@@ -52,23 +52,14 @@ function loadPatch(path: string): EntryPatch[] {
   return parsed as EntryPatch[]
 }
 
-function readXagentStatePatches(patch: EntryPatch[]): Record<string, Record<string, unknown>> {
+function readXagentStatePatches(patch: EntryPatch[]): Record<string, Record<string, JsExpression>> {
   return Object.fromEntries(
     patch
       .filter((row): row is PatchRow & { id: string; config: Record<string, unknown> } => (
         typeof row.id === 'string' && row.config !== undefined
       ))
-      .map(row => [row.id, Object.fromEntries(
-        Object.entries(row.config).map(([key, value]) => [
-          key,
-          isJsExpression(value) ? value.__jsExpr : value,
-        ]),
-      )]),
+      .map(row => [row.id, row.config]),
   )
-}
-
-function isJsExpression(value: unknown): value is JsExpression {
-  return typeof value === 'object' && value !== null && '__jsExpr' in value
 }
 
 describe('xagent business bundle', () => {
@@ -111,11 +102,11 @@ describe('xagent business bundle', () => {
     const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
 
     expect(readXagentStatePatches(patch)).toEqual({
-      settings: { dshHome: 'dshProfileDataPath()' },
-      credentials: { dshHome: 'dshProfileDataPath()' },
-      'session-persistence-jsonl': { root: "dshProfileDataPath('sessions')" },
-      'attachment-local': { dshHome: 'dshProfileDataPath()' },
-      'storage-json': { root: "dshProfileDataPath('storages')" },
+      settings: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      credentials: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      'session-persistence-jsonl': { root: { __jsExpr: "dshProfileDataPath('sessions')" } },
+      'attachment-local': { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      'storage-json': { root: { __jsExpr: "dshProfileDataPath('storages')" } },
     })
   })
 })

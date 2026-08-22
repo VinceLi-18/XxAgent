@@ -1,6 +1,6 @@
 {
   "name": "@xagent/dsh-developer",
-  "description": "XAgent 开发 Profile 的空扩展 Cordis Bundle",
+  "description": "XAgent 开发 Profile 的本地状态隔离 Cordis Bundle",
   "version": "0.1.0-rc.7",
   "private": true,
   "repository": {

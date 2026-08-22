@@ -14,8 +14,8 @@ export const name = 'xagent-developer-invariant'
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: Phase 0 deliberately adds no configuration rows or
- * runtime capability beyond the selected upstream bundles.
+ * No runtime invariant: this package only overrides local state paths and adds
+ * no runtime capability beyond the selected upstream bundles.
  */
 const install: InvariantInstaller = () => {}
 

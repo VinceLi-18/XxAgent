@@ -16,24 +16,15 @@ interface JsExpression {
   __jsExpr: string
 }
 
-function readXagentStatePatches(patch: unknown): Record<string, Record<string, unknown>> {
+function readXagentStatePatches(patch: unknown): Record<string, Record<string, JsExpression>> {
   if (!Array.isArray(patch)) throw new TypeError('patch must contain a patch list')
   return Object.fromEntries(
     (patch as PatchRow[])
       .filter((row): row is PatchRow & { id: string; config: Record<string, unknown> } => (
         typeof row.id === 'string' && row.config !== undefined
       ))
-      .map(row => [row.id, Object.fromEntries(
-        Object.entries(row.config).map(([key, value]) => [
-          key,
-          isJsExpression(value) ? value.__jsExpr : value,
-        ]),
-      )]),
+      .map(row => [row.id, row.config]),
   )
-}
-
-function isJsExpression(value: unknown): value is JsExpression {
-  return typeof value === 'object' && value !== null && '__jsExpr' in value
 }
 
 describe('xagent developer bundle', () => {
@@ -62,11 +53,11 @@ describe('xagent developer bundle', () => {
       'storage-json',
     ])
     expect(readXagentStatePatches(rows)).toEqual({
-      settings: { dshHome: 'dshProfileDataPath()' },
-      credentials: { dshHome: 'dshProfileDataPath()' },
-      'session-persistence-jsonl': { root: "dshProfileDataPath('sessions')" },
-      'attachment-local': { dshHome: 'dshProfileDataPath()' },
-      'storage-json': { root: "dshProfileDataPath('storages')" },
+      settings: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      credentials: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      'session-persistence-jsonl': { root: { __jsExpr: "dshProfileDataPath('sessions')" } },
+      'attachment-local': { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      'storage-json': { root: { __jsExpr: "dshProfileDataPath('storages')" } },
     })
   })
 })
