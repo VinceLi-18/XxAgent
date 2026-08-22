@@ -50,17 +50,17 @@ GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模�
 
 ## 真实服务与 GIF 证据
 
-构建版服务使用 `if [ -f .env ]; then set -a; . ./.env; set +a; fi; DSH_HOME=/private/tmp/xagent-task5-gif-verified-gXCvli/home DSH_AGENTS_HOME=/private/tmp/xagent-task5-gif-verified-gXCvli/agents node apps/cli/lib/bin.js --profile xagent-business --host 127.0.0.1 --port 3095` 启动，输出 `dsh web: http://127.0.0.1:3095`。
+在干净的最终产品 HEAD `a6b79303d716d2b7f85c3b303df19352af9111b2` 上执行 `pnpm run build && pnpm run build:web`，然后使用 `if [ -f .env ]; then set -a; . ./.env; set +a; fi; DSH_HOME=/private/tmp/xagent-task5-final-gif-NwJb1C/home DSH_AGENTS_HOME=/private/tmp/xagent-task5-final-gif-NwJb1C/agents node apps/cli/lib/bin.js --profile xagent-business --host 127.0.0.1 --port 3098` 启动构建版服务，输出 `dsh web: http://127.0.0.1:3098`。
 
-沙箱禁止本机监听端口，构建版服务以宿主权限启动；浏览器控制服务不可用后，使用仓库声明的 Playwright 依赖创建隔离 headless context。服务和浏览器均来自同一记录提交 `ce30f40e44a9b8c9c0f33a5a784ae4bc4143ebe1`，浏览器 viewport 为 1440×960、locale 为 `zh-CN`。
+沙箱禁止本机监听端口，构建版服务以宿主权限启动；内置浏览器不可用后，使用仓库声明的 Playwright 依赖创建新的隔离 headless context。服务、浏览器和四张帧均来自同一次连续运行，浏览器 viewport 为 1440×960、locale 为 `zh-CN`。
 
-全新 Profile 数据目录为 `/private/tmp/xagent-task5-gif-verified-gXCvli/home/profiles/xagent-business/data`。
+全新 Profile 数据目录为 `/private/tmp/xagent-task5-final-gif-NwJb1C/home/profiles/xagent-business/data`。
 
-同一次运行的 PNG 帧保存在仓库忽略目录 `.playwright-mcp/gif-frames-xagent-phase1-verified/`：欢迎对话框显示 XAgent 标题和固定中文文案；新会话入口显示在侧栏；侧栏从 280px 折叠至 56px 后恢复至 280px。AppFrame 的实际 grid tracks 为 `280px 1160px 0px`、`56px 1384px 0px`、`280px 1160px 0px`，保留三列框架的第三个 details track（空会话时宽度为 0）。
+同一次运行的 PNG 帧保存在仓库忽略目录 `.playwright-mcp/gif-frames-xagent-phase1-final-a6b7930/`：先显示 XAgent 标题和固定中文欢迎文案，点击「继续」后依次完成真实的「稍后配置」首次使用步骤并显示侧栏「新会话」入口，随后侧栏从 280px 折叠到 56px 再恢复至 280px。AppFrame 实测 grid tracks 为 `56px 1384px 0px` 和 `280px 1160px 0px`，保留三列框架的第三个 details track（空会话时宽度为 0）。
 
-GIF 已生成于仓库忽略路径 `.playwright-mcp/xagent-phase1-product-shell.gif`，绝对路径为 `/private/tmp/xagent-phase1-product-shell/.playwright-mcp/xagent-phase1-product-shell.gif`。`python3 /Users/vince/projects/XxAgent/.agents/skills/record-browser-gif/scripts/encode_gif.py .playwright-mcp/gif-frames-xagent-phase1-verified .playwright-mcp/xagent-phase1-product-shell.gif --durations 1.8,2.2,1.8,3.5 --fps 10 --max-width 1200 --colors 128` 的摘要为 4 个源帧、93 个编码帧、1200×800、10 fps、9.3 秒和 333,040 字节。
+GIF 已替换为仓库忽略路径 `.playwright-mcp/xagent-phase1-product-shell.gif`，绝对路径为 `/private/tmp/xagent-phase1-product-shell/.playwright-mcp/xagent-phase1-product-shell.gif`。`python3 /Users/vince/projects/XxAgent/.agents/skills/record-browser-gif/scripts/encode_gif.py /private/tmp/xagent-phase1-product-shell/.playwright-mcp/gif-frames-xagent-phase1-final-a6b7930 /private/tmp/xagent-phase1-product-shell/.playwright-mcp/xagent-phase1-product-shell.gif --durations 1.8,2.4,1.8,3.5 --fps 10 --max-width 1200 --colors 128 --force` 的摘要为 4 个源帧、95 个编码帧、1200×800、10 fps、9.5 秒和 332,204 字节；SHA-256 为 `c7d55e7b3b117f52513b7313fa01dcb5745755debaf6d2bda893307b2f74e1f3`。
 
-已直接查看编码后的 GIF；查看器只显示首帧时，以 ffmpeg 解码首帧、新会话帧、折叠帧、展开帧和末帧进行复核。顺序正确，折叠 rail 清晰，最终展开状态保持可读。
+已直接查看编码后的 GIF；查看器只显示首帧时，以 ffmpeg 解码欢迎、新会话、折叠和展开代表帧进行复核。顺序、侧栏状态和最终展开状态均清晰，未见密钥、个人数据或无关标签页。
 
 根 `.env` 未提供 `DEEPSEEK_API_KEY`，因此录制未执行真实模型回合；没有使用 fixture、mock、静态页面或合成事件替代。
 
