@@ -12,7 +12,7 @@
 | 类型检查与构建 | `pnpm run typecheck && pnpm run build` | PASS。 |
 | Web 前端构建 | `pnpm run build:web` | PASS。 |
 
-`pnpm run test:coverage` 未运行。它是全仓 per-file coverage 检查，超出本任务的欢迎文案、标题和组合验证范围，且已知全量运行时间边界不适合作为本次补充验证。
+欢迎文案与标题补充阶段没有单独运行 `pnpm run test:coverage`；本记录后续的深色主题层级修复已运行该全仓检查并通过。
 
 ## Business rosterless 安全闭包
 
@@ -25,6 +25,14 @@ GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模�
 `pnpm run typecheck` 与 `pnpm run build` 通过。全新 `DSH_HOME=/private/tmp/xagent-task9-built-DePNp6/business` 的构建版配置转储确认 Business 的 `agent-presets`、`ui-agent-preset`、Shell、文件系统、Web 与 Skill 配置项保持禁用；同一构建中 Developer 的 `agent-presets` 与 `ui-agent-preset` 保持启用。
 
 构建版 `apps/cli/lib/bin.js --profile xagent-business --host 127.0.0.1 --port 0` 以全新 `DSH_HOME=/private/tmp/xagent-task9-service-WR7WLc` 启动。真实 HTTP API 返回空且不可写的 Preset 清单；`session.create` 成功并返回不含 `agentPreset` 的 Session；`skill.list` 返回空清单。Rosterless 是 Phase 1 的通用 Agent 能力闭包，不是多用户认证、授权或租户隔离边界。
+
+## 深色主题层级与滚动条
+
+品牌主题保留 `--dsw-alias-bg-base: #14213D` 与 `--dsw-alias-bg-layer-1: #1D2939`，并将深色 `layer-2`、`layer-3` 恢复为 `neutral-bluish-850`、`neutral-bluish-800`。高架表面因此重新形成独立色阶，滚动条检查可从调色板正确识别输入、菜单和提示表面；`JsonTree` 使用的 `layer-1` 继续属于基础表面，无需局部重绑。
+
+未修改实现时，`pnpm exec vitest run packages/client/ui-theme/tests/scrollbar-styles.client.spec.ts` 稳定复现 21 个测试中的 2 个失败：高架集合缺少 `--dsw-specific-input-major`，且 `JsonTree.module.css` 的 `--dsw-alias-bg-layer-1` 被误判为高架表面。最小令牌修复后，滚动条与主题聚焦测试通过 2 个文件、40 个测试，`ui-theme` 全目录通过 8 个文件、65 个测试。
+
+沙箱内首次运行 `pnpm run test:coverage` 时，真实 HTTP、进程和终端用例出现统一超时；依照仓库宿主沙箱规则，以宿主权限原样重跑后通过 811 个文件、13,523 个测试，8 个文件与 109 个测试按既有条件跳过，语句、分支、函数和行覆盖率均为 100%。最终 `pnpm run typecheck` 通过。
 
 ## 构建版 Web 验证
 
