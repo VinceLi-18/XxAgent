@@ -33,6 +33,21 @@ const brandTokens = [
   '--dsw-alias-focus-ring',
 ] as const
 
+/** Relative luminance for an opaque six-digit sRGB color. */
+function relativeLuminance(color: string): number {
+  const channels = color.slice(1).match(/../g)!.map(channel => Number.parseInt(channel, 16) / 255)
+  const linear = channels.map(channel => channel <= 0.04045
+    ? channel / 12.92
+    : ((channel + 0.055) / 1.055) ** 2.4)
+  return 0.2126 * linear[0]! + 0.7152 * linear[1]! + 0.0722 * linear[2]!
+}
+
+/** WCAG contrast ratio for two opaque six-digit sRGB colors. */
+function contrastRatio(first: string, second: string): number {
+  const [lighter, darker] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a)
+  return (lighter! + 0.05) / (darker! + 0.05)
+}
+
 const make = (host = stubSettingsScope<ThemeSettings>()): {
   ctx: Context
   theme: ThemeRuntime
@@ -82,6 +97,12 @@ describe('ThemeRuntime', () => {
     for (const token of brandTokens) {
       expect(aliases.get(token), token).toMatch(/^#[0-9a-f]{6}$/i)
     }
+  })
+
+  it('keeps dark primary-button hover text at the 4.5:1 contrast threshold', () => {
+    const hover = darkAliases.get('--dsw-alias-button-primary-hover')!
+    const foreground = darkAliases.get('--dsw-alias-label-primary-foreground')!
+    expect(contrastRatio(hover, foreground)).toBeGreaterThanOrEqual(4.5)
   })
 
   it('adopts a published Host section without writing it back', () => {

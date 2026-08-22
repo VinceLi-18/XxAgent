@@ -117,9 +117,9 @@ export function HeroShell({ t, children }: HeroShellProps) {
     <div className={css.root}>
       <div className={css.stack}>
         <div className={css.headline}>
-          {/* figma 34:10412: fish 34×25 leading the headline, gap 10. */}
+          {/* The 24×24 X mark stays inside the headline's 34px grid column. */}
           <span className={css.fishHitbox}>
-            <FishLogo size={34} className={css.fish} />
+            <FishLogo size={24} className={css.fish} />
           </span>
           <span className={css.headlineText}>{t('hero.headline')}</span>
           <span className={css.previewBadge}>{t('hero.preview')}</span>
