@@ -1,7 +1,6 @@
 # XAgent Phase 1 产品外壳验证记录
 
-**日期：** 2026-08-22 至 2026-08-23
-**范围：** XAgent 欢迎文案、浏览器标题装配、Profile 组合和构建版 Web 验证。
+本记录覆盖 2026-08-22 至 2026-08-23 的 XAgent 欢迎文案、浏览器标题装配、Profile 组合和构建版 Web 验证。
 
 ## TDD 与聚焦验证
 
@@ -17,7 +16,7 @@
 
 ## 构建版 Web 验证
 
-`pnpm run test:web:built` 未通过，不能标记为 PASS。最小复现为 `pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/chat-scroll-contract.e2e.ts`。
+`pnpm run test:web:built` 尚未全量通过，不能标记为 PASS。最小复现为 `pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/chat-scroll-contract.e2e.ts`。
 
 受沙箱运行时影响，该命令在 `apps/web/tests/chat-scroll-contract.e2e.ts:460` 的 `chromium.launch()` 失败，Chromium 输出 `bootstrap_check_in ... MachPortRendezvousServer ... Permission denied (1100)` 并以 `SIGTRAP` 退出。
 
@@ -25,7 +24,9 @@
 
 `pnpm exec vitest list --config vitest.web.config.ts` 在 25.8 秒内完成，因此收集阶段不是卡点。
 
-本任务未修改产品代码或测试基础设施；该结果记录为浏览器测试运行环境阻断。
+欢迎文案实现修改了 `packages/client/ui-settings-models/src/onboarding-copy.ts`，并同步更新标题装配期望。本轮补充验收发现并修复了构建版 Web lane 的旧欢迎夹具、takeover 标题选择器和欢迎快照；`pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/onboarding-deepseek-config.e2e.ts` 以宿主权限通过 4 个测试。全量 lane 的其余卡点仍按浏览器测试运行环境记录。
+
+夹具修复后，以宿主权限运行 `pnpm run test:web:built` 在 Vitest runner 启动后 90 秒没有完成任何测试或输出进一步日志，为停止诊断而中断并退出 1。该全量启动或初始化挂起不同于沙箱的端口／Chromium 权限拒绝，也不同于已经通过的 onboarding lane；全量检查仍未通过。
 
 ## 真实服务与 GIF 证据
 
@@ -45,6 +46,6 @@ GIF 已生成于仓库忽略路径 `.playwright-mcp/xagent-phase1-product-shell.
 
 ## 其他检查
 
-`git diff --check` 在本轮文档更新后执行。
+`git diff --check` 在每轮文档更新后执行。
 
-`pnpm run doc-sync` 未运行。Task 3 已记录上游存量文档失败；本任务只更新进度记录，不将该存量问题归因于本次改动。
+`pnpm run doc-sync` 本轮已运行但未通过：`doc-typecheck` 仍在既有 XAgent 集成设计文档中缺少 `UserId`、`Role`、`ConnectionId` 和 `ProjectId` 定义；`verify-export-jsdoc` 命中其他包的临时 oxlint probe 文件；全仓翻译配对缺少多个既有文档与 bundle README 的条目。首次运行也报告本记录顶部相邻元数据行为硬换行，已改为单段后再执行 `pnpm run verify-md-wrap`，本文件不再出现在结果中；其余硬换行来自无关文档。`pnpm run verify-translation-pairing packages/client/ui-settings-models/README.md` 通过，确认本次 README 配对正确。

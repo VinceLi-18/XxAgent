@@ -149,19 +149,19 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
     // navigations (init scripts re-run per navigation); that stays harmless
     // because no later scenario in this file legitimately shows the
     // takeover, and only this test reads __takeoverSightings.
-    await page.addInitScript(() => {
+    await page.addInitScript((welcomeTitle: string) => {
       const sightings: string[] = []
       ;(window as unknown as { __takeoverSightings: string[] }).__takeoverSightings = sightings
       setInterval(() => {
         if (document.querySelector(
-          '[role="dialog"][aria-label="内测声明"], '
+          `[role="dialog"][aria-label="${welcomeTitle}"], `
           + '[role="dialog"][aria-label="添加一个 API Key 开始使用"]',
         ) !== null) {
           sightings.push('chrome')
         }
         if (document.getElementById('root')?.inert === true) sightings.push('inert')
       }, 8)
-    })
+    }, WELCOME_NOTICE_COPY.zh.title)
     // EVERY settings.describe issued before the release is held — not just
     // the first — so the pin cannot silently collapse back to loopback
     // timing if a second boot-time consumer of the join ever appears.
