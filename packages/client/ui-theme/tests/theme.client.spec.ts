@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { stubSettingsScope, type StubSettingsScope } from '@deepseek-ai/dsh-client-test-runtime'
@@ -8,6 +10,28 @@ import type {
   ThemeTokenOverrides,
 } from '@deepseek-ai/dsh-client-ui-theme/client'
 import { ThemeRuntime } from '@deepseek-ai/dsh-client-ui-theme/client'
+
+const platformCss = readFileSync(resolve('packages/client/ui-theme/src/styles/design-platform.css'), 'utf8')
+
+/** Alias values declared by one palette selector in the shipped stylesheet. */
+function aliasTokens(selector: string): Map<string, string> {
+  const tokens = new Map<string, string>()
+  for (const [, ruleSelector = '', declarations = ''] of platformCss.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (ruleSelector.trim() !== selector) continue
+    for (const [, name = '', value = ''] of declarations.matchAll(/(--dsw-alias-[\w-]+)\s*:\s*([^;]+);/g)) {
+      tokens.set(name, value.trim())
+    }
+  }
+  return tokens
+}
+
+const lightAliases = aliasTokens('body')
+const darkAliases = aliasTokens('body[data-ds-dark-theme]')
+const brandTokens = [
+  '--dsw-alias-brand-primary',
+  '--dsw-alias-button-primary-fill',
+  '--dsw-alias-focus-ring',
+] as const
 
 const make = (host = stubSettingsScope<ThemeSettings>()): {
   ctx: Context
@@ -46,6 +70,18 @@ describe('ThemeRuntime', () => {
     theme.setTheme('dark')
     expect(events).toHaveLength(1)
     expect(host.set).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['light', lightAliases],
+    ['dark', darkAliases],
+  ] as const)('ships readable brand, primary-button, and keyboard-focus colors for %s', (id, aliases) => {
+    const { theme } = make()
+    theme.setTheme(id)
+    expect(theme.getTheme().active.id).toBe(id)
+    for (const token of brandTokens) {
+      expect(aliases.get(token), token).toMatch(/^#[0-9a-f]{6}$/i)
+    }
   })
 
   it('adopts a published Host section without writing it back', () => {
