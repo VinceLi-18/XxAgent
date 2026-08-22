@@ -21,6 +21,16 @@ interface JsExpression {
   __jsExpr: string
 }
 
+function readJsExpressionConfig(config: Record<string, unknown>): Record<string, JsExpression> {
+  return Object.fromEntries(Object.entries(config).map(([key, value]) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || !('__jsExpr' in value) || typeof value.__jsExpr !== 'string') {
+      throw new TypeError(`${key} must be a JavaScript expression`)
+    }
+    return [key, { __jsExpr: value.__jsExpr }]
+  }))
+}
+
 const prohibitedRows = [
   'bash-sandbox',
   'pwsh-sandbox',
@@ -58,7 +68,7 @@ function readXagentStatePatches(patch: EntryPatch[]): Record<string, Record<stri
       .filter((row): row is PatchRow & { id: string; config: Record<string, unknown> } => (
         typeof row.id === 'string' && row.config !== undefined
       ))
-      .map(row => [row.id, row.config]),
+      .map(row => [row.id, readJsExpressionConfig(row.config)]),
   )
 }
 

@@ -300,6 +300,12 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:^
         version: link:../../packages/workflow/workflow-worker-thread
+      '@xagent/dsh-business':
+        specifier: workspace:^
+        version: link:../../packages/bundle/xagent-business
+      '@xagent/dsh-developer':
+        specifier: workspace:^
+        version: link:../../packages/bundle/xagent-developer
       commander:
         specifier: ^15.0.0
         version: 15.0.0
