@@ -99,7 +99,7 @@ export interface Profile {
  * Resolve a profile's directory under the Harness home.
  * @param name - the profile name (`dsh --profile <name>`).
  * @param home - the Harness home; defaults to {@link resolveDshHome}.
- * @returns the absolute profile directory (which may not exist yet).
+ * @returns the profile directory under `home` (which may not exist yet); a relative `home` produces a relative path.
  */
 export function resolveProfileDir(name: string, home: string = resolveDshHome()): string {
   if (name === '' || name.includes('/') || name.includes('\\') || name === '.' || name === '..'
@@ -114,7 +114,7 @@ export function resolveProfileDir(name: string, home: string = resolveDshHome())
  * Resolve the persistent data directory for a profile.
  * @param name - the profile name (`dsh --profile <name>`).
  * @param home - the Harness home; defaults to {@link resolveDshHome}.
- * @returns the absolute profile data directory (which may not exist yet).
+ * @returns the profile data directory under `home` (which may not exist yet); a relative `home` produces a relative path.
  */
 export function resolveProfileDataDir(name: string, home: string = resolveDshHome()): string {
   return join(resolveProfileDir(name, home), 'data')

@@ -66,6 +66,10 @@ GIF 已生成于仓库忽略路径 `.playwright-mcp/xagent-phase1-product-shell.
 
 ## 其他检查
 
+`resolveProfileDir()` 与 `resolveProfileDataDir()` 的 JSDoc 以传入的 `home` 为路径基准：默认 `home` 来自绝对的 Harness 主目录；调用者传入相对 `home` 时，返回值也是相对路径。Phase 1 设计文档状态为“已确认并实施”。
+
+`pnpm exec vitest run packages/boot/app-boot/tests/profile.spec.ts` 通过 1 个文件、15 个测试，`pnpm run typecheck` 通过。`verify-md-links` 与 `verify-doc-budgets` 通过；按 Task 11 文件过滤的 `verify-export-jsdoc` 没有发现违规。全仓 `verify-export-jsdoc` 仍被两个其他包中的临时 `oxlint-contract-*` 探针阻断，`verify-md-wrap` 仍命中既有 Phase 0 文档，均未命中本次修改文件。翻译配对清单仍将 11 份既有 XAgent 中文文档列为缺少英文配对，本次不新增英文副本。
+
 `git diff --check` 在每轮文档更新后执行。
 
 `pnpm run doc-sync` 本轮已运行但未通过：`doc-typecheck` 仍在既有 XAgent 集成设计文档中缺少 `UserId`、`Role`、`ConnectionId` 和 `ProjectId` 定义；`verify-export-jsdoc` 命中其他包的临时 oxlint probe 文件；全仓翻译配对缺少多个既有文档与 bundle README 的条目。首次运行也报告本记录顶部相邻元数据行为硬换行，已改为单段后再执行 `pnpm run verify-md-wrap`，本文件不再出现在结果中；其余硬换行来自无关文档。`pnpm run verify-translation-pairing packages/client/ui-settings-models/README.md` 通过，确认本次 README 配对正确。
