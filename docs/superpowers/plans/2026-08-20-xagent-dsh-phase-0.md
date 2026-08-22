@@ -43,27 +43,27 @@
 - 输入：/Users/vince/projects/deepseek-harness 中已确认且干净的 commit。
 - 输出：不含 DSH 历史提交的 XxAgent 工作树。
 
-- [ ] **步骤 1：验证待导入源码**
+- [x] **步骤 1：验证待导入源码**
 
     git -C /Users/vince/projects/deepseek-harness rev-parse HEAD
     git -C /Users/vince/projects/deepseek-harness diff --quiet 99f6f02fecdb7dff40c3fbc9470f5907c29f74ca
 
 预期：输出该固定 SHA，且 diff 命令退出码为 0。
 
-- [ ] **步骤 2：解包源码到 XxAgent**
+- [x] **步骤 2：解包源码到 XxAgent**
 
     git -C /Users/vince/projects/deepseek-harness archive --format=tar 99f6f02fecdb7dff40c3fbc9470f5907c29f74ca | tar -xf - -C /Users/vince/projects/XxAgent
 
 预期：出现 package.json、pnpm-lock.yaml、LICENSE、THIRD_PARTY_NOTICES.md、apps、packages、vendor 与 DSH 文档，且 Git 历史未新增 DSH 提交。
 
-- [ ] **步骤 3：确认设计与交接文档未被上游文档覆盖**
+- [x] **步骤 3：确认设计与交接文档未被上游文档覆盖**
 
     test -f docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md
     test -f docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md
 
 预期：两份已确认的 XAgent 架构文档均存在，且未被上游文档覆盖。
 
-- [ ] **步骤 4：创建单一 XxAgent 快照提交**
+- [x] **步骤 4：创建单一 XxAgent 快照提交**
 
     git add -A
     git commit -m "chore: import dsh 0.1.0-rc.7 snapshot"
@@ -81,14 +81,14 @@
 - 输入：官方上游 URL、固定版本/commit、LICENSE 与 THIRD_PARTY_NOTICES.md。
 - 输出：后续更新可验证的归属与基线记录。
 
-- [ ] **步骤 1：添加官方 upstream**
+- [x] **步骤 1：添加官方 upstream**
 
     git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git
     git remote -v
 
 预期：origin 仍为 XxAgent 仓库；upstream 为官方 DeepSeek Harness 仓库。
 
-- [ ] **步骤 2：写入基线文档**
+- [x] **步骤 2：写入基线文档**
 
 docs/upstream/dsh-baseline.md 的完整内容：
 
@@ -102,7 +102,7 @@ docs/upstream/dsh-baseline.md 的完整内容：
     - 许可证：LICENSE 中的 MIT；THIRD_PARTY_NOTICES.md 保留第三方声明。
     - 更新策略：在专用更新分支中比较本 commit 与 upstream，选择需要的改动作为新的 XxAgent 提交应用；不得将 upstream 历史 merge 或 rebase 至 XxAgent。
 
-- [ ] **步骤 3：验证归属记录**
+- [x] **步骤 3：验证归属记录**
 
     test -f LICENSE
     test -f THIRD_PARTY_NOTICES.md
@@ -111,7 +111,7 @@ docs/upstream/dsh-baseline.md 的完整内容：
 
 预期：所有检查均成功。
 
-- [ ] **步骤 4：独立提交基线文档**
+- [x] **步骤 4：独立提交基线文档**
 
     git add docs/upstream/dsh-baseline.md
     git commit -m "docs: record dsh upstream baseline"
@@ -127,14 +127,14 @@ docs/upstream/dsh-baseline.md 的完整内容：
 - 输入：上游 package.json、pnpm-lock.yaml、构建脚本与 Web 入口。
 - 输出：任何 XAgent 变更前的可复现基线结果。
 
-- [ ] **步骤 1：安装锁定依赖**
+- [x] **步骤 1：安装锁定依赖**
 
     pnpm install --frozen-lockfile
     git diff --exit-code pnpm-lock.yaml
 
 预期：pnpm 成功，锁文件不变。
 
-- [ ] **步骤 2：运行类型、核心、构建和 Web 测试**
+- [x] **步骤 2：运行类型、核心、构建和 Web 测试**
 
     pnpm run typecheck
     pnpm exec vitest run packages/bundle/base/tests/base.spec.ts packages/bundle/web-app/tests/web-app.spec.ts apps/cli/tests/web-agent-presets.e2e.ts
@@ -143,7 +143,7 @@ docs/upstream/dsh-baseline.md 的完整内容：
 
 预期：所有命令退出码为 0。
 
-- [ ] **步骤 3：冒烟验证 Web 服务**
+- [x] **步骤 3：冒烟验证 Web 服务**
 
 第一个终端：
 
@@ -155,7 +155,7 @@ docs/upstream/dsh-baseline.md 的完整内容：
 
 预期：HTTP 探测成功；用 Ctrl-C 停止服务，不录入模型凭据。
 
-- [ ] **步骤 4：记录全部命令结果**
+- [x] **步骤 4：记录全部命令结果**
 
 在 docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md 中建立下表：
 
@@ -168,7 +168,7 @@ docs/upstream/dsh-baseline.md 的完整内容：
 | Web 测试 | pnpm run test:web:built | PASS |
 | Web 冒烟 | pnpm dsh web --port 3080 加 loopback curl | PASS |
 
-- [ ] **步骤 5：提交基线证据**
+- [x] **步骤 5：提交基线证据**
 
     git add docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md
     git commit -m "docs: verify dsh phase 0 baseline"
@@ -198,20 +198,20 @@ docs/upstream/dsh-baseline.md 的完整内容：
 - 输入：DSH Bundle 清单与 Cordis 补丁格式。
 - 输出：声明 dsh.bundle.patch 的 @xagent/dsh-business 与 @xagent/dsh-developer。
 
-- [ ] **步骤 1：编写失败的 Bundle 清单断言**
+- [x] **步骤 1：编写失败的 Bundle 清单断言**
 
     expect(businessManifest.name).toBe('@xagent/dsh-business')
     expect(businessManifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(developerManifest.name).toBe('@xagent/dsh-developer')
     expect(developerManifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
 
-- [ ] **步骤 2：运行测试确认新包尚不存在**
+- [x] **步骤 2：运行测试确认新包尚不存在**
 
     pnpm exec vitest run packages/bundle/xagent-business/tests/business-closure.spec.ts packages/bundle/xagent-developer/tests/developer-bundle.spec.ts
 
 预期：因包和文件尚未创建而失败。
 
-- [ ] **步骤 3：实现最小包清单和入口**
+- [x] **步骤 3：实现最小包清单和入口**
 
 两个 package.json 都使用对应名称、根包一致的 version 0.1.0-rc.7、private true、type module、license MIT、main lib/index.js、types lib/types/index.d.ts、dsh.bundle.patch ./cordis.patch.yml，以及 @deepseek-ai/cordis 和 @deepseek-ai/dsh-invariants 的 workspace peerDependencies 与 devDependencies。每个包均提供中文 README、`src/invariant.ts`、`tsconfig.json`，并在 `tsconfig.host.json` 中注册；这是 DSH 新建包的固定约束，不改变本任务批准的能力范围。
 
@@ -229,7 +229,7 @@ docs/upstream/dsh-baseline.md 的完整内容：
 
     []
 
-- [ ] **步骤 4：实现业务拒绝补丁**
+- [x] **步骤 4：实现业务拒绝补丁**
 
 packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 
@@ -280,7 +280,7 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 
 业务组合仅为 @deepseek-ai/dsh-base 加 @xagent/dsh-business；不得组合 @deepseek-ai/dsh-web-app。
 
-- [ ] **步骤 5：验证并提交 Bundle 骨架**
+- [x] **步骤 5：验证并提交 Bundle 骨架**
 
     pnpm exec vitest run packages/bundle/xagent-business/tests/business-closure.spec.ts packages/bundle/xagent-developer/tests/developer-bundle.spec.ts
     pnpm run typecheck
@@ -300,7 +300,7 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 - 输入：解析后的 base 与业务 Cordis YAML 补丁。
 - 输出：业务有效配置中每项禁止能力均已禁用的确定性证据。
 
-- [ ] **步骤 1：写出有效行失败断言**
+- [x] **步骤 1：写出有效行失败断言**
 
     const prohibitedRows = [
       'bash-sandbox', 'pwsh-sandbox', 'tool-bash', 'tool-pwsh',
@@ -316,7 +316,7 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
       expect(effectiveRows.get(id)).toMatchObject({ id, disabled: true })
     }
 
-- [ ] **步骤 2：证明测试会检测遗漏**
+- [x] **步骤 2：证明测试会检测遗漏**
 
 暂时移除 tool-web 行并运行：
 
@@ -324,11 +324,11 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 
 预期：因 tool-web 未禁用而失败；恢复该行后通过。
 
-- [ ] **步骤 3：实现有效补丁组合**
+- [x] **步骤 3：实现有效补丁组合**
 
 用 readFileSync 读取 packages/bundle/base/cordis.patch.yml 与 packages/bundle/xagent-business/cordis.patch.yml，并通过工作区 js-yaml 解析。按 id 整理 base 的 insert 行，再以业务补丁的同 id 行替换。测试必须断言解析后的有效配置，不能断言 YAML 源文本子串。
 
-- [ ] **步骤 4：断言开发扩展惰性**
+- [x] **步骤 4：断言开发扩展惰性**
 
     expect(developerPatch).toEqual([])
     expect([
@@ -343,7 +343,7 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 
 预期：开发组合明确，且 XAgent 开发扩展在 Phase 0 不新增能力。
 
-- [ ] **步骤 5：运行闭包、类型与构建检查**
+- [x] **步骤 5：运行闭包、类型与构建检查**
 
     pnpm exec vitest run packages/bundle/xagent-business/tests/business-closure.spec.ts packages/bundle/xagent-developer/tests/developer-bundle.spec.ts
     pnpm run typecheck
@@ -351,7 +351,7 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 
 预期：全部成功。
 
-- [ ] **步骤 6：写入闭包记录并提交**
+- [x] **步骤 6：写入闭包记录并提交**
 
 记录应说明：业务组合为 @deepseek-ai/dsh-base 加 @xagent/dsh-business；禁用了 shell、文件系统、网络、Subagent、Workflow 和文件系统 Skill；业务不组合 Web Bundle；开发组合为 base、web-app、xagent-developer；Phase 0 无生产连接；Phase 2 认证与 Session 隔离通过安全测试前禁止业务工具或生产数据访问。
 
@@ -369,7 +369,7 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 - 输入：源码快照、基线记录、基线验证与闭包测试。
 - 输出：干净的 Phase 0 状态与不可绕过的 Phase 2 安全门禁。
 
-- [ ] **步骤 1：运行最终验证**
+- [x] **步骤 1：运行最终验证**
 
     git status --short
     git remote -v
@@ -380,14 +380,13 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 
 预期：工作树干净、origin/upstream 均存在、所有命令成功。
 
-- [ ] **步骤 2：验证源码快照历史策略**
+- [x] **步骤 2：验证源码快照历史策略**
 
-    git merge-base --is-ancestor 99f6f02fecdb7dff40c3fbc9470f5907c29f74ca HEAD
-    test $? -eq 1
+    test -z "$(git cat-file -t 99f6f02fecdb7dff40c3fbc9470f5907c29f74ca 2>/dev/null || true)"
 
-预期：已确认 DSH commit 不是 XxAgent HEAD 的祖先。
+预期：已确认 DSH commit 对象不存在于 XxAgent Git 数据库；源码快照未导入上游 Git 历史。
 
-- [ ] **步骤 3：通过实际命令输出写入完成状态**
+- [x] **步骤 3：通过实际命令输出写入完成状态**
 
     {
       printf '\n## 完成状态\n\n'
@@ -401,7 +400,7 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
 
 预期：记录包含实际 XxAgent SHA 与安全边界。
 
-- [ ] **步骤 4：提交 Phase 0 完成记录**
+- [x] **步骤 4：提交 Phase 0 完成记录**
 
     git add docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md
     git commit -m "docs: complete xagent dsh phase 0"
