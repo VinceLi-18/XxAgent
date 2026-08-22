@@ -63,3 +63,7 @@
   disabled: true
 - id: ui-permission
   disabled: true
+- id: agent-presets
+  disabled: true
+- id: ui-agent-preset
+  disabled: true

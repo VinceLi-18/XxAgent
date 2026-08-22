@@ -58,6 +58,8 @@ const prohibitedRows = [
 
 const disabledHostRows = ['permission', 'ui-permission'] as const
 
+const disabledPresetRows = ['agent-presets', 'ui-agent-preset'] as const
+
 function loadPatch(path: string): EntryPatch[] {
   const parsed = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
   if (!Array.isArray(parsed)) throw new TypeError(`${path} must contain a patch list`)
@@ -115,6 +117,17 @@ describe('xagent business bundle', () => {
     const rows = new Map(business.map(row => [row.id, row]))
 
     for (const id of disabledHostRows) {
+      expect(rows.get(id), `${id} must be explicitly disabled for business use`)
+        .toMatchObject({ id, disabled: true })
+    }
+  })
+
+  it('disables the agent preset roster and its browser entry', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const business = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(business.map(row => [row.id, row]))
+
+    for (const id of disabledPresetRows) {
       expect(rows.get(id), `${id} must be explicitly disabled for business use`)
         .toMatchObject({ id, disabled: true })
     }

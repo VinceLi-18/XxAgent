@@ -14,6 +14,18 @@
 
 `pnpm run test:coverage` 未运行。它是全仓 per-file coverage 检查，超出本任务的欢迎文案、标题和组合验证范围，且已知全量运行时间边界不适合作为本次补充验证。
 
+## Business rosterless 安全闭包
+
+最终安全审查发现，业务 Profile 虽然禁用了高风险宿主服务，但 `@deepseek-ai/dsh-web-app` 的 `agent-presets` 仍会让新会话尝试挂载随安装提供的 `standard` Preset，并扫描用户自定义 Preset。业务组合包现已显式禁用 `agent-presets` 与 `ui-agent-preset`，业务会话采用 rosterless 组合。
+
+静态 RED 在 `packages/bundle/xagent-business/tests/business-closure.spec.ts` 命中缺失的 `agent-presets` 拒绝行。真实组合 RED 通过 `apps/cli/tests/xagent-business-rosterless.e2e.ts` 复现：Preset API 返回随安装提供的 `standard`、`code`、`minimal`、`cordis` 与临时用户 Preset；`session.create` 尝试挂载 `standard`，并报告 `tool-bash`、`tool-fs`、Subagent 和 Workflow 配置项正在等待被业务 Profile 禁用的服务。
+
+GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模型。`pnpm exec vitest run packages/bundle/xagent-business/tests/business-closure.spec.ts packages/bundle/xagent-developer/tests/developer-bundle.spec.ts` 通过 2 个文件、6 个测试；`pnpm exec vitest --config vitest.e2e.config.ts run apps/cli/tests/xagent-business-rosterless.e2e.ts` 通过 1 个文件、2 个测试。业务会话成功发布且不记录 `agentPreset`，模型工具 schema、Preset 清单与文件型 Skill 清单均为空。
+
+`pnpm run typecheck` 与 `pnpm run build` 通过。全新 `DSH_HOME=/private/tmp/xagent-task9-built-DePNp6/business` 的构建版配置转储确认 Business 的 `agent-presets`、`ui-agent-preset`、Shell、文件系统、Web 与 Skill 配置项保持禁用；同一构建中 Developer 的 `agent-presets` 与 `ui-agent-preset` 保持启用。
+
+构建版 `apps/cli/lib/bin.js --profile xagent-business --host 127.0.0.1 --port 0` 以全新 `DSH_HOME=/private/tmp/xagent-task9-service-WR7WLc` 启动。真实 HTTP API 返回空且不可写的 Preset 清单；`session.create` 成功并返回不含 `agentPreset` 的 Session；`skill.list` 返回空清单。Rosterless 是 Phase 1 的通用 Agent 能力闭包，不是多用户认证、授权或租户隔离边界。
+
 ## 构建版 Web 验证
 
 `pnpm run test:web:built` 尚未全量通过，不能标记为 PASS。最小复现为 `pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/chat-scroll-contract.e2e.ts`。
@@ -49,3 +61,5 @@ GIF 已生成于仓库忽略路径 `.playwright-mcp/xagent-phase1-product-shell.
 `git diff --check` 在每轮文档更新后执行。
 
 `pnpm run doc-sync` 本轮已运行但未通过：`doc-typecheck` 仍在既有 XAgent 集成设计文档中缺少 `UserId`、`Role`、`ConnectionId` 和 `ProjectId` 定义；`verify-export-jsdoc` 命中其他包的临时 oxlint probe 文件；全仓翻译配对缺少多个既有文档与 bundle README 的条目。首次运行也报告本记录顶部相邻元数据行为硬换行，已改为单段后再执行 `pnpm run verify-md-wrap`，本文件不再出现在结果中；其余硬换行来自无关文档。`pnpm run verify-translation-pairing packages/client/ui-settings-models/README.md` 通过，确认本次 README 配对正确。
+
+Task 9 的普通 Web Preset 回归运行 30 个测试，其中 29 个通过；既有 `merges the global skill layer into a preset agent's catalog` 测试单独复现仍失败于 `dsh-badge` 的 `skill` 工具加载结果。Task 9 未修改普通 Web、Preset 或 `dsh-badge` 实现，Business 与普通 Web 测试也使用不同组合入口；该失败不属于 rosterless 改动。
