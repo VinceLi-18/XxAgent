@@ -37,7 +37,9 @@
 
 同一次运行的 PNG 帧保存在仓库忽略目录 `.playwright-mcp/gif-frames-xagent-phase1-verified/`：欢迎对话框显示 XAgent 标题和固定中文文案；新会话入口显示在侧栏；侧栏从 280px 折叠至 56px 后恢复至 280px。AppFrame 的实际 grid tracks 为 `280px 1160px 0px`、`56px 1384px 0px`、`280px 1160px 0px`，保留三列框架的第三个 details track（空会话时宽度为 0）。
 
-GIF 目标路径为 `.playwright-mcp/xagent-phase1-product-shell.gif`，但未生成。`python3 /Users/vince/projects/XxAgent/.agents/skills/record-browser-gif/scripts/encode_gif.py .playwright-mcp/gif-frames-xagent-phase1-verified .playwright-mcp/xagent-phase1-product-shell.gif --durations 1.8,2.2,1.8,3.5 --fps 10 --max-width 1200 --colors 128` 退出 1，原因是 `ffmpeg` 和 `ffprobe` 不在 PATH；录制规范禁止在未授权时安装或用其他编码器替代。
+GIF 已生成于仓库忽略路径 `.playwright-mcp/xagent-phase1-product-shell.gif`，绝对路径为 `/private/tmp/xagent-phase1-product-shell/.playwright-mcp/xagent-phase1-product-shell.gif`。`python3 /Users/vince/projects/XxAgent/.agents/skills/record-browser-gif/scripts/encode_gif.py .playwright-mcp/gif-frames-xagent-phase1-verified .playwright-mcp/xagent-phase1-product-shell.gif --durations 1.8,2.2,1.8,3.5 --fps 10 --max-width 1200 --colors 128` 的摘要为 4 个源帧、93 个编码帧、1200×800、10 fps、9.3 秒和 333,040 字节。
+
+已直接查看编码后的 GIF；查看器只显示首帧时，以 ffmpeg 解码首帧、新会话帧、折叠帧、展开帧和末帧进行复核。顺序正确，折叠 rail 清晰，最终展开状态保持可读。
 
 根 `.env` 未提供 `DEEPSEEK_API_KEY`，因此录制未执行真实模型回合；没有使用 fixture、mock、静态页面或合成事件替代。
 
