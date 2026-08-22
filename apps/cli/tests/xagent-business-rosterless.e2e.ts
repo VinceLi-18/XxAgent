@@ -123,7 +123,7 @@ This project skill must not enter a Business session.
     expect(skills.result).toEqual({ ok: true, value: { skills: [] } })
   })
 
-  it('does not mount an explicitly requested user preset during session creation', async () => {
+  it('rejects an explicitly requested user preset without publishing a session', async () => {
     if (ctx === undefined) throw new Error('Business composition did not boot')
     const sessionId = SessionId(`xagent-business-explicit-${randomUUID()}`)
     const created = await ctx.apiProxy.sessions.create({
@@ -131,23 +131,16 @@ This project skill must not enter a Business session.
       payload: { sessionId, cwd: project, agentPreset: 'business-user-preset' },
     })
 
-    expect(created.result).toMatchObject({
+    expect(ctx.agents.get(sessionId) === undefined).toBe(true)
+    expect(ctx.sessions.get(sessionId) === undefined).toBe(true)
+    expect(created.result).toEqual({
       ok: false,
       error: {
-        code: 'agent-preset-conflict',
-        details: { sessionId, requestedPreset: 'business-user-preset' },
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'business-user-preset', available: [] },
       },
     })
-    const agent = ctx.agents.get(sessionId)
-    expect(agent).toBeDefined()
-    if (agent === undefined) throw new Error('Explicit Business session was not published')
-    expect(agent.session.header.agentPreset).toBeUndefined()
-    expect(ctx.tools.schemas(agent).map(tool => tool.name)).toEqual([])
-    const skills = await ctx.apiProxy.skills.list({
-      rpcId: RpcId('xagent-business-explicit-skills'),
-      payload: { sessionId },
-    })
-    expect(skills.result).toEqual({ ok: true, value: { skills: [] } })
   })
 
   it('rejects selecting a user preset for a blank rosterless session', async () => {

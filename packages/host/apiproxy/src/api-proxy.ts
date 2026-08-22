@@ -1021,6 +1021,13 @@ class AgentPresetConflict extends Error {
   }
 }
 
+/** A new session requested a preset from a deployment without a roster. */
+class AgentPresetRosterAbsent extends Error {
+  constructor(readonly agentPreset: string) {
+    super(`this deployment composes no agent presets; requested ${JSON.stringify(agentPreset)}`)
+  }
+}
+
 /** Requested identity already belongs to a session with another project cwd. */
 class SessionCwdConflict extends Error {
   constructor(
@@ -1641,6 +1648,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           })).agent
         }
 
+        if (presetId !== undefined && ctx.get('agentPresets') === undefined) {
+          throw new AgentPresetRosterAbsent(presetId)
+        }
         try {
           await mkdir(cwd, { recursive: true })
         } catch (error: unknown) {
@@ -2133,6 +2143,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         try {
           await ensureSession(sessionId, cwd, request.payload.sessionId !== undefined, requestedPreset)
         } catch (error: unknown) {
+          if (error instanceof AgentPresetRosterAbsent) {
+            return err(request, noRoster(error.agentPreset))
+          }
           if (error instanceof AgentPresetConflict) {
             return err(request, {
               code: 'agent-preset-conflict',

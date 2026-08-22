@@ -171,6 +171,24 @@ describe('session.create with an agent preset', () => {
     expect(response.result.error.code).toBe('agent-preset-not-found')
   })
 
+  it('rejects a requested preset before publishing when no roster is composed', async () => {
+    const { api, ctx } = await harness()
+    const sessionId = SessionId('s3-no-roster')
+
+    const response = await api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    expect(ctx.sessions.get(sessionId)).toBeUndefined()
+    expect(response.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+  })
+
   it('refuses to adopt a live session under a different preset', async () => {
     const { api } = await harness(['standard', 'minimal'])
     await api.sessions.create(request({ sessionId: SessionId('s4'), agentPreset: 'minimal' }))
