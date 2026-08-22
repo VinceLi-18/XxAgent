@@ -1,0 +1,28 @@
+/**
+ * Package-owned invariant companion for `@xagent/dsh-business`.
+ * @module @xagent/dsh-business/invariant
+ */
+
+import type { Context } from '@deepseek-ai/cordis'
+import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
+
+const PACKAGE_NAME = '@xagent/dsh-business'
+
+/** Cordis companion plugin name. */
+export const name = 'xagent-business-invariant'
+/** Service required before the companion can register. */
+export const inject = ['invariants']
+
+/**
+ * No runtime invariant: this package contributes only a declarative deny-list
+ * patch, whose complete observable contract is exercised by its closure test.
+ */
+const install: InvariantInstaller = () => {}
+
+/**
+ * Register this package's invariant companion.
+ * @param ctx - Cordis context carrying the invariant service.
+ * @returns the installed registration's disposer after setup succeeds.
+ */
+export const apply = (ctx: Context): Promise<() => void> =>
+  Promise.resolve(ctx.invariants.register(PACKAGE_NAME, install))
