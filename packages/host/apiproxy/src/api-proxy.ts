@@ -916,6 +916,15 @@ function projectionsUnavailableError(): RpcError {
   }
 }
 
+/** Stable RPC error for deployments that do not compose the subagent service. */
+function subagentsUnavailableError(): RpcError {
+  return {
+    code: 'internal',
+    message: 'subagent service is unavailable in this deployment',
+    details: {},
+  }
+}
+
 /** Verify one address and mode against the complete direct-child catalog. */
 async function catalogChild(
   ctx: Context,
@@ -926,8 +935,10 @@ async function catalogChild(
   error?: RpcError
 }> {
   const { parentSessionId, childSessionId, mode } = address
+  const subagents = ctx.get('subagents')
+  if (subagents === undefined) return { error: subagentsUnavailableError() }
   try {
-    const entries = await ctx.subagents.listChildren(parentSessionId, signal)
+    const entries = await subagents.listChildren(parentSessionId, signal)
     const entry = entries.find(candidate => candidate.id === childSessionId)
     if (entry === undefined || (entry.kind === 'child' && entry.mode !== mode)) {
       return {
@@ -2575,8 +2586,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
     subagents: {
       async list(request, signal) {
+        const subagents = ctx.get('subagents')
+        if (subagents === undefined) return err(request, subagentsUnavailableError())
         try {
-          const entries = await ctx.subagents.listChildren(request.payload.parentSessionId, signal)
+          const entries = await subagents.listChildren(request.payload.parentSessionId, signal)
           return ok(request, {
             entries: entries.map(entry => entry.kind === 'child'
               ? {
@@ -2676,6 +2689,8 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async prompt(request, signal) {
         const { parentSessionId, childSessionId, content, clientTimeZone } = request.payload
+        const subagents = ctx.get('subagents')
+        if (subagents === undefined) return err(request, subagentsUnavailableError())
         const canonicalTimeZone = clientTimeZone === undefined
           ? undefined
           : canonicalClientTimeZone(clientTimeZone)
@@ -2699,7 +2714,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }, signal)
         if (verified.error !== undefined) return err(request, verified.error)
         try {
-          const messageId = await ctx.subagents.followup(parent, childSessionId, content, {
+          const messageId = await subagents.followup(parent, childSessionId, content, {
             source: {
               kind: 'user',
               rpcId: request.rpcId,
@@ -2719,8 +2734,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       // its parent Agent is offline. Absent targets are accepted no-ops there.
       interrupt(request) {
         const { parentSessionId, childSessionId } = request.payload
+        const subagents = ctx.get('subagents')
+        if (subagents === undefined) return Promise.resolve(err(request, subagentsUnavailableError()))
         try {
-          ctx.subagents.interrupt(childSessionId, { kind: 'user', parentSessionId })
+          subagents.interrupt(childSessionId, { kind: 'user', parentSessionId })
         } catch (error: unknown) {
           if (error instanceof SubagentError && error.code === 'UNAUTHORIZED') {
             return Promise.resolve(err(request, {

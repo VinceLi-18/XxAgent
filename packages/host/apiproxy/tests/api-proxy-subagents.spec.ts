@@ -16,6 +16,8 @@ function request<P>(payload: P): RpcRequest<P> {
 
 function bench(options: {
   parentLive?: boolean
+  /** Omit the registry to model deployments that forbid subagent capabilities. */
+  subagents?: false
   childStatus?: 'idle' | 'running'
   entries?: object[]
   followupError?: Error
@@ -81,8 +83,8 @@ function bench(options: {
     return { snapshot: coldBlock }
   })
   const ctx = new Context()
-  ctx.provide('agents', { get: getAgent })
-  ctx.provide('subagents', { listChildren, followup, interrupt })
+  ctx.provide('agents', { get: getAgent, list: () => [] })
+  if (options.subagents !== false) ctx.provide('subagents', { listChildren, followup, interrupt })
   ctx.provide('sessions', {
     get: (id: SessionId) => options.liveChild === true && id === CHILD
       ? { id: CHILD, header: childHeader, events: childEvents }
@@ -109,6 +111,39 @@ function bench(options: {
 }
 
 describe('subagent gateway', () => {
+  it('keeps non-subagent endpoints usable and reports an unavailable registry deterministically', async () => {
+    const { api } = bench({ subagents: false })
+
+    expect((await api.host.describe(request({}))).result).toMatchObject({
+      ok: true,
+      value: { cwd: '/tmp', attachedSessions: 0 },
+    })
+
+    const responses = await Promise.all([
+      api.subagents.list(request({ parentSessionId: PARENT })),
+      api.subagents.history(request({
+        parentSessionId: PARENT, childSessionId: CHILD, mode: 'continuable',
+      })),
+      api.subagents.prompt(request({
+        parentSessionId: PARENT, childSessionId: CHILD, mode: 'continuable', content: [],
+      }), new AbortController().signal),
+      api.subagents.interrupt(request({
+        parentSessionId: PARENT, childSessionId: CHILD, mode: 'continuable',
+      })),
+    ])
+
+    for (const response of responses) {
+      expect(response.result).toEqual({
+        ok: false,
+        error: {
+          code: 'internal',
+          message: 'subagent service is unavailable in this deployment',
+          details: {},
+        },
+      })
+    }
+  })
+
   it('lists the complete catalog and reports exact live-parent availability', async () => {
     const { api, listChildren } = bench({ parentLive: false, entries: [
       {

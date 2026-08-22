@@ -59,3 +59,7 @@
   disabled: true
 - id: skill-filesystem
   disabled: true
+- id: permission
+  disabled: true
+- id: ui-permission
+  disabled: true
