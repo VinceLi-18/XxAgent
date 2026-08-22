@@ -197,7 +197,7 @@ describe('session.create with an agent preset', () => {
       async list() {
         listCalls++
         if (listCalls === 1) {
-          firstListEntered.resolve()
+          firstListEntered.resolve(undefined)
           await releaseFirstList.promise
         }
         return []
@@ -209,7 +209,73 @@ describe('session.create with an agent preset', () => {
     const refused = api.sessions.create(request({ sessionId, agentPreset: 'local' }))
     await firstListEntered.promise
     const accepted = api.sessions.create(request({ sessionId }))
-    releaseFirstList.resolve()
+    releaseFirstList.resolve(undefined)
+    const [refusedResponse, acceptedResponse] = await Promise.all([refused, accepted])
+
+    expect(refusedResponse.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+    expect(acceptedResponse.result).toEqual({ ok: true, value: { sessionId } })
+    expect(ctx.agents.get(sessionId)).toBeDefined()
+    expect(ctx.sessions.get(sessionId)).toBeDefined()
+  })
+
+  it('does not publish when a stored identity disappears between no-roster checks', async () => {
+    const sessionId = SessionId('s3-no-roster-disappeared')
+    let listCalls = 0
+    const persistence = {
+      list() {
+        listCalls++
+        return Promise.resolve(listCalls === 1
+          ? [{ id: sessionId, version: 0, createdAt: 0, cwd: '/stored' }]
+          : [])
+      },
+    }
+    const { api, ctx } = await harness(undefined, persistence)
+
+    const response = await api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    expect(ctx.sessions.get(sessionId)).toBeUndefined()
+    expect(response.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+  })
+
+  it('lets a valid concurrent create retry when a stored identity disappears', async () => {
+    const secondListEntered = Promise.withResolvers<undefined>()
+    const releaseSecondList = Promise.withResolvers<undefined>()
+    const sessionId = SessionId('s3-no-roster-disappeared-concurrent')
+    let listCalls = 0
+    const persistence = {
+      async list() {
+        listCalls++
+        if (listCalls === 1) {
+          return [{ id: sessionId, version: 0, createdAt: 0, cwd: '/stored' }]
+        }
+        if (listCalls === 2) {
+          secondListEntered.resolve(undefined)
+          await releaseSecondList.promise
+        }
+        return []
+      },
+    }
+    const { api, ctx } = await harness(undefined, persistence)
+
+    const refused = api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+    await secondListEntered.promise
+    const accepted = api.sessions.create(request({ sessionId }))
+    releaseSecondList.resolve(undefined)
     const [refusedResponse, acceptedResponse] = await Promise.all([refused, accepted])
 
     expect(refusedResponse.result).toEqual({

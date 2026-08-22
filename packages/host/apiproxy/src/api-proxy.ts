@@ -1660,6 +1660,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           })).agent
         }
 
+        if (presetId !== undefined && ctx.get('agentPresets') === undefined) {
+          throw new AgentPresetRosterAbsent(presetId)
+        }
         try {
           await mkdir(cwd, { recursive: true })
         } catch (error: unknown) {
@@ -1693,7 +1696,17 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       })
       sessionCreations.set(sessionId, creation)
     }
-    const agent = await creation
+    let agent: Agent
+    try {
+      agent = await creation
+    } catch (error: unknown) {
+      // A valid caller may have joined a transaction whose owner named a
+      // preset. Once that request-specific refusal clears, create normally.
+      if (error instanceof AgentPresetRosterAbsent && presetId === undefined) {
+        return ensureSession(sessionId, cwd, checkPersistedIdentity)
+      }
+      throw error
+    }
     if (hasSubagentOwner(agent.session, agent)) throw new SubagentSessionOwnership(sessionId)
     // Beside the cwd check for the same reason, and after the await so it
     // covers every path that yields a live agent — freshly created, adopted
