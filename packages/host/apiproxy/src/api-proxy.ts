@@ -1611,7 +1611,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     // A no-roster refusal belongs only to the request that named a preset. Keep
     // it outside sessionCreations so a valid concurrent caller can still create.
     if (presetId !== undefined && ctx.get('agentPresets') === undefined) {
+      const attached = ctx.sessions.get(sessionId)
       const live = ctx.agents.get(sessionId)
+      if (attached !== undefined && hasSubagentOwner(attached, live)) {
+        throw new SubagentSessionOwnership(sessionId)
+      }
       if (live === undefined) {
         const persistence = checkPersistedIdentity ? ctx.get('sessionPersistence') : undefined
         const stored = persistence === undefined

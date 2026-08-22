@@ -189,6 +189,24 @@ describe('session.create with an agent preset', () => {
     })
   })
 
+  it('classifies an attached subagent session before a no-roster preset request', async () => {
+    const { api, ctx, cwd } = await harness()
+    const sessionId = SessionId('s3-no-roster-subagent')
+    ctx.sessions.create(sessionId, { meta: { cwd, origin: 'subagent' } })
+
+    const response = await api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    expect(response.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-busy',
+        message: `session "${sessionId}" is owned by subagent routing`,
+        details: { reason: 'use subagent delivery for this child session' },
+      },
+    })
+  })
+
   it('does not share a pending no-roster refusal with a valid concurrent create', async () => {
     const firstListEntered = Promise.withResolvers<undefined>()
     const releaseFirstList = Promise.withResolvers<undefined>()
