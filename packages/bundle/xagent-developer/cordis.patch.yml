@@ -1,1 +1,15 @@
-[]
+- id: settings
+  config:
+    dshHome: !!js dshProfileDataPath()
+- id: credentials
+  config:
+    dshHome: !!js dshProfileDataPath()
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshProfileDataPath('sessions')
+- id: attachment-local
+  config:
+    dshHome: !!js dshProfileDataPath()
+- id: storage-json
+  config:
+    root: !!js dshProfileDataPath('storages')

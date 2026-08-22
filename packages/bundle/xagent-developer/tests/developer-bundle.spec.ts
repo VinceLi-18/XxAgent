@@ -7,8 +7,37 @@ import { describe, expect, it } from 'vitest'
 import * as yaml from 'js-yaml'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 
+interface PatchRow {
+  id?: string
+  config?: Record<string, unknown>
+}
+
+interface JsExpression {
+  __jsExpr: string
+}
+
+function readXagentStatePatches(patch: unknown): Record<string, Record<string, unknown>> {
+  if (!Array.isArray(patch)) throw new TypeError('patch must contain a patch list')
+  return Object.fromEntries(
+    (patch as PatchRow[])
+      .filter((row): row is PatchRow & { id: string; config: Record<string, unknown> } => (
+        typeof row.id === 'string' && row.config !== undefined
+      ))
+      .map(row => [row.id, Object.fromEntries(
+        Object.entries(row.config).map(([key, value]) => [
+          key,
+          isJsExpression(value) ? value.__jsExpr : value,
+        ]),
+      )]),
+  )
+}
+
+function isJsExpression(value: unknown): value is JsExpression {
+  return typeof value === 'object' && value !== null && '__jsExpr' in value
+}
+
 describe('xagent developer bundle', () => {
-  it('declares a private empty patch bundle', () => {
+  it('declares a private state-isolation patch bundle without added tools', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       name?: string
@@ -23,6 +52,21 @@ describe('xagent developer bundle', () => {
       readFileSync(resolve(root, manifest.dsh!.bundle!.patch!), 'utf8'),
       { schema: entryListSchema },
     )
-    expect(patch).toEqual([])
+    if (!Array.isArray(patch)) throw new TypeError('patch must contain a patch list')
+    const rows = patch as PatchRow[]
+    expect(rows.map(row => row.id)).toEqual([
+      'settings',
+      'credentials',
+      'session-persistence-jsonl',
+      'attachment-local',
+      'storage-json',
+    ])
+    expect(readXagentStatePatches(rows)).toEqual({
+      settings: { dshHome: 'dshProfileDataPath()' },
+      credentials: { dshHome: 'dshProfileDataPath()' },
+      'session-persistence-jsonl': { root: "dshProfileDataPath('sessions')" },
+      'attachment-local': { dshHome: 'dshProfileDataPath()' },
+      'storage-json': { root: "dshProfileDataPath('storages')" },
+    })
   })
 })

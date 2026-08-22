@@ -1,5 +1,20 @@
 # XAgent 业务层在 dsh-base 之后应用。每个同 id 行整体替换基础行，
 # 因此拒绝决定不依赖底层行的部分合并或启动平台。
+- id: settings
+  config:
+    dshHome: !!js dshProfileDataPath()
+- id: credentials
+  config:
+    dshHome: !!js dshProfileDataPath()
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshProfileDataPath('sessions')
+- id: attachment-local
+  config:
+    dshHome: !!js dshProfileDataPath()
+- id: storage-json
+  config:
+    root: !!js dshProfileDataPath('storages')
 - id: bash-sandbox
   disabled: true
 - id: pwsh-sandbox

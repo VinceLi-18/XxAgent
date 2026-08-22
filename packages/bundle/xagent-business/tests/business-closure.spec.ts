@@ -10,12 +10,15 @@ import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 interface PatchRow {
   id?: string
   disabled?: boolean
+  config?: Record<string, unknown>
 }
 
-interface EntryPatch {
+interface EntryPatch extends PatchRow {
   insert?: PatchRow[]
-  id?: string
-  disabled?: boolean
+}
+
+interface JsExpression {
+  __jsExpr: string
 }
 
 const prohibitedRows = [
@@ -47,6 +50,25 @@ function loadPatch(path: string): EntryPatch[] {
   const parsed = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
   if (!Array.isArray(parsed)) throw new TypeError(`${path} must contain a patch list`)
   return parsed as EntryPatch[]
+}
+
+function readXagentStatePatches(patch: EntryPatch[]): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(
+    patch
+      .filter((row): row is PatchRow & { id: string; config: Record<string, unknown> } => (
+        typeof row.id === 'string' && row.config !== undefined
+      ))
+      .map(row => [row.id, Object.fromEntries(
+        Object.entries(row.config).map(([key, value]) => [
+          key,
+          isJsExpression(value) ? value.__jsExpr : value,
+        ]),
+      )]),
+  )
+}
+
+function isJsExpression(value: unknown): value is JsExpression {
+  return typeof value === 'object' && value !== null && '__jsExpr' in value
 }
 
 describe('xagent business bundle', () => {
@@ -82,5 +104,18 @@ describe('xagent business bundle', () => {
       expect(effectiveRows.get(id), `${id} must exist in the shared base bundle`).toBeDefined()
       expect(effectiveRows.get(id), `${id} must be disabled for business use`).toMatchObject({ id, disabled: true })
     }
+  })
+
+  it('anchors every local state provider to the current Profile data directory', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+
+    expect(readXagentStatePatches(patch)).toEqual({
+      settings: { dshHome: 'dshProfileDataPath()' },
+      credentials: { dshHome: 'dshProfileDataPath()' },
+      'session-persistence-jsonl': { root: "dshProfileDataPath('sessions')" },
+      'attachment-local': { dshHome: 'dshProfileDataPath()' },
+      'storage-json': { root: "dshProfileDataPath('storages')" },
+    })
   })
 })
