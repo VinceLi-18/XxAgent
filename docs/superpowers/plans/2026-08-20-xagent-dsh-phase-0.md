@@ -8,7 +8,7 @@
 
 **技术栈：** Node.js 24.16.0、pnpm 11.19.0、TypeScript 6、Vitest 4、Cordis、DSH 0.1.0-rc.7；Python 3.11.9 仅为后续服务预留。
 
-**设计依据：** docs/superpowers/specs/2026-08-20-jiaxin-dsh-fork-integration-design.md
+**设计依据：** docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md
 
 ## 全局约束
 
@@ -24,8 +24,8 @@
 
 | 路径 | 职责 |
 |---|---|
-| docs/superpowers/specs/2026-08-20-jiaxin-dsh-fork-integration-design.md | 已确认的整体架构 |
-| docs/superpowers/progress/2026-08-20-jiaxin-dsh-fork-handoff.md | 交接说明 |
+| docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md | 已确认的整体架构 |
+| docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md | 交接说明 |
 | docs/upstream/dsh-baseline.md | 上游 URL、固定 SHA、导入策略、许可证与更新规则 |
 | packages/bundle/xagent-business | 默认拒绝的业务 Cordis Bundle |
 | packages/bundle/xagent-developer | 空开发扩展 Cordis Bundle |
@@ -58,9 +58,10 @@
 
 - [ ] **步骤 3：确认设计与交接文档未被上游文档覆盖**
 
-    shasum docs/superpowers/specs/2026-08-20-jiaxin-dsh-fork-integration-design.md docs/superpowers/progress/2026-08-20-jiaxin-dsh-fork-handoff.md
+    test -f docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md
+    test -f docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md
 
-预期：SHA-1 分别为 f1d8f34b65ed674e0e927834fec316fd034d485f 与 2400bed52595a1627e1537f1ec29ad538e502398。
+预期：两份已确认的 XAgent 架构文档均存在，且未被上游文档覆盖。
 
 - [ ] **步骤 4：创建单一 XxAgent 快照提交**
 
@@ -178,13 +179,20 @@ docs/upstream/dsh-baseline.md 的完整内容：
 
 **文件：**
 - 新建：packages/bundle/xagent-business/package.json
+- 新建：packages/bundle/xagent-business/README.md
 - 新建：packages/bundle/xagent-business/cordis.patch.yml
 - 新建：packages/bundle/xagent-business/src/index.ts
+- 新建：packages/bundle/xagent-business/src/invariant.ts
+- 新建：packages/bundle/xagent-business/tsconfig.json
 - 新建：packages/bundle/xagent-business/tests/business-closure.spec.ts
 - 新建：packages/bundle/xagent-developer/package.json
+- 新建：packages/bundle/xagent-developer/README.md
 - 新建：packages/bundle/xagent-developer/cordis.patch.yml
 - 新建：packages/bundle/xagent-developer/src/index.ts
+- 新建：packages/bundle/xagent-developer/src/invariant.ts
+- 新建：packages/bundle/xagent-developer/tsconfig.json
 - 新建：packages/bundle/xagent-developer/tests/developer-bundle.spec.ts
+- 修改：tsconfig.host.json
 
 **接口：**
 - 输入：DSH Bundle 清单与 Cordis 补丁格式。
@@ -205,7 +213,7 @@ docs/upstream/dsh-baseline.md 的完整内容：
 
 - [ ] **步骤 3：实现最小包清单和入口**
 
-两个 package.json 都使用对应名称、version 0.0.0、private true、type module、license MIT、main lib/index.js、types lib/types/index.d.ts、dsh.bundle.patch ./cordis.patch.yml，以及 @deepseek-ai/cordis 的 workspace peerDependencies 和 devDependencies。
+两个 package.json 都使用对应名称、根包一致的 version 0.1.0-rc.7、private true、type module、license MIT、main lib/index.js、types lib/types/index.d.ts、dsh.bundle.patch ./cordis.patch.yml，以及 @deepseek-ai/cordis 和 @deepseek-ai/dsh-invariants 的 workspace peerDependencies 与 devDependencies。每个包均提供中文 README、`src/invariant.ts`、`tsconfig.json`，并在 `tsconfig.host.json` 中注册；这是 DSH 新建包的固定约束，不改变本任务批准的能力范围。
 
 业务入口：
 
@@ -399,4 +407,3 @@ packages/bundle/xagent-business/cordis.patch.yml 完整包含：
     git commit -m "docs: complete xagent dsh phase 0"
 
 预期：工作树干净；用户验收 Phase 0 证据后才可开始 Phase 1。
-

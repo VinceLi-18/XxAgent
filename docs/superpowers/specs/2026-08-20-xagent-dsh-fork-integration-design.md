@@ -1,4 +1,4 @@
-# JiaxinAgent 与 DeepSeek Harness Fork 融合技术设计
+# XAgent 与 DeepSeek Harness Fork 融合技术设计
 
 **状态：已确认，作为新仓库架构输入**
 
@@ -8,16 +8,16 @@
 
 ## 1. 背景与决策
 
-JiaxinAgent 当前由 React/Vite 前端、FastAPI 后端、PostgreSQL RLS、MinIO 和异步文档处理能力组成。产品目标是面向内部专员与管理层提供项目、资料、事实、文档、审批和受治理业务 Skill，同时具备可恢复、可追溯的 Agent 交互。
+XAgent 当前由 React/Vite 前端、FastAPI 后端、PostgreSQL RLS、MinIO 和异步文档处理能力组成。产品目标是面向内部专员与管理层提供项目、资料、事实、文档、审批和受治理业务 Skill，同时具备可恢复、可追溯的 Agent 交互。
 
-DeepSeek Harness（下文简称 DSH）提供基于 Cordis 的插件运行时、Agent Loop、模型与工具管线、Session event log、上下文压缩、Web 客户端插件和三栏 UI。它能显著降低通用 Agent Runtime 与对话 UI 的重复建设，但原生产品面向单用户或受信任主机环境，不具备 JiaxinAgent 所需的多账号认证、项目隔离、业务审批和业务数据模型。
+DeepSeek Harness（下文简称 DSH）提供基于 Cordis 的插件运行时、Agent Loop、模型与工具管线、Session event log、上下文压缩、Web 客户端插件和三栏 UI。它能显著降低通用 Agent Runtime 与对话 UI 的重复建设，但原生产品面向单用户或受信任主机环境，不具备 XAgent 所需的多账号认证、项目隔离、业务审批和业务数据模型。
 
 本设计确认以下决策：
 
 1. 新项目直接 Fork DSH，并允许修改其源码。
 2. 保持 Cordis 的插件化原则；能通过插件完成的业务能力不写入 Agent Loop。
 3. 采用分阶段迁移：第一阶段保留现有 FastAPI 业务服务，DSH Fork 承担 Agent Runtime 与 Web；稳定后再逐个迁移适合 TypeScript/Cordis 的模块。
-4. 保留两个隔离 Profile：`jiaxin-business` 面向业务用户，`jiaxin-developer` 面向开发和系统维护。
+4. 保留两个隔离 Profile：`xagent-business` 面向业务用户，`xagent-developer` 面向开发和系统维护。
 5. Python 长期保留 Docling、OCR、Office 文档处理、Embedding 等适合 Python 生态的 worker。
 6. FastAPI 与 PostgreSQL RLS 在第一阶段继续作为项目、文件、事实、审批、权限和正式审计的权威。
 7. DSH Session log 是 Agent 运行与回放的权威，不替代正式业务数据和审计。
@@ -30,7 +30,7 @@ DeepSeek Harness（下文简称 DSH）提供基于 Cordis 的插件运行时、A
 
 - 复用 DSH 的 Agent Loop、模型流、工具管线、Session、压缩、插件加载和 Web UI。
 - 在 DSH Host、Connection 和 Session API 中实现多账号认证与项目级访问隔离。
-- 把 JiaxinAgent 的业务能力组织成 Cordis Service Definition、Provider、Consumer 和客户端插件。
+- 把 XAgent 的业务能力组织成 Cordis Service Definition、Provider、Consumer 和客户端插件。
 - 保留当前已经实现并测试的 JWT、RLS、项目、Artifact、MinIO 和 Audit 能力。
 - 完成项目资料到事实、文档草稿、审批和导出的可追溯闭环。
 - 建立可升级、可裁剪、能继续吸收 DSH 上游修复的 Fork 治理方式。
@@ -39,7 +39,7 @@ DeepSeek Harness（下文简称 DSH）提供基于 Cordis 的插件运行时、A
 
 - 第一阶段不把全部 Python 代码重写成 TypeScript。
 - 不把 DSH 原生工具审批当作业务审批。
-- 不把 DSH Workspace 直接改名后当作 Jiaxin Project。
+- 不把 DSH Workspace 直接改名后当作 XAgent Project。
 - 不允许业务 Agent 直接访问数据库、MinIO、服务器文件路径或任意网络地址。
 - 不在业务 Profile 中提供 Coding Agent 的通用高权限工具。
 - 不在建立 Profile 闭包和依赖验证前大规模删除 DSH 源码。
@@ -64,7 +64,7 @@ DeepSeek Harness（下文简称 DSH）提供基于 Cordis 的插件运行时、A
 
 ### 3.2 已有但必须改造
 
-| 模块 | 原有限制 | Jiaxin 改造 |
+| 模块 | 原有限制 | XAgent 改造 |
 |---|---|---|
 | Client Connection | Host/Origin 信任围栏，不是身份认证 | Cookie/JWT、HTTP/WebSocket Principal、断连和撤权 |
 | API Remotes / API Proxy | Session 解析按运行时身份，不按业务用户 | 对 list/open/resume/search/fork/subscribe 统一授权 |
@@ -97,13 +97,13 @@ DeepSeek Harness（下文简称 DSH）提供基于 Cordis 的插件运行时、A
 - 开发 Plan、Todo、Goal；
 - Git 与开发类 Skill。
 
-## 4. JiaxinAgent 当前能力盘点
+## 4. XAgent 当前能力盘点
 
 ### 4.1 已实现并迁移
 
 | 当前能力 | 第一阶段去向 |
 |---|---|
-| JWT 登录、密码与安全配置 | `services/jiaxin-api`，由 DSH Auth 插件接入 |
+| JWT 登录、密码与安全配置 | `services/xagent-api`，由 DSH Auth 插件接入 |
 | 用户、角色、项目成员 | 保留 FastAPI/SQLAlchemy 模型 |
 | PostgreSQL RLS 与事务上下文 | 保留为业务数据第二道权限防线 |
 | 项目 API 和授权服务 | 保留并由 Business Gateway 调用 |
@@ -123,17 +123,17 @@ DeepSeek Harness（下文简称 DSH）提供基于 Cordis 的插件运行时、A
 - Docling/OCR/Embedding/渲染的生产 worker；
 - PostgreSQL DSH Session persistence；
 - DSH 与 FastAPI 委托令牌和 Outbox；
-- Jiaxin Conversation Nodes、详情面板和业务设置页面。
+- XAgent Conversation Nodes、详情面板和业务设置页面。
 
 ## 5. 目标总体架构
 
 ```mermaid
 flowchart TB
-  Browser["Jiaxin Web\nDSH Client UI"] --> Host["DSH Fork Host"]
+  Browser["XAgent Web\nDSH Client UI"] --> Host["DSH Fork Host"]
 
-  Host --> Auth["jiaxin-principal / auth"]
+  Host --> Auth["xagent-principal / auth"]
   Host --> Runtime["DSH Agent / Session / Tools"]
-  Host --> Gateway["jiaxin-business-gateway"]
+  Host --> Gateway["xagent-business-gateway"]
 
   Gateway --> API["FastAPI 业务服务"]
   API --> PG["PostgreSQL + RLS"]
@@ -143,21 +143,21 @@ flowchart TB
   Runtime --> SessionPG["PostgreSQL Session Event Store"]
   Runtime --> DeepSeek["DeepSeek API"]
 
-  Business["jiaxin-business profile"] --> Host
-  Developer["jiaxin-developer profile"] --> Host
+  Business["xagent-business profile"] --> Host
+  Developer["xagent-developer profile"] --> Host
 ```
 
 ### 5.1 建议仓库结构
 
 ```text
-jiaxin-dsh/
+xagent-dsh/
 ├── apps/
 │   ├── cli/
 │   └── web/
 ├── packages/
 │   ├── core/                        # 上游 DSH 核心
 │   ├── client/                      # 上游及改造后的 Web 插件
-│   ├── jiaxin/
+│   ├── xagent/
 │   │   ├── principal/
 │   │   ├── authorization/
 │   │   ├── business-gateway/
@@ -173,10 +173,10 @@ jiaxin-dsh/
 │   │   ├── delegation-token/
 │   │   └── ui-*/
 │   └── bundle/
-│       ├── jiaxin-business/
-│       └── jiaxin-developer/
+│       ├── xagent-business/
+│       └── xagent-developer/
 ├── services/
-│   ├── jiaxin-api/                  # 现有 FastAPI
+│   ├── xagent-api/                  # 现有 FastAPI
 │   └── document-worker/             # Python 文档任务
 └── docs/
 ```
@@ -211,22 +211,22 @@ Consumer（Model Tool / Host Remote / Client UI）
 
 | 插件族 | 职责 |
 |---|---|
-| `jiaxin-principal` | 当前用户、角色、连接和 Agent 身份 |
-| `jiaxin-authorization` | 项目、Session、工具和资源授权 |
-| `jiaxin-project` | Project Service、FastAPI Provider、Remote、UI |
-| `jiaxin-artifact` | 上传、预览、版本、解析、引用和 UI |
-| `jiaxin-fact` | 事实、证据、冲突、确认和工具 |
-| `jiaxin-document` | 模板、草稿、版本、导出和工具 |
-| `jiaxin-business-approval` | 跨 Turn 审批、恢复和 UI |
-| `jiaxin-audit` | Agent event 与业务 audit 关联 |
-| `jiaxin-business-skill` | 声明式业务 Skill 生命周期 |
-| `jiaxin-worker` | Celery/Docling/OCR/Render 任务适配 |
-| `jiaxin-session-persistence-pg` | PostgreSQL Session persistence |
-| `jiaxin-delegation-token` | DSH 到 FastAPI 的短期授权 |
+| `xagent-principal` | 当前用户、角色、连接和 Agent 身份 |
+| `xagent-authorization` | 项目、Session、工具和资源授权 |
+| `xagent-project` | Project Service、FastAPI Provider、Remote、UI |
+| `xagent-artifact` | 上传、预览、版本、解析、引用和 UI |
+| `xagent-fact` | 事实、证据、冲突、确认和工具 |
+| `xagent-document` | 模板、草稿、版本、导出和工具 |
+| `xagent-business-approval` | 跨 Turn 审批、恢复和 UI |
+| `xagent-audit` | Agent event 与业务 audit 关联 |
+| `xagent-business-skill` | 声明式业务 Skill 生命周期 |
+| `xagent-worker` | Celery/Docling/OCR/Render 任务适配 |
+| `xagent-session-persistence-pg` | PostgreSQL Session persistence |
+| `xagent-delegation-token` | DSH 到 FastAPI 的短期授权 |
 
 ### 6.2 UI 插件
 
-| Slot / 区域 | Jiaxin 内容 |
+| Slot / 区域 | XAgent 内容 |
 |---|---|
 | `sidebar` | 项目列表、项目会话、待办、筛选 |
 | `conversation` | Agent 对话、引用、工具、审批和任务节点 |
@@ -236,7 +236,7 @@ Consumer（Model Tool / Host Remote / Client UI）
 
 ## 7. Profile 设计
 
-### 7.1 `jiaxin-business`
+### 7.1 `xagent-business`
 
 - 仅挂载项目、资料、事实、文档、审批和受控业务 Skill；
 - 禁用 Bash、PowerShell、任意文件系统、任意网络、动态代码、Subagent、动态 Workflow 和自修改；
@@ -244,7 +244,7 @@ Consumer（Model Tool / Host Remote / Client UI）
 - 工具写操作默认生成 `draft` 或 `pending_review`；
 - 生产闭包测试必须证明危险工具既不可见也不可调用。
 
-### 7.2 `jiaxin-developer`
+### 7.2 `xagent-developer`
 
 - 保留 DSH Coding Agent 能力；
 - 使用独立 DSH Home、Session、凭据和工作目录；
@@ -257,7 +257,7 @@ Consumer（Model Tool / Host Remote / Client UI）
 ### 8.1 Principal
 
 ```ts
-interface JiaxinPrincipal {
+interface XAgentPrincipal {
   actorId: UserId
   role: Role
   permissionRevision: number
@@ -268,7 +268,7 @@ interface JiaxinPrincipal {
 ### 8.2 Session Scope
 
 ```ts
-interface JiaxinSessionScope {
+interface XAgentSessionScope {
   ownerId: UserId
   projectId?: ProjectId
   visibility: 'private' | 'project'
@@ -295,7 +295,7 @@ interface JiaxinSessionScope {
 sequenceDiagram
   participant M as DeepSeek
   participant T as DSH Tools
-  participant G as Jiaxin Gateway
+  participant G as XAgent Gateway
   participant A as FastAPI
   participant D as PostgreSQL RLS
 
@@ -327,7 +327,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   participant B as Browser
-  participant D as DSH Jiaxin Plugin
+  participant D as DSH XAgent Plugin
   participant A as FastAPI
   participant O as MinIO
   participant W as Python Worker
@@ -504,13 +504,13 @@ approved/executing -> failed
 
 ## 16. Fork 治理
 
-- 通用核心改动与 Jiaxin 业务插件分开提交；
+- 通用核心改动与 XAgent 业务插件分开提交；
 - 能通过插件实现的行为不改 Agent Loop；
 - 通用包修改必须有设计记录和回归测试；
 - 定期同步 upstream，但不自动追随每次更新；
 - 同步在专用分支完成并跑兼容测试；
 - 维护上游差异清单，记录原因、影响包和回馈可能；
-- Jiaxin 包使用独立命名空间；
+- XAgent 包使用独立命名空间；
 - 除非无法在 DSH 层解决，不修改 vendored Cordis；
 - 认证、Session 和 Connection 改造必须有长期安全测试。
 

@@ -1,4 +1,4 @@
-# JiaxinAgent × DSH Fork 新仓库交接说明
+# XAgent × DSH Fork 新仓库交接说明
 
 **日期：2026-08-20**
 
@@ -8,7 +8,7 @@
 
 新对话开始后首先阅读：
 
-- `docs/superpowers/specs/2026-08-20-jiaxin-dsh-fork-integration-design.md`
+- `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
 
 该文档是已确认的架构依据。旧文件 `2026-08-19-dsh-agent-runtime-spike.md` 已被新设计取代，不能作为当前方案。
 
@@ -19,7 +19,7 @@
 3. 采用分阶段迁移。
 4. 第一阶段保留现有 FastAPI、PostgreSQL RLS、MinIO 和 Python 业务服务。
 5. DSH Fork 负责 Agent Runtime、Session、工具管线和 Web 客户端。
-6. 保留 `jiaxin-business` 与 `jiaxin-developer` 两个隔离 Profile。
+6. 保留 `xagent-business` 与 `xagent-developer` 两个隔离 Profile。
 7. Business Profile 不提供 Shell、任意文件系统、任意网络、动态代码、Subagent、动态 Workflow 和自修改。
 8. Developer Profile 保留 Coding Agent，但不得连接生产业务数据和凭据。
 9. Python 长期保留 Docling、OCR、Office 解析/渲染和 Embedding worker。
@@ -33,7 +33,7 @@
 
 ```text
 /Users/vince/projects/deepseek-harness
-/Users/vince/projects/JiaxinAgent
+/Users/vince/projects/XAgent
 ```
 
 DSH 参考重点：
@@ -57,7 +57,7 @@ packages/interaction/user-approval
 packages/session
 ```
 
-Jiaxin 迁移重点：
+XAgent 迁移重点：
 
 ```text
 backend/app/core/security.py
@@ -83,15 +83,15 @@ frontend/e2e
 至少复制：
 
 ```text
-docs/superpowers/specs/2026-08-20-jiaxin-dsh-fork-integration-design.md
-docs/superpowers/progress/2026-08-20-jiaxin-dsh-fork-handoff.md
+docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md
+docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md
 ```
 
 建议一并复制作为业务依据：
 
 ```text
-docs/superpowers/specs/2026-08-05-jiaxin-agent-brd.html
-docs/superpowers/specs/2026-08-09-jiaxin-agent-technical-design.md
+docs/superpowers/specs/2026-08-05-xagent-agent-brd.html
+docs/superpowers/specs/2026-08-09-xagent-agent-technical-design.md
 docs/superpowers/specs/2026-08-15-task2-identity-rls-design.md
 docs/superpowers/specs/2026-08-15-private-artifact-storage-design.md
 docs/superpowers/specs/2026-08-15-project-workbench-design.md
@@ -107,7 +107,7 @@ docs/superpowers/specs/2026-08-16-compact-conversation-design.md
 3. 确认 Fork 对应的 DSH upstream commit/tag。
 4. 验证 Node、pnpm、Python 和系统依赖。
 5. 跑通 Fork 原始 build、typecheck、核心测试和 Web。
-6. 新增空的 `jiaxin-business`、`jiaxin-developer` bundle/profile。
+6. 新增空的 `xagent-business`、`xagent-developer` bundle/profile。
 7. 建立 Profile 工具闭包测试。
 8. 写 Phase 0 实施计划并经用户确认后再改代码。
 
@@ -130,14 +130,14 @@ Phase 0 完成后才能开始 Phase 1 产品壳。认证与 Session 隔离是 Ph
 在新项目创建后，可以把以下内容作为新对话的第一条消息：
 
 ```text
-继续 JiaxinAgent 与 DeepSeek Harness Fork 的融合开发。
+继续 XAgent 与 DeepSeek Harness Fork 的融合开发。
 
 新仓库路径：请从当前工作区读取；如果存在多个仓库或无法确定，先向我询问。
 DSH upstream commit/tag：请从 Git remote 和当前 HEAD 检测；如果还没有建立 Fork，先向我询问目标 commit/tag。
 
 请先完整阅读：
-1. docs/superpowers/specs/2026-08-20-jiaxin-dsh-fork-integration-design.md
-2. docs/superpowers/progress/2026-08-20-jiaxin-dsh-fork-handoff.md
+1. docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md
+2. docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md
 3. 仓库中的 AGENTS.md / CLAUDE.md
 
 已经确认：Fork DSH、分阶段迁移、保留 FastAPI、Business/Developer 双 Profile。不要重新讨论已经确认的总体方向，也不要直接开发业务功能。
