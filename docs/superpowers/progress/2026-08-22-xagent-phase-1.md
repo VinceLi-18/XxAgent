@@ -20,7 +20,7 @@
 
 静态 RED 在 `packages/bundle/xagent-business/tests/business-closure.spec.ts` 命中缺失的 `agent-presets` 拒绝行。真实组合 RED 通过 `apps/cli/tests/xagent-business-rosterless.e2e.ts` 复现：Preset API 返回随安装提供的 `standard`、`code`、`minimal`、`cordis` 与临时用户 Preset；`session.create` 尝试挂载 `standard`，并报告 `tool-bash`、`tool-fs`、Subagent 和 Workflow 配置项正在等待被业务 Profile 禁用的服务。
 
-GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模型。`pnpm exec vitest run packages/bundle/xagent-business/tests/business-closure.spec.ts packages/bundle/xagent-developer/tests/developer-bundle.spec.ts` 通过 2 个文件、6 个测试；`pnpm exec vitest --config vitest.e2e.config.ts run apps/cli/tests/xagent-business-rosterless.e2e.ts` 通过 1 个文件、2 个测试。业务会话成功发布且不记录 `agentPreset`，模型工具 schema、Preset 清单与文件型 Skill 清单均为空。
+GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模型。`pnpm exec vitest run packages/bundle/xagent-business/tests/business-closure.spec.ts packages/bundle/xagent-developer/tests/developer-bundle.spec.ts` 通过 2 个文件、6 个测试；`pnpm exec vitest --config vitest.e2e.config.ts run apps/cli/tests/xagent-business-rosterless.e2e.ts` 通过 1 个文件、4 个测试。默认创建的业务会话成功发布且不记录 `agentPreset`，模型工具 schema、Preset 清单与文件型 Skill 清单均为空。在全新 Session 上显式携带 `agentPreset` 的 `session.create` 以 `agent-preset-not-found` 拒绝，且 Agent 与 Session 均不发布；`agent-preset-conflict` 仅适用于采用既有无 Preset Session 的情形。对空白会话调用 `agentPreset.select` 同样以 `agent-preset-not-found` 拒绝并返回空的可用名单。
 
 `pnpm run typecheck` 与 `pnpm run build` 通过。全新 `DSH_HOME=/private/tmp/xagent-task9-built-DePNp6/business` 的构建版配置转储确认 Business 的 `agent-presets`、`ui-agent-preset`、Shell、文件系统、Web 与 Skill 配置项保持禁用；同一构建中 Developer 的 `agent-presets` 与 `ui-agent-preset` 保持启用。
 
@@ -36,17 +36,17 @@ GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模�
 
 ## 构建版 Web 验证
 
-`pnpm run test:web:built` 尚未全量通过，不能标记为 PASS。最小复现为 `pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/chat-scroll-contract.e2e.ts`。
+`pnpm run test:web:built` 的最终原样宿主复验已通过。沙箱与宿主结果分开记录，不用宿主结果掩盖沙箱的 Chromium 启动限制。
 
 受沙箱运行时影响，该命令在 `apps/web/tests/chat-scroll-contract.e2e.ts:460` 的 `chromium.launch()` 失败，Chromium 输出 `bootstrap_check_in ... MachPortRendezvousServer ... Permission denied (1100)` 并以 `SIGTRAP` 退出。
 
-以宿主权限运行同一命令可进入 Vitest，但在浏览器或服务初始化阶段 90 秒无进一步输出，随后为停止诊断而中断，退出状态为 130。
+以宿主权限运行同一 `chat-scroll-contract.e2e.ts` 命令在 23.16 秒内通过 1 个文件、5 个测试。此前 90 秒无进度输出的受控运行使用默认 reporter，且超时包装命令带有错误参数；该结果不能作为浏览器或服务初始化挂起的证据。
 
-`pnpm exec vitest list --config vitest.web.config.ts` 在 25.8 秒内完成，因此收集阶段不是卡点。
+修正主题断言前，完整 `pnpm run test:web:built` RED 在 338.34 秒后结束：73 个文件通过、1 个跳过、2 个失败，250 个测试通过、15 个跳过、3 个失败。失败只来自 `settings-chrome.e2e.ts` 与 `workflow-run.e2e.ts` 中仍指向旧深色背景和旧的明暗链接色差异的断言。
 
-欢迎文案实现修改了 `packages/client/ui-settings-models/src/onboarding-copy.ts`，并同步更新标题装配期望。本轮补充验收发现并修复了构建版 Web lane 的旧欢迎夹具、takeover 标题选择器和欢迎快照；`pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/onboarding-deepseek-config.e2e.ts` 以宿主权限通过 4 个测试。全量 lane 的其余卡点仍按浏览器测试运行环境记录。
+两处断言更新为 Phase 1 实际主题值后，聚焦复验通过 2 个文件、11 个测试。
 
-夹具修复后，以宿主权限对 `pnpm run test:web:built` 执行最终受控复验：Vitest runner 启动后 90 秒没有完成任何测试或输出进一步日志，超时控制结束进程并返回退出状态 142。该全量启动或初始化挂起不同于沙箱的端口／Chromium 权限拒绝，也不同于已经通过的 onboarding lane；全量检查仍未通过。
+最终以宿主权限原样运行 `pnpm run test:web:built` 在 338.50 秒后以退出状态 0 结束：75 个文件通过、1 个跳过，253 个测试通过、15 个跳过，无失败。
 
 ## 真实服务与 GIF 证据
 
@@ -68,10 +68,8 @@ GIF 已替换为仓库忽略路径 `.playwright-mcp/xagent-phase1-product-shell.
 
 `resolveProfileDir()` 与 `resolveProfileDataDir()` 的 JSDoc 以传入的 `home` 为路径基准：默认 `home` 来自绝对的 Harness 主目录；调用者传入相对 `home` 时，返回值也是相对路径。Phase 1 设计文档状态为“已确认并实施”。
 
-`pnpm exec vitest run packages/boot/app-boot/tests/profile.spec.ts` 通过 1 个文件、15 个测试，`pnpm run typecheck` 通过。`verify-md-links` 与 `verify-doc-budgets` 通过；按 Task 11 文件过滤的 `verify-export-jsdoc` 没有发现违规。全仓 `verify-export-jsdoc` 仍被两个其他包中的临时 `oxlint-contract-*` 探针阻断，`verify-md-wrap` 仍命中既有 Phase 0 文档，均未命中本次修改文件。翻译配对清单仍将 11 份既有 XAgent 中文文档列为缺少英文配对，本次不新增英文副本。
+`pnpm exec vitest run packages/boot/app-boot/tests/profile.spec.ts` 通过 1 个文件、15 个测试，`pnpm run typecheck` 通过。`verify-md-links`、`verify-doc-budgets`、`verify-export-jsdoc` 和 `doc-typecheck` 均通过。`verify-translation-pairing` 检查 947 对文档且全部一致；`verify-md-wrap` 检查 1,890 份文件且未发现硬换行段落。
 
 `git diff --check` 在每轮文档更新后执行。
 
-`pnpm run doc-sync` 本轮已运行但未通过：`doc-typecheck` 仍在既有 XAgent 集成设计文档中缺少 `UserId`、`Role`、`ConnectionId` 和 `ProjectId` 定义；`verify-export-jsdoc` 命中其他包的临时 oxlint probe 文件；全仓翻译配对缺少多个既有文档与 bundle README 的条目。首次运行也报告本记录顶部相邻元数据行为硬换行，已改为单段后再执行 `pnpm run verify-md-wrap`，本文件不再出现在结果中；其余硬换行来自无关文档。`pnpm run verify-translation-pairing packages/client/ui-settings-models/README.md` 通过，确认本次 README 配对正确。
-
-Task 9 的普通 Web Preset 回归运行 30 个测试，其中 29 个通过；既有 `merges the global skill layer into a preset agent's catalog` 测试单独复现仍失败于 `dsh-badge` 的 `skill` 工具加载结果。Task 9 未修改普通 Web、Preset 或 `dsh-badge` 实现，Business 与普通 Web 测试也使用不同组合入口；该失败不属于 rosterless 改动。
+`pnpm run doc-sync` 完整运行 28 项文档门禁，28 项通过、0 项失败、0 项跳过。
