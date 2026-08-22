@@ -189,6 +189,42 @@ describe('session.create with an agent preset', () => {
     })
   })
 
+  it('does not share a pending no-roster refusal with a valid concurrent create', async () => {
+    const firstListEntered = Promise.withResolvers<undefined>()
+    const releaseFirstList = Promise.withResolvers<undefined>()
+    let listCalls = 0
+    const persistence = {
+      async list() {
+        listCalls++
+        if (listCalls === 1) {
+          firstListEntered.resolve()
+          await releaseFirstList.promise
+        }
+        return []
+      },
+    }
+    const { api, ctx } = await harness(undefined, persistence)
+    const sessionId = SessionId('s3-no-roster-concurrent')
+
+    const refused = api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+    await firstListEntered.promise
+    const accepted = api.sessions.create(request({ sessionId }))
+    releaseFirstList.resolve()
+    const [refusedResponse, acceptedResponse] = await Promise.all([refused, accepted])
+
+    expect(refusedResponse.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+    expect(acceptedResponse.result).toEqual({ ok: true, value: { sessionId } })
+    expect(ctx.agents.get(sessionId)).toBeDefined()
+    expect(ctx.sessions.get(sessionId)).toBeDefined()
+  })
+
   it('refuses to adopt a live session under a different preset', async () => {
     const { api } = await harness(['standard', 'minimal'])
     await api.sessions.create(request({ sessionId: SessionId('s4'), agentPreset: 'minimal' }))
@@ -252,7 +288,13 @@ describe('session.create with an agent preset', () => {
     // any is a conflict rather than an adoption — the history was produced
     // under a composition this roster cannot name. The message has to say
     // that, because "already runs agent preset undefined" reads as a bug.
-    const { api } = await harness()
+    let listCalls = 0
+    const { api } = await harness(undefined, {
+      list() {
+        listCalls++
+        return Promise.resolve([])
+      },
+    })
     await api.sessions.create(request({ sessionId: SessionId('s7') }))
 
     const response = await api.sessions.create(request({ sessionId: SessionId('s7'), agentPreset: 'standard' }))
@@ -266,6 +308,7 @@ describe('session.create with an agent preset', () => {
       requestedPreset: 'standard',
       existingPreset: undefined,
     })
+    expect(listCalls).toBe(1)
   })
 })
 

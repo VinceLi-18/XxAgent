@@ -1608,6 +1608,18 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     checkPersistedIdentity: boolean,
     presetId?: string,
   ): Promise<Agent> {
+    // A no-roster refusal belongs only to the request that named a preset. Keep
+    // it outside sessionCreations so a valid concurrent caller can still create.
+    if (presetId !== undefined && ctx.get('agentPresets') === undefined) {
+      const live = ctx.agents.get(sessionId)
+      if (live === undefined) {
+        const persistence = checkPersistedIdentity ? ctx.get('sessionPersistence') : undefined
+        const stored = persistence === undefined
+          ? undefined
+          : (await persistence.list()).find(header => header.id === sessionId)
+        if (stored === undefined) throw new AgentPresetRosterAbsent(presetId)
+      }
+    }
     let creation = sessionCreations.get(sessionId)
     if (creation === undefined) {
       creation = (async () => {
@@ -1648,9 +1660,6 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           })).agent
         }
 
-        if (presetId !== undefined && ctx.get('agentPresets') === undefined) {
-          throw new AgentPresetRosterAbsent(presetId)
-        }
         try {
           await mkdir(cwd, { recursive: true })
         } catch (error: unknown) {
