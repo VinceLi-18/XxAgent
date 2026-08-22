@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -74,15 +74,19 @@ This project skill must not enter a Business session.
 `)
     const userPresetDir = join(home, '.agent-presets', 'business-user-preset')
     mkdirSync(userPresetDir, { recursive: true })
-    writeFileSync(join(userPresetDir, 'agent.cordis.yml'), '- insert: []\n')
+    writeFileSync(join(userPresetDir, 'agent.cordis.yml'), '[]\n')
     process.env.DSH_HOME = home
     ctx = await bootBusiness(home)
   }, 120_000)
 
   afterAll(async () => {
-    await ctx?.fiber.dispose()
-    if (previousHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = previousHome
+    try {
+      await ctx?.fiber.dispose()
+    } finally {
+      if (previousHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previousHome
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it('exposes neither shipped nor user-authored agent presets', async () => {
@@ -114,6 +118,66 @@ This project skill must not enter a Business session.
 
     const skills = await ctx.apiProxy.skills.list({
       rpcId: RpcId('xagent-business-skills'),
+      payload: { sessionId },
+    })
+    expect(skills.result).toEqual({ ok: true, value: { skills: [] } })
+  })
+
+  it('does not mount an explicitly requested user preset during session creation', async () => {
+    if (ctx === undefined) throw new Error('Business composition did not boot')
+    const sessionId = SessionId(`xagent-business-explicit-${randomUUID()}`)
+    const created = await ctx.apiProxy.sessions.create({
+      rpcId: RpcId('xagent-business-explicit-create'),
+      payload: { sessionId, cwd: project, agentPreset: 'business-user-preset' },
+    })
+
+    expect(created.result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'agent-preset-conflict',
+        details: { sessionId, requestedPreset: 'business-user-preset' },
+      },
+    })
+    const agent = ctx.agents.get(sessionId)
+    expect(agent).toBeDefined()
+    if (agent === undefined) throw new Error('Explicit Business session was not published')
+    expect(agent.session.header.agentPreset).toBeUndefined()
+    expect(ctx.tools.schemas(agent).map(tool => tool.name)).toEqual([])
+    const skills = await ctx.apiProxy.skills.list({
+      rpcId: RpcId('xagent-business-explicit-skills'),
+      payload: { sessionId },
+    })
+    expect(skills.result).toEqual({ ok: true, value: { skills: [] } })
+  })
+
+  it('rejects selecting a user preset for a blank rosterless session', async () => {
+    if (ctx === undefined) throw new Error('Business composition did not boot')
+    const sessionId = SessionId(`xagent-business-select-${randomUUID()}`)
+    const created = await ctx.apiProxy.sessions.create({
+      rpcId: RpcId('xagent-business-select-create'),
+      payload: { sessionId, cwd: project },
+    })
+    expect(created.result).toEqual({ ok: true, value: { sessionId } })
+
+    const selected = await ctx.apiProxy.agentPresets.select({
+      rpcId: RpcId('xagent-business-select'),
+      payload: { sessionId, agentPreset: 'business-user-preset' },
+    })
+    expect(selected.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'business-user-preset', available: [] },
+      },
+    })
+    const agent = ctx.agents.get(sessionId)
+    expect(agent).toBeDefined()
+    if (agent === undefined) throw new Error('Blank Business session was not published')
+    expect(agent.session.header.agentPreset).toBeUndefined()
+    expect(ctx.tools.schemas(agent).map(tool => tool.name)).toEqual([])
+    const skills = await ctx.apiProxy.skills.list({
+      rpcId: RpcId('xagent-business-select-skills'),
       payload: { sessionId },
     })
     expect(skills.result).toEqual({ ok: true, value: { skills: [] } })
