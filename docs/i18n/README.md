@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-This repo's documentation is read by people and agents both inside and outside the company, so every document in scope is maintained in English and Simplified Chinese. This page defines the pairing contract, checks, scope, and exclusions; [translation-rules.md](translation-rules.md) defines how to translate; [terminology.md](terminology.md) is the terminology source of truth. Routine agent work follows the lightweight path in [docs/AGENTS.md](../AGENTS.md); the extended [.agents/skills/dsh-translate-docs](../../.agents/skills/dsh-translate-docs/SKILL.md) workflow is available only through explicit user invocation.
+This repo's documentation is read by people and agents both inside and outside the company, so every document in scope is maintained in English and Simplified Chinese except the exact XAgent fork product documents listed below. This page defines the pairing contract, checks, scope, and exclusions; [translation-rules.md](translation-rules.md) defines how to translate; [terminology.md](terminology.md) is the terminology source of truth. Routine agent work follows the lightweight path in [docs/AGENTS.md](../AGENTS.md); the extended [.agents/skills/dsh-translate-docs](../../.agents/skills/dsh-translate-docs/SKILL.md) workflow is available only through explicit user invocation.
 
 ## The pairing contract
 
@@ -52,8 +52,20 @@ Generated English references and graphs participate in pairing when a reviewed C
 - `docs/i18n/terminology.md` and [style-samples.md](style-samples.md) — both are bilingual by construction.
 - [translation-prompt.md](translation-prompt.md) — the automated pipeline's prompt template; its body is machine-consumed verbatim, so a paired translation would change pipeline behavior.
 - `.agents/notes/archived/` — frozen historical triplets. [`verify-archived-agent-notes`](../../scripts/verify-archived-agent-notes.ts) validates their completeness and content seals; translation maintenance must never rewrite them.
+- **XAgent fork product documents — repository-owner exception.** The following exact files are maintained in Chinese only by explicit repository-owner decision; the exception grants no directory wildcard and does not cover future documents:
+  - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
+  - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
+  - `docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md`
+  - `docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md`
+  - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
+  - `docs/superpowers/progress/2026-08-22-xagent-phase-1.md`
+  - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
+  - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
+  - `docs/upstream/dsh-baseline.md`
+  - `packages/bundle/xagent-business/README.md`
+  - `packages/bundle/xagent-developer/README.md`
 
-**Universal requirement**: every current or future document in scope must merge as a complete bilingual pair. [scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) contains only explicit exclusions; there is no per-file rollout list, date cutoff, or README-specific policy class.
+**Universal requirement**: apart from the exact exclusions above, every current or future document in scope must merge as a complete bilingual pair. [scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) contains only explicit exclusions; there is no directory-wide XAgent exception, per-file rollout list, date cutoff, or README-specific policy class.
 
 ## Division of labor
 

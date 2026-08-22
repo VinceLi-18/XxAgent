@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-本仓库的文档会被公司内外的人和 agent（智能体）阅读，因此范围内的每篇文档都以英文和简体中文维护。本页定义配对约定、检查、范围与排除规则；[translation-rules.md](translation-rules.md) 定义如何翻译；[terminology.md](terminology.md) 是术语真源。agent 的日常工作遵循 [docs/AGENTS.md](../AGENTS.md) 中的轻量路径；扩展版 [.agents/skills/dsh-translate-docs](../../.agents/skills/dsh-translate-docs/SKILL.md) 工作流仅在用户显式调用时可用。
+本仓库的文档会被公司内外的人和 agent（智能体）阅读，因此除下文精确列出的 XAgent fork 产品文档外，范围内的每篇文档都以英文和简体中文维护。本页定义配对约定、检查、范围与排除规则；[translation-rules.md](translation-rules.md) 定义如何翻译；[terminology.md](terminology.md) 是术语真源。agent 的日常工作遵循 [docs/AGENTS.md](../AGENTS.md) 中的轻量路径；扩展版 [.agents/skills/dsh-translate-docs](../../.agents/skills/dsh-translate-docs/SKILL.md) 工作流仅在用户显式调用时可用。
 
 ## 配对约定
 
@@ -52,8 +52,20 @@
 - `docs/i18n/terminology.md` 与 [style-samples.md](style-samples.md)：二者本身即为中英对照文档。
 - [translation-prompt.md](translation-prompt.md)：自动翻译流水线的提示词模板；正文逐字进入模型请求，配对翻译会改变流水线行为。
 - `.agents/notes/archived/`：冻结的历史三文件配对。[`verify-archived-agent-notes`](../../scripts/verify-archived-agent-notes.ts) 校验其完整性和内容封存记录；翻译维护绝不能重写这些文件。
+- **XAgent fork 产品文档——仓库所有者例外。** 仓库所有者已明确决定以下精确文件只使用中文维护；该例外不授予目录通配符，也不覆盖今后新增的文档：
+  - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
+  - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
+  - `docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md`
+  - `docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md`
+  - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
+  - `docs/superpowers/progress/2026-08-22-xagent-phase-1.md`
+  - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
+  - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
+  - `docs/upstream/dsh-baseline.md`
+  - `packages/bundle/xagent-business/README.md`
+  - `packages/bundle/xagent-developer/README.md`
 
-**统一要求**：当前及今后纳入范围的每篇文档，合并时都必须构成完整的双语配对。[scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) 只包含显式排除项；不存在逐文件推进清单、日期分界或 README 专用政策类别。
+**统一要求**：除上述精确排除项外，当前及今后纳入范围的每篇文档，合并时都必须构成完整的双语配对。[scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) 只包含显式排除项；不存在 XAgent 目录级例外、逐文件推进清单、日期分界或 README 专用政策类别。
 
 ## 分工
 

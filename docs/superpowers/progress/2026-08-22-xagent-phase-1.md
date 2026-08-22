@@ -32,7 +32,7 @@ GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模�
 
 未修改实现时，`pnpm exec vitest run packages/client/ui-theme/tests/scrollbar-styles.client.spec.ts` 稳定复现 21 个测试中的 2 个失败：高架集合缺少 `--dsw-specific-input-major`，且 `JsonTree.module.css` 的 `--dsw-alias-bg-layer-1` 被误判为高架表面。最小令牌修复后，滚动条与主题聚焦测试通过 2 个文件、40 个测试，`ui-theme` 全目录通过 8 个文件、65 个测试。
 
-沙箱内首次运行 `pnpm run test:coverage` 时，真实 HTTP、进程和终端用例出现统一超时；依照仓库宿主沙箱规则，以宿主权限原样重跑后通过 811 个文件、13,523 个测试，8 个文件与 109 个测试按既有条件跳过，语句、分支、函数和行覆盖率均为 100%。最终 `pnpm run typecheck` 通过。
+沙箱内首次运行 `pnpm run test:coverage` 时，真实 HTTP、进程和终端用例出现统一超时；依照仓库宿主沙箱规则，以宿主权限原样重跑后通过 811 个文件、13,526 个测试，8 个文件与 109 个测试按既有条件跳过，语句、分支、函数和行覆盖率均为 100%。最终 `pnpm run typecheck` 通过。
 
 ## 构建版 Web 验证
 
@@ -46,7 +46,7 @@ GREEN 使用真实 Loader 组合与 API proxy 创建业务会话，不调用模�
 
 欢迎文案实现修改了 `packages/client/ui-settings-models/src/onboarding-copy.ts`，并同步更新标题装配期望。本轮补充验收发现并修复了构建版 Web lane 的旧欢迎夹具、takeover 标题选择器和欢迎快照；`pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/onboarding-deepseek-config.e2e.ts` 以宿主权限通过 4 个测试。全量 lane 的其余卡点仍按浏览器测试运行环境记录。
 
-夹具修复后，以宿主权限运行 `pnpm run test:web:built` 在 Vitest runner 启动后 90 秒没有完成任何测试或输出进一步日志，为停止诊断而中断并退出 1。该全量启动或初始化挂起不同于沙箱的端口／Chromium 权限拒绝，也不同于已经通过的 onboarding lane；全量检查仍未通过。
+夹具修复后，以宿主权限对 `pnpm run test:web:built` 执行最终受控复验：Vitest runner 启动后 90 秒没有完成任何测试或输出进一步日志，超时控制结束进程并返回退出状态 142。该全量启动或初始化挂起不同于沙箱的端口／Chromium 权限拒绝，也不同于已经通过的 onboarding lane；全量检查仍未通过。
 
 ## 真实服务与 GIF 证据
 

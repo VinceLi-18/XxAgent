@@ -257,7 +257,7 @@ Consumer（Model Tool / Host Remote / Client UI）
 ### 8.1 Principal
 
 ```ts
-interface XAgentPrincipal {
+interface XAgentPrincipal<UserId = string, Role = string, ConnectionId = string> {
   actorId: UserId
   role: Role
   permissionRevision: number
@@ -268,7 +268,7 @@ interface XAgentPrincipal {
 ### 8.2 Session Scope
 
 ```ts
-interface XAgentSessionScope {
+interface XAgentSessionScope<UserId = string, ProjectId = string> {
   ownerId: UserId
   projectId?: ProjectId
   visibility: 'private' | 'project'
