@@ -727,7 +727,7 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-host-apiproxy`
 
-需要：`agentDefaultModel` · `agents` · `attachments` · `directoryPicker` · `llm` · `sessions` · `subagents` · `sessionQuery` · `tools` · `userInteraction` · `workspace`
+需要：`agentDefaultModel` · `agents` · `attachments` · `directoryPicker` · `llm` · `sessions` · `sessionQuery` · `tools` · `userInteraction` · `workspace`
 
 ```ts config-catalog
 /** Gateway plugin configuration. */
@@ -3150,3 +3150,5 @@ export interface Config {
 - `@deepseek-ai/dsh-typert-generator`（[`packages/typert/generator/src/index.ts`](../packages/typert/generator/src/index.ts)）
 - `@deepseek-ai/dsh-typert-protocol`（[`packages/typert/protocol/src/index.ts`](../packages/typert/protocol/src/index.ts)）
 - `@deepseek-ai/dsh-typert-registry`（[`packages/typert/registry/src/index.ts`](../packages/typert/registry/src/index.ts)）
+- `@xagent/dsh-business`（[`packages/bundle/xagent-business/src/index.ts`](../packages/bundle/xagent-business/src/index.ts)）
+- `@xagent/dsh-developer`（[`packages/bundle/xagent-developer/src/index.ts`](../packages/bundle/xagent-developer/src/index.ts)）
