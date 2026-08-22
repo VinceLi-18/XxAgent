@@ -110,10 +110,22 @@ export function resolveProfileDir(name: string, home: string = resolveDshHome())
   return join(home, PROFILES_DIR, name)
 }
 
+/**
+ * Resolve the persistent data directory for a profile.
+ * @param name - the profile name (`dsh --profile <name>`).
+ * @param home - the Harness home; defaults to {@link resolveDshHome}.
+ * @returns the absolute profile data directory (which may not exist yet).
+ */
+export function resolveProfileDataDir(name: string, home: string = resolveDshHome()): string {
+  return join(resolveProfileDir(name, home), 'data')
+}
+
 /** The shipped profile templates auto-initialized on first use, by name. */
 export const PROFILE_TEMPLATES: Record<string, readonly string[]> = {
   web: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'],
   headless: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'],
+  'xagent-business': ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@xagent/dsh-business'],
+  'xagent-developer': ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@xagent/dsh-developer'],
 }
 
 /** Installation-owned bundle tuples normalized to the shipped template. */

@@ -39,6 +39,7 @@ export {
   PROFILES_DIR,
   readProfileManifest,
   resolveBundleDir,
+  resolveProfileDataDir,
   resolveProfileDir,
   writeProfileManifest,
   type DshBundleManifest,
