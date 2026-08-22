@@ -47,7 +47,7 @@
 
 - [ ] **步骤 1：写入失败测试**
 
-```ts
+```text
 it('为 XAgent 模板解析 Profile 专属数据目录', () => {
   const home = tmp()
   expect(resolveProfileDataDir('xagent-business', home))
@@ -69,7 +69,7 @@ it('为 XAgent 模板解析 Profile 专属数据目录', () => {
 
 - [ ] **步骤 3：实现 API 与模板**
 
-```ts
+```text
 export function resolveProfileDataDir(name: string, home: string = resolveDshHome()): string {
   return join(resolveProfileDir(name, home), 'data')
 }
@@ -108,7 +108,7 @@ git commit -m "feat: add xagent profile templates"
 
 - [ ] **步骤 1：写入失败测试**
 
-```ts
+```text
 it('在配置树启动前提供当前 Profile 的数据路径函数', async () => {
   const context = await bootXagentProfileForTest('xagent-business', home)
   expect(context.dshProfileDataPath?.('sessions'))
@@ -129,7 +129,7 @@ it('在配置树启动前提供当前 Profile 的数据路径函数', async () =
 
 在 `boot()` 的 `prepare` 回调中、`provideCmdline()` 之前提供函数：
 
-```ts
+```text
 const dataDir = resolveProfileDataDir(composed.profile.name)
 hostCtx.provide('dshProfileDataPath', (...segments: string[]) => join(dataDir, ...segments))
 ```
@@ -167,7 +167,7 @@ git commit -m "feat: expose profile data paths at boot"
 
 - [ ] **步骤 1：写入失败测试**
 
-```ts
+```text
 expect(readXagentStatePatches(patch)).toEqual({
   settings: { dshHome: 'dshProfileDataPath()' },
   credentials: { dshHome: 'dshProfileDataPath()' },
@@ -244,7 +244,7 @@ git commit -m "feat: isolate xagent profile state"
 
 - [ ] **步骤 1：写入失败测试**
 
-```ts
+```text
 expect(index).toContain('<title>XAgent</title>')
 expect(manifest).toMatchObject({ name: 'XAgent', short_name: 'XAgent' })
 ```
@@ -293,7 +293,7 @@ git commit -m "feat: brand web shell as xagent"
 
 - [ ] **步骤 1：写入失败测试**
 
-```tsx
+```text
 expect(zh.body).toContain('XAgent')
 expect(zh.body).toContain('项目上下文')
 ```
