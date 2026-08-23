@@ -53,6 +53,7 @@
 - [translation-prompt.md](translation-prompt.md)：自动翻译流水线的提示词模板；正文逐字进入模型请求，配对翻译会改变流水线行为。
 - `.agents/notes/archived/`：冻结的历史三文件配对。[`verify-archived-agent-notes`](../../scripts/verify-archived-agent-notes.ts) 校验其完整性和内容封存记录；翻译维护绝不能重写这些文件。
 - **XAgent fork 产品文档——仓库所有者例外。** 仓库所有者已明确决定以下精确文件只使用中文维护；该例外不授予目录通配符，也不覆盖今后新增的文档：
+  - `.agents/notes/implemented/architecture/2026-08-23-xagent-api-baseline-import.md`
   - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
   - `docs/superpowers/plans/2026-08-23-xagent-phase-2a-backend-baseline-import.md`
@@ -64,6 +65,7 @@
   - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
   - `docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md`
   - `docs/upstream/dsh-baseline.md`
+  - `docs/upstream/jiaxin-api-baseline.md`
   - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
   - `services/api/README.md`

@@ -429,7 +429,7 @@ git commit -m "ci: verify imported xagent api"
 **接口：**
 
 - 消费：已验证的来源提交、实际导入路径、测试命令和容器边界。
-- 产出：当前来源记录、长期架构决策和三个精确中文专属例外。
+- 产出：当前来源记录、长期架构决策和四个精确中文专属例外。
 
 - [ ] **步骤 1：写来源记录**
 
@@ -450,7 +450,7 @@ Phase 2 的认证和会话隔离依赖 FastAPI、PostgreSQL RLS 与项目权限�
 
 ## Decision
 
-XxAgent 在 `services/api/` 内拥有固定来源提交的后端基线。原 JiaxinAgent 保持不变；Phase 2 的后端改动、迁移和测试只发生在 XxAgent。来源代码与 XxAgent 集成文件保持可识别，Phase 3 基于该服务继续迁移而不重复导入。
+XAgent 在 `services/api/` 内拥有固定来源提交的后端基线。原 JiaxinAgent 保持不变；Phase 2 的后端改动、迁移和测试只发生在 XAgent。来源代码与 XAgent 集成文件保持可识别，Phase 3 基于该服务继续迁移而不重复导入。
 
 ## Alternatives considered
 
@@ -460,7 +460,7 @@ XxAgent 在 `services/api/` 内拥有固定来源提交的后端基线。原 Jia
 
 ## Consequences
 
-XAgent 获得单仓库内可测试和发布的 FastAPI 基础，JiaxinAgent 不受 Phase 2 行为变更影响。XxAgent 同时承担 Python 依赖、数据库迁移和来源差异维护；Phase 3 必须处理旧 `conversation_threads` 与 XAgent 会话模型的最终关系。
+XAgent 获得单仓库内可测试和发布的 FastAPI 基础，JiaxinAgent 不受 Phase 2 行为变更影响。XAgent 同时承担 Python 依赖、数据库迁移和来源差异维护；Phase 3 必须处理旧 `conversation_threads` 与 XAgent 会话模型的最终关系。
 ```
 
 - [ ] **步骤 3：登记精确中文专属例外**
