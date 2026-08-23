@@ -17,10 +17,13 @@ from app.models.identity import Role
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
 
 
+def _api_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
 def test_compose_uses_dedicated_non_superuser_application_credentials():
-    repository_root = Path(__file__).resolve().parents[3]
-    environment_example = (repository_root / ".env.example").read_text()
-    compose_configuration = (repository_root / "docker-compose.yml").read_text()
+    environment_example = (_api_root() / ".env.example").read_text()
+    compose_configuration = (_api_root() / "compose.yml").read_text()
 
     assert "POSTGRES_APP_USER=jiaxin_app" in environment_example
     assert "POSTGRES_APP_PASSWORD=" in environment_example
@@ -35,7 +38,6 @@ def test_compose_uses_dedicated_non_superuser_application_credentials():
 
 
 def test_environment_example_constructs_api_settings_without_host_environment(monkeypatch):
-    repository_root = Path(__file__).resolve().parents[3]
     for name in (
         "DATABASE_URL",
         "DATABASE_ADMIN_URL",
@@ -46,7 +48,7 @@ def test_environment_example_constructs_api_settings_without_host_environment(mo
     ):
         monkeypatch.delenv(name, raising=False)
 
-    settings = Settings(_env_file=repository_root / ".env.example")
+    settings = Settings(_env_file=_api_root() / ".env.example")
 
     assert settings.JWT_SECRET_KEY
     assert settings.JWT_ISSUER
@@ -54,10 +56,9 @@ def test_environment_example_constructs_api_settings_without_host_environment(mo
 
 
 def test_alembic_uses_a_separate_admin_database_url():
-    repository_root = Path(__file__).resolve().parents[3]
-    environment_example = (repository_root / ".env.example").read_text()
-    alembic_environment = (repository_root / "backend/alembic/env.py").read_text()
-    compose_configuration = (repository_root / "docker-compose.yml").read_text()
+    environment_example = (_api_root() / ".env.example").read_text()
+    alembic_environment = (_api_root() / "alembic/env.py").read_text()
+    compose_configuration = (_api_root() / "compose.yml").read_text()
 
     assert "DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}" in environment_example
     assert "settings.DATABASE_ADMIN_URL" in alembic_environment
@@ -65,9 +66,8 @@ def test_alembic_uses_a_separate_admin_database_url():
 
 
 def test_compose_runs_admin_migrations_before_runtime_services():
-    repository_root = Path(__file__).resolve().parents[3]
-    compose_configuration = (repository_root / "docker-compose.yml").read_text()
-    readme = (repository_root / "README.md").read_text()
+    compose_configuration = (_api_root() / "compose.yml").read_text()
+    readme = (_api_root() / "README.md").read_text()
 
     assert "  migrate:\n" in compose_configuration
     assert "command: [\"alembic\", \"upgrade\", \"head\"]" in compose_configuration

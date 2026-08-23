@@ -260,6 +260,7 @@ git commit -m "test: run imported api against postgres"
 **文件：**
 
 - 创建：`services/api/.env.example`
+- 创建：`services/api/.dockerignore`
 - 创建：`services/api/compose.yml`
 - 创建：`services/api/README.md`
 - 修改：`services/api/tests/security/test_database_rls.py`
@@ -293,19 +294,20 @@ services:
   api:
     build:
       context: .
+    image: xagent-api:local
   worker:
-    build:
-      context: .
+    image: xagent-api:local
   migrate:
-    build:
-      context: .
+    image: xagent-api:local
   postgres:
     volumes:
       - xagent-api-postgres:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
 ```
 
-删除来源 `web` 服务；卷名改为 `xagent-api-postgres` 和 `xagent-api-minio`。API 继续通过迁移成功、PostgreSQL 健康、MinIO 和 ClamAV 已启动后再启动，healthcheck 仍验证 `/api/v1/health`。
+删除来源 `web` 服务；卷名改为 `xagent-api-postgres` 和 `xagent-api-minio`。API 只构建一次 `xagent-api:local`，worker 与 migrate 复用同一镜像，避免 classic builder 重复解析和安装依赖。API 继续通过迁移成功、PostgreSQL 健康、MinIO 和 ClamAV 已启动后再启动，healthcheck 仍验证 `/api/v1/health`。
+
+创建 `services/api/.dockerignore`，排除 `.env`、`.venv/`、`.pytest_cache/`、`__pycache__/`、`dist/` 和 `tests/`，避免秘密及本地生成物进入 Docker 构建上下文。
 
 - [ ] **步骤 4：适配来源测试中的仓库根路径**
 
@@ -340,7 +342,7 @@ def _api_root() -> Path:
 - [ ] **步骤 7：提交容器接线**
 
 ```bash
-git add services/api/.env.example services/api/compose.yml services/api/README.md services/api/tests/security/test_database_rls.py package.json
+git add services/api/.env.example services/api/.dockerignore services/api/compose.yml services/api/README.md services/api/tests/security/test_database_rls.py package.json
 git commit -m "build: compose imported xagent api"
 ```
 
@@ -504,7 +506,7 @@ git commit -m "docs: record xagent api ownership"
 
 - [ ] **步骤 1：复核来源代码没有行为漂移**
 
-重新从固定提交导出来源，逐目录比较 `app/`、`alembic/`、`alembic.ini`、`pyproject.toml`、`Dockerfile` 和 `postgres/init/`。`tests/` 除 `test_database_rls.py` 的四处配置路径适配外保持字节一致；只允许 `uv.lock`、Compose、环境模板、服务 README 和 XxAgent 顶层接线作为新增文件。
+重新从固定提交导出来源，逐目录比较 `app/`、`alembic/`、`alembic.ini`、`pyproject.toml`、`Dockerfile` 和 `postgres/init/`。`tests/` 除 `test_database_rls.py` 的四处配置路径适配外保持字节一致；只允许 `uv.lock`、`.dockerignore`、Compose、环境模板、服务 README 和 XxAgent 顶层接线作为新增文件。
 
 - [ ] **步骤 2：运行后端完整验证**
 

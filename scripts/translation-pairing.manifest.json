@@ -20,6 +20,7 @@
     "docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md",
     "docs/upstream/dsh-baseline.md",
     "packages/bundle/xagent-business/README.md",
-    "packages/bundle/xagent-developer/README.md"
+    "packages/bundle/xagent-developer/README.md",
+    "services/api/README.md"
   ]
 }

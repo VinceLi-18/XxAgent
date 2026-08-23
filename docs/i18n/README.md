@@ -66,6 +66,7 @@ Generated English references and graphs participate in pairing when a reviewed C
   - `docs/upstream/dsh-baseline.md`
   - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
+  - `services/api/README.md`
 
 **Universal requirement**: apart from the exact exclusions above, every current or future document in scope must merge as a complete bilingual pair. [scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) contains only explicit exclusions; there is no directory-wide XAgent exception, per-file rollout list, date cutoff, or README-specific policy class.
 

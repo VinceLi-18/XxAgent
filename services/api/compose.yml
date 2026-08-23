@@ -1,0 +1,110 @@
+services:
+  api:
+    build:
+      context: .
+    image: xagent-api:local
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env to a high-entropy value}"
+      JWT_ISSUER: "${JWT_ISSUER:?Set JWT_ISSUER in .env}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:?Set JWT_AUDIENCE in .env}"
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_SECURE: ${MINIO_SECURE}
+      MINIO_PUBLIC_SECURE: ${MINIO_PUBLIC_SECURE}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MAX_ARTIFACT_SIZE_BYTES: ${MAX_ARTIFACT_SIZE_BYTES}
+      STAGING_EXPIRY_DAYS: ${STAGING_EXPIRY_DAYS}
+      CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      clamav:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/api/v1/health').read() == b'{\"status\":\"ok\"}'",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    image: xagent-api:local
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+    command: ["python", "-c", "import time; time.sleep(3600)"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - xagent-api-postgres:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+  migrate:
+    image: xagent-api:local
+    environment:
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:5173
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - xagent-api-minio:/data
+
+  clamav:
+    image: clamav/clamav:1.4.3_base
+    platform: linux/amd64
+
+volumes:
+  xagent-api-minio:
+  xagent-api-postgres:
