@@ -15,7 +15,7 @@
 - 来源仓库固定为 `git@github.com:VinceLi-18/JiaxinAgent.git`，来源提交固定为 `32eb79ff331b50f7cf35c3f377e6f7eeaaa9230d`。
 - 原 JiaxinAgent 仓库只读；不得提交、清理、切换或改写其工作树。
 - 不导入 `.git`、`.env`、密钥、数据库卷、MinIO 对象、缓存、虚拟环境、构建产物、前端或未跟踪文件。
-- `services/api/app/`、`alembic/`、`tests/`、`alembic.ini`、`pyproject.toml` 和 `Dockerfile` 在 Phase 2A 保持来源字节内容；XxAgent 集成文件作为新增旁系文件保存。
+- `services/api/app/`、`alembic/`、`alembic.ini`、`pyproject.toml` 和 `Dockerfile` 在 Phase 2A 保持来源字节内容；测试仅允许把来源仓库根路径改为 `services/api/`，XxAgent 集成文件作为新增旁系文件保存。
 - Python 依赖由 `services/api/uv.lock` 独立锁定；不得加入 pnpm workspace 或修改现有 Python SDK 锁文件。
 - 本地测试只能重建名称以 `_test` 结尾的数据库，并继续要求 `JX_ALLOW_SCHEMA_DROP=yes`。
 - 所有新增文档使用中文，并以精确路径登记中文专属例外；不得增加目录通配。
@@ -141,8 +141,8 @@ uv sync --python 3.11 --project services/api --extra dev --frozen
 
 ```json
 "api:sync": "uv sync --python 3.11 --project services/api --extra dev --frozen",
-"api:test": "uv run --python 3.11 --project services/api --extra dev pytest",
-"api:migrate": "uv run --python 3.11 --project services/api alembic upgrade head",
+"api:test": "uv run --python 3.11 --directory services/api --extra dev pytest",
+"api:migrate": "uv run --python 3.11 --directory services/api alembic upgrade head",
 "api:build": "uv build --python 3.11 --project services/api"
 ```
 
@@ -174,7 +174,7 @@ git commit -m "build: lock xagent api dependencies"
 - 创建：`services/api/compose.test.yml`
 - 修改：`.gitignore`
 - 修改：`package.json`
-- 测试：`services/api/tests/**`（来源测试保持不变）
+- 测试：`services/api/tests/**`（除任务 4 的仓库根路径适配外保持来源行为）
 
 **接口：**
 
@@ -261,6 +261,8 @@ git commit -m "test: run imported api against postgres"
 
 - 创建：`services/api/.env.example`
 - 创建：`services/api/compose.yml`
+- 创建：`services/api/README.md`
+- 修改：`services/api/tests/security/test_database_rls.py`
 - 修改：`package.json`
 
 **接口：**
@@ -305,7 +307,20 @@ services:
 
 删除来源 `web` 服务；卷名改为 `xagent-api-postgres` 和 `xagent-api-minio`。API 继续通过迁移成功、PostgreSQL 健康、MinIO 和 ClamAV 已启动后再启动，healthcheck 仍验证 `/api/v1/health`。
 
-- [ ] **步骤 4：增加顶层开发命令**
+- [ ] **步骤 4：适配来源测试中的仓库根路径**
+
+在 `services/api/tests/security/test_database_rls.py` 中增加唯一的路径辅助函数，并只替换四个配置文件定位点：
+
+```python
+def _api_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+```
+
+`.env.example`、`compose.yml`、`alembic/env.py` 和 `README.md` 都从 `_api_root()` 解析。断言内容、数据库 fixture、RLS 行为和 API 行为保持不变。
+
+创建中文 `services/api/README.md`，记录 Python 3.11/uv 前置条件、从 `.env.example` 创建本地 `.env`、`pnpm run api:sync`、`pnpm run api:test:db:up`、`pnpm run api:test`、`pnpm run api:migrate`、`docker compose up -d --build` 和停止服务命令；明确 `.env` 不得提交，测试数据库仅用于可销毁数据。
+
+- [ ] **步骤 5：增加顶层开发命令**
 
 在根 `package.json` 中加入：
 
@@ -316,16 +331,16 @@ services:
 
 `.env` 必须由使用者从 `.env.example` 复制并替换占位值，且保持 ignored。`api:dev:down` 默认保留开发数据卷；删除卷需要使用者单独明确执行。
 
-- [ ] **步骤 5：验证配置和真实健康检查**
+- [ ] **步骤 6：验证配置和真实健康检查**
 
 运行 `docker compose ... config` 确认路径有效；用一份位于临时目录的本地环境文件替换占位密钥后启动 `migrate`、`api` 及依赖，等待 healthcheck 通过，再请求 `GET /api/v1/health`。
 
 预期：响应为 `{"status":"ok"}`；迁移容器成功退出；日志不包含环境变量值。完成后停止服务，不删除未明确属于本次冒烟测试的卷。
 
-- [ ] **步骤 6：提交容器接线**
+- [ ] **步骤 7：提交容器接线**
 
 ```bash
-git add services/api/.env.example services/api/compose.yml package.json
+git add services/api/.env.example services/api/compose.yml services/api/README.md services/api/tests/security/test_database_rls.py package.json
 git commit -m "build: compose imported xagent api"
 ```
 
@@ -378,7 +393,7 @@ git commit -m "build: compose imported xagent api"
       - name: Sync immutable API environment
         run: uv sync --python 3.11 --project services/api --extra dev --frozen
       - name: Run complete imported API suite
-        run: uv run --python 3.11 --project services/api --extra dev pytest
+        run: uv run --python 3.11 --directory services/api --extra dev pytest
       - name: Build API package
         run: uv build --python 3.11 --project services/api
 ```
@@ -452,6 +467,7 @@ XAgent 获得单仓库内可测试和发布的 FastAPI 基础，JiaxinAgent 不�
 .agents/notes/implemented/architecture/2026-08-23-xagent-api-baseline-import.md
 docs/superpowers/plans/2026-08-23-xagent-phase-2a-backend-baseline-import.md
 docs/upstream/jiaxin-api-baseline.md
+services/api/README.md
 ```
 
 不得增加目录通配，也不得为这些路径创建 `.zh.md` 或 `.i18n.yaml`。
@@ -488,7 +504,7 @@ git commit -m "docs: record xagent api ownership"
 
 - [ ] **步骤 1：复核来源代码没有行为漂移**
 
-重新从固定提交导出来源，逐目录比较 `app/`、`alembic/`、`tests/`、`alembic.ini`、`pyproject.toml`、`Dockerfile` 和 `postgres/init/`。预期全部字节一致；只允许 `uv.lock`、Compose、环境模板和 XxAgent 顶层接线作为新增文件。
+重新从固定提交导出来源，逐目录比较 `app/`、`alembic/`、`alembic.ini`、`pyproject.toml`、`Dockerfile` 和 `postgres/init/`。`tests/` 除 `test_database_rls.py` 的四处配置路径适配外保持字节一致；只允许 `uv.lock`、Compose、环境模板、服务 README 和 XxAgent 顶层接线作为新增文件。
 
 - [ ] **步骤 2：运行后端完整验证**
 
