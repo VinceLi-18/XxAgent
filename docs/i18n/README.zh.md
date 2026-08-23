@@ -55,6 +55,7 @@
 - **XAgent fork 产品文档——仓库所有者例外。** 仓库所有者已明确决定以下精确文件只使用中文维护；该例外不授予目录通配符，也不覆盖今后新增的文档：
   - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
+  - `docs/superpowers/plans/2026-08-23-xagent-phase-2a-backend-baseline-import.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
