@@ -738,7 +738,9 @@
         "tests/**/*.ts"
       ],
       "ignoreDependencies": [
-        "@deepseek-ai/.+"
+        "@deepseek-ai/.+",
+        "@xagent/dsh-business",
+        "@xagent/dsh-developer"
       ]
     },
     "packages/client/modules": {
