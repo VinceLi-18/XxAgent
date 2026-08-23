@@ -351,6 +351,8 @@ git commit -m "build: compose imported xagent api"
 **文件：**
 
 - 修改：`.github/workflows/ci.yml`
+- 修改：`knip.json`
+- 修改：`scripts/ci-workflow.spec.ts`
 
 **接口：**
 
@@ -402,14 +404,14 @@ git commit -m "build: compose imported xagent api"
 
 - [ ] **步骤 2：验证 workflow 语法和本地等价命令**
 
-运行仓库现有 workflow/静态门禁，并使用任务 3 的测试数据库执行 CI 中相同的 `uv sync`、pytest 和 `uv build` 命令。
+在 `scripts/ci-workflow.spec.ts` 中锁定 job 名称、测试数据库环境、四条 Python 命令，并要求 `all-checks-passed.needs` 包含 `xagent-api`。在 `knip.json` 中把外部 Python 工具 `uv` 登记为精确 binary 例外。运行该契约测试和仓库现有静态门禁，并使用任务 3 的测试数据库执行 CI 中相同的 `uv sync`、pytest 和 `uv build` 命令。
 
 预期：workflow 解析通过；完整来源测试和包构建通过。
 
 - [ ] **步骤 3：提交 CI 信号**
 
 ```bash
-git add .github/workflows/ci.yml
+git add .github/workflows/ci.yml knip.json scripts/ci-workflow.spec.ts
 git commit -m "ci: verify imported xagent api"
 ```
 

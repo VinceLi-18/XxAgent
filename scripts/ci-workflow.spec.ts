@@ -203,6 +203,46 @@ describe('CI workflow', () => {
     expect(aggregate.needs).toContain('python-runtime')
   })
 
+  it('requires the complete XAgent API suite on every pull request', () => {
+    const workflow = loadWorkflow('.github/workflows/ci.yml')
+    const xagentApi = workflowJob(workflow, 'xagent-api')
+    const aggregate = workflowJob(workflow, 'all-checks-passed')
+    if (!Array.isArray(xagentApi.steps) || !Array.isArray(aggregate.needs)) {
+      throw new TypeError('XAgent API job must define steps and the aggregate must define needs')
+    }
+
+    expect(xagentApi).toMatchObject({
+      if: "github.event_name == 'pull_request'",
+      name: 'python 3.11 / xagent api',
+      env: {
+        JX_TEST_DATABASE_URL: 'postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:5432/xagent_api_test',
+        JX_ALLOW_SCHEMA_DROP: 'yes',
+      },
+      services: {
+        postgres: {
+          image: 'postgres:16-alpine',
+          env: {
+            POSTGRES_DB: 'xagent_api_test',
+            POSTGRES_USER: 'postgres',
+            POSTGRES_PASSWORD: 'xagent-api-test',
+          },
+          ports: ['5432:5432'],
+          options: expect.stringContaining('pg_isready -U postgres -d xagent_api_test'),
+        },
+      },
+    })
+    const commands = xagentApi.steps
+      .filter((step): step is Record<string, unknown> & { run: string } => isRecord(step) && typeof step.run === 'string')
+      .map(step => step.run)
+    expect(commands).toEqual(expect.arrayContaining([
+      'python -m pip install uv==0.11.23',
+      'uv sync --python 3.11 --project services/api --extra dev --frozen',
+      'uv run --python 3.11 --directory services/api --extra dev pytest',
+      'uv build --python 3.11 --project services/api',
+    ]))
+    expect(aggregate.needs).toContain('xagent-api')
+  })
+
   it('keeps every Vitest project process-isolated on native Windows', () => {
     const config = readFileSync(resolve(root, 'vitest.config.ts'), 'utf8')
 
