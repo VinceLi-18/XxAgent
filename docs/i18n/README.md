@@ -61,6 +61,7 @@ Generated English references and graphs participate in pairing when a reviewed C
   - `docs/superpowers/progress/2026-08-22-xagent-phase-1.md`
   - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
   - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
+  - `docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md`
   - `docs/upstream/dsh-baseline.md`
   - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
