@@ -442,7 +442,7 @@ approved/executing -> failed
 ### Phase 1：产品壳和 Profile
 
 - 品牌、主题和中文文案；
-- 保留三栏布局；
+- 保留 DSH 三栏框架及右栏扩展能力，不交付 XAgent 常驻项目右栏；
 - 业务 Profile 最小组合；
 - 开发 Profile 保留 Coding Agent；
 - 两个 Profile 的 Home、Session 和凭据隔离。
@@ -459,7 +459,7 @@ approved/executing -> failed
 
 - FastAPI、Alembic、RLS、MinIO 和测试；
 - Business Gateway；
-- 项目、登录和 Artifact UI；
+- 项目、登录和 Artifact UI，包括常驻的项目目录与协作收件箱右栏；
 - 上传、预览、下载和扫描；
 - DSH Session 替换简化对话存储。
 
