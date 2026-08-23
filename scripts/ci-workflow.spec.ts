@@ -207,8 +207,12 @@ describe('CI workflow', () => {
     const workflow = loadWorkflow('.github/workflows/ci.yml')
     const xagentApi = workflowJob(workflow, 'xagent-api')
     const aggregate = workflowJob(workflow, 'all-checks-passed')
-    if (!Array.isArray(xagentApi.steps) || !Array.isArray(aggregate.needs)) {
-      throw new TypeError('XAgent API job must define steps and the aggregate must define needs')
+    if (!Array.isArray(xagentApi.steps)
+      || !Array.isArray(aggregate.needs)
+      || !isRecord(xagentApi.services)
+      || !isRecord(xagentApi.services.postgres)
+      || typeof xagentApi.services.postgres.options !== 'string') {
+      throw new TypeError('XAgent API job must define steps, PostgreSQL options, and aggregate needs')
     }
 
     expect(xagentApi).toMatchObject({
@@ -227,10 +231,10 @@ describe('CI workflow', () => {
             POSTGRES_PASSWORD: 'xagent-api-test',
           },
           ports: ['5432:5432'],
-          options: expect.stringContaining('pg_isready -U postgres -d xagent_api_test'),
         },
       },
     })
+    expect(xagentApi.services.postgres.options).toContain('pg_isready -U postgres -d xagent_api_test')
     const commands = xagentApi.steps
       .filter((step): step is Record<string, unknown> & { run: string } => isRecord(step) && typeof step.run === 'string')
       .map(step => step.run)
