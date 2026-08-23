@@ -12,7 +12,7 @@
  */
 
 import { writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
 import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
@@ -26,6 +26,7 @@ import {
   loadOverlayPatches,
   loadProfile,
   PROFILE_PATCH_FILENAME,
+  resolveProfileDataDir,
   watchUserPatches,
   type Profile,
 } from '@deepseek-ai/dsh-app-boot'
@@ -37,6 +38,13 @@ const SHIPPED_PRESET_ROOT = fileURLToPath(new URL('../config/agent-presets/', im
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Current Profile's persistent-data path resolver for Loader config expressions. */
+    dshProfileDataPath?: (...segments: string[]) => string
+  }
+}
 
 const NAME = 'dsh'
 
@@ -225,6 +233,8 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   })
 
   const rootConfig = join(composed.profile.dir, PROFILE_ROOT_FILENAME)
+  const profileHome = dirname(dirname(composed.profile.dir))
+  const profileDataDir = resolveProfileDataDir(composed.profile.name, profileHome)
   // Recomposition for the live user layers: bundle layers below, overlays
   // above, so a user edit can never displace them. Parsed app arguments are
   // not in here at all — they live in app-provided services that survive a
@@ -250,6 +260,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     // Before any config-tree entry mounts, so plugins resolve all launch-time
     // environment values from the same immutable provenance snapshot.
     hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, options.environment)
+    hostCtx.provide('dshProfileDataPath', (...segments: string[]) => join(profileDataDir, ...segments))
     // The command line and bounded exit request are launcher facts available
     // to every app plugin that injects the argument snapshot.
     provideCmdline(hostCtx, {

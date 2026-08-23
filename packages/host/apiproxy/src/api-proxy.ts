@@ -916,6 +916,15 @@ function projectionsUnavailableError(): RpcError {
   }
 }
 
+/** Stable RPC error for deployments that do not compose the subagent service. */
+function subagentsUnavailableError(): RpcError {
+  return {
+    code: 'internal',
+    message: 'subagent service is unavailable in this deployment',
+    details: {},
+  }
+}
+
 /** Verify one address and mode against the complete direct-child catalog. */
 async function catalogChild(
   ctx: Context,
@@ -926,8 +935,10 @@ async function catalogChild(
   error?: RpcError
 }> {
   const { parentSessionId, childSessionId, mode } = address
+  const subagents = ctx.get('subagents')
+  if (subagents === undefined) return { error: subagentsUnavailableError() }
   try {
-    const entries = await ctx.subagents.listChildren(parentSessionId, signal)
+    const entries = await subagents.listChildren(parentSessionId, signal)
     const entry = entries.find(candidate => candidate.id === childSessionId)
     if (entry === undefined || (entry.kind === 'child' && entry.mode !== mode)) {
       return {
@@ -1007,6 +1018,13 @@ class AgentPresetConflict extends Error {
         : `session "${sessionId}" already runs agent preset ${JSON.stringify(existingPreset)}; `
       + `requested ${JSON.stringify(requestedPreset)}. A session's preset is fixed at creation.`,
     )
+  }
+}
+
+/** A new session requested a preset from a deployment without a roster. */
+class AgentPresetRosterAbsent extends Error {
+  constructor(readonly agentPreset: string) {
+    super(`this deployment composes no agent presets; requested ${JSON.stringify(agentPreset)}`)
   }
 }
 
@@ -1590,6 +1608,22 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     checkPersistedIdentity: boolean,
     presetId?: string,
   ): Promise<Agent> {
+    // A no-roster refusal belongs only to the request that named a preset. Keep
+    // it outside sessionCreations so a valid concurrent caller can still create.
+    if (presetId !== undefined && ctx.get('agentPresets') === undefined) {
+      const attached = ctx.sessions.get(sessionId)
+      const live = ctx.agents.get(sessionId)
+      if (attached !== undefined && hasSubagentOwner(attached, live)) {
+        throw new SubagentSessionOwnership(sessionId)
+      }
+      if (live === undefined) {
+        const persistence = checkPersistedIdentity ? ctx.get('sessionPersistence') : undefined
+        const stored = persistence === undefined
+          ? undefined
+          : (await persistence.list()).find(header => header.id === sessionId)
+        if (stored === undefined) throw new AgentPresetRosterAbsent(presetId)
+      }
+    }
     let creation = sessionCreations.get(sessionId)
     if (creation === undefined) {
       creation = (async () => {
@@ -1630,6 +1664,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           })).agent
         }
 
+        if (presetId !== undefined && ctx.get('agentPresets') === undefined) {
+          throw new AgentPresetRosterAbsent(presetId)
+        }
         try {
           await mkdir(cwd, { recursive: true })
         } catch (error: unknown) {
@@ -1663,7 +1700,17 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       })
       sessionCreations.set(sessionId, creation)
     }
-    const agent = await creation
+    let agent: Agent
+    try {
+      agent = await creation
+    } catch (error: unknown) {
+      // A valid caller may have joined a transaction whose owner named a
+      // preset. Once that request-specific refusal clears, create normally.
+      if (error instanceof AgentPresetRosterAbsent && presetId === undefined) {
+        return ensureSession(sessionId, cwd, checkPersistedIdentity)
+      }
+      throw error
+    }
     if (hasSubagentOwner(agent.session, agent)) throw new SubagentSessionOwnership(sessionId)
     // Beside the cwd check for the same reason, and after the await so it
     // covers every path that yields a live agent — freshly created, adopted
@@ -2122,6 +2169,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         try {
           await ensureSession(sessionId, cwd, request.payload.sessionId !== undefined, requestedPreset)
         } catch (error: unknown) {
+          if (error instanceof AgentPresetRosterAbsent) {
+            return err(request, noRoster(error.agentPreset))
+          }
           if (error instanceof AgentPresetConflict) {
             return err(request, {
               code: 'agent-preset-conflict',
@@ -2575,8 +2625,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
     subagents: {
       async list(request, signal) {
+        const subagents = ctx.get('subagents')
+        if (subagents === undefined) return err(request, subagentsUnavailableError())
         try {
-          const entries = await ctx.subagents.listChildren(request.payload.parentSessionId, signal)
+          const entries = await subagents.listChildren(request.payload.parentSessionId, signal)
           return ok(request, {
             entries: entries.map(entry => entry.kind === 'child'
               ? {
@@ -2676,6 +2728,8 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async prompt(request, signal) {
         const { parentSessionId, childSessionId, content, clientTimeZone } = request.payload
+        const subagents = ctx.get('subagents')
+        if (subagents === undefined) return err(request, subagentsUnavailableError())
         const canonicalTimeZone = clientTimeZone === undefined
           ? undefined
           : canonicalClientTimeZone(clientTimeZone)
@@ -2699,7 +2753,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }, signal)
         if (verified.error !== undefined) return err(request, verified.error)
         try {
-          const messageId = await ctx.subagents.followup(parent, childSessionId, content, {
+          const messageId = await subagents.followup(parent, childSessionId, content, {
             source: {
               kind: 'user',
               rpcId: request.rpcId,
@@ -2719,8 +2773,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       // its parent Agent is offline. Absent targets are accepted no-ops there.
       interrupt(request) {
         const { parentSessionId, childSessionId } = request.payload
+        const subagents = ctx.get('subagents')
+        if (subagents === undefined) return Promise.resolve(err(request, subagentsUnavailableError()))
         try {
-          ctx.subagents.interrupt(childSessionId, { kind: 'user', parentSessionId })
+          subagents.interrupt(childSessionId, { kind: 'user', parentSessionId })
         } catch (error: unknown) {
           if (error instanceof SubagentError && error.code === 'UNAUTHORIZED') {
             return Promise.resolve(err(request, {

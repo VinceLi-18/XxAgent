@@ -10,12 +10,25 @@ import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 interface PatchRow {
   id?: string
   disabled?: boolean
+  config?: Record<string, unknown>
 }
 
-interface EntryPatch {
+interface EntryPatch extends PatchRow {
   insert?: PatchRow[]
-  id?: string
-  disabled?: boolean
+}
+
+interface JsExpression {
+  __jsExpr: string
+}
+
+function readJsExpressionConfig(config: Record<string, unknown>): Record<string, JsExpression> {
+  return Object.fromEntries(Object.entries(config).map(([key, value]) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || !('__jsExpr' in value) || typeof value.__jsExpr !== 'string') {
+      throw new TypeError(`${key} must be a JavaScript expression`)
+    }
+    return [key, { __jsExpr: value.__jsExpr }]
+  }))
 }
 
 const prohibitedRows = [
@@ -43,10 +56,24 @@ const prohibitedRows = [
   'skill-filesystem',
 ] as const
 
+const disabledHostRows = ['permission', 'ui-permission'] as const
+
+const disabledPresetRows = ['agent-presets', 'ui-agent-preset'] as const
+
 function loadPatch(path: string): EntryPatch[] {
   const parsed = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
   if (!Array.isArray(parsed)) throw new TypeError(`${path} must contain a patch list`)
   return parsed as EntryPatch[]
+}
+
+function readXagentStatePatches(patch: EntryPatch[]): Record<string, Record<string, JsExpression>> {
+  return Object.fromEntries(
+    patch
+      .filter((row): row is PatchRow & { id: string; config: Record<string, unknown> } => (
+        typeof row.id === 'string' && row.config !== undefined
+      ))
+      .map(row => [row.id, readJsExpressionConfig(row.config)]),
+  )
 }
 
 describe('xagent business bundle', () => {
@@ -82,5 +109,40 @@ describe('xagent business bundle', () => {
       expect(effectiveRows.get(id), `${id} must exist in the shared base bundle`).toBeDefined()
       expect(effectiveRows.get(id), `${id} must be disabled for business use`).toMatchObject({ id, disabled: true })
     }
+  })
+
+  it('disables host permission rows when shell execution is unavailable', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const business = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(business.map(row => [row.id, row]))
+
+    for (const id of disabledHostRows) {
+      expect(rows.get(id), `${id} must be explicitly disabled for business use`)
+        .toMatchObject({ id, disabled: true })
+    }
+  })
+
+  it('disables the agent preset roster and its browser entry', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const business = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(business.map(row => [row.id, row]))
+
+    for (const id of disabledPresetRows) {
+      expect(rows.get(id), `${id} must be explicitly disabled for business use`)
+        .toMatchObject({ id, disabled: true })
+    }
+  })
+
+  it('anchors every local state provider to the current Profile data directory', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+
+    expect(readXagentStatePatches(patch)).toEqual({
+      settings: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      credentials: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      'session-persistence-jsonl': { root: { __jsExpr: "dshProfileDataPath('sessions')" } },
+      'attachment-local': { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
+      'storage-json': { root: { __jsExpr: "dshProfileDataPath('storages')" } },
+    })
   })
 })

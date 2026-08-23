@@ -725,7 +725,7 @@ Source: [`packages/hooks/hooks-codex/src/index.ts:44`](../packages/hooks/hooks-c
 
 ## `@deepseek-ai/dsh-host-apiproxy`
 
-Requires: `agentDefaultModel` · `agents` · `attachments` · `directoryPicker` · `llm` · `sessions` · `subagents` · `sessionQuery` · `tools` · `userQuestions` · `workspaceRegistry`
+Requires: `agentDefaultModel` · `agents` · `attachments` · `directoryPicker` · `llm` · `sessions` · `sessionQuery` · `tools` · `userQuestions` · `workspaceRegistry`
 
 ```ts config-catalog
 /** Gateway plugin configuration. */
@@ -3149,3 +3149,5 @@ Imported as libraries by other packages; a `cordis.yml` cannot load them.
 - `@deepseek-ai/dsh-typert-generator` ([`packages/typert/generator/src/index.ts`](../packages/typert/generator/src/index.ts))
 - `@deepseek-ai/dsh-typert-protocol` ([`packages/typert/protocol/src/index.ts`](../packages/typert/protocol/src/index.ts))
 - `@deepseek-ai/dsh-typert-registry` ([`packages/typert/registry/src/index.ts`](../packages/typert/registry/src/index.ts))
+- `@xagent/dsh-business` ([`packages/bundle/xagent-business/src/index.ts`](../packages/bundle/xagent-business/src/index.ts))
+- `@xagent/dsh-developer` ([`packages/bundle/xagent-developer/src/index.ts`](../packages/bundle/xagent-developer/src/index.ts))

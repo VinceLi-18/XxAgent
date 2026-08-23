@@ -44,6 +44,7 @@ describe('sidebar shell snapshots', () => {
     const slot = runtime.renderSlot('sidebar', { collapsed: false, width: 300 })
     // Wordmark + capsule both start a session in the expanded state.
     expect(slot.view.getAllByRole('button', { name: '新建会话' })).toHaveLength(2)
+    expect(slot.view.getByText('XAgent')).not.toBeNull()
     expect(slot.container).toMatchSnapshot()
     await runtime.dispose()
   })

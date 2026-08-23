@@ -14,8 +14,9 @@ export const name = 'xagent-business-invariant'
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: this package contributes only a declarative deny-list
- * patch, whose complete observable contract is exercised by its closure test.
+ * No runtime invariant: this package declaratively isolates local state and
+ * denies prohibited capabilities, whose complete observable contract is
+ * exercised by its closure test.
  */
 const install: InvariantInstaller = () => {}
 

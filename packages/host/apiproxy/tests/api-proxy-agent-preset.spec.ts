@@ -171,6 +171,144 @@ describe('session.create with an agent preset', () => {
     expect(response.result.error.code).toBe('agent-preset-not-found')
   })
 
+  it('rejects a requested preset before publishing when no roster is composed', async () => {
+    const { api, ctx } = await harness()
+    const sessionId = SessionId('s3-no-roster')
+
+    const response = await api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    expect(ctx.sessions.get(sessionId)).toBeUndefined()
+    expect(response.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+  })
+
+  it('classifies an attached subagent session before a no-roster preset request', async () => {
+    const { api, ctx, cwd } = await harness()
+    const sessionId = SessionId('s3-no-roster-subagent')
+    ctx.sessions.create(sessionId, { meta: { cwd, origin: 'subagent' } })
+
+    const response = await api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    expect(response.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-busy',
+        message: `session "${sessionId}" is owned by subagent routing`,
+        details: { reason: 'use subagent delivery for this child session' },
+      },
+    })
+  })
+
+  it('does not share a pending no-roster refusal with a valid concurrent create', async () => {
+    const firstListEntered = Promise.withResolvers<undefined>()
+    const releaseFirstList = Promise.withResolvers<undefined>()
+    let listCalls = 0
+    const persistence = {
+      async list() {
+        listCalls++
+        if (listCalls === 1) {
+          firstListEntered.resolve(undefined)
+          await releaseFirstList.promise
+        }
+        return []
+      },
+    }
+    const { api, ctx } = await harness(undefined, persistence)
+    const sessionId = SessionId('s3-no-roster-concurrent')
+
+    const refused = api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+    await firstListEntered.promise
+    const accepted = api.sessions.create(request({ sessionId }))
+    releaseFirstList.resolve(undefined)
+    const [refusedResponse, acceptedResponse] = await Promise.all([refused, accepted])
+
+    expect(refusedResponse.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+    expect(acceptedResponse.result).toEqual({ ok: true, value: { sessionId } })
+    expect(ctx.agents.get(sessionId)).toBeDefined()
+    expect(ctx.sessions.get(sessionId)).toBeDefined()
+  })
+
+  it('does not publish when a stored identity disappears between no-roster checks', async () => {
+    const sessionId = SessionId('s3-no-roster-disappeared')
+    let listCalls = 0
+    const persistence = {
+      list() {
+        listCalls++
+        return Promise.resolve(listCalls === 1
+          ? [{ id: sessionId, version: 0, createdAt: 0, cwd: '/stored' }]
+          : [])
+      },
+    }
+    const { api, ctx } = await harness(undefined, persistence)
+
+    const response = await api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    expect(ctx.sessions.get(sessionId)).toBeUndefined()
+    expect(response.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+  })
+
+  it('lets a valid concurrent create retry when a stored identity disappears', async () => {
+    const secondListEntered = Promise.withResolvers<undefined>()
+    const releaseSecondList = Promise.withResolvers<undefined>()
+    const sessionId = SessionId('s3-no-roster-disappeared-concurrent')
+    let listCalls = 0
+    const persistence = {
+      async list() {
+        listCalls++
+        if (listCalls === 1) {
+          return [{ id: sessionId, version: 0, createdAt: 0, cwd: '/stored' }]
+        }
+        if (listCalls === 2) {
+          secondListEntered.resolve(undefined)
+          await releaseSecondList.promise
+        }
+        return []
+      },
+    }
+    const { api, ctx } = await harness(undefined, persistence)
+
+    const refused = api.sessions.create(request({ sessionId, agentPreset: 'local' }))
+    await secondListEntered.promise
+    const accepted = api.sessions.create(request({ sessionId }))
+    releaseSecondList.resolve(undefined)
+    const [refusedResponse, acceptedResponse] = await Promise.all([refused, accepted])
+
+    expect(refusedResponse.result).toEqual({
+      ok: false,
+      error: {
+        code: 'agent-preset-not-found',
+        message: 'this deployment composes no agent presets',
+        details: { agentPreset: 'local', available: [] },
+      },
+    })
+    expect(acceptedResponse.result).toEqual({ ok: true, value: { sessionId } })
+    expect(ctx.agents.get(sessionId)).toBeDefined()
+    expect(ctx.sessions.get(sessionId)).toBeDefined()
+  })
+
   it('refuses to adopt a live session under a different preset', async () => {
     const { api } = await harness(['standard', 'minimal'])
     await api.sessions.create(request({ sessionId: SessionId('s4'), agentPreset: 'minimal' }))
@@ -234,7 +372,13 @@ describe('session.create with an agent preset', () => {
     // any is a conflict rather than an adoption — the history was produced
     // under a composition this roster cannot name. The message has to say
     // that, because "already runs agent preset undefined" reads as a bug.
-    const { api } = await harness()
+    let listCalls = 0
+    const { api } = await harness(undefined, {
+      list() {
+        listCalls++
+        return Promise.resolve([])
+      },
+    })
     await api.sessions.create(request({ sessionId: SessionId('s7') }))
 
     const response = await api.sessions.create(request({ sessionId: SessionId('s7'), agentPreset: 'standard' }))
@@ -248,6 +392,7 @@ describe('session.create with an agent preset', () => {
       requestedPreset: 'standard',
       existingPreset: undefined,
     })
+    expect(listCalls).toBe(1)
   })
 })
 

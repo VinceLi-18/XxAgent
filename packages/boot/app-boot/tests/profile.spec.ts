@@ -17,6 +17,7 @@ import {
   PROFILE_TEMPLATES,
   readProfileManifest,
   resolveBundleDir,
+  resolveProfileDataDir,
   resolveProfileDir,
   writeProfileManifest,
 } from '../src/index.ts'
@@ -52,6 +53,20 @@ describe('resolveProfileDir', () => {
     for (const bad of ['', '.', '..', 'a/b', 'a\\b']) {
       expect(() => resolveProfileDir(bad, home)).toThrow('invalid profile name')
     }
+  })
+})
+
+describe('resolveProfileDataDir', () => {
+  it('为 XAgent 模板解析 Profile 专属数据目录', () => {
+    const home = tmp()
+    expect(resolveProfileDataDir('xagent-business', home))
+      .toBe(join(home, 'profiles', 'xagent-business', 'data'))
+    expect(PROFILE_TEMPLATES['xagent-business']).toEqual([
+      '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@xagent/dsh-business',
+    ])
+    expect(PROFILE_TEMPLATES['xagent-developer']).toEqual([
+      '@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@xagent/dsh-developer',
+    ])
   })
 })
 

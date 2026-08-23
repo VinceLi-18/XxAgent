@@ -263,6 +263,13 @@ describe('Hero chrome', () => {
     expect(view.getByText('Into the Unknown')).toBeTruthy()
     expect(view.getByText('Preview')).toBeTruthy()
   })
+
+  it('keeps the X mark within the headline line height', () => {
+    const view = render(<HeroShell t={makeTranslate(en, commonEn)} />)
+    const mark = view.container.querySelector('svg[aria-hidden="true"]')!
+    expect(mark.getAttribute('width')).toBe('24')
+    expect(mark.getAttribute('height')).toBe('24')
+  })
 })
 
 describe('ConversationRoot resident composer', () => {

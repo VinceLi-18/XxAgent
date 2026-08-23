@@ -63,10 +63,12 @@ function mount(version?: string, mutateImpl: () => Promise<unknown> = () => Prom
 describe('WelcomeNotice', () => {
   it('uses the exact owner copy in both GUI locales', () => {
     expect(WELCOME_NOTICE_COPY.en).toEqual({
-      title: 'Internal Testing Notice',
-      body: "DeepSeek Harness 0.1 remains in testing for Harness developers. Many areas need further improvement, and we welcome feedback from the developer community. DeepSeek Harness's core plugins and foundational APIs will continue to evolve rapidly over the coming months.\n\nWe look forward to exploring the limits of intelligence with developers around the world, building on open-source, open, reusable, and composable infrastructure. We welcome Harness developers everywhere to join the DSH plugin ecosystem.",
+      title: 'XAgent',
+      body: 'XAgent organizes project context, resources, and collaborative tasks. Configure a model to start a new session.',
       continueLabel: 'Continue',
     })
+    expect(WELCOME_NOTICE_COPY.zh.body).toContain('XAgent')
+    expect(WELCOME_NOTICE_COPY.zh.body).toContain('项目上下文')
     expect(en.welcomeBody).toBe(WELCOME_NOTICE_COPY.en.body)
     expect(zh.welcomeBody).toBe(WELCOME_NOTICE_COPY.zh.body)
   })
@@ -77,7 +79,7 @@ describe('WelcomeNotice', () => {
     for (const paragraph of WELCOME_NOTICE_COPY.zh.body.split('\n\n')) {
       expect(screen.getByText(paragraph, { exact: true })).toBeTruthy()
     }
-    expect(dialog.querySelectorAll('p')).toHaveLength(2)
+    expect(dialog.querySelectorAll('p')).toHaveLength(WELCOME_NOTICE_COPY.zh.body.split('\n\n').length)
     expect(dialog.querySelectorAll('button')).toHaveLength(1)
     expect(screen.getByRole('button', { name: WELCOME_NOTICE_COPY.zh.continueLabel })).toBeTruthy()
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: WELCOME_NOTICE_COPY.zh.title }))
@@ -103,6 +105,13 @@ describe('WelcomeNotice', () => {
     await act(async () => { await h.controller.load() })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(h.complete).toHaveBeenCalledOnce()
+  })
+
+  it('shows the XAgent welcome notice after the prior testing notice was acknowledged', async () => {
+    const h = mount('2026-08-13.1')
+    await act(async () => { await h.controller.load() })
+    expect(await screen.findByRole('dialog', { name: 'XAgent' })).toBeTruthy()
+    expect(h.complete).not.toHaveBeenCalled()
   })
 
   it('keeps the sole action disabled while saving and reports a refused write', async () => {
