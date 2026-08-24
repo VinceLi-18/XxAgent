@@ -22,6 +22,7 @@ def _application_role() -> str:
 
 
 def upgrade() -> None:
+    op.execute("CREATE UNIQUE INDEX ux_accounts_email_casefold ON accounts (lower(email))")
     op.create_table(
         "xagent_account_credentials",
         sa.Column("account_id", sa.UUID(), nullable=False),
@@ -169,3 +170,4 @@ def downgrade() -> None:
     op.drop_index("ix_xagent_auth_sessions_account_id", table_name="xagent_auth_sessions")
     op.drop_table("xagent_auth_sessions")
     op.drop_table("xagent_account_credentials")
+    op.execute("DROP INDEX ux_accounts_email_casefold")

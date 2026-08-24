@@ -106,6 +106,20 @@ async def test_auth_session_rejects_non_future_expiry(seeded_database, alice) ->
 
 
 @pytest.mark.anyio
+async def test_account_email_is_unique_without_case_distinction(seeded_database) -> None:
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        with pytest.raises(IntegrityError):
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "INSERT INTO accounts (id, email, role, is_active) "
+                        "VALUES (:id, 'ALICE@example.test', 'specialist', true)"
+                    ),
+                    {"id": uuid4()},
+                )
+
+
+@pytest.mark.anyio
 async def test_permission_revision_tracks_account_role_and_status_changes(
     seeded_database,
     alice,

@@ -38,6 +38,32 @@ docker compose up -d --build
 
 `.env` 包含秘密，已被 Git 忽略，不得提交。`migrate` 使用管理员数据库连接完成迁移后，API 和 worker 只使用最低权限应用角色。API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
 
+## 账号管理
+
+账号管理命令只连接管理员数据库，不通过公开 HTTP API 创建账号。创建账号时只写身份与角色：
+
+```bash
+uv run --python 3.11 --project services/api xagent-api account create \
+  --email alice@example.com \
+  --role specialist
+```
+
+设置或重置密码时，命令从终端安全提示或非交互 stdin 连续读取两次密码，不接受明文密码参数。密码更新会撤销该账号的全部既有登录：
+
+```bash
+uv run --python 3.11 --project services/api xagent-api account set-password \
+  --email alice@example.com
+```
+
+停用账号会同时撤销既有登录并推进权限版本：
+
+```bash
+uv run --python 3.11 --project services/api xagent-api account deactivate \
+  --email alice@example.com
+```
+
+命令不会输出明文密码或密码哈希。`DATABASE_ADMIN_URL` 必须指向受控的管理连接；普通 API 连接仍使用最低权限的 `DATABASE_URL`。
+
 `.dockerignore` 会阻止 `.env`、本地虚拟环境、测试缓存和构建产物进入 Docker 构建上下文。
 
 ClamAV 官方 `1.4.3_base` 镜像只提供 `linux/amd64`。Apple Silicon 本地环境需要 Docker 已启用 amd64 模拟；PostgreSQL、Redis、MinIO 和 XAgent API 仍使用宿主原生架构。
