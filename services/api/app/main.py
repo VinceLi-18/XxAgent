@@ -4,6 +4,7 @@ from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.internal_auth import router as internal_auth_router
+from app.api.routes.internal_sessions import router as internal_sessions_router
 from app.api.routes.projects import router as projects_router
 from app.core.config import settings
 from app.core.security import Actor, get_current_actor
@@ -14,6 +15,7 @@ app.include_router(artifacts_router, prefix=settings.API_V1_STR)
 app.include_router(projects_router, prefix=settings.API_V1_STR)
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(internal_auth_router)
+app.include_router(internal_sessions_router)
 
 
 @app.get(f"{settings.API_V1_STR}/health")
