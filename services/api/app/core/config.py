@@ -10,13 +10,15 @@ class Settings(BaseSettings):
     )
 
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "JiaxinAgent"
+    PROJECT_NAME: str = "XAgent"
     DATABASE_URL: str
     DATABASE_ADMIN_URL: str | None = None
     POSTGRES_APP_USER: str
     JWT_SECRET_KEY: str
     JWT_ISSUER: str
     JWT_AUDIENCE: str
+    XAGENT_SERVICE_TOKEN: str = Field(min_length=32)
+    XAGENT_AUTH_SESSION_HOURS: int = Field(default=8, ge=1, le=24)
     MINIO_ENDPOINT: str
     MINIO_PUBLIC_ENDPOINT: str
     MINIO_ACCESS_KEY: str

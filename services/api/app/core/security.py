@@ -12,7 +12,7 @@ from app.core.db import get_session
 from app.models.identity import Account, Role
 
 bearer_scheme = HTTPBearer(auto_error=False)
-SESSION_COOKIE_NAME = "jiaxin_agent_session"
+SESSION_COOKIE_NAME = "xagent_session"
 
 
 class Actor(BaseModel):

@@ -1,7 +1,9 @@
 from fastapi import Depends, FastAPI
 
 from app.api.routes.artifacts import router as artifacts_router
+from app.api.routes.auth import router as auth_router
 from app.api.routes.conversations import router as conversations_router
+from app.api.routes.internal_auth import router as internal_auth_router
 from app.api.routes.projects import router as projects_router
 from app.core.config import settings
 from app.core.security import Actor, get_current_actor
@@ -10,6 +12,8 @@ app = FastAPI(title=settings.PROJECT_NAME)
 app.include_router(conversations_router, prefix=settings.API_V1_STR)
 app.include_router(artifacts_router, prefix=settings.API_V1_STR)
 app.include_router(projects_router, prefix=settings.API_V1_STR)
+app.include_router(auth_router, prefix=settings.API_V1_STR)
+app.include_router(internal_auth_router)
 
 
 @app.get(f"{settings.API_V1_STR}/health")

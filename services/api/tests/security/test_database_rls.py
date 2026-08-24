@@ -25,7 +25,7 @@ def test_compose_uses_dedicated_non_superuser_application_credentials():
     environment_example = (_api_root() / ".env.example").read_text()
     compose_configuration = (_api_root() / "compose.yml").read_text()
 
-    assert "POSTGRES_APP_USER=jiaxin_app" in environment_example
+    assert "POSTGRES_APP_USER=xagent_app" in environment_example
     assert "POSTGRES_APP_PASSWORD=" in environment_example
     assert (
         "DATABASE_URL=postgresql+asyncpg://${POSTGRES_APP_USER}:${POSTGRES_APP_PASSWORD}"

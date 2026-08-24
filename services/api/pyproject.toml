@@ -1,10 +1,11 @@
 [project]
-name = "jiaxin-agent-api"
+name = "xagent-api"
 version = "0.1.0"
-description = "JiaxinAgent API"
+description = "XAgent API"
 requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.13,<2.0",
+    "argon2-cffi>=25.1,<26.0",
     "asyncpg>=0.29,<1.0",
     "fastapi>=0.115,<1.0",
     "clamd>=1.0,<2.0",

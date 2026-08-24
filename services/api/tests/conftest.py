@@ -21,11 +21,12 @@ os.environ.update(
     {
         "DATABASE_URL": _test_database_url,
         "DATABASE_ADMIN_URL": _test_database_url,
-        "POSTGRES_APP_USER": "jiaxin_task2_test_app",
+        "POSTGRES_APP_USER": "xagent_api_test_app",
         "POSTGRES_APP_PASSWORD": "jiaxin-task2-test-app-password",
         "JWT_SECRET_KEY": "test-signing-key-not-for-production",
-        "JWT_ISSUER": "jiaxin-agent-tests",
+        "JWT_ISSUER": "xagent-tests",
         "JWT_AUDIENCE": "jiaxin-agent-api-tests",
+        "XAGENT_SERVICE_TOKEN": "xagent-test-service-token-00000001",
         "MINIO_ENDPOINT": "minio.test:9000",
         "MINIO_PUBLIC_ENDPOINT": "storage.test:9000",
         "MINIO_ACCESS_KEY": "test-minio-access-key",
@@ -36,7 +37,7 @@ os.environ.update(
     }
 )
 
-from app.core.db import SessionLocal, engine as app_engine
+from app.core.db import SessionLocal, admin_engine, engine as app_engine
 from app.main import app
 
 
@@ -156,6 +157,7 @@ async def client(seeded_database: AsyncEngine) -> AsyncClient:
             yield test_client
     finally:
         await app_engine.dispose()
+        await admin_engine.dispose()
 
 
 @pytest.fixture

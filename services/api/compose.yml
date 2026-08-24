@@ -5,10 +5,12 @@ services:
     image: xagent-api:local
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}
       POSTGRES_APP_USER: ${POSTGRES_APP_USER}
       JWT_SECRET_KEY: "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env to a high-entropy value}"
       JWT_ISSUER: "${JWT_ISSUER:?Set JWT_ISSUER in .env}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:?Set JWT_AUDIENCE in .env}"
+      XAGENT_SERVICE_TOKEN: "${XAGENT_SERVICE_TOKEN:?Set XAGENT_SERVICE_TOKEN in .env to a high-entropy value}"
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
