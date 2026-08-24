@@ -152,7 +152,12 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     const method = sessionMethod(endpoint)
     const values = args(payload)
     const permission = sessionPermission(endpoint, values)
-    if (method === undefined && permission === undefined) return operation()
+    if (method === undefined && permission === undefined) {
+      if (endpoint.startsWith('workspace/') || endpoint.startsWith('workspace.')) {
+        return unauthenticated()
+      }
+      return operation()
+    }
     if (!authenticated(request)) return unauthenticated()
     if (permission === undefined) return unauthenticated()
     try {
@@ -239,11 +244,11 @@ function objectFrame(value: unknown): Record<string, unknown> | undefined {
 
 /** Cordis 服务包装；服务键由通用 API Gateway 以可选结构读取。 */
 export class XAgentAuthorizationService extends Service implements ConnectionRequestAuthorizer {
-  private readonly authorization: XAgentAuthorization
+  private readonly implementation: XAgentAuthorization
 
   constructor(ctx: Context, backend: XAgentBackend, persistence: TokenScopedPersistence) {
     super(ctx, 'connectionRequestAuthorizer')
-    this.authorization = new XAgentAuthorization(backend, persistence)
+    this.implementation = new XAgentAuthorization(backend, persistence)
   }
 
   run<T>(
@@ -253,7 +258,7 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     signal: AbortSignal,
     operation: () => Promise<RpcResult<T>>,
   ): Promise<RpcResult<T>> {
-    return this.authorization.run(endpoint, payload, request, signal, operation)
+    return this.implementation.run(endpoint, payload, request, signal, operation)
   }
 
   filterEvent(
@@ -262,7 +267,7 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     request: ConnectionRequestContext,
     signal: AbortSignal,
   ): Promise<unknown> {
-    return this.authorization.filterEvent(endpoint, frame, request, signal)
+    return this.implementation.filterEvent(endpoint, frame, request, signal)
   }
 }
 
@@ -278,5 +283,3 @@ export function apply(ctx: Context, config: Config): void {
     persistence as TokenScopedPersistence,
   )
 }
-
-export default XAgentAuthorizationService

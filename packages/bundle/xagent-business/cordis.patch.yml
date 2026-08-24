@@ -66,8 +66,6 @@
   disabled: true
 - id: ui-agent-preset
   disabled: true
-- id: workspace
-  disabled: true
 - id: ui-workspace
   disabled: true
 

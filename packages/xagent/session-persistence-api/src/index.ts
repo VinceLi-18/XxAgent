@@ -299,6 +299,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return headers
   }
 
+  /** Process-global Workspace bootstrap must not enumerate a user-scoped store. */
+  override listForBootstrap(signal?: AbortSignal): Promise<SessionHeader[]> {
+    signal?.throwIfAborted()
+    return Promise.resolve([])
+  }
+
   async listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]> {
     signal?.throwIfAborted()
     const token = this.requireActiveToken()
@@ -434,5 +440,3 @@ export function apply(ctx: Context, config: Config): void {
     connectionId: randomUUID,
   }))
 }
-
-export default XAgentSessionPersistence

@@ -1,9 +1,15 @@
 import type { ConnectionRequestContext } from '@deepseek-ai/dsh-client-connection'
+import { Context } from '@deepseek-ai/cordis'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { XAgentBackend, XAgentSessionBackend } from '@xagent/dsh-backend-client'
 import { XAgentBackendError } from '@xagent/dsh-backend-client'
 import { describe, expect, test, vi } from 'vitest'
-import { XAgentAuthorization, type TokenScopedPersistence } from '../src/index.ts'
+import * as authorizationModule from '../src/index.ts'
+import {
+  XAgentAuthorization,
+  XAgentAuthorizationService,
+  type TokenScopedPersistence,
+} from '../src/index.ts'
 
 const context: ConnectionRequestContext = {
   principal: {
@@ -40,6 +46,35 @@ function persistence(onToken?: (token: string) => void): TokenScopedPersistence 
 const success = async (): Promise<RpcResult<string>> => ({ ok: true, value: 'ok' })
 
 describe('XAgent Session 授权', () => {
+  test('模块插件入口只暴露带配置的安装函数', () => {
+    expect('default' in authorizationModule).toBe(false)
+    expect(typeof authorizationModule.apply).toBe('function')
+  })
+
+  test('Cordis 服务代理保留授权器依赖与方法 this', async () => {
+    const scopedTokens: string[] = []
+    const ctx = new Context()
+    new XAgentAuthorizationService(ctx, backend(), persistence(token => scopedTokens.push(token)))
+
+    const result = new Promise<RpcResult<string>>((resolve) => {
+      void ctx.plugin({
+        inject: ['connectionRequestAuthorizer'],
+        apply(consumer) {
+          void consumer.connectionRequestAuthorizer.run(
+            'session/list',
+            { args: {} },
+            context,
+            new AbortController().signal,
+            success,
+          ).then(resolve)
+        },
+      })
+    })
+
+    await expect(result).resolves.toEqual({ ok: true, value: 'ok' })
+    expect(scopedTokens).toEqual(['alice-token'])
+  })
+
   test('缺少可信 Principal 或用户令牌时不调用业务方法', async () => {
     const operation = vi.fn(success)
     const auth = new XAgentAuthorization(backend(), persistence())
@@ -189,6 +224,25 @@ describe('XAgent Session 授权', () => {
       type: 'host/archived-sessions-changed',
       archivedSessionIds: ['session-00000000-0000-0000-0000-000000000701'],
     })
+  })
+
+  test('项目 UI 延后时拒绝访问内部 Workspace registry', async () => {
+    const operation = vi.fn(success)
+    const auth = new XAgentAuthorization(backend(), persistence())
+
+    const result = await auth.run(
+      'workspace/list',
+      { args: {} },
+      context,
+      new AbortController().signal,
+      operation,
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: 'unauthenticated', message: 'authentication required', details: {} },
+    })
+    expect(operation).not.toHaveBeenCalled()
   })
 
   test('匿名连接收不到实时事件', async () => {

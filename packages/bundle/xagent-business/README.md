@@ -4,7 +4,7 @@
 
 业务会话采用 rosterless 组合：本包禁用 `agent-presets` 及其浏览器入口，不暴露随安装提供的 `standard`、`code`、`cordis` 等 Preset，也不扫描 `$DSH_HOME/.agent-presets`。会话直接使用宿主的基础模型对话装配，模型工具目录与文件型 Skill 目录保持为空。
 
-它不包含 Web 应用层；与 Web 应用层组合时，认证桥、统一授权和远端 Session Persistence 共同把 FastAPI／PostgreSQL 作为业务会话唯一数据源。FastAPI 地址、Host 服务身份和允许来源必须由部署环境显式提供，缺少配置时 Profile 加载失败。本地 Workspace 及其浏览器入口保持关闭，业务工具、业务项目、资料、审批和受治理 Skill 不在本组合中提供。
+它不包含 Web 应用层；与 Web 应用层组合时，认证桥、统一授权和远端 Session Persistence 共同把 FastAPI／PostgreSQL 作为业务会话唯一数据源。FastAPI 地址、Host 服务身份和允许来源必须由部署环境显式提供，缺少配置时 Profile 加载失败。通用 API Gateway 启动所需的内部 Workspace registry 仍在 Host 内运行，但浏览器入口关闭且 Workspace RPC 由 Business 授权层拒绝；业务工具、业务项目、资料、审批和受治理 Skill 不在本组合中提供。
 
 ## Model Experience
 

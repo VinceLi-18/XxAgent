@@ -60,7 +60,6 @@ const prohibitedRows = [
 const disabledHostRows = ['permission', 'ui-permission'] as const
 
 const disabledPresetRows = ['agent-presets', 'ui-agent-preset'] as const
-const deferredProjectRows = ['workspace', 'ui-workspace'] as const
 
 function loadPatch(path: string): EntryPatch[] {
   const parsed = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
@@ -135,12 +134,13 @@ describe('xagent business bundle', () => {
     }
   })
 
-  it('keeps the local project surface disabled until the remote project adapter is composed', () => {
+  it('keeps the project surface disabled while retaining the private Host registry dependency', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const business = loadPatch(resolve(root, 'cordis.patch.yml'))
     const rows = new Map(business.map(row => [row.id, row]))
 
-    for (const id of deferredProjectRows) expect(rows.get(id)).toMatchObject({ id, disabled: true })
+    expect(rows.get('ui-workspace')).toMatchObject({ id: 'ui-workspace', disabled: true })
+    expect(rows.has('workspace')).toBe(false)
   })
 
   it('anchors every local state provider to the current Profile data directory', () => {

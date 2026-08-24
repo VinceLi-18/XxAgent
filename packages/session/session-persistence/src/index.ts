@@ -194,6 +194,16 @@ export abstract class SessionPersistence extends Service {
   abstract load(id: SessionId): Promise<SessionInspection>
 
   /**
+   * List headers that a process-global index may consume before any request
+   * identity exists. User-scoped remote backends override this with an empty
+   * list so service bootstrap cannot enumerate one tenant or require a token.
+   * Request paths must continue to use {@link list}.
+   */
+  listForBootstrap(signal?: AbortSignal): Promise<SessionHeader[]> {
+    return this.list(signal)
+  }
+
+  /**
    * Inspect an immutable logical session without committing recovery or
    * publishing it. A cold complete interrupted turn receives synthetic closers
    * in memory and a torn physical tail remains untouched. An already-live

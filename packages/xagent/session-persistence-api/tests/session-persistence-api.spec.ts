@@ -2,7 +2,10 @@ import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import type { XAgentBackend } from '@xagent/dsh-backend-client'
 import { describe, expect, test, vi } from 'vitest'
-import { XAgentSessionPersistence } from '../src/index.ts'
+import * as persistenceModule from '../src/index.ts'
+import {
+  XAgentSessionPersistence,
+} from '../src/index.ts'
 
 const id = SessionId('session-00000000-0000-0000-0000-000000000701')
 const header: SessionHeader = {
@@ -58,6 +61,19 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
 }
 
 describe('XAgent FastAPI Session Persistence', () => {
+  test('模块插件入口只暴露带配置的安装函数', () => {
+    expect('default' in persistenceModule).toBe(false)
+    expect(typeof persistenceModule.apply).toBe('function')
+  })
+
+  test('进程启动索引不枚举任何用户会话', async () => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.listForBootstrap()).resolves.toEqual([])
+    expect(value.calls).toEqual([])
+  })
+
   test('首次发布把 Header 和 seed 作为一个远端创建请求提交', async () => {
     const value = backend()
     const persistence = new XAgentSessionPersistence(new Context(), value)
