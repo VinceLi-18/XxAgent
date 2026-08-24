@@ -1228,24 +1228,6 @@ importers:
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
 
-  packages/bundle/xagent-business:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:^
-        version: link:../../../vendor/cordis
-      '@deepseek-ai/dsh-invariants':
-        specifier: workspace:^
-        version: link:../../runtime-diagnostics/invariants
-
-  packages/bundle/xagent-developer:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: workspace:^
-        version: link:../../../vendor/cordis
-      '@deepseek-ai/dsh-invariants':
-        specifier: workspace:^
-        version: link:../../runtime-diagnostics/invariants
-
   packages/bundle/headless:
     dependencies:
       '@deepseek-ai/dsh-cmdline':
@@ -1478,6 +1460,40 @@ importers:
       '@deepseek-ai/dsh-system-prompt':
         specifier: workspace:^
         version: link:../../core/system-prompt
+
+  packages/bundle/xagent-business:
+    dependencies:
+      '@xagent/dsh-authorization':
+        specifier: workspace:^
+        version: link:../../xagent/authorization
+      '@xagent/dsh-backend-client':
+        specifier: workspace:^
+        version: link:../../xagent/backend-client
+      '@xagent/dsh-connection-auth':
+        specifier: workspace:^
+        version: link:../../xagent/connection-auth
+      '@xagent/dsh-principal':
+        specifier: workspace:^
+        version: link:../../xagent/principal
+      '@xagent/dsh-session-persistence-api':
+        specifier: workspace:^
+        version: link:../../xagent/session-persistence-api
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+
+  packages/bundle/xagent-developer:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
 
   packages/client/connection:
     dependencies:
@@ -8338,6 +8354,31 @@ importers:
         specifier: workspace:^
         version: link:../../storage/storage-domain
 
+  packages/xagent/authorization:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-client-connection':
+        specifier: workspace:^
+        version: link:../../client/connection
+      '@deepseek-ai/dsh-host-apiproxy':
+        specifier: workspace:^
+        version: link:../../host/apiproxy
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session-persistence':
+        specifier: workspace:^
+        version: link:../../session/session-persistence
+      '@xagent/dsh-backend-client':
+        specifier: workspace:^
+        version: link:../backend-client
+
   packages/xagent/backend-client:
     devDependencies:
       '@deepseek-ai/cordis':
@@ -8389,6 +8430,28 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
+
+  packages/xagent/session-persistence-api:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+      '@deepseek-ai/dsh-session-persistence':
+        specifier: workspace:^
+        version: link:../../session/session-persistence
+      '@xagent/dsh-backend-client':
+        specifier: workspace:^
+        version: link:../backend-client
 
   python/sdk-runtime:
     dependencies:

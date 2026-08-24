@@ -91,7 +91,15 @@ export class XAgentBackendClient implements XAgentBackend {
   readonly sessions: XAgentSessionBackend
 
   constructor(private readonly options: XAgentBackendClientOptions) {
-    const origin = new URL(options.origin)
+    let origin: URL
+    try {
+      origin = new URL(options.origin)
+    } catch {
+      throw new TypeError('invalid XAgent backend configuration')
+    }
+    if ((origin.protocol !== 'http:' && origin.protocol !== 'https:') || options.serviceToken.length === 0) {
+      throw new TypeError('invalid XAgent backend configuration')
+    }
     this.origin = new URL(origin.origin)
     this.fetcher = options.fetch ?? globalThis.fetch
     this.timeoutMs = options.timeoutMs ?? 5_000

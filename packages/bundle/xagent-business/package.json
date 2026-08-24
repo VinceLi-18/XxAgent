@@ -31,6 +31,13 @@
     "lib/types/**/*.d.ts"
   ],
   "license": "MIT",
+  "dependencies": {
+    "@xagent/dsh-authorization": "workspace:^",
+    "@xagent/dsh-backend-client": "workspace:^",
+    "@xagent/dsh-connection-auth": "workspace:^",
+    "@xagent/dsh-principal": "workspace:^",
+    "@xagent/dsh-session-persistence-api": "workspace:^"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

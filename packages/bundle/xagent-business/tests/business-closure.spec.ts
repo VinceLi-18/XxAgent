@@ -9,6 +9,7 @@ import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 
 interface PatchRow {
   id?: string
+  name?: string
   disabled?: boolean
   config?: Record<string, unknown>
 }
@@ -59,6 +60,7 @@ const prohibitedRows = [
 const disabledHostRows = ['permission', 'ui-permission'] as const
 
 const disabledPresetRows = ['agent-presets', 'ui-agent-preset'] as const
+const deferredProjectRows = ['workspace', 'ui-workspace'] as const
 
 function loadPatch(path: string): EntryPatch[] {
   const parsed = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
@@ -133,6 +135,14 @@ describe('xagent business bundle', () => {
     }
   })
 
+  it('keeps the local project surface disabled until the remote project adapter is composed', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const business = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(business.map(row => [row.id, row]))
+
+    for (const id of deferredProjectRows) expect(rows.get(id)).toMatchObject({ id, disabled: true })
+  })
+
   it('anchors every local state provider to the current Profile data directory', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
@@ -140,9 +150,37 @@ describe('xagent business bundle', () => {
     expect(readXagentStatePatches(patch)).toEqual({
       settings: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
       credentials: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
-      'session-persistence-jsonl': { root: { __jsExpr: "dshProfileDataPath('sessions')" } },
       'attachment-local': { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
       'storage-json': { root: { __jsExpr: "dshProfileDataPath('storages')" } },
+    })
+  })
+
+  it('replaces local Session persistence with the authenticated FastAPI stack', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(patch.flatMap(row => row.insert ?? [row]).map(row => [row.id, row]))
+
+    expect(rows.get('session-persistence-jsonl')).toMatchObject({ disabled: true })
+    expect(rows.get('xagent-session-persistence-api')).toMatchObject({
+      name: '@xagent/dsh-session-persistence-api',
+    })
+    expect(rows.get('xagent-connection-auth')).toMatchObject({ name: '@xagent/dsh-connection-auth' })
+    expect(rows.get('xagent-authorization')).toMatchObject({ name: '@xagent/dsh-authorization' })
+    expect(JSON.stringify(patch)).not.toContain("dshProfileDataPath('sessions')")
+  })
+
+  it('declares every XAgent runtime package as a bundle dependency', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+    }
+
+    expect(manifest.dependencies).toMatchObject({
+      '@xagent/dsh-authorization': 'workspace:^',
+      '@xagent/dsh-backend-client': 'workspace:^',
+      '@xagent/dsh-connection-auth': 'workspace:^',
+      '@xagent/dsh-principal': 'workspace:^',
+      '@xagent/dsh-session-persistence-api': 'workspace:^',
     })
   })
 })

@@ -69,5 +69,11 @@ describe('xagent developer bundle', () => {
       'attachment-local': { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
       'storage-json': { root: { __jsExpr: "dshProfileDataPath('storages')" } },
     })
+    const serialized = JSON.stringify(patch)
+    expect(serialized).not.toContain('@xagent/dsh-connection-auth')
+    expect(serialized).not.toContain('@xagent/dsh-authorization')
+    expect(serialized).not.toContain('@xagent/dsh-session-persistence-api')
+    expect(serialized).not.toContain('XAGENT_API_ORIGIN')
+    expect(serialized).not.toContain('XAGENT_SERVICE_TOKEN')
   })
 })

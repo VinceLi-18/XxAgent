@@ -9,6 +9,15 @@ const principal = {
 }
 
 describe('XAgent 后端客户端', () => {
+  test('缺少 FastAPI origin 或 Host 服务身份时构造立即失败', () => {
+    expect(() => new XAgentBackendClient({ origin: '', serviceToken: 'service-secret' }))
+      .toThrow('invalid XAgent backend configuration')
+    expect(() => new XAgentBackendClient({ origin: 'https://api.example.test', serviceToken: '' }))
+      .toThrow('invalid XAgent backend configuration')
+    expect(() => new XAgentBackendClient({ origin: 'file:///tmp/api', serviceToken: 'service-secret' }))
+      .toThrow('invalid XAgent backend configuration')
+  })
+
   test('公开登录不发送 Host 服务身份并严格解析令牌响应', async () => {
     const fetcher = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json({
       access_token: 'user-token',
