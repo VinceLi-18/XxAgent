@@ -48,6 +48,12 @@ TypeScript 聚焦测试覆盖 Principal schema、后端响应上限与错误映�
 
 该验证同时经过浏览器侧 Host、连接认证、FastAPI introspection、授权服务、远端 Session Persistence、应用事务和 PostgreSQL RLS，不使用 mock 或静态页面替代。测试环境未提供模型 API key，因此没有伪造模型回合。
 
+## 真实 UI 证据
+
+提交 `7102f922521f53637b9b8d4e72a46acf9caa5378` 的构建版 FastAPI 与 `xagent-business` 使用回环 PostgreSQL 和全新 `DSH_HOME=/private/tmp/xagent-phase2b-gif-final-20260825/home` 启动。Playwright 在同一个浏览器上下文中连续记录中文登录页、填写状态、登录中状态和认证后 XAgent 主界面；账号由管理 CLI 临时创建，密码只以掩码显示。录制未使用 mock、静态页面或身份注入。
+
+GIF 位于忽略目录 `.playwright-mcp/xagent-phase2b-auth-isolation.gif`，未提交或发布。它由 4 张 1200×800 源帧编码为 85 帧、10 fps、8.5 秒、131,461 字节，SHA-256 为 `28931e1a0fda2c203ee542f3d4d3c8c142e55ced50b3083363c711507611634a`。源帧与编码结果均经过视觉检查，未包含密码明文、Cookie、JWT、服务身份或数据库内容。测试环境没有模型 API key，因此该 UI 证据不包含模型回合。
+
 ## 已知范围
 
 Phase 2B 提供真实多用户身份与私有 Session 隔离，但不交付项目区、第三栏项目详情、项目级 Artifact、审批工作流或生产部署拓扑；这些能力仍属于后续 Phase。Profile 本地目录不参与多用户授权，业务安全边界由 Principal、FastAPI 事务和 PostgreSQL RLS 共同建立。
