@@ -1,5 +1,6 @@
 /** Host registry and HTTP adapter for generic Connection RPC channels. */
 
+import { randomUUID } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import {
@@ -18,6 +19,8 @@ import type {
   ConnectionRpcEndpointMatcher,
   ConnectionRpcHandler,
   ConnectionRpcHandlerOptions,
+  ConnectionRequestContext,
+  ConnectionRequestContextResolver,
   HostConnectionHandle,
   HostConnectionRpc,
 } from './rpc.ts'
@@ -95,7 +98,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
   ): () => Promise<void> {
     assertChannel(channel)
     const trustedHosts = options.authority === 'loopback' ? [] : this.trustedHosts
-    const fetchHandler = rpcFetchHandler(channel, handler)
+    const fetchHandler = rpcFetchHandler(channel, handler, () => this.requestContextResolver())
     const route: WebRoute = {
       kind: 'prefix',
       path: channel,
@@ -126,7 +129,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
     }
     const interceptor: ConnectionRpcInterceptor = {
       matches,
-      fetchHandler: rpcFetchHandler(channel, handler),
+      fetchHandler: rpcFetchHandler(channel, handler, () => this.requestContextResolver()),
       options,
     }
     return owner.effect(() => {
@@ -139,11 +142,16 @@ export class HostConnectionService extends Service implements HostConnectionHand
       }
     }, `client-connection: ${channel} rpc interceptor`)
   }
+
+  private requestContextResolver(): ConnectionRequestContextResolver | undefined {
+    return this.ctx.get('connectionRequestContextResolver') as ConnectionRequestContextResolver | undefined
+  }
 }
 
 function rpcFetchHandler(
   channel: string,
   handler: ConnectionRpcHandler,
+  resolver: () => ConnectionRequestContextResolver | undefined,
 ): FetchHandler {
   return {
     async fetch(request: Request): Promise<Response> {
@@ -177,8 +185,24 @@ function rpcFetchHandler(
         })
       }
 
+      const connectionId = randomUUID()
+      let requestContext: ConnectionRequestContext = Object.freeze({ connectionId })
+      const activeResolver = resolver()
+      if (activeResolver !== undefined) {
+        try {
+          const resolved = await activeResolver.resolve(request, connectionId, request.signal)
+          requestContext = Object.freeze({
+            ...resolved.principal === undefined ? {} : { principal: resolved.principal },
+            ...resolved.userToken === undefined ? {} : { userToken: resolved.userToken },
+            connectionId,
+          })
+        } catch {
+          return new Response('unauthenticated', { status: 401 })
+        }
+      }
+
       try {
-        const result = await handler(endpoint, message.payload, request.signal)
+        const result = await handler(endpoint, message.payload, request.signal, requestContext)
         return fullResponse(message.rpcId, result)
       } catch (error) {
         return new Response(`handler failure: ${String(error)}`, { status: 500 })

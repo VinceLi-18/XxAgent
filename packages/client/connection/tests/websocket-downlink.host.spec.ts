@@ -76,6 +76,72 @@ async function acceptedSocket(downlinks: WebSocketDownlinks): Promise<WebSocket>
 }
 
 describe('WebSocket downlinks', () => {
+  it('authenticates each physical upgrade once and rejects before opening a stream', async () => {
+    const opened: string[] = []
+    const resolver = vi.fn(async (_request: Request, connectionId: string) => {
+      if (connectionId === '') throw new Error('missing connection id')
+      return { principal: { actorId: 'alice' }, userToken: 'secret' }
+    })
+    const downlinks = new WebSocketDownlinks(api(
+      async function * () { opened.push('mux') },
+      idle,
+    ), () => ({ resolve: resolver }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+
+    const first = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`, { headers: { cookie: 'xagent_session=one' } })
+    await once(first, 'close')
+    const second = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`, { headers: { cookie: 'xagent_session=two' } })
+    await once(second, 'close')
+
+    expect(resolver).toHaveBeenCalledTimes(2)
+    expect(opened).toEqual(['mux', 'mux'])
+  })
+
+  it('does not negotiate a WebSocket when authentication rejects', async () => {
+    const open = vi.fn<MuxSource>(() => idle<MuxFrame>(new AbortController().signal))
+    const downlinks = new WebSocketDownlinks(api(open, idle), () => ({
+      resolve: async () => { throw new Error('secret must not escape') },
+    }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`, { headers: { cookie: 'xagent_session=secret' } })
+    const [, response] = await once(socket, 'unexpected-response')
+    const status = (response as import('node:http').IncomingMessage).statusCode
+
+    expect(status).toBe(401)
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('closes an accepted stream when its authenticated lifetime expires', async () => {
+    const lifetime = new AbortController()
+    let sourceAborted = false
+    const downlinks = new WebSocketDownlinks(api(
+      async function * (signal) {
+        try {
+          await untilAbort(signal)
+        } finally {
+          sourceAborted = true
+        }
+      },
+      idle,
+    ), () => ({
+      resolve: async () => ({ lifetime: lifetime.signal }),
+    }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
+    await once(socket, 'open')
+
+    const closed = once(socket, 'close')
+    lifetime.abort()
+
+    const [code, reason] = await closed as [number, Buffer]
+    expect(code).toBe(1008)
+    expect(String(reason)).toBe('authentication expired')
+    await vi.waitFor(() => { expect(sourceAborted).toBe(true) })
+  })
+
   it('carries mux and host over independent downstream sockets and cancels each source on close', async () => {
     let muxAborted = false
     let hostAborted = false

@@ -9,6 +9,30 @@ const principal = {
 }
 
 describe('XAgent 后端客户端', () => {
+  test('公开登录不发送 Host 服务身份并严格解析令牌响应', async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => Response.json({
+      access_token: 'user-token',
+      token_type: 'bearer',
+      expires_at: '2026-08-25T08:00:00Z',
+      csrf_token: 'csrf-token',
+    }))
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: fetcher,
+    })
+
+    await expect(client.login('alice@example.test', 'password')).resolves.toEqual({
+      accessToken: 'user-token',
+      expiresAt: '2026-08-25T08:00:00Z',
+      csrfToken: 'csrf-token',
+    })
+    const [url, init] = fetcher.mock.calls[0]!
+    expect(String(url)).toBe('https://api.example.test/api/v1/auth/login')
+    expect(new Headers(init?.headers).has('authorization')).toBe(false)
+    expect(new Headers(init?.headers).has('x-xagent-service-token')).toBe(false)
+  })
+
   test('固定 origin、内部路径、服务身份和用户 JWT', async () => {
     const fetcher = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(JSON.stringify(principal), { status: 200 }))

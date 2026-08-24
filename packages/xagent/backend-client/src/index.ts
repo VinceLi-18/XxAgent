@@ -2,9 +2,19 @@
 
 import { randomUUID } from 'node:crypto'
 import { parseXAgentPrincipal, type XAgentPrincipal } from '@xagent/dsh-principal'
-import type { XAgentBackend, XAgentBackendErrorCode, XAgentSessionBackend } from './types.ts'
+import type {
+  XAgentBackend,
+  XAgentBackendErrorCode,
+  XAgentIssuedLogin,
+  XAgentSessionBackend,
+} from './types.ts'
 
-export type { XAgentBackend, XAgentBackendErrorCode, XAgentSessionBackend } from './types.ts'
+export type {
+  XAgentBackend,
+  XAgentBackendErrorCode,
+  XAgentIssuedLogin,
+  XAgentSessionBackend,
+} from './types.ts'
 
 const STABLE_CODES = new Set<XAgentBackendErrorCode>([
   'unauthenticated',
@@ -99,6 +109,37 @@ export class XAgentBackendClient implements XAgentBackend {
     this.sessions = Object.freeze(sessions)
   }
 
+  async login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin> {
+    const value = await this.request(
+      undefined,
+      '/api/v1/auth/login',
+      { email, password },
+      signal,
+      false,
+      false,
+    )
+    if (typeof value !== 'object' || value === null) {
+      throw new XAgentBackendError('service-unavailable')
+    }
+    const record = value as Record<string, unknown>
+    if (
+      record.token_type !== 'bearer'
+      || typeof record.access_token !== 'string'
+      || record.access_token.length === 0
+      || typeof record.expires_at !== 'string'
+      || record.expires_at.length === 0
+      || typeof record.csrf_token !== 'string'
+      || record.csrf_token.length === 0
+    ) {
+      throw new XAgentBackendError('service-unavailable')
+    }
+    return {
+      accessToken: record.access_token,
+      expiresAt: record.expires_at,
+      csrfToken: record.csrf_token,
+    }
+  }
+
   async introspect(userToken: string, signal?: AbortSignal): Promise<XAgentPrincipal> {
     const value = await this.request(userToken, '/internal/xagent/auth/introspect', undefined, signal)
     try {
@@ -113,25 +154,28 @@ export class XAgentBackendClient implements XAgentBackend {
   }
 
   private async request(
-    userToken: string,
+    userToken: string | undefined,
     path: string,
     body: unknown,
     signal?: AbortSignal,
     allowEmpty = false,
+    internal = true,
   ): Promise<unknown> {
     const timeout = AbortSignal.timeout(this.timeoutMs)
     const requestSignal = signal === undefined ? timeout : AbortSignal.any([timeout, signal])
     let response: Response
     try {
+      const headers = new Headers({ 'content-type': 'application/json' })
+      if (internal) {
+        if (userToken === undefined) throw new XAgentBackendError('unauthenticated')
+        headers.set('authorization', `Bearer ${userToken}`)
+        headers.set('x-xagent-service-token', this.options.serviceToken)
+      }
       const init: RequestInit = {
         method: 'POST',
         redirect: 'manual',
         signal: requestSignal,
-        headers: {
-          authorization: `Bearer ${userToken}`,
-          'content-type': 'application/json',
-          'x-xagent-service-token': this.options.serviceToken,
-        },
+        headers,
       }
       if (body !== undefined) init.body = JSON.stringify(body)
       response = await this.fetcher(new URL(path, this.origin), init)

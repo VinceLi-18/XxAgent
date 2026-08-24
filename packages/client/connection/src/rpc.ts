@@ -11,11 +11,36 @@ export interface ConnectionRpcHandlerOptions {
   readonly authority: ConnectionRpcAuthority
 }
 
+/** Host 为一个物理 HTTP 请求或 WebSocket 连接生成的显式上下文。 */
+export interface ConnectionRequestContext {
+  readonly principal?: unknown
+  readonly userToken?: string
+  readonly connectionId: string
+}
+
+/** 可选认证服务返回的字段；Host 独占 connectionId。 */
+export interface ResolvedConnectionRequestContext {
+  readonly principal?: unknown
+  readonly userToken?: string
+  /** 认证失效时终止该物理长连接；普通 HTTP 请求无需提供。 */
+  readonly lifetime?: AbortSignal
+}
+
+/** 可选的部署认证扩展点；通用 Connection 不依赖具体产品身份包。 */
+export interface ConnectionRequestContextResolver {
+  resolve(
+    request: Request,
+    connectionId: string,
+    signal: AbortSignal,
+  ): Promise<ResolvedConnectionRequestContext>
+}
+
 /** Handler invoked after Connection has decoded the transport envelope. */
 export type ConnectionRpcHandler = (
   endpoint: string,
   payload: unknown,
   signal: AbortSignal,
+  request: ConnectionRequestContext,
 ) => Promise<RpcResult<unknown>>
 
 /** Synchronous ownership test for one endpoint on a shared RPC channel. */

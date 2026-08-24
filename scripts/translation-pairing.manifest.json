@@ -27,6 +27,8 @@
     "packages/xagent/README.md",
     "packages/xagent/backend-client/README.md",
     "packages/xagent/backend-client/architecture.md",
+    "packages/xagent/connection-auth/README.md",
+    "packages/xagent/connection-auth/architecture.md",
     "packages/xagent/delegation-token/README.md",
     "packages/xagent/delegation-token/architecture.md",
     "packages/xagent/principal/README.md",

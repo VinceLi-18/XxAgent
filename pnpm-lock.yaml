@@ -8350,6 +8350,28 @@ importers:
         specifier: workspace:^
         version: link:../principal
 
+  packages/xagent/connection-auth:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-client-connection':
+        specifier: workspace:^
+        version: link:../../client/connection
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: workspace:^
+        version: link:../../host/webserver
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@xagent/dsh-backend-client':
+        specifier: workspace:^
+        version: link:../backend-client
+
   packages/xagent/delegation-token:
     devDependencies:
       '@deepseek-ai/cordis':

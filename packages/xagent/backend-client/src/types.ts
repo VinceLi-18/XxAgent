@@ -18,7 +18,14 @@ export interface XAgentSessionBackend {
   archive(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
 }
 
+export interface XAgentIssuedLogin {
+  accessToken: string
+  expiresAt: string
+  csrfToken: string
+}
+
 export interface XAgentBackend {
+  login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin>
   introspect(userToken: string, signal?: AbortSignal): Promise<XAgentPrincipal>
   revoke(userToken: string, signal?: AbortSignal): Promise<void>
   readonly sessions: XAgentSessionBackend
