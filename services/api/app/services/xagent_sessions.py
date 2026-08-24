@@ -45,6 +45,7 @@ def session_payload(item: XAgentSession) -> dict[str, Any]:
         "visibility": item.visibility,
         "permission_revision_created": item.permission_revision_created,
         "title": item.title,
+        "runtime_header": item.runtime_header,
         "archived": item.archived,
         "last_event_sequence": item.last_event_sequence,
         "version": item.version,
@@ -149,6 +150,9 @@ async def create_session(
     project_id: UUID | None,
     idempotency_key: str,
     digest: str,
+    session_id: UUID | None = None,
+    runtime_header: dict[str, Any] | None = None,
+    events: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     operation = "session.create"
     replay = await _idempotent_result(
@@ -162,14 +166,30 @@ async def create_session(
         return replay, True
 
     item = XAgentSession(
-        id=uuid4(),
+        id=session_id or uuid4(),
         owner_id=principal.actor_id,
         project_id=project_id,
         visibility=visibility,
         permission_revision_created=principal.permission_revision,
         title=title,
+        runtime_header=runtime_header,
     )
     session.add(item)
+    await session.flush()
+    initial_events = events or []
+    for sequence, event in enumerate(initial_events):
+        session.add(
+            XAgentSessionEvent(
+                session_id=item.id,
+                sequence=sequence,
+                event_type=event["event_type"],
+                schema_version=event["schema_version"],
+                payload=event["payload"],
+                actor_id=principal.actor_id,
+                tool_call_id=event.get("tool_call_id"),
+            )
+        )
+    item.last_event_sequence = len(initial_events) - 1
     await session.flush()
     result = {"schema_version": PROTOCOL_VERSION, "session": session_payload(item)}
     await _store_idempotent_result(
@@ -181,6 +201,41 @@ async def create_session(
         result=result,
     )
     return result, False
+
+
+async def authorize_session(
+    session: AsyncSession,
+    session_id: UUID,
+    operation: str,
+) -> None:
+    actor_id = "NULLIF(current_setting('app.actor_id', true), '')::uuid"
+    if operation == "read":
+        item = await _visible_session(session, session_id)
+        if item is not None:
+            return
+    elif operation == "edit":
+        visible = await session.scalar(
+            select(XAgentSession.id).where(
+                XAgentSession.id == session_id,
+                text(
+                    f"((visibility = 'private' AND owner_id = {actor_id}) OR "
+                    "(visibility = 'project' AND project_id IN "
+                    "(SELECT public.xagent_authorized_project_edit_ids())))"
+                ),
+            )
+        )
+        if visible is not None:
+            return
+    elif operation == "owner":
+        visible = await session.scalar(
+            select(XAgentSession.id).where(
+                XAgentSession.id == session_id,
+                text(f"owner_id = {actor_id}"),
+            )
+        )
+        if visible is not None:
+            return
+    raise SessionServiceError(SessionErrorCode.NOT_FOUND)
 
 
 async def _visible_session(

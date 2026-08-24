@@ -16,6 +16,8 @@ export interface ConnectionRequestContext {
   readonly principal?: unknown
   readonly userToken?: string
   readonly connectionId: string
+  /** Host-decoded RPC correlation id; absent on event-stream connections. */
+  readonly requestId?: string
 }
 
 /** 可选认证服务返回的字段；Host 独占 connectionId。 */
@@ -33,6 +35,28 @@ export interface ConnectionRequestContextResolver {
     connectionId: string,
     signal: AbortSignal,
   ): Promise<ResolvedConnectionRequestContext>
+}
+
+/** 可选的部署授权扩展点；实现包围一次已认证 RPC，且不得信任 payload 中的身份字段。 */
+export interface ConnectionRequestAuthorizer {
+  run<T>(
+    endpoint: string,
+    payload: unknown,
+    request: ConnectionRequestContext,
+    signal: AbortSignal,
+    operation: () => Promise<RpcResult<T>>,
+  ): Promise<RpcResult<T>>
+
+  /**
+   * Filter or project one server-push frame for the authenticated physical
+   * connection. Returning undefined suppresses the frame.
+   */
+  filterEvent?(
+    endpoint: 'events.mux' | 'events.host',
+    frame: unknown,
+    request: ConnectionRequestContext,
+    signal: AbortSignal,
+  ): Promise<unknown | undefined>
 }
 
 /** Handler invoked after Connection has decoded the transport envelope. */

@@ -7,7 +7,7 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import { SessionPreparation } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
 import type { SessionPersistenceRevision } from './revision.ts'
 
 // Re-export the metadata vocabulary so Consumers import it from the Service Definition.
@@ -121,6 +121,17 @@ export abstract class SessionPersistence extends Service {
       return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
     }
     return Promise.reject(new Error('this session persistence backend does not expose raw artifacts'))
+  }
+
+  /**
+   * Durably register a fresh unpublished Session before the Agent/Session
+   * registries expose it. Remote backends override this boundary when their
+   * publication must be atomic with an initial event prefix; local and lazy
+   * backends keep the default no-op.
+   * @param _session - the fully seeded but still unpublished Session.
+   */
+  preparePublication(_session: Session): Promise<void> {
+    return Promise.resolve()
   }
 
   /**

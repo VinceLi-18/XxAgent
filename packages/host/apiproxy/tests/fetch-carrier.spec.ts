@@ -661,6 +661,31 @@ describe('SSE streams through the carrier', () => {
     expect(frames[0]?.payload).toMatchObject({ type: 'host/session-removed' })
   })
 
+  it('filters SSE frames with the authenticated request context', async () => {
+    const api = fakeApi({ muxFrames: [
+      { type: 'session/subscribed', sessionId: 'denied' as never, lastSeq: 0 },
+      { type: 'session/subscribed', sessionId: 'allowed' as never, lastSeq: 0 },
+    ] })
+    const filterEvent = vi.fn(async (_endpoint: string, frame: unknown) => (
+      (frame as { sessionId?: string }).sessionId === 'denied' ? undefined : frame
+    ))
+    const handler = toFetchHandler(api, {
+      requestContext: { connectionId: 'connection-1', userToken: 'token' },
+      authorizer: {
+        run: async (_endpoint, _payload, _request, _signal, operation) => operation(),
+        filterEvent,
+      },
+    })
+    const filtered = new InProcessApiClient({ fetch: handler.fetch })
+
+    const frames = await collect(filtered.events.mux({}, new AbortController().signal))
+
+    expect(frames.map(frame => frame.payload)).toEqual([
+      { type: 'session/subscribed', sessionId: 'allowed', lastSeq: 0 },
+    ])
+    expect(filterEvent).toHaveBeenCalledTimes(2)
+  })
+
   it('drops frames after the consumer aborts mid-stream', async () => {
     const many = Array.from({ length: 50 }, (_, i): MuxFrame => ({ type: 'session/subscribed', sessionId: `s${String(i)}` as never, lastSeq: i }))
     const ac = new AbortController()

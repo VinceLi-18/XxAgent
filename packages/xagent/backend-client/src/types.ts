@@ -16,6 +16,12 @@ export interface XAgentSessionBackend {
   append(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   fork(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   archive(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
+  authorize(
+    userToken: string,
+    sessionId: string,
+    operation: 'read' | 'edit' | 'owner',
+    signal?: AbortSignal,
+  ): Promise<void>
 }
 
 export interface XAgentIssuedLogin {

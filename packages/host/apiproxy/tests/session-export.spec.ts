@@ -154,6 +154,28 @@ describe('cold blank probe config', () => {
 })
 
 describe('session.export download endpoint', () => {
+  it('authorizes GET before preparing the export artifact', async () => {
+    const readRaw = vi.fn(async () => artifact('session-root'))
+    const api = await buildApi({}, [], { readRaw })
+    const run = vi.fn(async () => ({
+      ok: false as const,
+      error: { code: 'session-not-found' as const, message: 'session not found', details: { sessionId: sid('session-root') } },
+    }))
+    const response = await toFetchHandler(api, {
+      requestContext: { connectionId: 'connection-1', userToken: 'alice-token' },
+      authorizer: { run },
+    }).fetch(new Request('http://host/api/session.export?sessionId=session-root'))
+
+    expect(response.status).toBe(404)
+    expect(run).toHaveBeenCalledOnce()
+    expect(run.mock.calls[0]?.slice(0, 3)).toEqual([
+      'session.export',
+      { sessionId: 'session-root' },
+      { connectionId: 'connection-1', userToken: 'alice-token' },
+    ])
+    expect(readRaw).not.toHaveBeenCalled()
+  })
+
   it('streams a ZIP with the root artifact verbatim under its original filename', async () => {
     const api = await buildApi({ 'session-root': artifact('session-root') })
     const response = await toFetchHandler(api).fetch(

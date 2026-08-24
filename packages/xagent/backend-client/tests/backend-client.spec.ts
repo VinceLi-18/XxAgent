@@ -98,4 +98,18 @@ describe('XAgent 后端客户端', () => {
     await expect(pending).rejects.toMatchObject({ code: 'service-unavailable' })
     expect(fetcher.mock.calls[0]![1]?.signal?.aborted).toBe(true)
   })
+
+  test('会话授权使用固定路径且接受空成功响应', async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(null, { status: 204 }))
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: fetcher,
+    })
+
+    await expect(client.sessions.authorize('user-secret', 'session/unsafe', 'edit')).resolves.toBeUndefined()
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+      'https://api.example.test/internal/xagent/sessions/session%2Funsafe/authorize',
+    )
+  })
 })

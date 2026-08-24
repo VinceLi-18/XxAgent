@@ -35,6 +35,10 @@ interface ConnectionRpcInterceptor {
   readonly options: ConnectionRpcHandlerOptions
 }
 
+interface ContextualFetchHandler {
+  fetch(request: Request, context: ConnectionRequestContext): Promise<Response>
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** Host Connection transport and RPC registrations. */
@@ -73,14 +77,20 @@ export class HostConnectionService extends Service implements HostConnectionHand
    */
   createSharedFetchHandler(
     channel: '/api',
-    fallback: FetchHandler,
+    fallback: ContextualFetchHandler,
   ): FetchHandler {
     return {
-      fetch: (request) => {
+      fetch: async (request) => {
         const endpoint = endpointFromPath(channel, new URL(request.url).pathname)
         const interceptor = this.interceptors.get(channel)
         if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
-          return fallback.fetch(request)
+          let context: ConnectionRequestContext
+          try {
+            context = await resolveRequestContext(request, this.requestContextResolver())
+          } catch {
+            return new Response('unauthenticated', { status: 401 })
+          }
+          return fallback.fetch(request, context)
         }
         if (interceptor.options.authority === 'loopback' && !isTrustedApiRequest(request, [])) {
           return Promise.resolve(new Response('forbidden', { status: 403 }))
@@ -185,30 +195,38 @@ function rpcFetchHandler(
         })
       }
 
-      const connectionId = randomUUID()
-      let requestContext: ConnectionRequestContext = Object.freeze({ connectionId })
-      const activeResolver = resolver()
-      if (activeResolver !== undefined) {
-        try {
-          const resolved = await activeResolver.resolve(request, connectionId, request.signal)
-          requestContext = Object.freeze({
-            ...resolved.principal === undefined ? {} : { principal: resolved.principal },
-            ...resolved.userToken === undefined ? {} : { userToken: resolved.userToken },
-            connectionId,
-          })
-        } catch {
-          return new Response('unauthenticated', { status: 401 })
-        }
+      let requestContext: ConnectionRequestContext
+      try {
+        requestContext = await resolveRequestContext(request, resolver())
+      } catch {
+        return new Response('unauthenticated', { status: 401 })
       }
 
       try {
-        const result = await handler(endpoint, message.payload, request.signal, requestContext)
+        const result = await handler(endpoint, message.payload, request.signal, {
+          ...requestContext,
+          requestId: message.rpcId,
+        })
         return fullResponse(message.rpcId, result)
       } catch (error) {
         return new Response(`handler failure: ${String(error)}`, { status: 500 })
       }
     },
   }
+}
+
+async function resolveRequestContext(
+  request: Request,
+  resolver: ConnectionRequestContextResolver | undefined,
+): Promise<ConnectionRequestContext> {
+  const connectionId = randomUUID()
+  if (resolver === undefined) return Object.freeze({ connectionId })
+  const resolved = await resolver.resolve(request, connectionId, request.signal)
+  return Object.freeze({
+    ...resolved.principal === undefined ? {} : { principal: resolved.principal },
+    ...resolved.userToken === undefined ? {} : { userToken: resolved.userToken },
+    connectionId,
+  })
 }
 
 function invalidEnvelopeResponse(body: unknown, issues: RpcErrorDetailsMap['bad-request']['issues']): Response {

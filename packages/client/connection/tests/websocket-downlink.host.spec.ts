@@ -197,6 +197,40 @@ describe('WebSocket downlinks', () => {
     })
   })
 
+  it('filters every downlink frame with the authenticated connection context', async () => {
+    const filterEvent = vi.fn(async (
+      _endpoint: string,
+      frame: unknown,
+      _request: unknown,
+      _signal: AbortSignal,
+    ) => {
+      const value = frame as { sessionId?: string }
+      return value.sessionId === 'session-denied' ? undefined : frame
+    })
+    const downlinks = new WebSocketDownlinks(api(
+      async function * () {
+        yield { rpcId: RpcId('denied'), payload: { type: 'session/subscribed', sessionId: 'session-denied' as never, lastSeq: 0 } }
+        yield { rpcId: RpcId('allowed'), payload: { type: 'session/subscribed', sessionId: 'session-allowed' as never, lastSeq: 0 } }
+      },
+      idle,
+    ), () => ({
+      resolve: async (_request, connectionId) => ({
+        principal: { actorId: 'alice', connectionId },
+        userToken: 'alice-token',
+      }),
+    }), () => ({ run: async (_endpoint, _payload, _request, _signal, operation) => operation(), filterEvent }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
+
+    expect(await read(socket)).toMatchObject({ rpcId: 'allowed' })
+    expect(filterEvent).toHaveBeenCalledTimes(2)
+    expect(filterEvent.mock.calls[0]?.[2]).toMatchObject({
+      principal: { actorId: 'alice' },
+      userToken: 'alice-token',
+    })
+  })
+
   it('rejects client messages because upstream remains HTTP', async () => {
     let aborted = false
     const downlinks = new WebSocketDownlinks(api(

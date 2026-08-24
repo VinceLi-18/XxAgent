@@ -8,7 +8,12 @@ import type {
   ApiProxy, HostFrame, MuxFrame, RpcRequest, ServerRequest,
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
-import type { ConnectionRequestContextResolver, ResolvedConnectionRequestContext } from './rpc.ts'
+import type {
+  ConnectionRequestAuthorizer,
+  ConnectionRequestContext,
+  ConnectionRequestContextResolver,
+  ResolvedConnectionRequestContext,
+} from './rpc.ts'
 
 type Frame = MuxFrame | HostFrame
 
@@ -57,6 +62,7 @@ export class WebSocketDownlinks {
   constructor(
     private readonly api: ApiProxy,
     private readonly resolver: () => ConnectionRequestContextResolver | undefined = () => undefined,
+    private readonly authorizer: () => ConnectionRequestAuthorizer | undefined = () => undefined,
   ) {}
 
   /**
@@ -66,7 +72,7 @@ export class WebSocketDownlinks {
    * @param head - Bytes already read after the upgrade headers.
    */
   handleMux(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
-    return this.upgrade(req, socket, head, signal => this.api.events.mux({
+    return this.upgrade(req, socket, head, 'events.mux', signal => this.api.events.mux({
       rpcId: RpcId(randomUUID()),
       payload: {},
     }, signal))
@@ -79,7 +85,7 @@ export class WebSocketDownlinks {
    * @param head - Bytes already read after the upgrade headers.
    */
   handleHost(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
-    return this.upgrade(req, socket, head, signal => this.api.events.host({
+    return this.upgrade(req, socket, head, 'events.host', signal => this.api.events.host({
       rpcId: RpcId(randomUUID()),
       payload: {},
     }, signal))
@@ -104,13 +110,14 @@ export class WebSocketDownlinks {
     req: IncomingMessage,
     socket: Duplex,
     head: Buffer,
+    endpoint: 'events.mux' | 'events.host',
     open: (signal: AbortSignal) => AsyncIterable<RpcRequest<F>>,
   ): Promise<void> {
     const activeResolver = this.resolver()
+    const connectionId = randomUUID()
     const connectionAbort = new AbortController()
     let resolved: ResolvedConnectionRequestContext | undefined
     if (activeResolver !== undefined) {
-      const connectionId = randomUUID()
       const headers = new Headers()
       for (const [name, value] of Object.entries(req.headers)) {
         if (typeof value === 'string') headers.set(name, value)
@@ -147,7 +154,12 @@ export class WebSocketDownlinks {
       websocket.once('message', () => {
         websocket.close(1008, 'downlink only')
       })
-      const pump = this.pump(websocket, open(abort.signal), abort)
+      const requestContext: ConnectionRequestContext = {
+        connectionId,
+        ...resolved?.principal === undefined ? {} : { principal: resolved.principal },
+        ...resolved?.userToken === undefined ? {} : { userToken: resolved.userToken },
+      }
+      const pump = this.pump(websocket, open(abort.signal), abort, endpoint, requestContext)
       this.pumps.add(pump)
       void pump.then(() => { this.pumps.delete(pump) })
     })
@@ -157,9 +169,19 @@ export class WebSocketDownlinks {
     socket: WebSocket,
     frames: AsyncIterable<RpcRequest<F>>,
     abort: AbortController,
+    endpoint: 'events.mux' | 'events.host',
+    request: ConnectionRequestContext,
   ): Promise<void> {
     try {
-      for await (const frame of frames) await send(socket, frame)
+      for await (const frame of frames) {
+        const activeAuthorizer = this.authorizer()
+        if (activeAuthorizer?.filterEvent === undefined) {
+          await send(socket, frame)
+          continue
+        }
+        const payload = await activeAuthorizer.filterEvent(endpoint, frame.payload, request, abort.signal)
+        if (payload !== undefined) await send(socket, { ...frame, payload: payload as F })
+      }
     } catch (error) {
       if (!abort.signal.aborted) {
         try {

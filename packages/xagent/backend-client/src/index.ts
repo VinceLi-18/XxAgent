@@ -105,6 +105,15 @@ export class XAgentBackendClient implements XAgentBackend {
       append: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/append`, body, signal),
       fork: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/fork`, body, signal),
       archive: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/archive`, body, signal),
+      authorize: async (token, id, operation, signal) => {
+        await this.request(
+          token,
+          `/internal/xagent/sessions/${encodeURIComponent(id)}/authorize`,
+          { schema_version: 1, operation },
+          signal,
+          true,
+        )
+      },
     }
     this.sessions = Object.freeze(sessions)
   }

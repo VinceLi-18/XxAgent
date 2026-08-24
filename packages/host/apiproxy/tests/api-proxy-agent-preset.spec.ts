@@ -116,10 +116,12 @@ async function harness(
 
   const factory: AgentFactory = {
     async createAgent(_ownerCtx, options) {
-      const session = ctx.sessions.create(
+      const session = ctx.sessions.prepare(
         options.sessionId,
         options.meta === undefined ? {} : { meta: options.meta },
       )
+      const detachSession = ctx.sessions.enter(session)
+      ctx.sessions.announce(session)
       const agent = stubAgent(session)
       // Setup runs before publication against a context that carries the
       // agent, and the agent reaches back through `agent.ctx` — the pair the
@@ -128,7 +130,7 @@ async function harness(
       ;(agent as { ctx?: Context }).ctx = agentCtx
       await options.setup?.(agentCtx)
       const unregister = ctx.agents.register(agent)
-      return { agent, dispose: () => { unregister(); return Promise.resolve() } }
+      return { agent, dispose: () => { unregister(); detachSession(); return Promise.resolve() } }
     },
     async resume() {
       throw new Error('test harness has no persisted sessions')

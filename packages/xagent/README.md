@@ -8,5 +8,7 @@
 | `@xagent/dsh-backend-client` | 通过固定内部路径、服务身份和用户 JWT 访问 FastAPI |
 | `@xagent/dsh-delegation-token` | 签发和验证最长 60 秒的 Ed25519 限域单次委托令牌 |
 | `@xagent/dsh-connection-auth` | 将浏览器 Cookie 登录态绑定为每个 Connection 请求和物理 WebSocket 的 Principal |
+| `@xagent/dsh-authorization` | 在 Session RPC 执行前通过 FastAPI 与 RLS 统一判定 read/edit 权限 |
+| `@xagent/dsh-session-persistence-api` | 以 FastAPI/PostgreSQL 作为 Business Session Header 与事件的唯一真源 |
 
 这些包本身不接管通用 DSH Profile。只有 XAgent Business 组合显式装载后才生效，Developer 和上游 Profile 不会获得服务凭据或委托私钥。

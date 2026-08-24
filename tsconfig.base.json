@@ -35,6 +35,8 @@
       "@xagent/dsh-delegation-token": ["./packages/xagent/delegation-token/src/index.ts"],
       "@xagent/dsh-delegation-token/types": ["./packages/xagent/delegation-token/src/types.ts"],
       "@xagent/dsh-connection-auth": ["./packages/xagent/connection-auth/src/index.ts"],
+      "@xagent/dsh-authorization": ["./packages/xagent/authorization/src/index.ts"],
+      "@xagent/dsh-session-persistence-api": ["./packages/xagent/session-persistence-api/src/index.ts"],
       "@deepseek-ai/cordis": ["./vendor/cordis/src"],
       "@deepseek-ai/cosmokit": ["./vendor/cosmokit/src"],
       "@deepseek-ai/schemastery": ["./vendor/schemastery/src"],

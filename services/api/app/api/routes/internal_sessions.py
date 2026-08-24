@@ -16,6 +16,7 @@ from app.services.xagent_sessions import (
     SessionErrorCode,
     SessionServiceError,
     append_events,
+    authorize_session,
     archive_session,
     create_session,
     fork_session,
@@ -33,18 +34,21 @@ class VersionedRequest(BaseModel):
     schema_version: int
 
 
-class CreateSessionRequest(VersionedRequest):
-    title: str = Field(min_length=1, max_length=255)
-    visibility: Literal["private", "project"]
-    project_id: UUID | None = None
-    idempotency_key: str = Field(min_length=1, max_length=255)
-
-
 class EventInput(BaseModel):
     event_type: str = Field(min_length=1, max_length=100)
     schema_version: int = Field(ge=1)
     payload: dict[str, Any]
     tool_call_id: str | None = Field(default=None, max_length=255)
+
+
+class CreateSessionRequest(VersionedRequest):
+    session_id: UUID | None = None
+    runtime_header: dict[str, Any] | None = None
+    title: str = Field(min_length=1, max_length=255)
+    visibility: Literal["private", "project"]
+    project_id: UUID | None = None
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    events: list[EventInput] = Field(default_factory=list, max_length=100)
 
 
 class AppendRequest(VersionedRequest):
@@ -66,6 +70,10 @@ class ForkRequest(VersionedRequest):
 
 class ArchiveRequest(VersionedRequest):
     expected_version: int = Field(ge=1)
+
+
+class AuthorizeRequest(VersionedRequest):
+    operation: Literal["read", "edit", "owner"]
 
 
 class SessionContext:
@@ -133,6 +141,7 @@ async def create_route(
     context: SessionContext = Depends(get_session_context),
 ) -> dict[str, Any]:
     _check_version(request.schema_version)
+    _check_event_versions(request.events)
     digest = request_hash(request.model_dump(mode="json", exclude={"idempotency_key"}))
     try:
         result, replay = await create_session(
@@ -143,12 +152,29 @@ async def create_route(
             project_id=request.project_id,
             idempotency_key=request.idempotency_key,
             digest=digest,
+            session_id=request.session_id,
+            runtime_header=request.runtime_header,
+            events=[event.model_dump(mode="json") for event in request.events],
         )
     except SessionServiceError as error:
         _raise_http(error)
     if replay:
         response.status_code = status.HTTP_200_OK
     return result
+
+
+@router.post("/{session_id}/authorize", status_code=status.HTTP_204_NO_CONTENT)
+async def authorize_route(
+    session_id: UUID,
+    request: AuthorizeRequest,
+    context: SessionContext = Depends(get_session_context),
+) -> Response:
+    _check_version(request.schema_version)
+    try:
+        await authorize_session(context.session, session_id, request.operation)
+    except SessionServiceError as error:
+        _raise_http(error)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{session_id}/open")

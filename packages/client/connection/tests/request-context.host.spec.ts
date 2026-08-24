@@ -64,7 +64,7 @@ describe('Connection 请求上下文', () => {
     await routes.find(route => route.path === '/rpc')!.handler(request(), output.raw)
 
     expect(output.state.status).toBe(200)
-    expect(seen).toEqual([{ connectionId: expect.any(String) }])
+    expect(seen).toEqual([{ connectionId: expect.any(String), requestId: 'rpc-1' }])
     await remove()
     await dispose()
   })
@@ -88,6 +88,7 @@ describe('Connection 请求上下文', () => {
       principal: { actorId: 'alice' },
       userToken: 'browser-secret',
       connectionId: generated,
+      requestId: 'rpc-1',
     })
     await remove()
     await dispose()

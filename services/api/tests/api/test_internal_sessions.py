@@ -212,3 +212,62 @@ async def test_unsupported_schema_version_has_a_stable_error(
 
     assert response.status_code == 400
     assert response.json() == {"detail": {"code": "unsupported-version"}}
+
+
+@pytest.mark.anyio
+async def test_runtime_header_and_requested_identity_round_trip_with_explicit_authorization(
+    client,
+    seeded_database,
+    alice,
+    bob,
+) -> None:
+    alice_token = await _login(client, seeded_database, alice, "alice@example.test")
+    bob_token = await _login(client, seeded_database, bob, "bob@example.test")
+    session_id = "00000000-0000-0000-0000-000000000701"
+    runtime_header = {
+        "version": 0,
+        "id": session_id,
+        "createdAt": 1787587200000,
+        "cwd": "/workspace/alice",
+    }
+    created = await client.post(
+        "/internal/xagent/sessions",
+        headers=_headers(alice_token),
+        json={
+            "schema_version": 1,
+            "session_id": session_id,
+            "runtime_header": runtime_header,
+            "title": "runtime",
+            "visibility": "private",
+            "idempotency_key": "runtime-header-1",
+            "events": [
+                {
+                    "event_type": "turn/start",
+                    "schema_version": 1,
+                    "payload": {"type": "turn/start", "seq": 0, "time": 1, "data": {"turn": 1}},
+                }
+            ],
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["session"]["id"] == session_id
+    assert created.json()["session"]["runtime_header"] == runtime_header
+    opened = await client.post(
+        f"/internal/xagent/sessions/{session_id}/open",
+        headers=_headers(alice_token),
+        json={"schema_version": 1},
+    )
+    assert opened.json()["events"][0]["payload"]["type"] == "turn/start"
+    allowed = await client.post(
+        f"/internal/xagent/sessions/{session_id}/authorize",
+        headers=_headers(alice_token),
+        json={"schema_version": 1, "operation": "edit"},
+    )
+    hidden = await client.post(
+        f"/internal/xagent/sessions/{session_id}/authorize",
+        headers=_headers(bob_token),
+        json={"schema_version": 1, "operation": "read"},
+    )
+    assert allowed.status_code == 204
+    assert hidden.status_code == 404

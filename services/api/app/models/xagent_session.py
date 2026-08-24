@@ -28,6 +28,7 @@ class XAgentSession(Base):
     visibility: Mapped[str] = mapped_column(String(16), nullable=False)
     permission_revision_created: Mapped[int] = mapped_column(BigInteger, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    runtime_header: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_event_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=-1)
     version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)

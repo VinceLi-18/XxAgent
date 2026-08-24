@@ -164,6 +164,8 @@
     { "path": "./packages/xagent/backend-client" },
     { "path": "./packages/xagent/delegation-token" },
     { "path": "./packages/xagent/connection-auth" },
+    { "path": "./packages/xagent/authorization" },
+    { "path": "./packages/xagent/session-persistence-api" },
     { "path": "./packages/session/session-telemetry-otel" },
     { "path": "./packages/core/system-prompt" },
     { "path": "./packages/core/agent" },

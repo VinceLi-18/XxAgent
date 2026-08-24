@@ -14,6 +14,7 @@ import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink
 
 export type {
   ConnectionRpcAuthority,
+  ConnectionRequestAuthorizer,
   ConnectionRpcEndpointMatcher,
   ConnectionRpcHandler,
   ConnectionRpcHandlerOptions,
@@ -141,7 +142,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
   const connection = new HostConnectionService(ctx, trustedHosts)
   const fetchHandler = connection.createSharedFetchHandler(API_PATH, {
-    async fetch(request) {
+    async fetch(request, requestContext) {
       const pathname = new URL(request.url).pathname
       const method = pathname.startsWith(`${API_PATH}/`)
         ? pathname.slice(API_PATH.length + 1)
@@ -159,7 +160,8 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
       }
       const apiProxy = ctx.get('apiProxy')
       if (apiProxy === undefined) return new Response('not found', { status: 404 })
-      return toFetchHandler(apiProxy).fetch(request)
+      const authorizer = ctx.get('connectionRequestAuthorizer') as import('./rpc.ts').ConnectionRequestAuthorizer | undefined
+      return toFetchHandler(apiProxy, { requestContext, ...authorizer === undefined ? {} : { authorizer } }).fetch(request)
     },
   })
   const route: WebRoute = {
@@ -180,6 +182,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
     const downlinks = new WebSocketDownlinks(
       apiCtx.apiProxy,
       () => apiCtx.get('connectionRequestContextResolver') as ConnectionRequestContextResolver | undefined,
+      () => apiCtx.get('connectionRequestAuthorizer') as import('./rpc.ts').ConnectionRequestAuthorizer | undefined,
     )
     const registerDownlink = (
       path: string,
