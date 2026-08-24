@@ -63,6 +63,8 @@ export const SERVICE_PAGE: Record<string, string> = {
   codeRuntime: 'code-runtime.md',
   commands: 'commands.md',
   compaction: 'compaction.md',
+  connectionRequestAuthorizer: 'session.md',
+  connectionRequestContextResolver: 'web-server.md',
   cordisInspect: 'extensions.md',
   credentials: 'credentials.md',
   directoryPicker: 'workspace.md',
@@ -106,6 +108,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   web: 'web.md',
   workflowEngine: 'workflow.md',
   workspaceRegistry: 'workspace.md',
+  xagentPrincipal: 'web-server.md',
 }
 
 /**
@@ -499,6 +502,7 @@ export const FOUNDATION_TYPE_NAMES: ReadonlySet<string> = new Set([
   'Pick',
   'Promise',
   'Record',
+  'Request',
   'Readonly',
   'Uint8Array',
 ])
@@ -518,6 +522,10 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   CompactionAgentContext: 'compaction service input is owned by packages/compaction/compaction/src/index.ts',
   ManualCompactAgentContext: 'manual compaction service input is owned by packages/compaction/compaction/src/index.ts',
   ClientResponse: 'wire response message is owned by packages/host/apiproxy/src/api/rpc.ts',
+  ConnectionRequestContext: 'XAgent connection authorization context is owned by packages/xagent/authorization/architecture.md',
+  ResolvedConnectionRequestContext: 'XAgent authenticated connection context is owned by packages/xagent/connection-auth/architecture.md',
+  RpcResult: 'wire result contract is owned by packages/host/apiproxy/src/api/rpc.ts',
+  XAgentPrincipal: 'XAgent principal contract is owned by packages/xagent/principal/architecture.md',
   ApprovalRequestId: 'dynamic Plugin approval identity is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisErrorDetails: 'Cordis runtime error payload is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisInspectPlatform: 'Cordis inspect platform identity is owned by packages/extensions/cordis-host-runner/src/types.ts',

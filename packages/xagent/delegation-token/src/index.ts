@@ -28,6 +28,11 @@ function validScope(value: DelegationScope): boolean {
     && value.permissionRevision >= 1
 }
 
+/**
+ * Issue one Ed25519 delegation token with a maximum sixty-second lifetime.
+ * @param options - exact scope, signer, audience, time, and nonce.
+ * @returns the compact signed token.
+ */
 export function issueDelegationToken(options: IssueDelegationOptions): string {
   if (
     !validScope(options)
@@ -58,6 +63,12 @@ export function issueDelegationToken(options: IssueDelegationOptions): string {
   return `${signingInput}.${signature}`
 }
 
+/**
+ * Verify and consume one delegation token against the expected operation.
+ * @param token - compact signed token from the trusted issuer.
+ * @param options - verifier, expected scope, current revision, and nonce consumer.
+ * @returns immutable validated delegation claims.
+ */
 export async function verifyDelegationToken(
   token: string,
   options: VerifyDelegationOptions,

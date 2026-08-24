@@ -19,11 +19,17 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+/** XAgent browser connection authentication plugin configuration. */
 export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
   backendOrigin: string
+  /** Host 调用内部认证接口时使用的服务身份。 */
   serviceToken: string
+  /** 可以提交浏览器登录请求的精确 origin 清单。 */
   allowedOrigins: string[]
+  /** 是否只通过 HTTPS 发送登录 Cookie。 */
   secureCookie: boolean
+  /** 已认证连接再次 introspection 前的最长缓存时间。 */
   revalidateIntervalMs: number
 }
 
@@ -44,6 +50,13 @@ export class XAgentConnectionAuthService extends Service implements ConnectionRe
     super(ctx, 'connectionRequestContextResolver')
   }
 
+  /**
+   * Resolve one HTTP request into a context bound to its physical connection.
+   * @param request - browser request carrying only Host-managed credentials.
+   * @param connectionId - Host-generated physical connection identifier.
+   * @param signal - request cancellation signal.
+   * @returns the authenticated context used by RPC authorization.
+   */
   resolve(request: Request, connectionId: string, signal: AbortSignal): Promise<ResolvedConnectionRequestContext> {
     return this.authenticator.resolve(request, connectionId, signal)
   }
@@ -72,6 +85,8 @@ async function fetchRequest(request: IncomingMessage, maxBodyBytes: number): Pro
   const method = request.method ?? 'GET'
   const body = method === 'GET' || method === 'HEAD' ? undefined : await readBody(request, maxBodyBytes)
   const init: RequestInit = { method, headers }
+  /* v8 ignore next -- GET, HEAD, and body-bearing branches are exercised through registered routes;
+   * V8 attributes only the assignment arm. */
   if (body !== undefined) init.body = Buffer.from(body).toString('utf8')
   return new Request(new URL(request.url ?? '/', 'http://xagent.internal'), init)
 }

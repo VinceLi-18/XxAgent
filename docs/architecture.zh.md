@@ -36,6 +36,18 @@ dsh --profile web --dump-config
 
 组装机制见 [app-boot](../packages/boot/app-boot/README.md#profiles)；配置字段见生成的[配置目录](config-catalog.md)。
 
+### XAgent 认证业务运行时
+
+`xagent-business` 仍以 dsh Host 作为面向浏览器的进程，但不把本地 JSONL 存储作为会话权威。Host 用浏览器的安全登录 Cookie 向 XAgent FastAPI 服务换取身份，为每条物理连接建立不可变 Principal，并将其显式传入 RPC 授权。浏览器 payload 和类似身份的请求头都不能定义 Principal。
+
+XAgent 授权服务依据封闭的方法表校验每个 Session 方法。它把请求绑定到已认证连接，向 FastAPI 查询所需的 read 或 edit 决策，并只在远端持久化调用期间打开窄作用域的用户令牌租约。未知 Workspace 方法和全部浏览器 Workspace RPC 都失败关闭；内部 Workspace registry 仅因通用 API Gateway 启动时需要而保留挂载。
+
+FastAPI 拥有密码、可撤销登录记录、权限版本、账号状态、会话 Header 和仅追加的会话事件。PostgreSQL 行级安全策略与应用事务会在每次读写前重新校验 actor。私有会话只对 owner 可见，Manager 也不能例外；不可见与不存在统一返回 not-found。FastAPI 不可用时，Host 不会回退到 Profile 本地会话文件。
+
+新会话跨运行时边界保持发布原子性：远端 Header 与 seed event 必须提交成功，Agent 才能对外可见。恢复会话时保留被中断的持久事件尾，并把所需的关闭事件追加到远端。启动期 Workspace 发现使用独立的 bootstrap 方法；XAgent provider 会刻意返回空会话，因为此时还不存在已认证 Principal。
+
+`xagent-developer`、`web`、`headless` 和其他上游 Profile 继续使用原有本地持久化，也不会装载 XAgent 服务凭据、认证、授权或委托密钥。Profile 目录仍只是组织边界，不是多用户安全边界。
+
 ## 核心包
 
 以下是向 Cordis 树贡献内容的部分核心包。

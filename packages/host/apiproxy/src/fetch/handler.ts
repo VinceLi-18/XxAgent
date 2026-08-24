@@ -110,6 +110,7 @@ interface ApiRequestAuthorizer {
   ): Promise<unknown>
 }
 
+/** Optional request identity and authorization hooks installed by product profiles. */
 export interface FetchHandlerOptions {
   requestContext?: ApiRequestContext
   authorizer?: ApiRequestAuthorizer
@@ -205,11 +206,11 @@ function fullResponse(narrow: RpcResponse<unknown>): Response {
 async function handleUnary<K extends keyof RpcMethodMap>(
   api: ApiProxy,
   method: K,
+  route: UnaryRoutes[K],
   message: ClientRequest,
   signal: AbortSignal,
   options?: FetchHandlerOptions,
 ): Promise<Response> {
-  const route = UNARY_ROUTES[method]
   const payload = route.schema.safeParse(message.payload)
   if (!payload.success) {
     return errorResponse(message.rpcId, { code: 'bad-request', message: `invalid payload for ${method}`, details: { issues: payload.error.issues } })
@@ -291,6 +292,7 @@ function sseResponse(
 /**
  * Wraps an ApiProxy into a pure fetch function (isomorphic point: feed the returned fetch straight to InProcessApiClient).
  * @param api - the host-side ApiProxy implementation.
+ * @param options - optional connection context and request authorizer.
  * @returns an object holding `fetch(Request)`; paths outside /api/ return 404.
  */
 export function toFetchHandler(api: ApiProxy, options?: FetchHandlerOptions): { fetch: typeof fetch } {
@@ -380,7 +382,7 @@ export function toFetchHandler(api: ApiProxy, options?: FetchHandlerOptions): { 
       if (message.method !== method) {
         return errorResponse(message.rpcId, { code: 'bad-request', message: `method "${message.method}" does not match path "${method}"`, details: { issues: [] } })
       }
-      return handleUnary(api, method, message, req.signal, options)
+      return handleUnary(api, method, UNARY_ROUTES[method], message, req.signal, options)
     },
   }
 }

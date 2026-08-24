@@ -277,6 +277,15 @@ abstract locate(meta: SessionHeader): SessionLocation | undefined
 readRaw(_id: SessionId, signal?: AbortSignal): Promise<SessionRawArtifact | undefined>
 
 /**
+ * Durably register a fresh unpublished Session before the Agent/Session
+ * registries expose it. Remote backends override this boundary when their
+ * publication must be atomic with an initial event prefix; local and lazy
+ * backends keep the default no-op.
+ * @param _session - the fully seeded but still unpublished Session.
+ */
+preparePublication(_session: Session): Promise<void>
+
+/**
  * Register a new session's metadata. A backend MAY defer the physical write
  * until the first {@link append} (lazy materialization), in which case a
  * created-but-never-appended session is absent from {@link list}
@@ -321,6 +330,16 @@ async prepare(id: SessionId, signal?: AbortSignal): Promise<SessionPreparation>
  * @returns the header and a log ending on a balanced `turn/end`.
  */
 abstract load(id: SessionId): Promise<SessionInspection>
+
+/**
+ * List headers that a process-global index may consume before any request
+ * identity exists. User-scoped remote backends override this with an empty
+ * list so service bootstrap cannot enumerate one tenant or require a token.
+ * Request paths must continue to use {@link list}.
+ * @param signal - optional cancellation for backend list work.
+ * @returns headers safe to expose to a process-global bootstrap index.
+ */
+listForBootstrap(signal?: AbortSignal): Promise<SessionHeader[]>
 
 /**
  * Inspect an immutable logical session without committing recovery or
@@ -379,7 +398,7 @@ abstract list(signal?: AbortSignal): Promise<SessionHeader[]>
 abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]>
 ```
 
-Types: [SessionEvent](session.md) · [SessionId](core.md)
+Types: [Session](session.md) · [SessionEvent](session.md) · [SessionId](core.md)
 
 Source: [`packages/session/session-persistence/src/index.ts:84`](../../packages/session/session-persistence/src/index.ts)
 <!-- END GENERATED cordis-surface -->

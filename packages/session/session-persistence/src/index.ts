@@ -198,6 +198,8 @@ export abstract class SessionPersistence extends Service {
    * identity exists. User-scoped remote backends override this with an empty
    * list so service bootstrap cannot enumerate one tenant or require a token.
    * Request paths must continue to use {@link list}.
+   * @param signal - optional cancellation for backend list work.
+   * @returns headers safe to expose to a process-global bootstrap index.
    */
   listForBootstrap(signal?: AbortSignal): Promise<SessionHeader[]> {
     return this.list(signal)

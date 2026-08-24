@@ -125,12 +125,17 @@ export class WorkspaceRegistry extends Service {
 
     await this.recoverPendingMutation()
     this.validateStoredState(this.state)
+    const persistence = this.ctx.sessionPersistence as {
+      list(signal?: AbortSignal): Promise<SessionHeader[]>
+      listForBootstrap?: (signal?: AbortSignal) => Promise<SessionHeader[]>
+    }
+    const listForBootstrap = (): Promise<SessionHeader[]> => persistence.listForBootstrap?.() ?? persistence.list()
     if (!this.state.initialized) {
-      const headers = await this.ctx.sessionPersistence.listForBootstrap()
+      const headers = await listForBootstrap()
       await this.replaceHeaderIndex(headers)
       await this.bootstrap(headers)
     } else if (this.table.size > 0) {
-      await this.replaceHeaderIndex(await this.ctx.sessionPersistence.listForBootstrap())
+      await this.replaceHeaderIndex(await listForBootstrap())
     }
 
     await this.indexLiveSessions()

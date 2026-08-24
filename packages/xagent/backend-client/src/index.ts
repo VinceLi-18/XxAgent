@@ -25,6 +25,7 @@ const STABLE_CODES = new Set<XAgentBackendErrorCode>([
   'service-unavailable',
 ])
 
+/** Stable fail-closed error returned by the XAgent backend boundary. */
 export class XAgentBackendError extends Error {
   constructor(readonly code: XAgentBackendErrorCode) {
     super(`XAgent backend request failed: ${code}`)
@@ -32,6 +33,7 @@ export class XAgentBackendError extends Error {
   }
 }
 
+/** Network, service-identity, timeout, and response-limit settings for the Host client. */
 export interface XAgentBackendClientOptions {
   origin: string
   serviceToken: string
@@ -82,6 +84,7 @@ function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
     : 'service-unavailable'
 }
 
+/** Bounded Host client for XAgent authentication and Session APIs. */
 export class XAgentBackendClient implements XAgentBackend {
   private readonly origin: URL
   private readonly fetcher: typeof globalThis.fetch

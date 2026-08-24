@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, test, vi } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebServer, WebRoute } from '@deepseek-ai/dsh-host-webserver'
-import { apply, inject } from '../src/index.ts'
+import { apply, HostConnectionService, inject } from '../src/index.ts'
 import type { ConnectionRequestContextResolver, ConnectionRpcHandler } from '../src/rpc.ts'
 
 function server(routes: WebRoute[]): Pick<WebServer, 'register' | 'registerUpgrade' | 'tapIndex' | 'port'> {
@@ -114,5 +114,29 @@ describe('Connection 请求上下文', () => {
     expect(output.state.body).not.toContain('browser-secret')
     await remove()
     await dispose()
+  })
+
+  test('共享 fallback 同样认证，并保留 resolver 省略的可选字段', async () => {
+    const rejected = await mount({ resolve: vi.fn(async () => { throw new Error('secret') }) })
+    const denied = (rejected.ctx.connection as HostConnectionService).createSharedFetchHandler('/api', {
+      fetch: vi.fn(async () => new Response('fallback')),
+    })
+    await expect(denied.fetch(new Request('http://localhost/api/unclaimed')))
+      .resolves.toMatchObject({ status: 401 })
+    await rejected.dispose()
+
+    const accepted = await mount({ resolve: vi.fn(async () => ({})) })
+    const seen: unknown[] = []
+    const fallback = (accepted.ctx.connection as HostConnectionService).createSharedFetchHandler('/api', {
+      fetch: vi.fn(async (_request, requestContext) => {
+        seen.push(requestContext)
+        return new Response('fallback')
+      }),
+    })
+    const response = await fallback.fetch(new Request('http://localhost/api/unclaimed'))
+    expect(response.status).toBe(200)
+    expect(seen).toHaveLength(1)
+    expect(typeof (seen[0] as { connectionId: unknown }).connectionId).toBe('string')
+    await accepted.dispose()
   })
 })

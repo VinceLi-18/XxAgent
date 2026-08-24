@@ -638,7 +638,10 @@ export class AgentLoop extends Service implements AgentFactory {
       const setupCommit = await raceAbort(setup?.(prepared.agent.ctx), prepared.signal, id)
       setupCommit?.commit()
       if (source === 'startup') {
-        await this.runtime.ctx.get('sessionPersistence')?.preparePublication(session)
+        const persistence = this.runtime.ctx.get('sessionPersistence') as undefined | {
+          preparePublication?: (candidate: Session) => Promise<void>
+        }
+        await persistence?.preparePublication?.(session)
       }
       return prepared.publish(source)
     } catch (error: unknown) {

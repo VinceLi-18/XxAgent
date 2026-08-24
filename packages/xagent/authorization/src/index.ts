@@ -30,14 +30,18 @@ const SESSION_PERMISSIONS = new Map<string, Permission | 'list' | 'create'>([
   ['cancel', 'edit'],
 ])
 
+/** Remote Session Persistence operations that require an explicit user-token scope. */
 export interface TokenScopedPersistence {
   withUserToken<T>(userToken: string, operation: () => Promise<T>): Promise<T>
   authorizeRequest?(sessionId: string, requestId: string | undefined, userToken: string): void
   flushSession?(sessionId: string): Promise<void>
 }
 
+/** XAgent Session authorization plugin configuration. */
 export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
   backendOrigin: string
+  /** Host 调用内部授权接口时使用的服务身份。 */
   serviceToken: string
 }
 
@@ -251,6 +255,15 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     this.implementation = new XAgentAuthorization(backend, persistence)
   }
 
+  /**
+   * Authorize one connection-bound RPC and run it inside the matching user scope.
+   * @param endpoint - closed-table RPC method name.
+   * @param payload - untrusted parsed RPC payload.
+   * @param request - Host-created physical connection context.
+   * @param signal - request cancellation signal.
+   * @param operation - downstream operation admitted after authorization.
+   * @returns the downstream result or a stable authorization error.
+   */
   run<T>(
     endpoint: string,
     payload: unknown,
@@ -261,6 +274,14 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     return this.implementation.run(endpoint, payload, request, signal, operation)
   }
 
+  /**
+   * Remove Session event frames the authenticated connection cannot read.
+   * @param endpoint - event stream carrying the frame.
+   * @param frame - untrusted candidate event frame.
+   * @param request - Host-created physical connection context.
+   * @param signal - stream cancellation signal.
+   * @returns the original frame when visible, or `undefined` when hidden.
+   */
   filterEvent(
     endpoint: 'events.mux' | 'events.host',
     frame: unknown,

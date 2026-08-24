@@ -54,6 +54,25 @@ A request whose handling throws (a malformed %-escape hitting `decodeURIComponen
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxconnectionrequestcontextresolver--xagentconnectionauthservice"></a>
+
+### `ctx.connectionRequestContextResolver` — `XAgentConnectionAuthService`
+
+Connection 可选解析服务；通用传输只依赖其结构，不导入 XAgent。
+
+```ts cordis-catalog
+/**
+ * Resolve one HTTP request into a context bound to its physical connection.
+ * @param request - browser request carrying only Host-managed credentials.
+ * @param connectionId - Host-generated physical connection identifier.
+ * @param signal - request cancellation signal.
+ * @returns the authenticated context used by RPC authorization.
+ */
+resolve(request: Request, connectionId: string, signal: AbortSignal): Promise<ResolvedConnectionRequestContext>
+```
+
+Source: [`packages/xagent/connection-auth/src/index.ts:48`](../../packages/xagent/connection-auth/src/index.ts)
+
 <a id="ctxwebserver--webserver"></a>
 
 ### `ctx.webServer` — `WebServer`
@@ -105,4 +124,23 @@ applyIndexTaps(html: string): string
 ```
 
 Source: [`packages/host/webserver/src/index.ts:59`](../../packages/host/webserver/src/index.ts)
+
+<a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
+
+### `ctx.xagentPrincipal` — `XAgentPrincipalService` (abstract seam)
+
+XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。
+
+```ts cordis-catalog
+/**
+ * Introspect a login token and bind the resulting actor to one Host connection.
+ * @param userToken - opaque FastAPI login token.
+ * @param connectionId - Host-generated physical connection identifier.
+ * @param signal - optional introspection cancellation signal.
+ * @returns an immutable validated Principal.
+ */
+abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
+```
+
+Source: [`packages/xagent/principal/src/index.ts:55`](../../packages/xagent/principal/src/index.ts)
 <!-- END GENERATED cordis-surface -->

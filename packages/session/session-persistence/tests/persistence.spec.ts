@@ -1757,6 +1757,19 @@ describe('PersistenceCoordinator retirement', () => {
 })
 
 describe('SessionPersistence service registration', () => {
+  it('defaults bootstrap listing to the backend list and publication preparation to no-op', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const fiber = await ctx.plugin(MemoryPersistence)
+    const m = meta('default-bootstrap-list')
+    await ctx.sessionPersistence.create(m)
+    await ctx.sessionPersistence.append(m.id, oneTurnLog())
+
+    await expect(ctx.sessionPersistence.listForBootstrap()).resolves.toEqual([m])
+    await expect(ctx.sessionPersistence.preparePublication(Session.create(m.id, [], m))).resolves.toBeUndefined()
+    await fiber.dispose()
+  })
+
   it('provides a cancellation-aware default preparation for simple backends', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

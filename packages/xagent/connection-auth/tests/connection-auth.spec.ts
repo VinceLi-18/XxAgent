@@ -1,6 +1,10 @@
+import { Readable } from 'node:stream'
+import { Context } from '@deepseek-ai/cordis'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
 import { describe, expect, test, vi } from 'vitest'
 import type { XAgentBackend } from '@xagent/dsh-backend-client'
-import { XAgentConnectionAuthenticator } from '../src/index.ts'
+import { apply, XAgentConnectionAuthenticator } from '../src/index.ts'
 
 const ACTOR_ID = '00000000-0000-0000-0000-000000000001'
 const AUTH_SESSION_ID = '00000000-0000-0000-0000-000000000101'
@@ -41,6 +45,40 @@ function authenticatedRequest(method: 'GET' | 'POST' = 'POST'): Request {
       'x-xagent-csrf': 'csrf-token',
     },
   })
+}
+
+function nodeRequest(options: {
+  method?: string
+  url?: string
+  headers?: Record<string, string>
+  chunks?: Array<string | Uint8Array>
+}): IncomingMessage {
+  const request = Readable.from(options.chunks ?? []) as IncomingMessage
+  request.method = options.method
+  request.url = options.url
+  request.rawHeaders = Object.entries(options.headers ?? {}).flatMap(([name, value]) => [name, value])
+  return request
+}
+
+async function invoke(route: WebRoute, request: IncomingMessage): Promise<{ status: number; headers: Headers; body: string }> {
+  const headers = new Headers()
+  let body = ''
+  let finished!: () => void
+  const done = new Promise<void>((resolve) => { finished = resolve })
+  const response = {
+    statusCode: 200,
+    setHeader(name: string, value: string | readonly string[]) {
+      headers.delete(name)
+      for (const item of typeof value === 'string' ? [value] : value) headers.append(name, item)
+    },
+    end(value?: Uint8Array) {
+      body = value === undefined ? '' : Buffer.from(value).toString('utf8')
+      finished()
+    },
+  } as unknown as ServerResponse
+  await route.handler(request, response)
+  await done
+  return { status: response.statusCode, headers, body }
 }
 
 describe('XAgent Connection 认证桥', () => {
@@ -220,5 +258,250 @@ describe('XAgent Connection 认证桥', () => {
     expect(active.status).toBe(204)
     expect(await active.text()).toBe('')
     expect(missing.status).toBe(401)
+  })
+
+  test('Cookie 解析、登录载荷与来源校验的所有拒绝路径均失败关闭', async () => {
+    const auth = authenticator()
+    const baseHeaders = { origin: 'https://app.example.test', 'content-type': 'application/json' }
+    for (const request of [
+      new Request('https://app.example.test/auth/login', { method: 'GET', headers: baseHeaders }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: { ...baseHeaders, origin: 'bad url' }, body: '{}' }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: baseHeaders }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: { ...baseHeaders, 'content-length': 'invalid' }, body: '{}' }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: baseHeaders, body: 'not-json' }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: baseHeaders, body: 'null' }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: baseHeaders, body: JSON.stringify({ email: 1, password: 'p' }) }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: baseHeaders, body: JSON.stringify({ email: '', password: 'p' }) }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: baseHeaders, body: JSON.stringify({ email: 'a', password: 1 }) }),
+      new Request('https://app.example.test/auth/login', { method: 'POST', headers: baseHeaders, body: JSON.stringify({ email: 'a', password: '' }) }),
+    ]) expect((await auth.login(request)).status).toBe(request.method === 'GET' || request.headers.get('origin') === 'bad url' ? 403 : 400)
+
+    const limited = new XAgentConnectionAuthenticator(backend(), {
+      allowedOrigins: ['http://127.0.0.1:3000'], secureCookie: false, maxLoginBodyBytes: 3,
+    })
+    expect((await limited.login(new Request('http://127.0.0.1:3000/auth/login', {
+      method: 'POST', headers: { origin: 'http://127.0.0.1:3000', 'content-length': '4' }, body: '{}  ',
+    }))).status).toBe(400)
+    expect((await limited.login(new Request('http://127.0.0.1:3000/auth/login', {
+      method: 'POST', headers: { origin: 'http://127.0.0.1:3000' }, body: '{}  ',
+    }))).status).toBe(400)
+
+    await expect(auth.resolve(new Request('https://app.example.test/api', {
+      method: 'POST',
+      headers: { origin: 'https://app.example.test', cookie: 'xagent_session=a; xagent_session=b; xagent_csrf=x', 'x-xagent-csrf': 'x' },
+    }), 'connection')).rejects.toThrow('unauthenticated')
+    await expect(auth.resolve(new Request('https://app.example.test/api', {
+      method: 'POST',
+      headers: { origin: 'https://app.example.test', cookie: 'xagent_session=; xagent_csrf=long', 'x-xagent-csrf': 'x' },
+    }), 'connection')).rejects.toThrow('unauthenticated')
+  })
+
+  test('父信号、身份变化和注销失败都终止或拒绝登录态', async () => {
+    vi.useFakeTimers()
+    try {
+      const auth = new XAgentConnectionAuthenticator(backend({
+        introspect: vi.fn()
+          .mockResolvedValueOnce({ actorId: ACTOR_ID, role: 'specialist', permissionRevision: 3, authSessionId: AUTH_SESSION_ID, connectionId: 'x' })
+          .mockResolvedValueOnce({ actorId: ACTOR_ID, role: 'manager', permissionRevision: 3, authSessionId: AUTH_SESSION_ID, connectionId: 'x' }),
+      }), { allowedOrigins: ['https://app.example.test'], secureCookie: true, revalidateIntervalMs: 100 })
+      const parent = new AbortController()
+      const websocket = new Request('https://app.example.test/api/events', {
+        headers: { cookie: 'xagent_session=user-token', origin: 'https://app.example.test', upgrade: 'websocket' },
+        signal: parent.signal,
+      })
+      const first = await auth.resolve(websocket, 'connection')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(first.lifetime?.aborted).toBe(true)
+
+      const second = await authenticator().resolve(new Request('https://app.example.test/api/events', {
+        headers: { cookie: 'xagent_session=user-token', origin: 'https://app.example.test', upgrade: 'websocket' },
+        signal: parent.signal,
+      }), 'connection')
+      parent.abort()
+      expect(second.lifetime?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const failed = authenticator(backend({ revoke: vi.fn(async () => { throw new Error('revoked') }) }))
+    expect((await failed.logout(authenticatedRequest())).status).toBe(401)
+    expect((await failed.logout(new Request('https://app.example.test/auth/logout', { method: 'POST' }))).status).toBe(401)
+    expect((await failed.logout(new Request('https://app.example.test/auth/logout', {
+      method: 'POST', headers: {
+        origin: 'https://app.example.test', cookie: 'xagent_csrf=csrf-token', 'x-xagent-csrf': 'csrf-token',
+      },
+    }))).status).toBe(401)
+  })
+
+  test('回环 HTTP 可使用非 Secure Cookie，且来源必须是规范化精确值', async () => {
+    const local = new XAgentConnectionAuthenticator(backend(), {
+      allowedOrigins: ['http://localhost:3000'], secureCookie: false,
+    })
+    const response = await local.login(new Request('http://localhost:3000/auth/login', {
+      method: 'POST', headers: { origin: 'http://localhost:3000' },
+      body: JSON.stringify({ email: 'alice@example.test', password: 'password' }),
+    }))
+    expect(response.headers.get('set-cookie')).not.toContain('Secure')
+    for (const origin of ['not a url', 'http://localhost:3000/']) {
+      await expect(local.resolve(new Request('http://localhost:3000/api', {
+        headers: { origin, cookie: 'xagent_session=user-token' },
+      }), 'connection')).rejects.toThrow('unauthenticated')
+    }
+    await expect(local.resolve(new Request('http://localhost:3000/api', {
+      headers: { origin: 'http://localhost:3000', cookie: 'xagent_session=' },
+    }), 'connection')).rejects.toThrow('unauthenticated')
+  })
+
+  test('多个长连接独立清理，成功复核会继续调度', async () => {
+    vi.useFakeTimers()
+    try {
+      const introspect = vi.fn<XAgentBackend['introspect']>(async () => ({
+        actorId: ACTOR_ID, role: 'specialist', permissionRevision: 3,
+        authSessionId: AUTH_SESSION_ID, connectionId: 'ignored',
+      }))
+      const auth = new XAgentConnectionAuthenticator(backend({ introspect }), {
+        allowedOrigins: ['https://app.example.test'], secureCookie: true, revalidateIntervalMs: 100,
+      })
+      const firstParent = new AbortController()
+      const secondParent = new AbortController()
+      const make = (signal: AbortSignal) => new Request('https://app.example.test/api/events', {
+        headers: { cookie: 'xagent_session=user-token', origin: 'https://app.example.test', upgrade: 'websocket' }, signal,
+      })
+      const first = await auth.resolve(make(firstParent.signal), 'first')
+      const second = await auth.resolve(make(secondParent.signal), 'second')
+      firstParent.abort()
+      expect(first.lifetime?.aborted).toBe(true)
+      expect(second.lifetime?.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(second.lifetime?.aborted).toBe(false)
+      expect(introspect).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(introspect).toHaveBeenCalledTimes(4)
+      secondParent.abort()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test.each([
+    [{ role: 'manager' }],
+    [{ permissionRevision: 4 }],
+    [{ authSessionId: crypto.randomUUID() }],
+  ])('任一复核身份字段变化都会终止连接 %#', async (change) => {
+    vi.useFakeTimers()
+    try {
+      const introspect = vi.fn()
+        .mockResolvedValueOnce({ actorId: ACTOR_ID, role: 'specialist', permissionRevision: 3, authSessionId: AUTH_SESSION_ID, connectionId: 'x' })
+        .mockResolvedValueOnce({ actorId: ACTOR_ID, role: 'specialist', permissionRevision: 3, authSessionId: AUTH_SESSION_ID, connectionId: 'x', ...change })
+      const auth = new XAgentConnectionAuthenticator(backend({ introspect }), {
+        allowedOrigins: ['https://app.example.test'], secureCookie: true, revalidateIntervalMs: 100,
+      })
+      const resolved = await auth.resolve(new Request('https://app.example.test/api/events', {
+        headers: { cookie: 'xagent_session=user-token', origin: 'https://app.example.test', upgrade: 'websocket' },
+      }), 'connection')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(resolved.lifetime?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  test('Cordis 插件注册三条真实 HTTP 路由并转发 Cookie', async () => {
+    const routes = new Map<string, WebRoute>()
+    const ctx = new Context()
+    ctx.provide('webServer', {
+      register(route: WebRoute) {
+        routes.set(route.path, route)
+        return () => { routes.delete(route.path) }
+      },
+    } as WebServer)
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname
+      if (path.endsWith('/login')) return Response.json({
+        access_token: 'user-token', token_type: 'bearer', expires_at: '2026-08-25T08:00:00Z', csrf_token: 'csrf-token',
+      })
+      if (path.endsWith('/introspect')) return Response.json({
+        actor_id: ACTOR_ID, role: 'specialist', permission_revision: 3, auth_session_id: AUTH_SESSION_ID,
+      })
+      return new Response(null, { status: 204 })
+    })
+    apply(ctx, {
+      backendOrigin: 'https://api.example.test', serviceToken: 'service-secret',
+      allowedOrigins: ['https://app.example.test'], secureCookie: true, revalidateIntervalMs: 100,
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect([...routes.keys()].sort()).toEqual(['/auth/login', '/auth/logout', '/auth/session'])
+
+    const login = await invoke(routes.get('/auth/login')!, nodeRequest({
+      method: 'POST', url: '/auth/login', headers: { origin: 'https://app.example.test', 'content-type': 'application/json' },
+      chunks: [Buffer.from('{"email":"alice@example.test",'), '"password":"password"}'],
+    }))
+    expect(login.status).toBe(200)
+    expect(login.headers.get('set-cookie')).toContain('xagent_session=user-token')
+
+    const status = await invoke(routes.get('/auth/session')!, nodeRequest({
+      method: 'GET', url: '/auth/session', headers: { cookie: 'xagent_session=user-token' },
+    }))
+    expect(status.status).toBe(204)
+
+    const logout = await invoke(routes.get('/auth/logout')!, nodeRequest({
+      method: 'POST', url: '/auth/logout', headers: {
+        origin: 'https://app.example.test', cookie: 'xagent_session=user-token; xagent_csrf=csrf-token', 'x-xagent-csrf': 'csrf-token',
+      },
+    }))
+    expect(logout.status).toBe(204)
+    const resolver = ctx.get('connectionRequestContextResolver')!
+    await expect(resolver.resolve(authenticatedRequest(), 'service-connection', new AbortController().signal))
+      .resolves.toMatchObject({ principal: { connectionId: 'service-connection' } })
+    await ctx.fiber.dispose()
+    fetcher.mockRestore()
+  })
+
+  test('插件 HTTP 适配器拒绝超限正文、畸形头并稳定映射后端错误', async () => {
+    const routes = new Map<string, WebRoute>()
+    const ctx = new Context()
+    ctx.provide('webServer', { register(route: WebRoute) { routes.set(route.path, route); return () => {} } } as WebServer)
+    const fetcher = vi.spyOn(globalThis, 'fetch')
+    apply(ctx, {
+      backendOrigin: 'https://api.example.test', serviceToken: 'service-secret',
+      allowedOrigins: ['https://app.example.test'], secureCookie: true, revalidateIntervalMs: 100,
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    fetcher.mockResolvedValueOnce(Response.json({ detail: { code: 'unauthenticated' } }, { status: 401 }))
+    const unauthorized = await invoke(routes.get('/auth/login')!, nodeRequest({
+      method: 'POST', url: '/auth/login', headers: { origin: 'https://app.example.test' },
+      chunks: ['{"email":"alice@example.test","password":"password"}'],
+    }))
+    expect(unauthorized).toMatchObject({ status: 401, body: 'unauthenticated' })
+
+    fetcher.mockRejectedValueOnce(new Error('offline'))
+    const unavailable = await invoke(routes.get('/auth/login')!, nodeRequest({
+      method: 'POST', url: '/auth/login', headers: { origin: 'https://app.example.test' },
+      chunks: ['{"email":"alice@example.test","password":"password"}'],
+    }))
+    expect(unavailable).toMatchObject({ status: 503, body: 'service unavailable' })
+
+    const oversized = await invoke(routes.get('/auth/login')!, nodeRequest({
+      method: 'POST', url: '/auth/login', headers: { origin: 'https://app.example.test' },
+      chunks: ['x'.repeat(16 * 1024 + 1)],
+    }))
+    expect(oversized.status).toBe(503)
+
+    const defaults = await invoke(routes.get('/auth/session')!, nodeRequest({}))
+    expect(defaults.status).toBe(401)
+    const head = await invoke(routes.get('/auth/session')!, nodeRequest({ method: 'HEAD', url: '/auth/session' }))
+    expect(head.status).toBe(401)
+    const logoutBodyFailure = await invoke(routes.get('/auth/logout')!, nodeRequest({
+      method: 'POST', url: '/auth/logout', chunks: ['xx'], headers: {
+        origin: 'https://app.example.test', cookie: 'xagent_session=user-token; xagent_csrf=csrf-token', 'x-xagent-csrf': 'csrf-token',
+      },
+    }))
+    expect(logoutBodyFailure.status).toBe(503)
+    const oddHeaders = nodeRequest({ method: 'GET' })
+    oddHeaders.rawHeaders = ['orphan']
+    await expect(invoke(routes.get('/auth/session')!, oddHeaders)).rejects.toThrow('invalid request headers')
+    await ctx.fiber.dispose()
+    fetcher.mockRestore()
   })
 })

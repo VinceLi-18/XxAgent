@@ -176,6 +176,31 @@ describe('session.export download endpoint', () => {
     expect(readRaw).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['unauthenticated', 401],
+    ['internal', 503],
+  ] as const)('maps %s export authorization failure to HTTP %s', async (code, status) => {
+    const api = await buildApi({})
+    const response = await toFetchHandler(api, {
+      requestContext: { connectionId: 'connection-1' },
+      authorizer: {
+        run: async () => ({ ok: false, error: { code, message: 'denied', details: {} } }) as never,
+      },
+    }).fetch(new Request('http://host/api/session.export?sessionId=session-root'))
+    expect(response.status).toBe(status)
+  })
+
+  it('returns an authorized export after the authorizer runs the guarded operation', async () => {
+    const api = await buildApi({ 'session-root': artifact('session-root') })
+    const response = await toFetchHandler(api, {
+      requestContext: { connectionId: 'connection-1' },
+      authorizer: {
+        run: async (_endpoint, _payload, _request, _signal, operation) => operation(),
+      },
+    }).fetch(new Request('http://host/api/session.export?sessionId=session-root'))
+    expect(response.status).toBe(200)
+  })
+
   it('streams a ZIP with the root artifact verbatim under its original filename', async () => {
     const api = await buildApi({ 'session-root': artifact('session-root') })
     const response = await toFetchHandler(api).fetch(

@@ -503,6 +503,38 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'connectionRequestAuthorizer',
+    summary: 'Cordis 服务包装；服务键由通用 API Gateway 以可选结构读取。',
+    description: 'Cordis 服务包装；服务键由通用 API Gateway 以可选结构读取。',
+    methods: [
+      {
+        signature: 'run<T>( endpoint: string, payload: unknown, request: ConnectionRequestContext, signal: AbortSignal, operation: () => Promise<RpcResult<T>>, ): Promise<RpcResult<T>>',
+        description: 'Authorize one connection-bound RPC and run it inside the matching user scope.',
+        parameters: [{ name: 'endpoint', description: 'closed-table RPC method name.' }, { name: 'payload', description: 'untrusted parsed RPC payload.' }, { name: 'request', description: 'Host-created physical connection context.' }, { name: 'signal', description: 'request cancellation signal.' }, { name: 'operation', description: 'downstream operation admitted after authorization.' }],
+        returns: 'the downstream result or a stable authorization error.',
+      },
+      {
+        signature: 'filterEvent( endpoint: \'events.mux\' | \'events.host\', frame: unknown, request: ConnectionRequestContext, signal: AbortSignal, ): Promise<unknown>',
+        description: 'Remove Session event frames the authenticated connection cannot read.',
+        parameters: [{ name: 'endpoint', description: 'event stream carrying the frame.' }, { name: 'frame', description: 'untrusted candidate event frame.' }, { name: 'request', description: 'Host-created physical connection context.' }, { name: 'signal', description: 'stream cancellation signal.' }],
+        returns: 'the original frame when visible, or `undefined` when hidden.',
+      },
+    ],
+  },
+  {
+    key: 'connectionRequestContextResolver',
+    summary: 'Connection 可选解析服务；通用传输只依赖其结构，不导入 XAgent。',
+    description: 'Connection 可选解析服务；通用传输只依赖其结构，不导入 XAgent。',
+    methods: [
+      {
+        signature: 'resolve(request: Request, connectionId: string, signal: AbortSignal): Promise<ResolvedConnectionRequestContext>',
+        description: 'Resolve one HTTP request into a context bound to its physical connection.',
+        parameters: [{ name: 'request', description: 'browser request carrying only Host-managed credentials.' }, { name: 'connectionId', description: 'Host-generated physical connection identifier.' }, { name: 'signal', description: 'request cancellation signal.' }],
+        returns: 'the authenticated context used by RPC authorization.',
+      },
+    ],
+  },
+  {
     key: 'credentials',
     summary: 'Abstract credential service.',
     description: 'Abstract credential service. Providers implement the four operations over their source layers; one seam-wide rule binds them all: an empty stored value is absent everywhere — `resolve` skips it, `describe` reports it unconfigured — so a blank never masquerades as a configured secret.',
@@ -1035,6 +1067,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['when this backend does not expose per-session raw artifacts.'],
       },
       {
+        signature: 'preparePublication(_session: Session): Promise<void>',
+        description: 'Durably register a fresh unpublished Session before the Agent/Session registries expose it. Remote backends override this boundary when their publication must be atomic with an initial event prefix; local and lazy backends keep the default no-op.',
+        parameters: [{ name: '_session', description: 'the fully seeded but still unpublished Session.' }],
+      },
+      {
         signature: 'abstract create(meta: SessionHeader): Promise<void>',
         description: 'Register a new session\'s metadata. A backend MAY defer the physical write until the first append (lazy materialization), in which case a created-but-never-appended session is absent from list — abandoned sessions leave nothing behind.',
         parameters: [{ name: 'meta', description: 'the immutable header (id, version, cwd, lineage) to record.' }],
@@ -1055,6 +1092,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Load an immutable balanced logical view and commit any required cold recovery. A complete interrupted final turn is preserved and durably closed with missing tool errors plus any open step and turn boundaries; only a torn final record is discarded. Unknown versions and corruption in the committed prefix reject. Implementations MUST NOT crash-repair an identity still bound to a live Session: a balanced live log may return as a durable snapshot, while an open live turn rejects. Returned values may be shared with immutable live or prepared state and must not be mutated. Revision-based implementations may wait for one stable read/check round trip.',
         parameters: [{ name: 'id', description: 'the persisted session to reload.' }],
         returns: 'the header and a log ending on a balanced `turn/end`.',
+      },
+      {
+        signature: 'listForBootstrap(signal?: AbortSignal): Promise<SessionHeader[]>',
+        description: 'List headers that a process-global index may consume before any request identity exists. User-scoped remote backends override this with an empty list so service bootstrap cannot enumerate one tenant or require a token. Request paths must continue to use list.',
+        parameters: [{ name: 'signal', description: 'optional cancellation for backend list work.' }],
+        returns: 'headers safe to expose to a process-global bootstrap index.',
       },
       {
         signature: 'abstract inspect(id: SessionId, signal?: AbortSignal): Promise<SessionInspection>',
@@ -2156,6 +2199,19 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Resolve by canonical directory path without creating or mutating a workspace. A missing path rejects during `realpath`; an existing unowned directory returns `undefined`.',
         parameters: [{ name: 'path', description: 'Existing directory path in any spelling.' }],
         returns: 'the workspace owning the canonical path, when one exists.',
+      },
+    ],
+  },
+  {
+    key: 'xagentPrincipal',
+    summary: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
+    description: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
+    methods: [
+      {
+        signature: 'abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>',
+        description: 'Introspect a login token and bind the resulting actor to one Host connection.',
+        parameters: [{ name: 'userToken', description: 'opaque FastAPI login token.' }, { name: 'connectionId', description: 'Host-generated physical connection identifier.' }, { name: 'signal', description: 'optional introspection cancellation signal.' }],
+        returns: 'an immutable validated Principal.',
       },
     ],
   },
@@ -3645,7 +3701,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RpcErrorDetailsMap',
-    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPreset?: string;\n    };\n    \'agent-preset-not-found\': {\n        agentPreset: string;\n      /* …truncated — full shape in source */',
+    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'unauthenticated\': {};\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPreset?: string;\n    };\n    \'agent-preset-not-found\': {\n        /* …truncated — full shape in source */',
   },
   {
     name: 'RpcId',
@@ -4654,6 +4710,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'WorkflowStopReason',
     declaration: 'export type WorkflowStopReason = \'completed\' | \'cancelled\' | \'error\';',
+  },
+  {
+    name: 'XAgentPrincipal',
+    declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
+  },
+  {
+    name: 'XAgentRole',
+    declaration: 'export type XAgentRole = \'manager\' | \'specialist\';',
   },
 ]
 

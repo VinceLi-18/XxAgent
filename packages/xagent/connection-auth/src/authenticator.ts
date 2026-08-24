@@ -5,6 +5,7 @@ import type { ConnectionRequestContextResolver, ResolvedConnectionRequestContext
 const SESSION_COOKIE = 'xagent_session'
 const CSRF_COOKIE = 'xagent_csrf'
 
+/** Browser-origin, cookie, payload, and revalidation policy for connection authentication. */
 export interface XAgentConnectionAuthOptions {
   allowedOrigins: readonly string[]
   secureCookie: boolean
@@ -17,6 +18,7 @@ function cookieValue(header: string | null, name: string): string | undefined {
   const matches = header.split(';').map(part => part.trim()).filter(part => part.startsWith(`${name}=`))
   if (matches.length !== 1) return undefined
   const match = matches[0]
+  /* v8 ignore next -- length === 1 guarantees this dense array has index zero. */
   if (match === undefined) return undefined
   const value = match.slice(name.length + 1)
   return value.length === 0 ? undefined : value
@@ -111,6 +113,11 @@ export class XAgentConnectionAuthenticator implements ConnectionRequestContextRe
     return Object.freeze({ principal, userToken, ...lifetime === undefined ? {} : { lifetime } })
   }
 
+  /**
+   * Exchange email credentials for Host-managed login cookies.
+   * @param request - browser login request.
+   * @returns a redacted login response with secure cookie headers.
+   */
   async login(request: Request): Promise<Response> {
     if (request.method !== 'POST' || !this.hasAllowedOrigin(request)) {
       return new Response('forbidden', { status: 403 })
@@ -133,6 +140,11 @@ export class XAgentConnectionAuthenticator implements ConnectionRequestContextRe
     return Response.json({ csrf_token: issued.csrfToken, expires_at: issued.expiresAt }, { headers })
   }
 
+  /**
+   * Introspect the current login cookie without exposing its token.
+   * @param request - browser authentication-status request.
+   * @returns 204 for an active login or 401 otherwise.
+   */
   async status(request: Request): Promise<Response> {
     const headers = { 'x-xagent-auth': '1' }
     try {
@@ -145,6 +157,11 @@ export class XAgentConnectionAuthenticator implements ConnectionRequestContextRe
     }
   }
 
+  /**
+   * Revoke the current login and clear its browser cookies.
+   * @param request - same-origin, CSRF-protected logout request.
+   * @returns 204 after revocation or 401 when authentication fails.
+   */
   async logout(request: Request): Promise<Response> {
     try {
       this.assertOrigin(request)
@@ -193,6 +210,7 @@ export class XAgentConnectionAuthenticator implements ConnectionRequestContextRe
     watchers.add(controller)
     this.lifetimes.set(userToken, watchers)
     const cleanup = (): void => {
+      /* v8 ignore next -- watch installs the first timer synchronously before any external abort can fire. */
       if (timer !== undefined) clearTimeout(timer)
       watchers.delete(controller)
       if (watchers.size === 0) this.lifetimes.delete(userToken)
@@ -200,6 +218,7 @@ export class XAgentConnectionAuthenticator implements ConnectionRequestContextRe
     controller.signal.addEventListener('abort', cleanup, { once: true })
     parent.addEventListener('abort', () => { controller.abort() }, { once: true })
     const revalidate = async (): Promise<void> => {
+      /* v8 ignore next -- cleanup clears every scheduled callback before it can observe an aborted controller. */
       if (controller.signal.aborted) return
       try {
         const current = await this.backend.introspect(userToken, controller.signal)

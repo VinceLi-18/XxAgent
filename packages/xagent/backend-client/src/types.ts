@@ -1,5 +1,6 @@
 import type { XAgentPrincipal } from '@xagent/dsh-principal'
 
+/** Stable error vocabulary exposed across the Host/FastAPI boundary. */
 export type XAgentBackendErrorCode =
   | 'unauthenticated'
   | 'not-found'
@@ -8,6 +9,7 @@ export type XAgentBackendErrorCode =
   | 'unsupported-version'
   | 'service-unavailable'
 
+/** Principal-scoped FastAPI Session operations used by the remote persistence provider. */
 export interface XAgentSessionBackend {
   list(userToken: string, signal?: AbortSignal): Promise<unknown>
   create(userToken: string, body: unknown, signal?: AbortSignal): Promise<unknown>
@@ -24,12 +26,14 @@ export interface XAgentSessionBackend {
   ): Promise<void>
 }
 
+/** Login material returned only to the Host before it writes browser cookies. */
 export interface XAgentIssuedLogin {
   accessToken: string
   expiresAt: string
   csrfToken: string
 }
 
+/** Authentication and Session contract implemented by the XAgent FastAPI client. */
 export interface XAgentBackend {
   login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin>
   introspect(userToken: string, signal?: AbortSignal): Promise<XAgentPrincipal>

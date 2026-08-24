@@ -1,5 +1,7 @@
+/** XAgent 当前支持的账号角色。 */
 export type XAgentRole = 'manager' | 'specialist'
 
+/** FastAPI 认证后绑定到一条 Host 物理连接的不可变身份。 */
 export interface XAgentPrincipal {
   readonly actorId: string
   readonly role: XAgentRole
@@ -8,6 +10,7 @@ export interface XAgentPrincipal {
   readonly connectionId: string
 }
 
+/** 通过服务端 introspection 解析连接 Principal 的边界。 */
 export interface XAgentPrincipalResolver {
   resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 }

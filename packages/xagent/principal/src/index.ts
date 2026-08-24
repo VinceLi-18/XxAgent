@@ -16,7 +16,12 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** 将 FastAPI introspection 结果转换为当前物理连接的不可变 Principal。 */
+/**
+ * 将 FastAPI introspection 结果转换为当前物理连接的不可变 Principal。
+ * @param value - FastAPI 返回的待校验 Principal payload。
+ * @param connectionId - Host 生成的物理连接标识。
+ * @returns 结构与标识均已校验的不可变 Principal。
+ */
 export function parseXAgentPrincipal(value: unknown, connectionId: string): XAgentPrincipal {
   if (typeof value !== 'object' || value === null || connectionId.length === 0) {
     throw new TypeError('invalid principal')
@@ -52,6 +57,13 @@ export abstract class XAgentPrincipalService extends Service implements XAgentPr
     super(ctx, 'xagentPrincipal')
   }
 
+  /**
+   * Introspect a login token and bind the resulting actor to one Host connection.
+   * @param userToken - opaque FastAPI login token.
+   * @param connectionId - Host-generated physical connection identifier.
+   * @param signal - optional introspection cancellation signal.
+   * @returns an immutable validated Principal.
+   */
   abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 }
 

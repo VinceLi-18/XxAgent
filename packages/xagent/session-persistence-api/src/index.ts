@@ -23,8 +23,11 @@ import { XAgentBackendClient, type XAgentBackend } from '@xagent/dsh-backend-cli
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 
+/** XAgent FastAPI Session Persistence plugin configuration. */
 export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
   backendOrigin: string
+  /** Host 调用内部 Session 接口时使用的服务身份。 */
   serviceToken: string
 }
 
@@ -146,6 +149,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return undefined
   }
 
+  /**
+   * Run one complete authenticated RPC inside an exclusive user-token scope.
+   * @param userToken - opaque token already bound to the request Principal.
+   * @param operation - complete remote persistence operation.
+   * @returns the operation result after the scope is cleared.
+   */
   async withUserToken<T>(userToken: string, operation: () => Promise<T>): Promise<T> {
     let release!: () => void
     const previous = this.scopeTail
@@ -160,6 +169,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
     }
   }
 
+  /**
+   * Record the authenticated token lease for one Session request.
+   * @param id - authorized Session identifier.
+   * @param requestId - optional Host request identifier.
+   * @param userToken - opaque token bound to the authorized Principal.
+   */
   authorizeRequest(id: SessionIdType, requestId: string | undefined, userToken: string): void {
     this.leases.set(id, userToken)
     if (requestId !== undefined) this.requestTokens.set(requestId, { sessionId: id, token: userToken })
@@ -185,6 +200,11 @@ export class XAgentSessionPersistence extends SessionPersistence {
     this.leases.set(session.id, token)
   }
 
+  /**
+   * Flush queued events for one live Session before a remote authorization read.
+   * @param id - Session whose pending append must settle.
+   * @returns after the live Session flush completes or immediately when absent.
+   */
   async flushSession(id: SessionIdType): Promise<void> {
     const session = this.ctx.get('sessions')?.get(id)
     if (session !== undefined) await this.ctx.sessions.flush(session)
@@ -206,11 +226,11 @@ export class XAgentSessionPersistence extends SessionPersistence {
 
   async append(id: SessionIdType, events: readonly SessionEvent[]): Promise<void> {
     if (events.length === 0) return
-    const token = this.tokenForEvents(id, events)
-    if (token === undefined) throw new Error('unauthenticated')
     const first = events[0]
     const last = events.at(-1)
     if (first === undefined || last === undefined) return
+    const token = this.tokenForEvents(id, events)
+    if (token === undefined) throw new Error('unauthenticated')
     for (let index = 0; index < events.length; index++) {
       if (events[index]?.seq !== first.seq + index) throw new TypeError('non-contiguous XAgent session append')
     }

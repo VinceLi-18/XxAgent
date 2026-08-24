@@ -36,6 +36,18 @@ Any row it prints can be replaced by a patch of your own.
 
 Composition mechanics are in [app-boot](../packages/boot/app-boot/README.md#profiles); config fields are in the generated [config catalog](config-catalog.md).
 
+### XAgent authenticated Business runtime
+
+`xagent-business` keeps the dsh Host as the browser-facing process, but it does not use the local JSONL store as its session authority. The Host exchanges the browser's secure login cookie with the XAgent FastAPI service, derives an immutable principal for each physical connection, and passes that principal explicitly through RPC authorization. Browser payloads and identity-like headers never define the principal.
+
+The XAgent authorization service validates every Session method against a closed method table. It binds the request to the authenticated connection, asks FastAPI for the required read or edit decision, and opens a narrowly scoped user-token lease around the remote persistence call. Unknown Workspace methods and all browser Workspace RPCs fail closed; the internal Workspace registry remains mounted only because the generic API gateway requires it during boot.
+
+FastAPI owns passwords, revocable login records, permission revisions, account state, session headers, and append-only session events. PostgreSQL row-level security and the application transaction recheck the actor before each read or write. A private session is visible only to its owner, including to managers; invisible and absent sessions share the same not-found result. The Host never falls back to a profile-local session file when FastAPI is unavailable.
+
+New-session publication is atomic across the runtime boundary: the remote header and seed event must commit before the Agent becomes visible. Restored sessions preserve interrupted durable tails and append any required closure events remotely. Startup workspace discovery uses a separate bootstrap method; the XAgent provider intentionally returns no user sessions there because no authenticated principal exists yet.
+
+`xagent-developer`, `web`, `headless`, and other upstream profiles retain their existing local persistence and do not load XAgent service credentials, authentication, authorization, or delegation keys. Profile directories remain an organization boundary, not a multi-user security boundary.
+
 ## Core packages
 
 Here are some core packages that contribute to the Cordis tree.

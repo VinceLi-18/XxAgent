@@ -131,6 +131,18 @@ describe('XAgent Session 授权', () => {
       'rpc-alice-prompt',
       'alice-token',
     )
+    await auth.run(
+      'session/history',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      context,
+      new AbortController().signal,
+      success,
+    )
+    expect(authorizeRequest).toHaveBeenLastCalledWith(
+      'session-00000000-0000-0000-0000-000000000701',
+      undefined,
+      'alice-token',
+    )
   })
 
   test('不可见 Session 统一映射为 session-not-found', async () => {
@@ -262,5 +274,144 @@ describe('XAgent Session 授权', () => {
     await expect(auth.run('host/describe', { args: {} }, context, new AbortController().signal, operation))
       .resolves.toEqual({ ok: true, value: 'ok' })
     expect(operation).toHaveBeenCalledOnce()
+  })
+
+  test.each([
+    [{ userToken: undefined }],
+    [{ userToken: '' }],
+    [{ principal: null }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), actorId: 1 } }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), actorId: 'bad' } }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), role: 'admin' } }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), permissionRevision: 1.5 } }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), permissionRevision: 0 } }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), authSessionId: 1 } }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), authSessionId: 'bad' } }],
+    [{ principal: { ...(context.principal as Record<string, unknown>), connectionId: 'other' } }],
+  ])('拒绝伪造或不完整 Principal %#', async (override) => {
+    const operation = vi.fn(success)
+    const auth = new XAgentAuthorization(backend(), persistence())
+    const result = await auth.run('session.list', {}, { ...context, ...override } as never, new AbortController().signal, operation)
+    expect(result.ok).toBe(false)
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    [null],
+    [[]],
+    [{ args: null }],
+    [{ args: [] }],
+    [{ args: 'bad' }],
+  ])('无效参数对象不能提供 Session 标识 %#', async (payload) => {
+    const auth = new XAgentAuthorization(backend(), persistence())
+    await expect(auth.run('session.history', payload, context, new AbortController().signal, success))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+  })
+
+  test('点式 Session 方法、创建与未登记方法遵守封闭权限表', async () => {
+    const authorize = vi.fn(async () => {})
+    const operation = vi.fn(success)
+    const auth = new XAgentAuthorization(backend(authorize), persistence())
+    const signal = new AbortController().signal
+    await expect(auth.run('session.create', { args: {} }, context, signal, operation)).resolves.toEqual({ ok: true, value: 'ok' })
+    await expect(auth.run('session.unknown', { args: {} }, context, signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run('workspace.archiveSession', { args: { sessionId: 'bad' } }, context, signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    expect(authorize).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    [null],
+    [{}],
+    [{ sessions: null }],
+    [{ sessions: [null] }],
+    [{ sessions: [{ runtime_header: 'bad' }] }],
+    [{ sessions: [{ runtime_header: {} }] }],
+  ])('拒绝畸形可见 Session 响应 %#', async (value) => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => value as never)
+    const auth = new XAgentAuthorization(remote, persistence())
+    await expect(auth.run('session.search', {}, context, new AbortController().signal, success))
+      .resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+  })
+
+  test('列表过滤保留失败或非 items 响应，并丢弃畸形内存项', async () => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => ({
+      schema_version: 1, sessions: [{ runtime_header: null }, { runtime_header: { id: 'visible' } }],
+    }))
+    const auth = new XAgentAuthorization(remote, persistence())
+    const signal = new AbortController().signal
+    const failed: RpcResult<unknown> = { ok: false, error: { code: 'internal', message: 'failed', details: {} } }
+    await expect(auth.run('session.list', {}, context, signal, async () => failed)).resolves.toBe(failed)
+    await expect(auth.run('session.list', {}, context, signal, async () => ({ ok: true, value: null })))
+      .resolves.toEqual({ ok: true, value: null })
+    await expect(auth.run('session.list', {}, context, signal, async () => ({ ok: true, value: {} })))
+      .resolves.toEqual({ ok: true, value: {} })
+    await expect(auth.run('session.list', {}, context, signal, async () => ({
+      ok: true, value: { items: [null, {}, { sessionId: 1 }, { sessionId: 'visible' }] },
+    }))).resolves.toEqual({ ok: true, value: { items: [{ sessionId: 'visible' }] } })
+  })
+
+  test.each([
+    [new XAgentBackendError('unauthenticated'), 'unauthenticated'],
+    [new XAgentBackendError('not-found'), 'internal'],
+    [new Error('offline'), 'internal'],
+  ])('授权后端错误稳定映射 %#', async (failure, code) => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => { throw failure })
+    const auth = new XAgentAuthorization(remote, persistence())
+    const result = await auth.run('session.list', {}, context, new AbortController().signal, success)
+    expect(result).toMatchObject({ ok: false, error: { code } })
+  })
+
+  test('事件过滤覆盖控制帧、畸形帧、归档校验和后端故障', async () => {
+    const flushSession = vi.fn(async () => {})
+    const authorize = vi.fn(async (_token: string, id: string) => {
+      if (id.endsWith('999')) throw new Error('offline')
+    })
+    const auth = new XAgentAuthorization(backend(authorize), { ...persistence(), flushSession })
+    const signal = new AbortController().signal
+    for (const frame of [null, [], 'bad']) {
+      await expect(auth.filterEvent('events.host', frame, context, signal)).resolves.toBeUndefined()
+    }
+    for (const type of ['stream/error', 'host/remote-event']) {
+      const frame = { type }
+      await expect(auth.filterEvent('events.host', frame, context, signal)).resolves.toBe(frame)
+    }
+    await expect(auth.filterEvent('events.host', { type: 'host/archived-sessions-changed', archivedSessionIds: null }, context, signal))
+      .resolves.toBeUndefined()
+    await expect(auth.filterEvent('events.host', {
+      type: 'host/archived-sessions-changed', archivedSessionIds: [1, 'bad'],
+    }, context, signal)).resolves.toEqual({ type: 'host/archived-sessions-changed', archivedSessionIds: [] })
+    await expect(auth.filterEvent('events.host', { type: 1 }, context, signal)).resolves.toBeUndefined()
+    await expect(auth.filterEvent('events.host', { type: 'session/event', sessionId: 1 }, context, signal)).resolves.toBeUndefined()
+    await expect(auth.filterEvent('events.host', {
+      type: 'session/event', sessionId: 'session-00000000-0000-0000-0000-000000000999',
+    }, context, signal)).rejects.toThrow('offline')
+    expect(flushSession).toHaveBeenCalled()
+  })
+
+  test('服务代理转发事件过滤，插件入口校验 token scope 并注册服务', async () => {
+    const ctx = new Context()
+    const service = new XAgentAuthorizationService(ctx, backend(), persistence())
+    await expect(service.filterEvent('events.host', { type: 'stream/error' }, context, new AbortController().signal))
+      .resolves.toEqual({ type: 'stream/error' })
+    await ctx.fiber.dispose()
+
+    const missing = new Context()
+    missing.provide('sessionPersistence', {} as never)
+    expect(() => {
+      authorizationModule.apply(missing, { backendOrigin: 'https://api.example.test', serviceToken: 'service' })
+    })
+      .toThrow('requires token-scoped session persistence')
+    await missing.fiber.dispose()
+
+    const mounted = new Context()
+    mounted.provide('sessionPersistence', persistence() as never)
+    authorizationModule.apply(mounted, { backendOrigin: 'https://api.example.test', serviceToken: 'service' })
+    expect(mounted.get('connectionRequestAuthorizer')).toBeDefined()
+    await mounted.fiber.dispose()
   })
 })

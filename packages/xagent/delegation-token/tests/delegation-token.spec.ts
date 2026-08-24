@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto'
+import { generateKeyPairSync, sign } from 'node:crypto'
 import { describe, expect, test } from 'vitest'
 import { issueDelegationToken, verifyDelegationToken } from '../src/index.ts'
 
@@ -11,6 +11,30 @@ const scope = {
   toolCallId: 'tool-call-1',
   toolName: 'artifact.read',
   permissionRevision: 4,
+}
+
+function rawToken(payload: Record<string, unknown>, header: Record<string, unknown> = { alg: 'EdDSA', typ: 'JWT' }): string {
+  const head = Buffer.from(JSON.stringify(header)).toString('base64url')
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const input = `${head}.${body}`
+  return `${input}.${sign(null, Buffer.from(input), privateKey).toString('base64url')}`
+}
+
+const payload = {
+  iss: 'xagent-host', aud: 'xagent-api', iat: now, exp: now + 30,
+  actor_id: scope.actorId, project_id: scope.projectId, session_id: scope.sessionId,
+  tool_call_id: scope.toolCallId, tool_name: scope.toolName,
+  permission_revision: scope.permissionRevision, nonce: 'nonce-valid',
+}
+
+const verifyOptions = {
+  publicKey,
+  issuer: 'xagent-host',
+  audience: 'xagent-api',
+  now: now + 1,
+  expected: scope,
+  currentPermissionRevision: 4,
+  consumeNonce: async () => true,
 }
 
 describe('XAgent Ed25519 委托令牌', () => {
@@ -93,5 +117,81 @@ describe('XAgent Ed25519 委托令牌', () => {
       ...base,
       currentPermissionRevision: 5,
     })).rejects.toThrow('delegation rejected')
+  })
+
+  test.each([
+    [{ actorId: 'bad' }],
+    [{ projectId: 'bad' }],
+    [{ sessionId: 'bad' }],
+    [{ toolCallId: '' }],
+    [{ toolName: '' }],
+    [{ permissionRevision: 1.5 }],
+    [{ permissionRevision: 0 }],
+    [{ now: 1.5 }],
+    [{ expiresInSeconds: 1.5 }],
+    [{ expiresInSeconds: 0 }],
+    [{ issuer: '' }],
+    [{ audience: '' }],
+    [{ nonce: '' }],
+  ])('签发端拒绝无效字段 %#', (override) => {
+    expect(() => issueDelegationToken({
+      ...scope,
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+      now, expiresInSeconds: 30, nonce: 'nonce', ...override,
+    })).toThrow('delegation rejected')
+  })
+
+  test.each([
+    [{ iss: 'wrong' }],
+    [{ aud: 'wrong' }],
+    [{ actor_id: 'bad' }],
+    [{ project_id: 'bad' }],
+    [{ session_id: 'bad' }],
+    [{ tool_call_id: '' }],
+    [{ tool_name: '' }],
+    [{ permission_revision: 1.5 }],
+    [{ permission_revision: 0 }],
+    [{ iat: 'bad' }],
+    [{ iat: 1.5 }],
+    [{ exp: 'bad' }],
+    [{ exp: 1.5 }],
+    [{ exp: now + 61 }],
+    [{ exp: now + 1 }],
+    [{ iat: now + 2 }],
+    [{ nonce: 1 }],
+    [{ nonce: '' }],
+  ])('验证端拒绝无效 claim %#', async (override) => {
+    await expect(verifyDelegationToken(rawToken({ ...payload, ...override }), verifyOptions))
+      .rejects.toThrow('delegation rejected')
+  })
+
+  test.each([
+    [{ actorId: crypto.randomUUID() }],
+    [{ projectId: crypto.randomUUID() }],
+    [{ sessionId: crypto.randomUUID() }],
+    [{ toolCallId: 'other-call' }],
+    [{ toolName: 'other.tool' }],
+    [{ permissionRevision: 5 }],
+  ])('验证端拒绝与预期作用域不同的 claim %#', async (override) => {
+    await expect(verifyDelegationToken(rawToken(payload), {
+      ...verifyOptions,
+      expected: { ...scope, ...override },
+    })).rejects.toThrow('delegation rejected')
+  })
+
+  test('拒绝畸形 compact token、header、签名和已消费 nonce', async () => {
+    await expect(verifyDelegationToken('not-a-token', verifyOptions)).rejects.toThrow('delegation rejected')
+    await expect(verifyDelegationToken(`*.${rawToken(payload).split('.').slice(1).join('.')}`, verifyOptions))
+      .rejects.toThrow('delegation rejected')
+    await expect(verifyDelegationToken(rawToken(payload, { alg: 'HS256', typ: 'JWT' }), verifyOptions))
+      .rejects.toThrow('delegation rejected')
+    await expect(verifyDelegationToken(rawToken(payload, { alg: 'EdDSA', typ: 'wrong' }), verifyOptions))
+      .rejects.toThrow('delegation rejected')
+    const parts = rawToken(payload).split('.')
+    await expect(verifyDelegationToken(`${parts[0]}.${parts[1]}.*`, verifyOptions)).rejects.toThrow('delegation rejected')
+    await expect(verifyDelegationToken(`${parts[0]}.${parts[1]}.${Buffer.alloc(64).toString('base64url')}`, verifyOptions))
+      .rejects.toThrow('delegation rejected')
+    await expect(verifyDelegationToken(rawToken(payload), { ...verifyOptions, consumeNonce: async () => false }))
+      .rejects.toThrow('delegation rejected')
   })
 })
