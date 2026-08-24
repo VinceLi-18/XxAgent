@@ -8338,6 +8338,36 @@ importers:
         specifier: workspace:^
         version: link:../../storage/storage-domain
 
+  packages/xagent/backend-client:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@xagent/dsh-principal':
+        specifier: workspace:^
+        version: link:../principal
+
+  packages/xagent/delegation-token:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+
+  packages/xagent/principal:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+
   python/sdk-runtime:
     dependencies:
       '@deepseek-ai/cordis':

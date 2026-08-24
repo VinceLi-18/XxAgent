@@ -28,6 +28,12 @@
     // not declaration path aliases, keep each package/vendor source compiled
     // under its own tsconfig boundary.
     "paths": {
+      "@xagent/dsh-principal": ["./packages/xagent/principal/src/index.ts"],
+      "@xagent/dsh-principal/types": ["./packages/xagent/principal/src/types.ts"],
+      "@xagent/dsh-backend-client": ["./packages/xagent/backend-client/src/index.ts"],
+      "@xagent/dsh-backend-client/types": ["./packages/xagent/backend-client/src/types.ts"],
+      "@xagent/dsh-delegation-token": ["./packages/xagent/delegation-token/src/index.ts"],
+      "@xagent/dsh-delegation-token/types": ["./packages/xagent/delegation-token/src/types.ts"],
       "@deepseek-ai/cordis": ["./vendor/cordis/src"],
       "@deepseek-ai/cosmokit": ["./vendor/cosmokit/src"],
       "@deepseek-ai/schemastery": ["./vendor/schemastery/src"],
