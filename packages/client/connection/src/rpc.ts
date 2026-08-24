@@ -56,7 +56,7 @@ export interface ConnectionRequestAuthorizer {
     frame: unknown,
     request: ConnectionRequestContext,
     signal: AbortSignal,
-  ): Promise<unknown | undefined>
+  ): Promise<unknown>
 }
 
 /** Handler invoked after Connection has decoded the transport envelope. */

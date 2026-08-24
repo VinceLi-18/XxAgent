@@ -217,10 +217,10 @@ export class XAgentConnectionAuthenticator implements ConnectionRequestContextRe
         return
       }
       timer = setTimeout(() => { void revalidate() }, this.revalidateIntervalMs)
-      timer.unref?.()
+      timer.unref()
     }
     timer = setTimeout(() => { void revalidate() }, this.revalidateIntervalMs)
-    timer.unref?.()
+    timer.unref()
     return controller.signal
   }
 

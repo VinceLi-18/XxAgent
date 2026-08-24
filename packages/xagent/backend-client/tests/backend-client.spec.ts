@@ -8,6 +8,11 @@ const principal = {
   auth_session_id: '00000000-0000-0000-0000-000000000101',
 }
 
+function requestUrl(input: string | URL | Request): string {
+  if (typeof input === 'string') return input
+  return input instanceof URL ? input.href : input.url
+}
+
 describe('XAgent 后端客户端', () => {
   test('缺少 FastAPI origin 或 Host 服务身份时构造立即失败', () => {
     expect(() => new XAgentBackendClient({ origin: '', serviceToken: 'service-secret' }))
@@ -37,7 +42,7 @@ describe('XAgent 后端客户端', () => {
       csrfToken: 'csrf-token',
     })
     const [url, init] = fetcher.mock.calls[0]!
-    expect(String(url)).toBe('https://api.example.test/api/v1/auth/login')
+    expect(requestUrl(url)).toBe('https://api.example.test/api/v1/auth/login')
     expect(new Headers(init?.headers).has('authorization')).toBe(false)
     expect(new Headers(init?.headers).has('x-xagent-service-token')).toBe(false)
   })
@@ -57,7 +62,7 @@ describe('XAgent 后端客户端', () => {
     expect(result.connectionId).toBe('connection-1')
     expect(fetcher).toHaveBeenCalledOnce()
     const [url, init] = fetcher.mock.calls[0]!
-    expect(String(url)).toBe('https://api.example.test/internal/xagent/auth/introspect')
+    expect(requestUrl(url)).toBe('https://api.example.test/internal/xagent/auth/introspect')
     expect(init).toMatchObject({ method: 'POST', redirect: 'manual' })
     expect(new Headers(init?.headers).get('authorization')).toBe('Bearer user-secret')
     expect(new Headers(init?.headers).get('x-xagent-service-token')).toBe('service-secret')
@@ -73,7 +78,7 @@ describe('XAgent 后端客户端', () => {
       ),
     })
 
-    const rejected = await client.sessions.open('user-secret', crypto.randomUUID()).catch(error => error)
+    const rejected = await client.sessions.open('user-secret', crypto.randomUUID()).catch((error: unknown) => error)
 
     expect(rejected).toBeInstanceOf(XAgentBackendError)
     expect(rejected).toMatchObject({ code: 'not-found' })
@@ -93,7 +98,9 @@ describe('XAgent 后端客户端', () => {
 
   test('调用方取消会传到 fetch 且统一映射服务不可用', async () => {
     const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_, reject) => {
-      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      init?.signal?.addEventListener('abort', () => {
+        reject(new Error('request aborted', { cause: init.signal?.reason }))
+      }, { once: true })
     }))
     const client = new XAgentBackendClient({
       origin: 'https://api.example.test',
@@ -117,7 +124,7 @@ describe('XAgent 后端客户端', () => {
     })
 
     await expect(client.sessions.authorize('user-secret', 'session/unsafe', 'edit')).resolves.toBeUndefined()
-    expect(String(fetcher.mock.calls[0]?.[0])).toBe(
+    expect(requestUrl(fetcher.mock.calls[0]![0])).toBe(
       'https://api.example.test/internal/xagent/sessions/session%2Funsafe/authorize',
     )
   })

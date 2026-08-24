@@ -65,18 +65,17 @@ describe('XAgent FastAPI Session Persistence', () => {
 
     await persistence.withUserToken('alice-token', () => persistence.preparePublication(session))
 
-    expect(value.calls.find(call => call.name === 'create')?.args).toEqual([
-      'alice-token',
-      expect.objectContaining({
-        session_id: '00000000-0000-0000-0000-000000000701',
-        runtime_header: header,
-        events: [expect.objectContaining({
-          event_type: 'session/end-seed',
-          payload: expect.objectContaining({ seq: 0, type: 'session/end-seed' }),
-        })],
-      }),
-      undefined,
-    ])
+    const call = value.calls.find(candidate => candidate.name === 'create')
+    expect(call?.args[0]).toBe('alice-token')
+    expect(call?.args[1]).toMatchObject({
+      session_id: '00000000-0000-0000-0000-000000000701',
+      runtime_header: header,
+      events: [{
+        event_type: 'session/end-seed',
+        payload: { seq: 0, type: 'session/end-seed' },
+      }],
+    })
+    expect(call?.args[2]).toBeUndefined()
   })
 
   test('创建与追加使用当前请求令牌，后续写入使用按 Session 固定的租约', async () => {

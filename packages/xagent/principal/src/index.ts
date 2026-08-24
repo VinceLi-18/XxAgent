@@ -4,7 +4,7 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { XAgentPrincipal, XAgentPrincipalResolver, XAgentRole } from './types.ts'
+import type { XAgentPrincipal, XAgentPrincipalResolver } from './types.ts'
 
 export type { XAgentPrincipal, XAgentPrincipalResolver, XAgentRole } from './types.ts'
 
@@ -39,7 +39,7 @@ export function parseXAgentPrincipal(value: unknown, connectionId: string): XAge
   }
   return Object.freeze({
     actorId,
-    role: role as XAgentRole,
+    role,
     permissionRevision: permissionRevision as number,
     authSessionId,
     connectionId,

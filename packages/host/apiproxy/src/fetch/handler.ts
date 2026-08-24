@@ -107,7 +107,7 @@ interface ApiRequestAuthorizer {
     frame: unknown,
     request: ApiRequestContext,
     signal: AbortSignal,
-  ): Promise<unknown | undefined>
+  ): Promise<unknown>
 }
 
 export interface FetchHandlerOptions {
@@ -202,7 +202,6 @@ function fullResponse(narrow: RpcResponse<unknown>): Response {
  */
 // K appears once in the signature but ties the UNARY_ROUTES[K] row lookup to its own
 // schema/invoke pairing; a union parameter degrades the row to an uninvokable intersection.
-// oxlint-disable-next-line typescript/no-unnecessary-type-parameters
 async function handleUnary<K extends keyof RpcMethodMap>(
   api: ApiProxy,
   method: K,

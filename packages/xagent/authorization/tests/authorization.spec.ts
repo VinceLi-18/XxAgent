@@ -28,10 +28,12 @@ function backend(authorize: XAgentSessionBackend['authorize'] = vi.fn(async () =
   }
 }
 
-function persistence(): TokenScopedPersistence {
+function persistence(onToken?: (token: string) => void): TokenScopedPersistence {
   return {
-    withUserToken: vi.fn(async (_token: string, operation: () => Promise<unknown>) => operation()) as unknown as
-      TokenScopedPersistence['withUserToken'],
+    async withUserToken<T>(token: string, operation: () => Promise<T>): Promise<T> {
+      onToken?.(token)
+      return operation()
+    },
   }
 }
 
@@ -55,7 +57,8 @@ describe('XAgent Session 授权', () => {
     ['session/cancel', 'edit'],
   ] as const)('%s 映射为 %s 权限并在令牌作用域内执行', async (endpoint, permission) => {
     const authorize = vi.fn(async () => {})
-    const scope = persistence()
+    const scopedTokens: string[] = []
+    const scope = persistence(token => scopedTokens.push(token))
     const auth = new XAgentAuthorization(backend(authorize), scope)
 
     await expect(auth.run(
@@ -72,7 +75,7 @@ describe('XAgent Session 授权', () => {
       permission,
       expect.any(AbortSignal),
     )
-    expect(scope.withUserToken).toHaveBeenCalledWith('alice-token', expect.any(Function))
+    expect(scopedTokens).toEqual(['alice-token'])
   })
 
   test('prompt 将 Host rpcId 与用户令牌显式绑定给后续事件追加', async () => {

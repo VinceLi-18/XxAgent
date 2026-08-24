@@ -45,7 +45,14 @@ function authenticatedRequest(method: 'GET' | 'POST' = 'POST'): Request {
 
 describe('XAgent Connection 认证桥', () => {
   test('在 RPC handler 前固定 Principal 与用户令牌', async () => {
-    const value = backend()
+    const introspect = vi.fn<XAgentBackend['introspect']>(async (_token, _signal) => ({
+      actorId: ACTOR_ID,
+      role: 'specialist',
+      permissionRevision: 3,
+      authSessionId: AUTH_SESSION_ID,
+      connectionId: 'backend-value-is-ignored',
+    }))
+    const value = backend({ introspect })
     const result = await authenticator(value).resolve(authenticatedRequest(), 'connection-1')
 
     expect(result).toEqual({
@@ -58,7 +65,7 @@ describe('XAgent Connection 认证桥', () => {
       },
       userToken: 'user-token',
     })
-    expect(value.introspect).toHaveBeenCalledWith('user-token', expect.any(AbortSignal))
+    expect(introspect).toHaveBeenCalledWith('user-token', expect.any(AbortSignal))
   })
 
   test('POST 缺少同源 Origin 或双提交 CSRF 时失败关闭', async () => {
@@ -98,7 +105,10 @@ describe('XAgent Connection 认证桥', () => {
   })
 
   test('登录只返回 CSRF 和过期时间，并设置严格 Cookie', async () => {
-    const value = backend()
+    const login = vi.fn<XAgentBackend['login']>(async () => ({
+      accessToken: 'user-token', expiresAt: '2026-08-25T08:00:00Z', csrfToken: 'csrf-token',
+    }))
+    const value = backend({ login })
     const response = await authenticator(value).login(new Request('https://app.example.test/auth/login', {
       method: 'POST',
       headers: { origin: 'https://app.example.test', 'content-type': 'application/json' },
@@ -117,7 +127,7 @@ describe('XAgent Connection 认证桥', () => {
     expect(cookies).toContain('Secure')
     expect(cookies).toContain('xagent_csrf=csrf-token')
     expect(body).not.toContain('user-token')
-    expect(value.login).toHaveBeenCalledWith('alice@example.test', 'password', expect.any(AbortSignal))
+    expect(login).toHaveBeenCalledWith('alice@example.test', 'password', expect.any(AbortSignal))
   })
 
   test('退出先撤销服务端会话，再清除两个 Cookie', async () => {

@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { WebServer, WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { apply, inject } from '../src/index.ts'
+import type { ConnectionRequestContextResolver, ConnectionRpcHandler } from '../src/rpc.ts'
 
 function server(routes: WebRoute[]): Pick<WebServer, 'register' | 'registerUpgrade' | 'tapIndex' | 'port'> {
   return {
@@ -41,7 +42,7 @@ function response(): { raw: ServerResponse; state: { status: number | undefined;
   return { raw, state }
 }
 
-async function mount(resolver?: { resolve: (...args: never[]) => unknown }) {
+async function mount(resolver?: ConnectionRequestContextResolver) {
   const ctx = new Context()
   const routes: WebRoute[] = []
   ctx.provide('webServer', server(routes) as WebServer)
@@ -64,7 +65,9 @@ describe('Connection 请求上下文', () => {
     await routes.find(route => route.path === '/rpc')!.handler(request(), output.raw)
 
     expect(output.state.status).toBe(200)
-    expect(seen).toEqual([{ connectionId: expect.any(String), requestId: 'rpc-1' }])
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ requestId: 'rpc-1' })
+    expect(typeof (seen[0] as { connectionId?: unknown }).connectionId).toBe('string')
     await remove()
     await dispose()
   })
@@ -75,8 +78,10 @@ describe('Connection 请求上下文', () => {
       userToken: 'browser-secret',
       connectionId: `forged-${connectionId}`,
     })) }
-    const { ctx, routes, dispose } = await mount(resolver as never)
-    const handler = vi.fn(async (_endpoint, _payload, _signal, context) => ({ ok: true as const, value: context }))
+    const { ctx, routes, dispose } = await mount(resolver)
+    const handler = vi.fn<ConnectionRpcHandler>(async (_endpoint, _payload, _signal, context) => (
+      { ok: true as const, value: context }
+    ))
     const remove = ctx.connection.rpc.handle('/rpc', handler, { authority: 'trusted-host' })
     const output = response()
 
@@ -96,7 +101,7 @@ describe('Connection 请求上下文', () => {
 
   test('认证拒绝不会调用 handler 或回显异常和凭据', async () => {
     const resolver = { resolve: vi.fn(async () => { throw new Error('browser-secret leaked') }) }
-    const { ctx, routes, dispose } = await mount(resolver as never)
+    const { ctx, routes, dispose } = await mount(resolver)
     const handler = vi.fn(async () => ({ ok: true as const, value: 'forbidden' }))
     const remove = ctx.connection.rpc.handle('/rpc', handler, { authority: 'trusted-host' })
     const output = response()

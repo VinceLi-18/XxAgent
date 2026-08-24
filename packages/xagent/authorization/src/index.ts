@@ -195,7 +195,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     frame: unknown,
     request: ConnectionRequestContext,
     signal: AbortSignal,
-  ): Promise<unknown | undefined> {
+  ): Promise<unknown> {
     if (!authenticated(request)) return undefined
     const value = objectFrame(frame)
     if (value === undefined) return undefined
@@ -261,7 +261,7 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     frame: unknown,
     request: ConnectionRequestContext,
     signal: AbortSignal,
-  ): Promise<unknown | undefined> {
+  ): Promise<unknown> {
     return this.authorization.filterEvent(endpoint, frame, request, signal)
   }
 }

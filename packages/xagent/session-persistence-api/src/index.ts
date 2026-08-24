@@ -388,7 +388,11 @@ export class XAgentSessionPersistence extends SessionPersistence {
   private flushWrites(id: SessionIdType): Promise<void> {
     const state = this.writes.get(id)
     if (state === undefined) return Promise.resolve()
-    if (state.failure !== undefined) return Promise.reject(state.failure)
+    if (state.failure !== undefined) {
+      return Promise.reject(state.failure instanceof Error
+        ? state.failure
+        : new Error('session persistence write failed', { cause: state.failure }))
+    }
     if (state.timer !== undefined) {
       clearTimeout(state.timer)
       state.timer = undefined
