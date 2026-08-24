@@ -130,6 +130,14 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
   }
+  const status: WebRoute = {
+    kind: 'exact',
+    path: '/auth/session',
+    handler: async (request, response) => {
+      await send(await authenticator.status(await fetchRequest(request, 0)), response)
+    },
+  }
   ctx.effect(() => ctx.webServer.register(login), 'xagent-auth: login route')
   ctx.effect(() => ctx.webServer.register(logout), 'xagent-auth: logout route')
+  ctx.effect(() => ctx.webServer.register(status), 'xagent-auth: session route')
 }

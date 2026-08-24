@@ -195,4 +195,20 @@ describe('XAgent Connection 认证桥', () => {
       secureCookie: false,
     })).toThrow('invalid connection authentication configuration')
   })
+
+  test('登录态探针只返回状态，不暴露 Principal 或用户令牌', async () => {
+    const auth = new XAgentConnectionAuthenticator(backend(), {
+      allowedOrigins: ['https://app.example.test'],
+      secureCookie: true,
+    })
+
+    const active = await auth.status(new Request('https://app.example.test/auth/session', {
+      headers: { cookie: 'xagent_session=user-token' },
+    }))
+    const missing = await auth.status(new Request('https://app.example.test/auth/session'))
+
+    expect(active.status).toBe(204)
+    expect(await active.text()).toBe('')
+    expect(missing.status).toBe(401)
+  })
 })

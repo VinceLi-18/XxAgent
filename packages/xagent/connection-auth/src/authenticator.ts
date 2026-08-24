@@ -133,6 +133,18 @@ export class XAgentConnectionAuthenticator implements ConnectionRequestContextRe
     return Response.json({ csrf_token: issued.csrfToken, expires_at: issued.expiresAt }, { headers })
   }
 
+  async status(request: Request): Promise<Response> {
+    const headers = { 'x-xagent-auth': '1' }
+    try {
+      const userToken = cookieValue(request.headers.get('cookie'), SESSION_COOKIE)
+      if (userToken === undefined) throw new Error('unauthenticated')
+      await this.backend.introspect(userToken, request.signal)
+      return new Response(null, { status: 204, headers })
+    } catch {
+      return new Response('unauthenticated', { status: 401, headers })
+    }
+  }
+
   async logout(request: Request): Promise<Response> {
     try {
       this.assertOrigin(request)
