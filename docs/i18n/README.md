@@ -53,17 +53,22 @@ Generated English references and graphs participate in pairing when a reviewed C
 - [translation-prompt.md](translation-prompt.md) — the automated pipeline's prompt template; its body is machine-consumed verbatim, so a paired translation would change pipeline behavior.
 - `.agents/notes/archived/` — frozen historical triplets. [`verify-archived-agent-notes`](../../scripts/verify-archived-agent-notes.ts) validates their completeness and content seals; translation maintenance must never rewrite them.
 - **XAgent fork product documents — repository-owner exception.** The following exact files are maintained in Chinese only by explicit repository-owner decision; the exception grants no directory wildcard and does not cover future documents:
+  - `.agents/notes/implemented/architecture/2026-08-23-xagent-api-baseline-import.md`
   - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
+  - `docs/superpowers/plans/2026-08-23-xagent-phase-2a-backend-baseline-import.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
   - `docs/superpowers/progress/2026-08-22-xagent-phase-1.md`
   - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
   - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
+  - `docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md`
   - `docs/upstream/dsh-baseline.md`
+  - `docs/upstream/jiaxin-api-baseline.md`
   - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
+  - `services/api/README.md`
 
 **Universal requirement**: apart from the exact exclusions above, every current or future document in scope must merge as a complete bilingual pair. [scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) contains only explicit exclusions; there is no directory-wide XAgent exception, per-file rollout list, date cutoff, or README-specific policy class.
 

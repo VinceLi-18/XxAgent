@@ -49,6 +49,12 @@ const repositoryUrl = 'git+https://github.com/deepseek-harness/deepseek-harness.
 const publishedRepositoryUrl = 'git+https://github.com/deepseek-ai/deepseek-harness.git'
 /** Directories whose packages this repository publishes: one release member each. */
 const releaseMemberDirectory = /^(?:packages\/[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
+/** Fork-owned runtime bundles that ship inside XAgent rather than through npm. */
+const privateXagentPackages: Readonly<Record<string, string>> = {
+  'packages/bundle/xagent-business': '@xagent/dsh-business',
+  'packages/bundle/xagent-developer': '@xagent/dsh-developer',
+}
+const xagentRepositoryUrl = 'git+https://github.com/VinceLi-18/XxAgent.git'
 
 const localArtifactDirs = new Set(['node_modules'])
 const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
@@ -239,6 +245,19 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
       || manifest.repository.url !== repositoryUrl
       || manifest.repository.directory !== expectedDirectory) {
       errors.push(`${label}: published Landlock package repository must use ${repositoryUrl} with directory ${expectedDirectory} for trusted publishing`)
+    }
+  } else if (privateXagentPackages[dir] !== undefined) {
+    const expectedName = privateXagentPackages[dir]
+    if (manifest.name !== expectedName) {
+      errors.push(`${label}: private XAgent package must use name ${expectedName}`)
+    }
+    if (manifest.private !== true) {
+      errors.push(`${label}: private XAgent package must set "private": true`)
+    }
+    if (manifest.repository?.type !== 'git'
+      || manifest.repository.url !== xagentRepositoryUrl
+      || manifest.repository.directory !== dir) {
+      errors.push(`${label}: private XAgent package repository must use ${xagentRepositoryUrl} with directory ${dir}`)
     }
   } else if (releaseMemberDirectory.test(dir)) {
     // Release members state that they are publishable: npm refuses a private

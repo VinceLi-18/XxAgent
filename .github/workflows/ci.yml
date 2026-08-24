@@ -313,6 +313,48 @@ jobs:
       - name: Run complete keyless Python suite
         run: uv run --python 3.10 --group test --project python/sdk pytest
 
+  xagent-api:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: python 3.11 / xagent api
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: xagent_api_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: xagent-api-test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d xagent_api_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      JX_TEST_DATABASE_URL: postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:5432/xagent_api_test
+      JX_ALLOW_SCHEMA_DROP: 'yes'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: python -m pip install uv==0.11.23
+
+      - name: Sync immutable API environment
+        run: uv sync --python 3.11 --project services/api --extra dev --frozen
+
+      - name: Run complete imported API suite
+        run: uv run --python 3.11 --directory services/api --extra dev pytest
+
+      - name: Build API package
+        run: uv build --python 3.11 --project services/api
+
   # One native target makes the complete release-shaped Python path required
   # without duplicating platform-independent behavior across the release matrix.
   # The reusable builder owns the executable, snapshot, wheel, clean-install,
@@ -928,7 +970,7 @@ jobs:
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
           || 'ubuntu-latest' }}
-    needs: [node-24, node-24-coverage, node-24-consumers, node-compat, python-sdk, python-runtime, windows]
+    needs: [node-24, node-24-coverage, node-24-consumers, node-compat, python-sdk, python-runtime, windows, xagent-api]
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Fail if any needed job did not succeed
