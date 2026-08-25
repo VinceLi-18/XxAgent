@@ -2,7 +2,7 @@ import asyncio
 import signal
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TypeAlias
+from typing import TypeAlias, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -21,6 +21,7 @@ DEFAULT_POLL_SECONDS = 1
 
 ArtifactProcessor: TypeAlias = Callable[[ArtifactJobLease], Awaitable[None]]
 ArtifactProcessorResolver: TypeAlias = Callable[[], ArtifactProcessor]
+_TaskResult = TypeVar("_TaskResult")
 
 
 def _resolve_processor() -> ArtifactProcessor:
@@ -79,6 +80,17 @@ async def _retry_owned_lease(
             )
 
 
+async def _await_task_quiescence(task: asyncio.Task[_TaskResult]) -> None:
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except Exception:
+            break
+    await asyncio.gather(task, return_exceptions=True)
+
+
 async def _process_lease(
     sessions: async_sessionmaker[AsyncSession],
     lease: ArtifactJobLease,
@@ -117,14 +129,13 @@ async def _process_lease(
         if heartbeat_task in completed:
             still_owned = await heartbeat_task
             if not still_owned:
-                processor_task.cancel()
-                await asyncio.gather(processor_task, return_exceptions=True)
+                await _await_task_quiescence(processor_task)
                 return
 
         heartbeat_stop.set()
         still_owned = await heartbeat_task
         if not still_owned:
-            await asyncio.gather(processor_task, return_exceptions=True)
+            await _await_task_quiescence(processor_task)
             return
 
         try:
@@ -140,8 +151,8 @@ async def _process_lease(
                 await finish_job(session, lease, now=datetime.now(UTC))
     except BaseException:
         heartbeat_stop.set()
-        processor_task.cancel()
-        await asyncio.gather(processor_task, heartbeat_task, return_exceptions=True)
+        await _await_task_quiescence(heartbeat_task)
+        await _await_task_quiescence(processor_task)
         raise
 
 

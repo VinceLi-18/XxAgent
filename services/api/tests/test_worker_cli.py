@@ -1,6 +1,7 @@
 import asyncio
 import os
 import subprocess
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -11,7 +12,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.config import ArtifactWorkerSettings, Settings
-from app.models.artifact import ArtifactProcessingJob
+from app.models.artifact import ArtifactProcessingJob, ArtifactVersion
 from app.worker import _run_worker_loop
 
 
@@ -77,6 +78,21 @@ def _worker_url(test_database_url: str, worker_role: str) -> str:
     )
 
 
+def _run_shipping_worker_once(worker_role: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        "PATH": os.environ["PATH"],
+        "DATABASE_WORKER_URL": _worker_url(os.environ["JX_TEST_DATABASE_URL"], worker_role),
+    }
+    return subprocess.run(
+        ["uv", "run", "--project", "services/api", "xagent-api", "worker", "--once"],
+        cwd=Path(__file__).resolve().parents[3],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def test_api_and_worker_database_settings_are_disjoint() -> None:
     api_settings = Settings()
     worker_settings = ArtifactWorkerSettings(
@@ -96,22 +112,35 @@ async def test_worker_once_needs_only_worker_database_configuration(
     worker_role: str,
 ) -> None:
     del seeded_database
-    env = {
-        "PATH": os.environ["PATH"],
-        "DATABASE_WORKER_URL": _worker_url(os.environ["JX_TEST_DATABASE_URL"], worker_role),
-    }
-    completed = subprocess.run(
-        ["uv", "run", "--project", "services/api", "xagent-api", "worker", "--once"],
-        cwd=Path(__file__).resolve().parents[3],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    completed = _run_shipping_worker_once(worker_role)
 
     assert completed.returncode == 0
     assert completed.stdout == ""
     assert completed.stderr == ""
+
+
+@pytest.mark.anyio
+async def test_shipping_worker_once_claims_and_safely_retries_without_task4(
+    seeded_database: AsyncEngine,
+    worker_role: str,
+    alice,
+) -> None:
+    started_at = datetime.now(UTC)
+    seeded = await _seed_job(seeded_database, actor_id=alice.id, now=started_at)
+
+    completed = _run_shipping_worker_once(worker_role)
+
+    async with AsyncSession(seeded_database) as session:
+        job = await session.get(ArtifactProcessingJob, seeded.id)
+        version = await session.get(ArtifactVersion, seeded.version_id)
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert job is not None and job.status == "ready" and job.attempts == 1
+    assert job.lease_token is None and job.lease_expires_at is None
+    assert job.failure_code == "processor-unavailable"
+    assert job.next_attempt_at > started_at
+    assert version is not None and version.scan_status == "scanning"
 
 
 @pytest.mark.anyio
@@ -208,8 +237,17 @@ async def test_lost_heartbeat_cancels_publication_and_waits_for_processor_cleanu
     alice,
 ) -> None:
     seeded = await _seed_job(seeded_database, actor_id=alice.id, now=datetime.now(UTC))
-    processor_stopped = asyncio.Event()
+    thread_started = threading.Event()
+    release_thread = threading.Event()
+    thread_stopped = threading.Event()
     replacement_token = uuid4()
+
+    def blocking_processor() -> None:
+        thread_started.set()
+        try:
+            assert release_thread.wait(timeout=2)
+        finally:
+            thread_stopped.set()
 
     async def processor(lease) -> None:
         async with AsyncSession(seeded_database) as session:
@@ -222,26 +260,79 @@ async def test_lost_heartbeat_cancels_publication_and_waits_for_processor_cleanu
                         lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
                     )
                 )
-        try:
-            await asyncio.Event().wait()
-        finally:
-            await asyncio.sleep(0)
-            processor_stopped.set()
+        await asyncio.to_thread(blocking_processor)
 
-    await _run_worker_loop(
-        _sessions(worker_engine),
-        once=True,
-        processor=processor,
-        lease_seconds=0.1,
-        heartbeat_seconds=0.01,
-        poll_seconds=0,
+    worker_task = asyncio.create_task(
+        _run_worker_loop(
+            _sessions(worker_engine),
+            once=True,
+            processor=processor,
+            lease_seconds=0.1,
+            heartbeat_seconds=0.01,
+            poll_seconds=0,
+        )
     )
+    assert await asyncio.to_thread(thread_started.wait, 1)
+    try:
+        await asyncio.sleep(0.05)
+        assert not worker_task.done()
+    finally:
+        release_thread.set()
+        await asyncio.gather(worker_task, return_exceptions=True)
 
     async with AsyncSession(seeded_database) as session:
         job = await session.get(ArtifactProcessingJob, seeded.id)
-    assert processor_stopped.is_set()
+    assert thread_stopped.is_set()
     assert job is not None and job.status == "leased"
     assert job.lease_token == replacement_token
+    assert job.failure_code is None
+
+
+@pytest.mark.anyio
+async def test_outer_worker_cancellation_waits_for_blocking_processor(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+) -> None:
+    seeded = await _seed_job(seeded_database, actor_id=alice.id, now=datetime.now(UTC))
+    thread_started = threading.Event()
+    release_thread = threading.Event()
+    thread_stopped = threading.Event()
+
+    def blocking_processor() -> None:
+        thread_started.set()
+        try:
+            assert release_thread.wait(timeout=2)
+        finally:
+            thread_stopped.set()
+
+    async def processor(_lease) -> None:
+        await asyncio.to_thread(blocking_processor)
+
+    worker_task = asyncio.create_task(
+        _run_worker_loop(
+            _sessions(worker_engine),
+            once=True,
+            processor=processor,
+            lease_seconds=60,
+            heartbeat_seconds=20,
+            poll_seconds=0,
+        )
+    )
+    assert await asyncio.to_thread(thread_started.wait, 1)
+    worker_task.cancel()
+    try:
+        await asyncio.sleep(0.05)
+        assert not worker_task.done()
+    finally:
+        release_thread.set()
+        result = await asyncio.gather(worker_task, return_exceptions=True)
+
+    async with AsyncSession(seeded_database) as session:
+        job = await session.get(ArtifactProcessingJob, seeded.id)
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert thread_stopped.is_set()
+    assert job is not None and job.status == "leased"
     assert job.failure_code is None
 
 

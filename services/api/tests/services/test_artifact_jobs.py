@@ -247,6 +247,41 @@ async def test_expired_lease_is_reclaimed_and_old_token_cannot_mutate_it(
 
 
 @pytest.mark.anyio
+async def test_expired_fifth_lease_closes_without_blocking_the_next_due_job(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+) -> None:
+    now = datetime(2026, 8, 25, 10, 0, tzinfo=UTC)
+    exhausted_token = uuid4()
+    exhausted = await _seed_job(
+        seeded_database,
+        actor_id=alice.id,
+        now=now - timedelta(minutes=1),
+        attempts=5,
+        status="leased",
+        lease_token=exhausted_token,
+        lease_expires_at=now - timedelta(seconds=1),
+    )
+    next_job = await _seed_job(seeded_database, actor_id=alice.id, now=now)
+    sessions = _worker_sessions(worker_engine)
+
+    lease = await _claim(sessions, now=now)
+    no_sixth_lease = await _claim(sessions, now=now)
+
+    async with AsyncSession(seeded_database) as session:
+        exhausted_job = await session.get(ArtifactProcessingJob, exhausted.job_id)
+        exhausted_version = await session.get(ArtifactVersion, exhausted.version_id)
+    assert lease is not None and lease.job_id == next_job.job_id and lease.attempt == 1
+    assert no_sixth_lease is None
+    assert exhausted_job is not None and exhausted_job.status == "dead"
+    assert exhausted_job.attempts == 5
+    assert exhausted_job.lease_token is None and exhausted_job.lease_expires_at is None
+    assert exhausted_job.failure_code == "lease-expired"
+    assert exhausted_version is not None and exhausted_version.scan_status == "failed"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("prior_attempts", "expected_delay"),
     ((0, 5), (1, 10), (2, 20), (3, 40)),

@@ -29,26 +29,49 @@ async def claim_due_job(
 ) -> ArtifactJobLease | None:
     """Lock and claim one due or expired artifact job in the caller's transaction."""
 
-    job = await session.scalar(
-        select(ArtifactProcessingJob)
-        .where(
-            or_(
-                and_(
-                    ArtifactProcessingJob.status == "ready",
-                    ArtifactProcessingJob.next_attempt_at <= now,
-                ),
-                and_(
-                    ArtifactProcessingJob.status == "leased",
-                    ArtifactProcessingJob.lease_expires_at <= now,
-                ),
+    while True:
+        job = await session.scalar(
+            select(ArtifactProcessingJob)
+            .where(
+                or_(
+                    and_(
+                        ArtifactProcessingJob.status == "ready",
+                        ArtifactProcessingJob.next_attempt_at <= now,
+                    ),
+                    and_(
+                        ArtifactProcessingJob.status == "leased",
+                        ArtifactProcessingJob.lease_expires_at <= now,
+                    ),
+                )
+            )
+            .order_by(ArtifactProcessingJob.next_attempt_at, ArtifactProcessingJob.id)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if job is None:
+            return None
+        if job.attempts < MAX_ATTEMPTS:
+            break
+
+        await session.execute(
+            update(ArtifactProcessingJob)
+            .where(ArtifactProcessingJob.id == job.id)
+            .values(
+                status="dead",
+                lease_token=None,
+                lease_expires_at=None,
+                failure_code="lease-expired",
+                updated_at=now,
             )
         )
-        .order_by(ArtifactProcessingJob.next_attempt_at, ArtifactProcessingJob.id)
-        .with_for_update(skip_locked=True)
-        .limit(1)
-    )
-    if job is None:
-        return None
+        await session.execute(
+            update(ArtifactVersion)
+            .where(
+                ArtifactVersion.id == job.version_id,
+                ArtifactVersion.scan_status == "scanning",
+            )
+            .values(scan_status="failed")
+        )
 
     lease_token = uuid4()
     lease_expires_at = now + timedelta(seconds=lease_seconds)
