@@ -5,20 +5,35 @@ import { parseXAgentPrincipal, type XAgentPrincipal } from '@xagent/dsh-principa
 import type {
   XAgentBackend,
   XAgentBackendErrorCode,
+  XAgentCapability,
   XAgentIssuedLogin,
+  XAgentProjectDetail,
+  XAgentProjectSummary,
   XAgentSessionBackend,
+  XAgentWorkbenchBackend,
+  XAgentWorkbenchBootstrap,
+  XAgentWorkbenchContext,
 } from './types.ts'
 
 export type {
   XAgentBackend,
   XAgentBackendErrorCode,
+  XAgentCapability,
   XAgentIssuedLogin,
+  XAgentProjectDetail,
+  XAgentProjectSummary,
   XAgentSessionBackend,
+  XAgentSessionProjectRefsInput,
+  XAgentWorkbenchBackend,
+  XAgentWorkbenchBootstrap,
+  XAgentWorkbenchContext,
 } from './types.ts'
 
 const STABLE_CODES = new Set<XAgentBackendErrorCode>([
   'unauthenticated',
+  'forbidden',
   'not-found',
+  'session-not-found',
   'sequence-conflict',
   'idempotency-conflict',
   'unsupported-version',
@@ -39,8 +54,148 @@ export interface XAgentBackendClientOptions {
   serviceToken: string
   fetch?: typeof globalThis.fetch
   timeoutMs?: number
+  maxRequestBytes?: number
   maxResponseBytes?: number
   connectionId?: () => string
+}
+
+function failSchema(): never {
+  throw new XAgentBackendError('service-unavailable')
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) failSchema()
+  return value as Record<string, unknown>
+}
+
+function exactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  const row = record(value)
+  const actual = Object.keys(row).sort()
+  const expected = [...keys].sort()
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) failSchema()
+  return row
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+
+function requiredUuid(value: unknown): string {
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value)) failSchema()
+  return value
+}
+
+function requiredString(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) failSchema()
+  return value
+}
+
+function count(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) failSchema()
+  return value as number
+}
+
+function parseContext(value: unknown): XAgentWorkbenchContext {
+  const row = exactRecord(value, ['kind', 'project_id'])
+  if (row.kind === 'workbench' && row.project_id === null) return { kind: 'workbench' }
+  if (row.kind === 'project') return { kind: 'project', projectId: requiredUuid(row.project_id) }
+  return failSchema()
+}
+
+function parseProjectSummary(value: unknown): XAgentProjectSummary {
+  const row = exactRecord(value, ['id', 'name', 'created_at'])
+  const createdAt = requiredString(row.created_at)
+  if (!Number.isFinite(Date.parse(createdAt))) failSchema()
+  return {
+    id: requiredUuid(row.id),
+    name: requiredString(row.name),
+    createdAt,
+  }
+}
+
+function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
+  const row = exactRecord(value, [
+    'schema_version',
+    'account',
+    'capabilities',
+    'context',
+    'projects',
+    'session_summary',
+  ])
+  if (row.schema_version !== 1) failSchema()
+  const account = exactRecord(row.account, ['id', 'email', 'role', 'permission_revision'])
+  if (
+    account.role !== 'manager' && account.role !== 'specialist'
+    || !Number.isSafeInteger(account.permission_revision)
+    || (account.permission_revision as number) < 1
+  ) failSchema()
+  if (!Array.isArray(row.capabilities)) failSchema()
+  const capabilities = (row.capabilities as unknown[]).map((capability): XAgentCapability => {
+    if (capability !== 'project.create') failSchema()
+    return 'project.create'
+  })
+  if (new Set(capabilities).size !== capabilities.length) failSchema()
+  if (!Array.isArray(row.projects)) failSchema()
+  const projects = row.projects.map(parseProjectSummary)
+  const projectIds = projects.map(project => project.id)
+  if (new Set(projectIds).size !== projectIds.length) failSchema()
+  const summary = exactRecord(row.session_summary, ['private_count', 'project_counts'])
+  const projectCountsRow = record(summary.project_counts)
+  const projectCounts: Record<string, number> = {}
+  for (const [projectId, value] of Object.entries(projectCountsRow)) {
+    requiredUuid(projectId)
+    projectCounts[projectId] = count(value)
+  }
+  const countedProjectIds = Object.keys(projectCounts).sort()
+  const expectedProjectIds = [...projectIds].sort()
+  if (
+    countedProjectIds.length !== expectedProjectIds.length
+    || countedProjectIds.some((projectId, index) => projectId !== expectedProjectIds[index])
+  ) failSchema()
+  return {
+    account: {
+      id: requiredUuid(account.id),
+      email: requiredString(account.email),
+      role: account.role,
+      permissionRevision: account.permission_revision as number,
+    },
+    capabilities,
+    context: parseContext(row.context),
+    projects,
+    sessionSummary: {
+      privateCount: count(summary.private_count),
+      projectCounts,
+    },
+  }
+}
+
+function parseContextSelection(value: unknown): string {
+  const row = exactRecord(value, ['schema_version', 'account_id', 'context'])
+  if (row.schema_version !== 1) failSchema()
+  parseContext(row.context)
+  return requiredUuid(row.account_id)
+}
+
+function parseCreatedProject(value: unknown): string {
+  const row = exactRecord(value, ['schema_version', 'account_id', 'project', 'context'])
+  if (row.schema_version !== 1) failSchema()
+  const project = parseProjectSummary(row.project)
+  const context = parseContext(row.context)
+  if (context.kind !== 'project' || context.projectId !== project.id) failSchema()
+  return requiredUuid(row.account_id)
+}
+
+function parseProjectDetail(value: unknown): XAgentProjectDetail {
+  const row = exactRecord(value, ['schema_version', 'account_id', 'project', 'access', 'session_summary'])
+  if (row.schema_version !== 1) failSchema()
+  const access = exactRecord(row.access, ['can_edit'])
+  const summary = exactRecord(row.session_summary, ['session_count'])
+  if (typeof access.can_edit !== 'boolean') failSchema()
+  const project = parseProjectSummary(row.project)
+  return {
+    accountId: requiredUuid(row.account_id),
+    ...project,
+    canEdit: access.can_edit,
+    sessionCount: count(summary.session_count),
+  }
 }
 
 async function readBounded(response: Response, limit: number): Promise<string> {
@@ -89,9 +244,11 @@ export class XAgentBackendClient implements XAgentBackend {
   private readonly origin: URL
   private readonly fetcher: typeof globalThis.fetch
   private readonly timeoutMs: number
+  private readonly maxRequestBytes: number
   private readonly maxResponseBytes: number
   private readonly connectionId: () => string
   readonly sessions: XAgentSessionBackend
+  readonly workbench: XAgentWorkbenchBackend
 
   constructor(private readonly options: XAgentBackendClientOptions) {
     let origin: URL
@@ -106,6 +263,7 @@ export class XAgentBackendClient implements XAgentBackend {
     this.origin = new URL(origin.origin)
     this.fetcher = options.fetch ?? globalThis.fetch
     this.timeoutMs = options.timeoutMs ?? 5_000
+    this.maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024
     this.maxResponseBytes = options.maxResponseBytes ?? 8 * 1024 * 1024
     this.connectionId = options.connectionId ?? randomUUID
     const sessions: XAgentSessionBackend = {
@@ -127,6 +285,68 @@ export class XAgentBackendClient implements XAgentBackend {
       },
     }
     this.sessions = Object.freeze(sessions)
+    const bootstrap = async (token: string, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap> =>
+      parseBootstrap(await this.request(
+        token,
+        '/internal/xagent/workbench/bootstrap',
+        { schema_version: 1 },
+        signal,
+      ))
+    const workbench: XAgentWorkbenchBackend = {
+      bootstrap,
+      selectContext: async (token, context, signal) => {
+        const accountId = parseContextSelection(await this.request(
+          token,
+          '/internal/xagent/workbench/context',
+          {
+            schema_version: 1,
+            kind: context.kind,
+            project_id: context.kind === 'project' ? context.projectId : null,
+          },
+          signal,
+        ))
+        const result = await bootstrap(token, signal)
+        if (result.account.id !== accountId) failSchema()
+        return result
+      },
+      createProject: async (token, input, signal) => {
+        const accountId = parseCreatedProject(await this.request(
+          token,
+          '/internal/xagent/projects',
+          {
+            schema_version: 1,
+            name: input.name,
+            idempotency_key: input.idempotencyKey,
+          },
+          signal,
+        ))
+        const result = await bootstrap(token, signal)
+        if (result.account.id !== accountId) failSchema()
+        return result
+      },
+      project: async (token, projectId, signal) => parseProjectDetail(await this.request(
+        token,
+        `/internal/xagent/projects/${encodeURIComponent(projectId)}`,
+        { schema_version: 1 },
+        signal,
+      )),
+      addSessionProjectRefs: async (token, input, signal) => {
+        const value = await this.request(
+          token,
+          '/internal/xagent/session-project-refs',
+          {
+            schema_version: 1,
+            session_id: input.sessionId,
+            project_ids: input.projectIds,
+            idempotency_key: input.idempotencyKey,
+          },
+          signal,
+          true,
+        )
+        if (value !== undefined) failSchema()
+      },
+    }
+    this.workbench = Object.freeze(workbench)
   }
 
   async login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin> {
@@ -197,7 +417,13 @@ export class XAgentBackendClient implements XAgentBackend {
         signal: requestSignal,
         headers,
       }
-      if (body !== undefined) init.body = JSON.stringify(body)
+      if (body !== undefined) {
+        const encoded = JSON.stringify(body)
+        if (new TextEncoder().encode(encoded).byteLength > this.maxRequestBytes) {
+          throw new XAgentBackendError('service-unavailable')
+        }
+        init.body = encoded
+      }
       response = await this.fetcher(new URL(path, this.origin), init)
       const raw = await readBounded(response, this.maxResponseBytes)
       let value: unknown

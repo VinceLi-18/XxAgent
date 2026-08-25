@@ -8,6 +8,39 @@ const principal = {
   auth_session_id: '00000000-0000-0000-0000-000000000101',
 }
 
+const bootstrapResponse = {
+  schema_version: 1,
+  account: {
+    id: '00000000-0000-0000-0000-000000000001',
+    email: 'alice@example.test',
+    role: 'specialist',
+    permission_revision: 3,
+  },
+  capabilities: ['project.create'],
+  context: { kind: 'workbench', project_id: null },
+  projects: [{
+    id: '00000000-0000-0000-0000-000000000201',
+    name: 'Alpha',
+    created_at: '2026-08-25T08:00:00+00:00',
+  }],
+  session_summary: {
+    private_count: 2,
+    project_counts: { '00000000-0000-0000-0000-000000000201': 4 },
+  },
+}
+
+const projectResponse = {
+  schema_version: 1,
+  account_id: '00000000-0000-0000-0000-000000000001',
+  project: {
+    id: '00000000-0000-0000-0000-000000000201',
+    name: 'Alpha',
+    created_at: '2026-08-25T08:00:00+00:00',
+  },
+  access: { can_edit: true },
+  session_summary: { session_count: 4 },
+}
+
 function requestUrl(input: string | URL | Request): string {
   if (typeof input === 'string') return input
   return input instanceof URL ? input.href : input.url
@@ -205,7 +238,10 @@ describe('XAgent 后端客户端', () => {
 
   test.each([
     [401, {}, 'unauthenticated'],
+    [403, { detail: { code: 'forbidden' } }, 'forbidden'],
+    [404, { detail: { code: 'session-not-found' } }, 'session-not-found'],
     [500, {}, 'service-unavailable'],
+    [503, { detail: { code: 'service-unavailable' } }, 'service-unavailable'],
     [500, 'failure', 'service-unavailable'],
     [409, { detail: null }, 'service-unavailable'],
     [409, { detail: { code: 1 } }, 'service-unavailable'],
@@ -250,5 +286,240 @@ describe('XAgent 后端客户端', () => {
     } finally {
       fetcher.mockRestore()
     }
+  })
+
+  test('工作台方法只调用固定 POST 路径并严格转换协议字段', async () => {
+    const calls: Array<{ path: string; body: unknown; headers: Headers; redirect: RequestRedirect | undefined }> = []
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(requestUrl(input)).pathname
+      calls.push({
+        path,
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined,
+        headers: new Headers(init?.headers),
+        redirect: init?.redirect,
+      })
+      if (path === '/internal/xagent/workbench/bootstrap') return Response.json(bootstrapResponse)
+      if (path === '/internal/xagent/workbench/context') {
+        return Response.json({
+          schema_version: 1,
+          account_id: bootstrapResponse.account.id,
+          context: { kind: 'workbench', project_id: null },
+        })
+      }
+      if (path === '/internal/xagent/projects') {
+        return Response.json({
+          schema_version: 1,
+          account_id: bootstrapResponse.account.id,
+          project: projectResponse.project,
+          context: { kind: 'project', project_id: projectResponse.project.id },
+        }, { status: 201 })
+      }
+      if (path.startsWith('/internal/xagent/projects/')) return Response.json(projectResponse)
+      if (path === '/internal/xagent/session-project-refs') return new Response(null, { status: 204 })
+      return new Response(null, { status: 500 })
+    })
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test/base',
+      serviceToken: 'service-secret',
+      fetch: fetcher,
+    })
+
+    const bootstrapped = await client.workbench.bootstrap('user-secret')
+    const selected = await client.workbench.selectContext(
+      'user-secret',
+      { kind: 'workbench' },
+    )
+    const created = await client.workbench.createProject(
+      'user-secret',
+      { name: 'Alpha', idempotencyKey: 'create-1' },
+    )
+    const detail = await client.workbench.project(
+      'user-secret',
+      'project/unsafe',
+    )
+    await client.workbench.addSessionProjectRefs('user-secret', {
+      sessionId: '00000000-0000-0000-0000-000000000301',
+      projectIds: ['00000000-0000-0000-0000-000000000201'],
+      idempotencyKey: 'refs-1',
+    })
+
+    expect(bootstrapped).toEqual({
+      account: {
+        id: bootstrapResponse.account.id,
+        email: 'alice@example.test',
+        role: 'specialist',
+        permissionRevision: 3,
+      },
+      capabilities: ['project.create'],
+      context: { kind: 'workbench' },
+      projects: [{
+        id: projectResponse.project.id,
+        name: 'Alpha',
+        createdAt: '2026-08-25T08:00:00+00:00',
+      }],
+      sessionSummary: {
+        privateCount: 2,
+        projectCounts: { [projectResponse.project.id]: 4 },
+      },
+    })
+    expect(selected).toEqual(bootstrapped)
+    expect(created).toEqual(bootstrapped)
+    expect(detail).toEqual({
+      accountId: bootstrapResponse.account.id,
+      id: projectResponse.project.id,
+      name: 'Alpha',
+      createdAt: '2026-08-25T08:00:00+00:00',
+      canEdit: true,
+      sessionCount: 4,
+    })
+    expect(calls.map(call => call.path)).toEqual([
+      '/internal/xagent/workbench/bootstrap',
+      '/internal/xagent/workbench/context',
+      '/internal/xagent/workbench/bootstrap',
+      '/internal/xagent/projects',
+      '/internal/xagent/workbench/bootstrap',
+      '/internal/xagent/projects/project%2Funsafe',
+      '/internal/xagent/session-project-refs',
+    ])
+    expect(calls.map(call => call.body)).toEqual([
+      { schema_version: 1 },
+      { schema_version: 1, kind: 'workbench', project_id: null },
+      { schema_version: 1 },
+      { schema_version: 1, name: 'Alpha', idempotency_key: 'create-1' },
+      { schema_version: 1 },
+      { schema_version: 1 },
+      {
+        schema_version: 1,
+        session_id: '00000000-0000-0000-0000-000000000301',
+        project_ids: ['00000000-0000-0000-0000-000000000201'],
+        idempotency_key: 'refs-1',
+      },
+    ])
+    expect(calls.every(call => call.headers.get('authorization') === 'Bearer user-secret')).toBe(true)
+    expect(calls.every(call => call.headers.get('x-xagent-service-token') === 'service-secret')).toBe(true)
+    expect(calls.every(call => call.redirect === 'manual')).toBe(true)
+  })
+
+  test.each([
+    [null],
+    [{ ...bootstrapResponse, schema_version: 2 }],
+    [{ ...bootstrapResponse, extra: true }],
+    [{ ...bootstrapResponse, account: { ...bootstrapResponse.account, permission_revision: 0 } }],
+    [{ ...bootstrapResponse, capabilities: ['project.delete'] }],
+    [{ ...bootstrapResponse, context: { kind: 'project', project_id: null } }],
+    [{ ...bootstrapResponse, projects: [{ ...bootstrapResponse.projects[0], created_at: '' }] }],
+    [{ ...bootstrapResponse, session_summary: { private_count: -1, project_counts: {} } }],
+    [{ ...bootstrapResponse, session_summary: { private_count: 0, project_counts: {} } }],
+    [{ ...bootstrapResponse, projects: [...bootstrapResponse.projects, bootstrapResponse.projects[0]] }],
+  ])('拒绝畸形工作台 Bootstrap %#', async (value) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(value),
+    })
+
+    await expect(client.workbench.bootstrap('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [null],
+    [{ ...projectResponse, schema_version: 2 }],
+    [{ ...projectResponse, account_id: '' }],
+    [{ ...projectResponse, project: { ...projectResponse.project, name: '' } }],
+    [{ ...projectResponse, access: { can_edit: 'yes' } }],
+    [{ ...projectResponse, session_summary: { session_count: -1 } }],
+  ])('拒绝畸形项目详情 %#', async (value) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(value),
+    })
+
+    await expect(client.workbench.project('token', 'project-id')).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('拒绝畸形操作响应和跨账号 Bootstrap', async () => {
+    const malformedCreate = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json({
+        schema_version: 1,
+        account_id: bootstrapResponse.account.id,
+        project: projectResponse.project,
+        context: { kind: 'project', project_id: projectResponse.project.id },
+        owner_id: bootstrapResponse.account.id,
+      }),
+    })
+    await expect(malformedCreate.workbench.createProject('token', {
+      name: 'Alpha',
+      idempotencyKey: 'create-1',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const responses = [
+      Response.json({
+        schema_version: 1,
+        account_id: bootstrapResponse.account.id,
+        context: { kind: 'workbench', project_id: null },
+      }),
+      Response.json({
+        ...bootstrapResponse,
+        account: {
+          ...bootstrapResponse.account,
+          id: '00000000-0000-0000-0000-000000000002',
+        },
+      }),
+    ]
+    const crossed = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => responses.shift()!,
+    })
+    await expect(crossed.workbench.selectContext('token', { kind: 'workbench' }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const nonemptyRefs = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json({ ok: true }),
+    })
+    await expect(nonemptyRefs.workbench.addSessionProjectRefs('token', {
+      sessionId: '00000000-0000-0000-0000-000000000301',
+      projectIds: ['00000000-0000-0000-0000-000000000201'],
+      idempotencyKey: 'refs-1',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('工作台请求体超限、超时和重定向全部失败关闭', async () => {
+    const notCalled = vi.fn()
+    const oversized = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      maxRequestBytes: 32,
+      fetch: notCalled,
+    })
+    await expect(oversized.workbench.createProject('token', {
+      name: 'x'.repeat(64),
+      idempotencyKey: 'key',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+    expect(notCalled).not.toHaveBeenCalled()
+
+    const timedOut = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      timeoutMs: 1,
+      fetch: (_input, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new Error('request timed out'))
+        }, { once: true })
+      }),
+    })
+    await expect(timedOut.workbench.bootstrap('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const redirected = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => new Response(null, { status: 302, headers: { location: 'https://evil.test' } }),
+    })
+    await expect(redirected.workbench.bootstrap('token')).rejects.toMatchObject({ code: 'service-unavailable' })
   })
 })
