@@ -42,6 +42,47 @@ def _runtime_gateway() -> MinioGateway:
     return MinioGateway.from_settings()
 
 
+async def _require_project_edit(
+    session: AsyncSession,
+    principal: Principal,
+    project_id: UUID | None,
+) -> None:
+    if project_id is None:
+        return
+    try:
+        await authorize_project(
+            session,
+            principal.actor_id,
+            project_id,
+            ProjectAction.EDIT,
+        )
+    except ForbiddenError:
+        raise ArtifactNotFound from None
+
+
+async def _require_artifact_edit(
+    session: AsyncSession,
+    principal: Principal,
+    artifact_id: UUID,
+) -> Artifact:
+    artifact = await session.scalar(select(Artifact).where(Artifact.id == artifact_id))
+    if artifact is None:
+        raise ArtifactNotFound
+    await _require_project_edit(session, principal, artifact.project_id)
+    return artifact
+
+
+async def _require_upload_edit(
+    session: AsyncSession,
+    principal: Principal,
+    upload: StagingUpload,
+) -> None:
+    if upload.artifact_id is not None:
+        await _require_artifact_edit(session, principal, upload.artifact_id)
+        return
+    await _require_project_edit(session, principal, upload.project_id)
+
+
 async def create_upload(
     session: AsyncSession,
     principal: Principal,
@@ -134,6 +175,34 @@ async def create_upload(
     return upload
 
 
+async def get_or_create_upload_put_url(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    upload: StagingUpload,
+    idempotency_key: str,
+) -> str:
+    stored = await session.get(
+        XAgentIdempotencyKey,
+        (principal.actor_id, "artifact.upload.create", idempotency_key),
+    )
+    if stored is None or stored.result.get("upload_id") != str(upload.id):
+        raise ArtifactNotFound
+    put_url = stored.result.get("put_url")
+    if isinstance(put_url, str):
+        return put_url
+    remaining = upload.expires_at - datetime.now(UTC)
+    if remaining <= timedelta(0):
+        raise ArtifactNotFound
+    put_url = _runtime_gateway().create_staging_put_url(
+        upload.staging_key,
+        remaining,
+    )
+    stored.result = {**stored.result, "put_url": put_url}
+    await session.flush()
+    return put_url
+
+
 async def complete_upload(
     session: AsyncSession,
     principal: Principal,
@@ -163,14 +232,19 @@ async def complete_upload(
         (principal.actor_id, operation, idempotency_key),
     )
     if stored is not None and stored.expires_at > now:
-        if stored.request_hash != digest:
-            raise ArtifactIdempotencyConflict
         version = await session.get(
             ArtifactVersion,
             UUID(stored.result["version_id"]),
         )
         if version is None:
             raise ArtifactNotFound
+        await _require_artifact_edit(
+            session,
+            principal,
+            version.artifact_id,
+        )
+        if stored.request_hash != digest:
+            raise ArtifactIdempotencyConflict
         return version
 
     upload = await session.scalar(
@@ -182,6 +256,7 @@ async def complete_upload(
     )
     if upload is None:
         raise ArtifactNotFound
+    await _require_upload_edit(session, principal, upload)
     if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
         raise UploadRejectedError
 

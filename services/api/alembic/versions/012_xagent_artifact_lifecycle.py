@@ -39,6 +39,25 @@ def upgrade() -> None:
         "staging_uploads",
         "expected_size IS NULL OR expected_size BETWEEN 0 AND 52428800",
     )
+    actor_id = "NULLIF(current_setting('app.actor_id', true), '')::uuid"
+    staging_scope = (
+        f"staging_uploads.owner_id = {actor_id} OR staging_uploads.project_id IN "
+        "(SELECT public.xagent_authorized_project_edit_ids())"
+    )
+    matching_artifact = (
+        "staging_uploads.artifact_id IS NULL OR EXISTS ("
+        "SELECT 1 FROM artifacts WHERE artifacts.id = staging_uploads.artifact_id "
+        "AND artifacts.owner_id IS NOT DISTINCT FROM staging_uploads.owner_id "
+        "AND artifacts.project_id IS NOT DISTINCT FROM staging_uploads.project_id)"
+    )
+    op.execute("DROP POLICY staging_uploads_insert ON staging_uploads")
+    op.execute(
+        f"CREATE POLICY staging_uploads_insert ON staging_uploads FOR INSERT "
+        f"TO {application_role} WITH CHECK ("
+        f"staging_uploads.created_by_id = {actor_id} "
+        "AND staging_uploads.expected_size BETWEEN 0 AND 52428800 "
+        f"AND ({staging_scope}) AND ({matching_artifact}))"
+    )
 
     op.add_column("artifacts", sa.Column("created_by_id", sa.UUID(), nullable=True))
     op.create_foreign_key(
@@ -440,6 +459,13 @@ def downgrade() -> None:
         op.drop_column("artifact_versions", column_name)
     op.drop_constraint("fk_artifacts_created_by_id_accounts", "artifacts", type_="foreignkey")
     op.drop_column("artifacts", "created_by_id")
+    actor_id = "NULLIF(current_setting('app.actor_id', true), '')::uuid"
+    op.execute("DROP POLICY staging_uploads_insert ON staging_uploads")
+    op.execute(
+        "CREATE POLICY staging_uploads_insert ON staging_uploads FOR INSERT WITH CHECK ("
+        f"created_by_id = {actor_id} AND (owner_id = {actor_id} "
+        "OR project_id IN (SELECT public.authorized_project_ids())))"
+    )
     op.drop_constraint("ck_staging_upload_expected_size", "staging_uploads", type_="check")
     op.drop_constraint(
         "fk_staging_uploads_artifact_id_artifacts",

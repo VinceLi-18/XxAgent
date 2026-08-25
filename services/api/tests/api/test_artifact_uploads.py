@@ -146,6 +146,46 @@ async def _complete_upload(
     )
 
 
+async def _select_project_with_temporary_edit(
+    client,
+    engine,
+    alice,
+    bob,
+    project,
+) -> tuple[str, TemporaryProjectGrant]:
+    grant = TemporaryProjectGrant(
+        project_id=project.id,
+        account_id=alice.id,
+        action=ProjectAction.EDIT,
+        granted_by_id=bob.id,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        async with session.begin():
+            session.add(grant)
+    token = await _login(client, engine, alice, "alice@example.test")
+    selected = await client.post(
+        "/internal/xagent/workbench/context",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "kind": "project",
+            "project_id": str(project.id),
+        },
+    )
+    assert selected.status_code == 200
+    return token, grant
+
+
+async def _downgrade_grant_to_read(client, engine, grant_id: UUID) -> str:
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        async with session.begin():
+            grant = await session.get(TemporaryProjectGrant, grant_id)
+            assert grant is not None
+            grant.action = ProjectAction.READ
+    return await _authenticate(client, "alice@example.test")
+
+
 @pytest.mark.anyio
 async def test_internal_artifact_route_rejects_a_missing_host_or_user_identity(
     client,
@@ -197,12 +237,22 @@ async def test_create_upload_persists_the_server_accepted_size_and_ten_minute_wi
     upload_id = UUID(response.json()["upload_id"])
     expires_at = datetime.fromisoformat(response.json()["expires_at"])
     assert before + timedelta(minutes=10) <= expires_at <= after + timedelta(minutes=10)
-    assert artifact_gateway.put_calls == [
-        (f"staging/{upload_id}", timedelta(minutes=10))
-    ]
+    assert len(artifact_gateway.put_calls) == 1
+    signed_key, signed_for = artifact_gateway.put_calls[0]
+    assert signed_key == f"staging/{upload_id}"
+    assert timedelta(minutes=9, seconds=50) <= signed_for <= timedelta(minutes=10)
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         upload = await session.get(StagingUpload, upload_id)
+        idempotency = await session.get(
+            XAgentIdempotencyKey,
+            (alice.id, "artifact.upload.create", "private-max-size"),
+        )
     assert upload is not None
+    assert idempotency is not None
+    assert idempotency.result == {
+        "upload_id": str(upload_id),
+        "put_url": response.json()["put_url"],
+    }
     assert (
         upload.expected_size,
         upload.artifact_id,
@@ -298,6 +348,116 @@ async def test_create_upload_replays_same_request_and_rejects_same_key_with_new_
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         count = await session.scalar(select(func.count()).select_from(StagingUpload))
     assert count == 1
+
+
+@pytest.mark.anyio
+async def test_create_upload_replay_returns_the_original_url_near_expiry(
+    client,
+    seeded_database,
+    alice,
+    artifact_gateway: UploadUrlGateway,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_time = datetime.now(UTC)
+
+    class MutableDatetime(datetime):
+        current = initial_time
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    signed: list[tuple[str, timedelta]] = []
+
+    def sign_with_time(key: str, expires: timedelta) -> str:
+        signed.append((key, expires))
+        return f"https://storage.test/put/{key}?signature={len(signed)}"
+
+    monkeypatch.setattr("app.services.artifacts.datetime", MutableDatetime)
+    monkeypatch.setattr(
+        artifact_gateway,
+        "create_staging_put_url",
+        sign_with_time,
+    )
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    first = await _create_upload(
+        client,
+        token,
+        filename="临近到期.txt",
+        size=2,
+        key="near-expiry-create",
+    )
+    MutableDatetime.current = initial_time + timedelta(minutes=9, seconds=59)
+
+    replayed = await _create_upload(
+        client,
+        token,
+        filename="临近到期.txt",
+        size=2,
+        key="near-expiry-create",
+    )
+
+    assert replayed.status_code == 201
+    assert replayed.json() == first.json()
+    assert signed == [
+        (f"staging/{first.json()['upload_id']}", timedelta(minutes=10))
+    ]
+
+
+@pytest.mark.anyio
+async def test_create_upload_with_an_expired_key_allocates_a_fresh_upload(
+    client,
+    seeded_database,
+    alice,
+    artifact_gateway: UploadUrlGateway,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial_time = datetime.now(UTC)
+
+    class MutableDatetime(datetime):
+        current = initial_time
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    signed: list[tuple[str, timedelta]] = []
+
+    def sign_with_time(key: str, expires: timedelta) -> str:
+        signed.append((key, expires))
+        return f"https://storage.test/put/{key}?signature={len(signed)}"
+
+    monkeypatch.setattr("app.services.artifacts.datetime", MutableDatetime)
+    monkeypatch.setattr(
+        artifact_gateway,
+        "create_staging_put_url",
+        sign_with_time,
+    )
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    first = await _create_upload(
+        client,
+        token,
+        filename="已过期.txt",
+        size=2,
+        key="expired-create",
+    )
+    MutableDatetime.current = initial_time + timedelta(minutes=10, seconds=1)
+
+    replacement = await _create_upload(
+        client,
+        token,
+        filename="已过期.txt",
+        size=2,
+        key="expired-create",
+    )
+
+    assert replacement.status_code == 201
+    assert replacement.json()["upload_id"] != first.json()["upload_id"]
+    assert replacement.json()["put_url"] != first.json()["put_url"]
+    assert datetime.fromisoformat(replacement.json()["expires_at"]) == (
+        MutableDatetime.current + timedelta(minutes=10)
+    )
+    assert len(signed) == 2
 
 
 @pytest.mark.anyio
@@ -534,6 +694,136 @@ async def test_completion_fails_closed_after_project_membership_is_revoked(
             select(func.count()).select_from(ArtifactVersion)
         )
     assert version_count == 0
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        ObjectMetadata(4, "text/plain", "etag-valid"),
+        None,
+        ObjectMetadata(3, "text/plain", "etag-wrong-size"),
+    ),
+)
+@pytest.mark.anyio
+async def test_first_completion_checks_current_project_edit_before_object_stat(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    bob_project,
+    artifact_gateway: UploadUrlGateway,
+    metadata: ObjectMetadata | None,
+) -> None:
+    token, grant = await _select_project_with_temporary_edit(
+        client,
+        seeded_database,
+        alice,
+        bob,
+        bob_project,
+    )
+    created = await _create_upload(
+        client,
+        token,
+        filename="降权首次完成.txt",
+        size=4,
+        key="downgraded-first-create",
+    )
+    upload_id = UUID(created.json()["upload_id"])
+    if metadata is not None:
+        artifact_gateway.objects[f"staging/{upload_id}"] = metadata
+    token = await _downgrade_grant_to_read(client, seeded_database, grant.id)
+
+    completed = await _complete_upload(
+        client,
+        token,
+        upload_id,
+        actual_size=4,
+        sha256="a" * 64,
+        key="downgraded-first-complete",
+    )
+
+    assert completed.status_code == 404
+    assert completed.json() == {"detail": {"code": "not-found"}}
+    assert artifact_gateway.stat_calls == []
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        version_count = await session.scalar(
+            select(func.count()).select_from(ArtifactVersion)
+        )
+        job_count = await session.scalar(
+            select(func.count()).select_from(ArtifactProcessingJob)
+        )
+    assert (version_count, job_count) == (0, 0)
+
+
+@pytest.mark.anyio
+async def test_completion_replay_and_conflict_check_current_project_edit_first(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    bob_project,
+    artifact_gateway: UploadUrlGateway,
+) -> None:
+    token, grant = await _select_project_with_temporary_edit(
+        client,
+        seeded_database,
+        alice,
+        bob,
+        bob_project,
+    )
+    created = await _create_upload(
+        client,
+        token,
+        filename="降权幂等完成.txt",
+        size=6,
+        key="downgraded-replay-create",
+    )
+    upload_id = UUID(created.json()["upload_id"])
+    artifact_gateway.objects[f"staging/{upload_id}"] = ObjectMetadata(
+        6, "text/plain", "etag-replay"
+    )
+    first = await _complete_upload(
+        client,
+        token,
+        upload_id,
+        actual_size=6,
+        sha256="b" * 64,
+        key="downgraded-replay-complete",
+    )
+    assert first.status_code == 201
+    artifact_gateway.stat_calls.clear()
+    token = await _downgrade_grant_to_read(client, seeded_database, grant.id)
+
+    replayed = await _complete_upload(
+        client,
+        token,
+        upload_id,
+        actual_size=6,
+        sha256="b" * 64,
+        key="downgraded-replay-complete",
+    )
+    conflict = await _complete_upload(
+        client,
+        token,
+        upload_id,
+        actual_size=6,
+        sha256="c" * 64,
+        key="downgraded-replay-complete",
+    )
+
+    assert replayed.status_code == conflict.status_code == 404
+    assert replayed.json() == conflict.json() == {
+        "detail": {"code": "not-found"}
+    }
+    assert artifact_gateway.stat_calls == []
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        version_count = await session.scalar(
+            select(func.count()).select_from(ArtifactVersion)
+        )
+        job_count = await session.scalar(
+            select(func.count()).select_from(ArtifactProcessingJob)
+        )
+    assert (version_count, job_count) == (1, 1)
 
 
 @pytest.mark.anyio

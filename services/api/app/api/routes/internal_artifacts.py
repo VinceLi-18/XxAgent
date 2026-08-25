@@ -1,4 +1,3 @@
-from datetime import timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -65,12 +64,15 @@ async def _create_upload_response(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "not-found"},
         ) from None
+    put_url = await artifacts.get_or_create_upload_put_url(
+        context.session,
+        context.principal,
+        upload=upload,
+        idempotency_key=request.idempotency_key,
+    )
     return CreateArtifactUploadResponse(
         upload_id=upload.id,
-        put_url=artifacts._runtime_gateway().create_staging_put_url(
-            upload.staging_key,
-            timedelta(minutes=10),
-        ),
+        put_url=put_url,
         expires_at=upload.expires_at,
     )
 
