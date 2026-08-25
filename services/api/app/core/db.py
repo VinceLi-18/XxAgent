@@ -1,12 +1,24 @@
 from collections.abc import AsyncIterator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.core.config import settings
 
-engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
+
+def create_database_engine(database_url: str) -> AsyncEngine:
+    """Create one independently disposable PostgreSQL engine."""
+
+    return create_async_engine(database_url, pool_pre_ping=True)
+
+
+engine = create_database_engine(settings.DATABASE_URL)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
-admin_engine = create_async_engine(settings.DATABASE_ADMIN_URL or settings.DATABASE_URL, pool_pre_ping=True)
+admin_engine = create_database_engine(settings.DATABASE_ADMIN_URL or settings.DATABASE_URL)
 AdminSessionLocal = async_sessionmaker(admin_engine, expire_on_commit=False)
 
 

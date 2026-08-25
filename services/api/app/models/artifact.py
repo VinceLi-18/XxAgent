@@ -69,6 +69,10 @@ class ArtifactProcessingJob(Base):
     __tablename__ = "artifact_processing_jobs"
     __table_args__ = (
         CheckConstraint("attempts >= 0", name="ck_artifact_processing_job_attempts"),
+        CheckConstraint(
+            "status IN ('ready', 'leased', 'succeeded', 'dead')",
+            name="ck_artifact_processing_job_status",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

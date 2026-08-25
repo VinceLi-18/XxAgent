@@ -174,6 +174,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     show_capabilities = capability_commands.add_parser("show")
     show_capabilities.add_argument("--email", required=True)
+
+    worker = commands.add_parser("worker")
+    worker.add_argument("--once", action="store_true")
     return parser
 
 
@@ -233,6 +236,11 @@ async def _run_and_dispose(args: argparse.Namespace) -> str:
 
 def main() -> None:
     args = _parser().parse_args()
+    if args.domain == "worker":
+        from app.worker import run_worker
+
+        asyncio.run(run_worker(once=args.once))
+        return
     try:
         message = asyncio.run(_run_and_dispose(args))
     except ValueError as error:

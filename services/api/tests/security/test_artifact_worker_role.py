@@ -281,7 +281,7 @@ async def test_worker_can_claim_jobs_and_update_only_processing_columns(
         ).one()
         await connection.execute(
             text(
-                "UPDATE artifact_processing_jobs SET status = 'running', attempts = 1, "
+                "UPDATE artifact_processing_jobs SET status = 'leased', attempts = 1, "
                 "lease_token = :lease_token, lease_expires_at = CURRENT_TIMESTAMP, "
                 "updated_at = CURRENT_TIMESTAMP WHERE id = :job_id"
             ),

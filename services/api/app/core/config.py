@@ -1,6 +1,10 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.worker_config import ArtifactWorkerSettings
+
+__all__ = ("ArtifactWorkerSettings", "Settings", "settings")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(

@@ -299,6 +299,34 @@ async def test_artifact_processing_job_rejects_negative_attempts(
 
 
 @pytest.mark.anyio
+async def test_artifact_processing_job_rejects_unknown_status(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    await _require_lifecycle_schema(seeded_database)
+    artifact_id = await _insert_artifact(seeded_database, alice.id)
+    version_id = await _insert_version(
+        seeded_database,
+        artifact_id=artifact_id,
+        account_id=alice.id,
+        version_number=1,
+        scan_status="pending",
+        object_key=None,
+    )
+
+    with pytest.raises(IntegrityError, match="ck_artifact_processing_job_status"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_processing_jobs "
+                    "(id, version_id, status, attempts, next_attempt_at) "
+                    "VALUES (:id, :version_id, 'unknown', 0, CURRENT_TIMESTAMP)"
+                ),
+                {"id": uuid4(), "version_id": version_id},
+            )
+
+
+@pytest.mark.anyio
 async def test_artifact_version_allows_only_declared_scan_transitions(
     seeded_database: AsyncEngine,
     alice,

@@ -259,6 +259,10 @@ def upgrade() -> None:
             server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.CheckConstraint("attempts >= 0", name="ck_artifact_processing_job_attempts"),
+        sa.CheckConstraint(
+            "status IN ('ready', 'leased', 'succeeded', 'dead')",
+            name="ck_artifact_processing_job_status",
+        ),
         sa.ForeignKeyConstraint(["version_id"], ["artifact_versions.id"]),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("version_id"),
