@@ -22,5 +22,5 @@ Authorizer 从物理连接建立一次 `AsyncLocalStorage` 请求作用域，服
 
 ## Known Limitations and Deferred Work
 
-- 当前仅提供工作台读取、上下文选择、项目创建和项目详情；Session 项目引用由后续会话装配边界处理。
+- 当前仅提供工作台读取、上下文选择、项目创建和项目详情；Session 创建范围由独立的远端 Persistence 在 FastAPI 事务内决定。
 - 服务依赖 XAgent Authorizer 建立请求作用域，不能作为匿名 Remote 使用。

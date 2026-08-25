@@ -72,6 +72,7 @@ async def test_bootstrap_returns_account_projects_context_and_session_summary(
                 "created_at": alice_project.created_at.isoformat(),
             }
         ],
+        "session_scopes": [],
         "session_summary": {
             "private_count": 0,
             "project_counts": {str(alice_project.id): 0},

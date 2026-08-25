@@ -22,6 +22,7 @@ import {
 import { XAgentBackendClient, type XAgentBackend } from '@xagent/dsh-backend-client'
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** XAgent FastAPI Session Persistence plugin configuration. */
 export interface Config {
@@ -95,6 +96,21 @@ function responseSessions(value: unknown): Record<string, unknown>[] {
   const sessions = object(value).sessions
   if (!Array.isArray(sessions)) throw new TypeError('invalid XAgent session response')
   return sessions.map(object)
+}
+
+function validateCreatedSession(value: unknown, expectedId: string): void {
+  const row = object(value)
+  const session = object(row.session)
+  if (row.schema_version !== 1 || session.id !== expectedId) {
+    throw new TypeError('invalid XAgent session create response')
+  }
+  if (session.visibility === 'private' && session.project_id === null) return
+  if (
+    session.visibility === 'project'
+    && typeof session.project_id === 'string'
+    && UUID_PATTERN.test(session.project_id)
+  ) return
+  throw new TypeError('invalid XAgent session create response')
 }
 
 function responseInspection(value: unknown): SessionInspection {
@@ -183,13 +199,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
   override async preparePublication(session: Session): Promise<void> {
     const token = this.requireActiveToken()
     const events = session.events.map(event => structuredClone(event))
-    await this.backend.sessions.create(token, {
+    const expectedId = backendSessionId(session.id)
+    const response = await this.backend.sessions.create(token, {
       schema_version: 1,
-      session_id: backendSessionId(session.id),
+      session_id: expectedId,
       runtime_header: structuredClone(session.header),
       title: session.id,
-      visibility: 'private',
-      project_id: null,
       idempotency_key: `publish:${session.id}`,
       events: events.map(event => ({
         event_type: event.type,
@@ -197,6 +212,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
         payload: event,
       })),
     }, undefined)
+    validateCreatedSession(response, expectedId)
     this.leases.set(session.id, token)
   }
 
@@ -212,15 +228,15 @@ export class XAgentSessionPersistence extends SessionPersistence {
 
   async create(meta: SessionHeader): Promise<void> {
     const token = this.requireActiveToken()
-    await this.backend.sessions.create(token, {
+    const expectedId = backendSessionId(meta.id)
+    const response = await this.backend.sessions.create(token, {
       schema_version: 1,
-      session_id: backendSessionId(meta.id),
+      session_id: expectedId,
       runtime_header: structuredClone(meta),
       title: meta.id,
-      visibility: 'private',
-      project_id: null,
       idempotency_key: `create:${meta.id}`,
     }, undefined)
+    validateCreatedSession(response, expectedId)
     this.leases.set(meta.id, token)
   }
 

@@ -50,6 +50,13 @@ export interface XAgentProjectSummary {
   readonly createdAt: string
 }
 
+/** 服务端授权后的单个 Session 工作上下文索引。 */
+export interface XAgentSessionScopeSummary {
+  readonly sessionId: string
+  readonly visibility: 'private' | 'project'
+  readonly projectId?: string
+}
+
 /** 当前账号的完整工作台初始化状态。 */
 export interface XAgentWorkbenchBootstrap {
   readonly account: {
@@ -61,6 +68,7 @@ export interface XAgentWorkbenchBootstrap {
   readonly capabilities: readonly XAgentCapability[]
   readonly context: XAgentWorkbenchContext
   readonly projects: readonly XAgentProjectSummary[]
+  readonly sessionScopes: readonly XAgentSessionScopeSummary[]
   readonly sessionSummary: {
     readonly privateCount: number
     readonly projectCounts: Readonly<Record<string, number>>

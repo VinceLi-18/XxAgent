@@ -187,6 +187,40 @@ describe('XAgent Session 授权', () => {
     })
   })
 
+  test.each([
+    ['session/history', 'read'],
+    ['session/create', 'read'],
+    ['session/fork', 'read'],
+    ['session/prompt', 'edit'],
+  ] as const)('%s 在项目或引用失权后统一返回 session-not-found', async (endpoint, permission) => {
+    const authorize = vi.fn(async () => { throw new XAgentBackendError('not-found') })
+    const operation = vi.fn(success)
+    const auth = new XAgentAuthorization(backend(authorize), persistence())
+    const sessionId = 'session-00000000-0000-0000-0000-000000000701'
+
+    await expect(auth.run(
+      endpoint,
+      { args: { sessionId } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'session-not-found',
+        message: 'session not found',
+        details: { sessionId },
+      },
+    })
+    expect(authorize).toHaveBeenCalledWith(
+      'alice-token',
+      '00000000-0000-0000-0000-000000000701',
+      permission,
+      expect.any(AbortSignal),
+    )
+    expect(operation).not.toHaveBeenCalled()
+  })
+
   test('列表结果按 FastAPI 当前可见集合过滤内存中的其他用户 Session', async () => {
     const value = backend()
     value.sessions.list = vi.fn(async () => ({

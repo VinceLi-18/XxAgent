@@ -104,6 +104,16 @@ async def test_project_session_cannot_register_project_references(
     alice_project,
 ) -> None:
     token = await _login(client, seeded_database, alice, "alice@example.test")
+    selected = await client.post(
+        "/internal/xagent/workbench/context",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "kind": "project",
+            "project_id": str(alice_project.id),
+        },
+    )
+    assert selected.status_code == 200
     created = await client.post(
         "/internal/xagent/sessions",
         headers=_headers(token),

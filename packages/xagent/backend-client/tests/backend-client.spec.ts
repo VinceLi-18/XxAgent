@@ -23,6 +23,18 @@ const bootstrapResponse = {
     name: 'Alpha',
     created_at: '2026-08-25T08:00:00+00:00',
   }],
+  session_scopes: [
+    {
+      session_id: '00000000-0000-0000-0000-000000000301',
+      visibility: 'private',
+      project_id: null,
+    },
+    {
+      session_id: '00000000-0000-0000-0000-000000000302',
+      visibility: 'project',
+      project_id: '00000000-0000-0000-0000-000000000201',
+    },
+  ],
   session_summary: {
     private_count: 2,
     project_counts: { '00000000-0000-0000-0000-000000000201': 4 },
@@ -357,6 +369,17 @@ describe('XAgent 后端客户端', () => {
         name: 'Alpha',
         createdAt: '2026-08-25T08:00:00+00:00',
       }],
+      sessionScopes: [
+        {
+          sessionId: '00000000-0000-0000-0000-000000000301',
+          visibility: 'private',
+        },
+        {
+          sessionId: '00000000-0000-0000-0000-000000000302',
+          visibility: 'project',
+          projectId: '00000000-0000-0000-0000-000000000201',
+        },
+      ],
       sessionSummary: {
         privateCount: 2,
         projectCounts: { [projectResponse.project.id]: 4 },
@@ -408,6 +431,11 @@ describe('XAgent 后端客户端', () => {
     [{ ...bootstrapResponse, capabilities: ['project.delete'] }],
     [{ ...bootstrapResponse, context: { kind: 'project', project_id: null } }],
     [{ ...bootstrapResponse, projects: [{ ...bootstrapResponse.projects[0], created_at: '' }] }],
+    [{ ...bootstrapResponse, session_scopes: null }],
+    [{ ...bootstrapResponse, session_scopes: [{ session_id: 'bad', visibility: 'private', project_id: null }] }],
+    [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: null }] }],
+    [{ ...bootstrapResponse, session_scopes: [...bootstrapResponse.session_scopes, { session_id: '00000000-0000-0000-0000-000000000301', visibility: 'private', project_id: null }] }],
+    [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: '00000000-0000-0000-0000-000000000999' }] }],
     [{ ...bootstrapResponse, session_summary: { private_count: -1, project_counts: {} } }],
     [{ ...bootstrapResponse, session_summary: { private_count: 0, project_counts: {} } }],
     [{ ...bootstrapResponse, projects: [...bootstrapResponse.projects, bootstrapResponse.projects[0]] }],

@@ -138,6 +138,116 @@ async def test_create_list_open_append_and_archive_are_actor_isolated(
 
 
 @pytest.mark.anyio
+async def test_create_uses_the_saved_server_context_and_ignores_forged_scope(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+
+    selected = await client.post(
+        "/internal/xagent/workbench/context",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "kind": "project",
+            "project_id": str(alice_project.id),
+        },
+    )
+    project_session = await client.post(
+        "/internal/xagent/sessions",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "session_id": "00000000-0000-0000-0000-000000000711",
+            "runtime_header": {
+                "version": 0,
+                "id": "session-00000000-0000-0000-0000-000000000711",
+                "createdAt": 1787587200000,
+            },
+            "title": "project context",
+            "visibility": "private",
+            "project_id": None,
+            "idempotency_key": "context-project-1",
+        },
+    )
+    switched = await client.post(
+        "/internal/xagent/workbench/context",
+        headers=_headers(token),
+        json={"schema_version": 1, "kind": "workbench", "project_id": None},
+    )
+    forked_project_session = await client.post(
+        f"/internal/xagent/sessions/{project_session.json()['session']['id']}/fork",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "through_sequence": -1,
+            "title": "forked project context",
+            "idempotency_key": "context-project-fork-1",
+        },
+    )
+    private_session = await client.post(
+        "/internal/xagent/sessions",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "session_id": "00000000-0000-0000-0000-000000000712",
+            "runtime_header": {
+                "version": 0,
+                "id": "session-00000000-0000-0000-0000-000000000712",
+                "createdAt": 1787587200001,
+            },
+            "title": "workbench context",
+            "visibility": "project",
+            "project_id": str(alice_project.id),
+            "idempotency_key": "context-workbench-1",
+        },
+    )
+    bootstrap = await client.post(
+        "/internal/xagent/workbench/bootstrap",
+        headers=_headers(token),
+        json={"schema_version": 1},
+    )
+    listed = await client.post(
+        "/internal/xagent/sessions/list",
+        headers=_headers(token),
+        json={"schema_version": 1},
+    )
+
+    assert selected.status_code == 200
+    assert project_session.status_code == 201
+    assert project_session.json()["session"]["visibility"] == "project"
+    assert project_session.json()["session"]["project_id"] == str(alice_project.id)
+    assert switched.status_code == 200
+    assert forked_project_session.status_code == 201
+    assert forked_project_session.json()["session"]["visibility"] == "project"
+    assert forked_project_session.json()["session"]["project_id"] == str(alice_project.id)
+    assert private_session.status_code == 201
+    assert private_session.json()["session"]["visibility"] == "private"
+    assert private_session.json()["session"]["project_id"] is None
+    scopes = {item["session_id"]: item for item in bootstrap.json()["session_scopes"]}
+    assert scopes == {
+        "session-00000000-0000-0000-0000-000000000711": {
+            "session_id": "session-00000000-0000-0000-0000-000000000711",
+            "visibility": "project",
+            "project_id": str(alice_project.id),
+        },
+        "session-00000000-0000-0000-0000-000000000712": {
+            "session_id": "session-00000000-0000-0000-0000-000000000712",
+            "visibility": "private",
+            "project_id": None,
+        },
+    }
+    listed_runtime_ids = {
+        item["runtime_header"]["id"]
+        for item in listed.json()["sessions"]
+        if item["runtime_header"] is not None
+    }
+    assert set(scopes) == listed_runtime_ids
+
+
+@pytest.mark.anyio
 async def test_events_are_paginated_and_fork_copies_only_the_authorized_prefix(
     client,
     seeded_database,
@@ -282,6 +392,16 @@ async def test_project_session_continues_to_use_its_project_access(
     alice_project,
 ) -> None:
     token = await _login(client, seeded_database, alice, "alice@example.test")
+    selected = await client.post(
+        "/internal/xagent/workbench/context",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "kind": "project",
+            "project_id": str(alice_project.id),
+        },
+    )
+    assert selected.status_code == 200
     created = await client.post(
         "/internal/xagent/sessions",
         headers=_headers(token),

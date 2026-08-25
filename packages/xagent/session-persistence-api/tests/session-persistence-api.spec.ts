@@ -35,7 +35,17 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
       },
       create: async (...args) => {
         calls.push({ name: 'create', args })
-        return { schema_version: 1, session: { runtime_header: header, version: 1, last_event_sequence: -1 } }
+        return {
+          schema_version: 1,
+          session: {
+            id: '00000000-0000-0000-0000-000000000701',
+            visibility: 'private',
+            project_id: null,
+            runtime_header: header,
+            version: 1,
+            last_event_sequence: -1,
+          },
+        }
       },
       open: async (...args) => {
         calls.push({ name: 'open', args })
@@ -92,6 +102,8 @@ describe('XAgent FastAPI Session Persistence', () => {
       }],
     })
     expect(call?.args[2]).toBeUndefined()
+    expect(call?.args[1]).not.toHaveProperty('visibility')
+    expect(call?.args[1]).not.toHaveProperty('project_id')
   })
 
   test('创建与追加使用当前请求令牌，后续写入使用按 Session 固定的租约', async () => {
@@ -112,6 +124,8 @@ describe('XAgent FastAPI Session Persistence', () => {
       }),
       undefined,
     ])
+    expect(value.calls.find(call => call.name === 'create')?.args[1]).not.toHaveProperty('visibility')
+    expect(value.calls.find(call => call.name === 'create')?.args[1]).not.toHaveProperty('project_id')
     expect(value.calls.find(call => call.name === 'append')?.args).toEqual([
       'alice-token',
       '00000000-0000-0000-0000-000000000701',
@@ -195,6 +209,21 @@ describe('XAgent FastAPI Session Persistence', () => {
 
     await expect(persistence.withUserToken('alice-token', () => persistence.create(header)))
       .rejects.toThrow('service unavailable')
+    await expect(persistence.append(id, [event])).rejects.toThrow('unauthenticated')
+  })
+
+  test.each([
+    [{ session: { id: '00000000-0000-0000-0000-000000000702', visibility: 'private', project_id: null } }],
+    [{ session: { id: '00000000-0000-0000-0000-000000000701', visibility: 'private', project_id: '00000000-0000-0000-0000-000000000401' } }],
+    [{ session: { id: '00000000-0000-0000-0000-000000000701', visibility: 'project', project_id: null } }],
+    [{ session: { id: '00000000-0000-0000-0000-000000000701', visibility: 'project', project_id: 'not-a-uuid' } }],
+  ])('创建响应身份或服务端范围畸形时不建立写入租约 %#', async (response) => {
+    const value = backend()
+    value.sessions.create = vi.fn(async () => ({ schema_version: 1, ...response }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.withUserToken('alice-token', () => persistence.create(header)))
+      .rejects.toThrow('invalid XAgent session create response')
     await expect(persistence.append(id, [event])).rejects.toThrow('unauthenticated')
   })
 

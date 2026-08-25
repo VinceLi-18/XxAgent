@@ -42,6 +42,7 @@ function bootstrap(accountId: string): XAgentWorkbenchBootstrap {
     capabilities: [],
     context: { kind: 'workbench' },
     projects: [],
+    sessionScopes: [],
     sessionSummary: { privateCount: 0, projectCounts: {} },
   }
 }

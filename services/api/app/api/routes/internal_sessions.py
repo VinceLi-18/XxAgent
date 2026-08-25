@@ -2,7 +2,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,7 @@ from app.core.db import get_admin_session
 from app.core.db_context import set_actor_context
 from app.core.security import Actor
 from app.services.auth import AuthenticationRejected, Principal, introspect
+from app.services.workbench import normalize_context
 from app.services.xagent_sessions import (
     SessionErrorCode,
     SessionServiceError,
@@ -42,11 +43,11 @@ class EventInput(BaseModel):
 
 
 class CreateSessionRequest(VersionedRequest):
+    model_config = ConfigDict(extra="ignore")
+
     session_id: UUID | None = None
     runtime_header: dict[str, Any] | None = None
     title: str = Field(min_length=1, max_length=255)
-    visibility: Literal["private", "project"]
-    project_id: UUID | None = None
     idempotency_key: str = Field(min_length=1, max_length=255)
     events: list[EventInput] = Field(default_factory=list, max_length=100)
 
@@ -145,12 +146,19 @@ async def create_route(
     _check_event_versions(request.events)
     digest = request_hash(request.model_dump(mode="json", exclude={"idempotency_key"}))
     try:
+        workbench_context = await normalize_context(
+            context.session,
+            context.principal,
+            None,
+        )
         result, replay = await create_session(
             context.session,
             context.principal,
             title=request.title,
-            visibility=request.visibility,
-            project_id=request.project_id,
+            visibility=(
+                "project" if workbench_context.kind == "project" else "private"
+            ),
+            project_id=workbench_context.project_id,
             idempotency_key=request.idempotency_key,
             digest=digest,
             session_id=request.session_id,

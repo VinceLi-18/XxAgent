@@ -15,6 +15,7 @@ from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession
 from app.services.auth import Principal
 from app.services.capabilities import effective_capabilities
 from app.services.projects import create_project
+from app.services.xagent_sessions import list_sessions
 
 
 @dataclass(frozen=True)
@@ -217,22 +218,29 @@ async def bootstrap_workbench(
         await session.scalars(select(Project).order_by(Project.name, Project.id))
     ).all()
     context = await normalize_context(session, principal, None)
-    counts = (
-        await session.execute(
-            select(
-                XAgentSession.visibility,
-                XAgentSession.project_id,
-                func.count(),
-            ).group_by(XAgentSession.visibility, XAgentSession.project_id)
-        )
-    ).all()
+    visible_sessions = await list_sessions(session)
+    session_scopes = []
     private_count = 0
     project_counts = {str(project.id): 0 for project in projects}
-    for visibility, project_id, count in counts:
+    for item in visible_sessions:
+        visibility = item["visibility"]
+        project_id = item["project_id"]
         if visibility == "private":
-            private_count += count
-        elif project_id is not None and str(project_id) in project_counts:
-            project_counts[str(project_id)] += count
+            private_count += 1
+        elif project_id is not None and project_id in project_counts:
+            project_counts[project_id] += 1
+        runtime_header = item["runtime_header"]
+        runtime_session_id = (
+            runtime_header.get("id") if isinstance(runtime_header, dict) else None
+        )
+        if isinstance(runtime_session_id, str):
+            session_scopes.append(
+                {
+                    "session_id": runtime_session_id,
+                    "visibility": visibility,
+                    "project_id": project_id,
+                }
+            )
 
     return {
         "schema_version": 1,
@@ -255,6 +263,7 @@ async def bootstrap_workbench(
             }
             for project in projects
         ],
+        "session_scopes": session_scopes,
         "session_summary": {
             "private_count": private_count,
             "project_counts": project_counts,

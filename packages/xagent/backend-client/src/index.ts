@@ -10,6 +10,7 @@ import type {
   XAgentProjectDetail,
   XAgentProjectSummary,
   XAgentSessionBackend,
+  XAgentSessionScopeSummary,
   XAgentWorkbenchBackend,
   XAgentWorkbenchBootstrap,
   XAgentWorkbenchContext,
@@ -24,6 +25,7 @@ export type {
   XAgentProjectSummary,
   XAgentSessionBackend,
   XAgentSessionProjectRefsInput,
+  XAgentSessionScopeSummary,
   XAgentWorkbenchBackend,
   XAgentWorkbenchBootstrap,
   XAgentWorkbenchContext,
@@ -77,9 +79,15 @@ function exactRecord(value: unknown, keys: readonly string[]): Record<string, un
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+const SESSION_ID_PATTERN = /^(?:session-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 
 function requiredUuid(value: unknown): string {
   if (typeof value !== 'string' || !UUID_PATTERN.test(value)) failSchema()
+  return value
+}
+
+function requiredSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !SESSION_ID_PATTERN.test(value)) failSchema()
   return value
 }
 
@@ -111,6 +119,22 @@ function parseProjectSummary(value: unknown): XAgentProjectSummary {
   }
 }
 
+function parseSessionScope(value: unknown): XAgentSessionScopeSummary {
+  const row = exactRecord(value, ['session_id', 'visibility', 'project_id'])
+  const sessionId = requiredSessionId(row.session_id)
+  if (row.visibility === 'private' && row.project_id === null) {
+    return { sessionId, visibility: 'private' }
+  }
+  if (row.visibility === 'project') {
+    return {
+      sessionId,
+      visibility: 'project',
+      projectId: requiredUuid(row.project_id),
+    }
+  }
+  return failSchema()
+}
+
 function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
   const row = exactRecord(value, [
     'schema_version',
@@ -118,6 +142,7 @@ function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
     'capabilities',
     'context',
     'projects',
+    'session_scopes',
     'session_summary',
   ])
   if (row.schema_version !== 1) failSchema()
@@ -137,6 +162,14 @@ function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
   const projects = row.projects.map(parseProjectSummary)
   const projectIds = projects.map(project => project.id)
   if (new Set(projectIds).size !== projectIds.length) failSchema()
+  if (!Array.isArray(row.session_scopes)) failSchema()
+  const sessionScopes = row.session_scopes.map(parseSessionScope)
+  const sessionIds = sessionScopes.map(scope => scope.sessionId)
+  if (
+    new Set(sessionIds).size !== sessionIds.length
+    || sessionScopes.some(scope => scope.visibility === 'project'
+      && (scope.projectId === undefined || !projectIds.includes(scope.projectId)))
+  ) failSchema()
   const summary = exactRecord(row.session_summary, ['private_count', 'project_counts'])
   const projectCountsRow = record(summary.project_counts)
   const projectCounts: Record<string, number> = {}
@@ -160,6 +193,7 @@ function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
     capabilities,
     context: parseContext(row.context),
     projects,
+    sessionScopes,
     sessionSummary: {
       privateCount: count(summary.private_count),
       projectCounts,
