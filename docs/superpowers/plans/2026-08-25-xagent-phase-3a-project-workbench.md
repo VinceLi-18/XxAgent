@@ -590,8 +590,8 @@ git commit -m "feat: add optional workbench shell slots"
 - 创建：`packages/xagent/ui-account/tests/account.client.spec.tsx`
 - 创建：`packages/xagent/ui-account/README.md`
 - 创建：`packages/xagent/ui-account/architecture.md`
-- 删除：`packages/client/ui-layout/src/client/xagent-auth-blocker.tsx`
-- 删除：`packages/client/ui-layout/tests/xagent-auth-blocker.client.spec.tsx`
+- 删除：通用布局的旧 XAgent 认证组件
+- 删除：旧认证组件的客户端测试
 - 修改：`packages/client/ui-layout/src/client/AppFrame.tsx`
 - 修改：`packages/client/ui-layout/src/client/AppFrame.module.css`
 - 修改：`tsconfig.base.json`

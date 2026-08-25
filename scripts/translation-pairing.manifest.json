@@ -43,6 +43,8 @@
     "packages/xagent/project/architecture.md",
     "packages/xagent/session-persistence-api/README.md",
     "packages/xagent/session-persistence-api/architecture.md",
+    "packages/xagent/ui-account/README.md",
+    "packages/xagent/ui-account/architecture.md",
     "services/api/README.md"
   ]
 }

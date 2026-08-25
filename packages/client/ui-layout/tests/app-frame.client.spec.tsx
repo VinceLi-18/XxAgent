@@ -141,6 +141,13 @@ afterEach(() => {
 })
 
 describe('AppFrame', () => {
+  it('通用布局不请求 XAgent 认证接口', () => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    mountFrame()
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
   it('renders three tracks from store state', () => {
     const { frame } = mountFrame()
     expect(tracks(frame)).toEqual([280, 0])

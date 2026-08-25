@@ -16,7 +16,6 @@ import type { HostObservable, InjectFace, PropsRenderSlots, PropsRuntime, PropsS
 import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './columns.ts'
 import type { createLayoutStore } from './stores.ts'
 import css from './AppFrame.module.css'
-import { XAgentAuthBlocker } from './xagent-auth-blocker.tsx'
 
 /** Full composed props: runtime share + child-slot render share + store share. */
 export type LayoutInjected = { hooks: { shellDetails: HostObservable<boolean> } }
@@ -259,7 +258,6 @@ export function AppFrame({
       </>
       <div className={css.overlayLayer} data-shell-overlay>
         {renderSlot('shell.overlay', {})}
-        <XAgentAuthBlocker />
       </div>
       {shellDetailsConceded && (
         <button

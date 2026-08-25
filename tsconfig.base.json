@@ -39,6 +39,8 @@
       "@xagent/dsh-session-persistence-api": ["./packages/xagent/session-persistence-api/src/index.ts"],
       "@xagent/dsh-project": ["./packages/xagent/project/src/index.ts"],
       "@xagent/dsh-project/types": ["./packages/xagent/project/src/types.ts"],
+      "@xagent/dsh-ui-account": ["./packages/xagent/ui-account/src/index.ts"],
+      "@xagent/dsh-ui-account/client": ["./packages/xagent/ui-account/src/client/index.ts"],
       "@deepseek-ai/cordis": ["./vendor/cordis/src"],
       "@deepseek-ai/cosmokit": ["./vendor/cosmokit/src"],
       "@deepseek-ai/schemastery": ["./vendor/schemastery/src"],
