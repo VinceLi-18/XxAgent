@@ -232,3 +232,45 @@ async def test_accounts_only_read_project_refs_for_their_private_sessions(
 
     assert rows == [(alice_session_id, bob_project.id)]
     assert may_insert is False
+
+
+@pytest.mark.anyio
+async def test_application_role_cannot_copy_inaccessible_project_references(
+    seeded_database: AsyncEngine,
+    actor_session: AsyncSession,
+    alice,
+    bob_project,
+) -> None:
+    source_id = UUID("00000000-0000-0000-0000-000000000913")
+    target_id = UUID("00000000-0000-0000-0000-000000000914")
+    await _insert_private_session(
+        seeded_database,
+        session_id=source_id,
+        owner_id=alice.id,
+    )
+    await _insert_private_session(
+        seeded_database,
+        session_id=target_id,
+        owner_id=alice.id,
+    )
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO xagent_session_project_refs (session_id, project_id) "
+                "VALUES (:session_id, :project_id)"
+            ),
+            {"session_id": source_id, "project_id": bob_project.id},
+        )
+
+    await set_actor_context(
+        actor_session,
+        Actor(id=alice.id, role=Role.SPECIALIST),
+    )
+    with pytest.raises(DBAPIError, match="authorized source references"):
+        await actor_session.execute(
+            text(
+                "SELECT public.xagent_copy_private_session_project_refs("
+                ":source_id, :target_id)"
+            ),
+            {"source_id": source_id, "target_id": target_id},
+        )

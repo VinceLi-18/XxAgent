@@ -106,6 +106,7 @@ async def get_session_context(
 def _raise_http(error: SessionServiceError) -> None:
     status_code = {
         SessionErrorCode.NOT_FOUND: status.HTTP_404_NOT_FOUND,
+        SessionErrorCode.SESSION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
         SessionErrorCode.SEQUENCE_CONFLICT: status.HTTP_409_CONFLICT,
         SessionErrorCode.IDEMPOTENCY_CONFLICT: status.HTTP_409_CONFLICT,
         SessionErrorCode.UNSUPPORTED_VERSION: status.HTTP_400_BAD_REQUEST,

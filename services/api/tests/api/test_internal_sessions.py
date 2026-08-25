@@ -271,3 +271,55 @@ async def test_runtime_header_and_requested_identity_round_trip_with_explicit_au
     )
     assert allowed.status_code == 204
     assert hidden.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_project_session_continues_to_use_its_project_access(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    alice_project,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    created = await client.post(
+        "/internal/xagent/sessions",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "title": "项目上下文",
+            "visibility": "project",
+            "project_id": str(alice_project.id),
+            "idempotency_key": "project-access-source",
+        },
+    )
+    assert created.status_code == 201
+    session_id = created.json()["session"]["id"]
+
+    async with AsyncSession(seeded_database) as session:
+        async with session.begin():
+            await session.execute(
+                text("UPDATE projects SET owner_id = :owner_id WHERE id = :project_id"),
+                {"owner_id": bob.id, "project_id": alice_project.id},
+            )
+    hidden = await client.post(
+        f"/internal/xagent/sessions/{session_id}/open",
+        headers=_headers(token),
+        json={"schema_version": 1},
+    )
+    assert hidden.status_code == 404
+    assert hidden.json() == {"detail": {"code": "not-found"}}
+
+    async with AsyncSession(seeded_database) as session:
+        async with session.begin():
+            await session.execute(
+                text("UPDATE projects SET owner_id = :owner_id WHERE id = :project_id"),
+                {"owner_id": alice.id, "project_id": alice_project.id},
+            )
+    restored = await client.post(
+        f"/internal/xagent/sessions/{session_id}/open",
+        headers=_headers(token),
+        json={"schema_version": 1},
+    )
+    assert restored.status_code == 200
+    assert restored.json()["session"]["project_id"] == str(alice_project.id)

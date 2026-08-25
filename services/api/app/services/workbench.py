@@ -4,12 +4,13 @@ from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import Actor
 from app.models.identity import Account
 from app.models.project import Project
-from app.models.workbench import XAgentWorkbenchPreference
+from app.models.workbench import XAgentSessionProjectRef, XAgentWorkbenchPreference
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession
 from app.services.auth import Principal
 from app.services.capabilities import effective_capabilities
@@ -28,6 +29,129 @@ class WorkbenchNotFound(Exception):
 
 class WorkbenchIdempotencyConflict(Exception):
     pass
+
+
+class WorkbenchSessionNotFound(Exception):
+    pass
+
+
+async def register_session_project_refs(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    session_id: UUID,
+    project_ids: list[UUID],
+    idempotency_key: str,
+    digest: str,
+) -> None:
+    requested_project_ids = sorted(set(project_ids))
+    item = await session.scalar(
+        select(XAgentSession)
+        .where(
+            XAgentSession.id == session_id,
+            XAgentSession.owner_id == principal.actor_id,
+            XAgentSession.visibility == "private",
+        )
+        .with_for_update()
+    )
+    if item is None:
+        raise WorkbenchNotFound
+
+    existing_project_ids = set(
+        (
+            await session.scalars(
+                select(XAgentSessionProjectRef.project_id).where(
+                    XAgentSessionProjectRef.session_id == session_id
+                )
+            )
+        ).all()
+    )
+    initially_visible_project_ids = set(
+        (
+            await session.scalars(
+                select(Project.id).where(
+                    Project.id.in_(existing_project_ids),
+                    text("id IN (SELECT public.authorized_project_ids())"),
+                )
+            )
+        ).all()
+    )
+    if initially_visible_project_ids != existing_project_ids:
+        raise WorkbenchSessionNotFound
+
+    operation = f"session.project-refs:{session_id}"
+    lock_name = f"{principal.actor_id}:{operation}:{idempotency_key}"
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
+        {"lock_name": lock_name},
+    )
+    stored = await session.get(
+        XAgentIdempotencyKey,
+        (principal.actor_id, operation, idempotency_key),
+    )
+    if stored is not None and stored.expires_at > datetime.now(UTC):
+        if stored.request_hash != digest:
+            raise WorkbenchIdempotencyConflict
+        replay = True
+    else:
+        replay = False
+
+    all_project_ids = sorted(existing_project_ids | set(requested_project_ids))
+    visible_project_ids = set(
+        (
+            await session.scalars(
+                select(Project.id)
+                .where(
+                    Project.id.in_(all_project_ids),
+                    text("id IN (SELECT public.authorized_project_ids())"),
+                )
+                .order_by(Project.id)
+                .with_for_update()
+            )
+        ).all()
+    )
+    if not existing_project_ids.issubset(visible_project_ids):
+        raise WorkbenchSessionNotFound
+    if visible_project_ids != set(all_project_ids):
+        raise WorkbenchNotFound
+    if replay:
+        return
+
+    if requested_project_ids:
+        await session.execute(
+            insert(XAgentSessionProjectRef)
+            .values(
+                [
+                    {"session_id": session_id, "project_id": project_id}
+                    for project_id in requested_project_ids
+                ]
+            )
+            .on_conflict_do_nothing(
+                index_elements=["session_id", "project_id"],
+            )
+        )
+    result = {
+        "schema_version": 1,
+        "session_id": str(session_id),
+        "project_ids": [str(project_id) for project_id in requested_project_ids],
+    }
+    expires_at = datetime.now(UTC) + timedelta(hours=24)
+    if stored is None:
+        session.add(
+            XAgentIdempotencyKey(
+                actor_id=principal.actor_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+                request_hash=digest,
+                result=result,
+                expires_at=expires_at,
+            )
+        )
+    else:
+        stored.request_hash = digest
+        stored.result = result
+        stored.expires_at = expires_at
+    await session.flush()
 
 
 async def normalize_context(

@@ -287,7 +287,7 @@ git commit -m "feat: fail closed on xagent session project refs"
 
 **文件：**
 
-- 创建：`services/api/alembic/versions/010_drop_legacy_conversation_threads.py`
+- 创建：`services/api/alembic/versions/011_drop_legacy_conversation_threads.py`
 - 删除：`services/api/app/models/conversation.py`
 - 删除：`services/api/app/api/routes/conversations.py`
 - 修改：`services/api/app/models/__init__.py`
@@ -300,7 +300,7 @@ git commit -m "feat: fail closed on xagent session project refs"
 
 - [ ] **步骤 1：写旧接口和表必须消失的 RED 测试**
 
-断言 OpenAPI 不再包含 `/api/v1/conversations`，应用模型注册不含 `conversation_threads`；升级 `010` 后表不存在。
+断言 OpenAPI 不再包含 `/api/v1/conversations`，应用模型注册不含 `conversation_threads`；升级 `011` 后表不存在。
 
 ```bash
 pnpm run api:test -- tests/security/test_legacy_conversation_removed.py
@@ -314,10 +314,10 @@ pnpm run api:test -- tests/security/test_legacy_conversation_removed.py
 
 - [ ] **步骤 3：验证 downgrade 只恢复空结构**
 
-在测试数据库写一条旧行，升级 `010` 删除表，再 downgrade 到 `009`；断言表、索引和约束恢复但行数为零，然后再次 upgrade head。
+在测试数据库写一条旧行，升级 `011` 删除表，再 downgrade 到 `010_xagent_ref_copy`；断言表、索引和约束恢复但行数为零，然后再次 upgrade head。
 
 ```bash
-cd services/api && .venv/bin/alembic downgrade 009_xagent_project_workbench
+cd services/api && .venv/bin/alembic downgrade 010_xagent_ref_copy
 cd services/api && .venv/bin/alembic upgrade head
 pnpm run api:test -- tests/security/test_legacy_conversation_removed.py
 ```

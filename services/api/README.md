@@ -64,6 +64,14 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 命令不会输出明文密码或密码哈希。`DATABASE_ADMIN_URL` 必须指向受控的管理连接；普通 API 连接仍使用最低权限的 `DATABASE_URL`。
 
+## 工作台与 Session 内部接口
+
+`/internal/xagent/*` 路由同时要求 `X-XAgent-Service-Token` 服务身份和当前账号的 Bearer token。服务端 introspection 生成 Principal，并在同一数据库事务设置 actor context；浏览器不得提交 actor、role、owner 或权限版本。
+
+`POST /internal/xagent/session-project-refs` 只为当前账号拥有的私有 Session 登记项目引用。请求包含 `schema_version: 1`、`session_id`、非空 `project_ids`、`idempotency_key`；全部新旧引用必须在同一事务对当前账号可见，成功返回 204。项目不可见或 Session 不可登记统一隐藏具体项目，幂等键对应不同请求时返回 `idempotency-conflict`。
+
+带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 在同一事务继承引用。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。
+
 `.dockerignore` 会阻止 `.env`、本地虚拟环境、测试缓存和构建产物进入 Docker 构建上下文。
 
 ClamAV 官方 `1.4.3_base` 镜像只提供 `linux/amd64`。Apple Silicon 本地环境需要 Docker 已启用 amd64 模拟；PostgreSQL、Redis、MinIO 和 XAgent API 仍使用宿主原生架构。

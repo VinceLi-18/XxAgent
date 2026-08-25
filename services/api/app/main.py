@@ -8,6 +8,7 @@ from app.api.routes.internal_sessions import router as internal_sessions_router
 from app.api.routes.internal_workbench import (
     projects_router as internal_projects_router,
     router as internal_workbench_router,
+    session_project_refs_router as internal_session_project_refs_router,
 )
 from app.api.routes.projects import router as projects_router
 from app.core.config import settings
@@ -22,6 +23,7 @@ app.include_router(internal_auth_router)
 app.include_router(internal_sessions_router)
 app.include_router(internal_workbench_router)
 app.include_router(internal_projects_router)
+app.include_router(internal_session_project_refs_router)
 
 
 @app.get(f"{settings.API_V1_STR}/health")

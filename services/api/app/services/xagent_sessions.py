@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.project import Project
+from app.models.workbench import XAgentSessionProjectRef
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
 from app.services.auth import Principal
 
@@ -16,6 +18,7 @@ PROTOCOL_VERSION = 1
 
 class SessionErrorCode(str, Enum):
     NOT_FOUND = "not-found"
+    SESSION_NOT_FOUND = "session-not-found"
     SEQUENCE_CONFLICT = "sequence-conflict"
     IDEMPOTENCY_CONFLICT = "idempotency-conflict"
     UNSUPPORTED_VERSION = "unsupported-version"
@@ -138,7 +141,12 @@ async def list_sessions(session: AsyncSession) -> list[dict[str, Any]]:
             select(XAgentSession).order_by(XAgentSession.updated_at.desc(), XAgentSession.id)
         )
     ).all()
-    return [session_payload(item) for item in rows]
+    inaccessible_session_ids = await _private_session_ids_with_inaccessible_refs(
+        session,
+        {item.id for item in rows if item.visibility == "private"},
+    )
+    visible_rows = [item for item in rows if item.id not in inaccessible_session_ids]
+    return [session_payload(item) for item in visible_rows]
 
 
 async def create_session(
@@ -210,12 +218,11 @@ async def authorize_session(
 ) -> None:
     actor_id = "NULLIF(current_setting('app.actor_id', true), '')::uuid"
     if operation == "read":
-        item = await _visible_session(session, session_id)
-        if item is not None:
-            return
+        await _visible_session(session, session_id)
+        return
     elif operation == "edit":
         visible = await session.scalar(
-            select(XAgentSession.id).where(
+            select(XAgentSession).where(
                 XAgentSession.id == session_id,
                 text(
                     f"((visibility = 'private' AND owner_id = {actor_id}) OR "
@@ -225,17 +232,71 @@ async def authorize_session(
             )
         )
         if visible is not None:
+            await _require_private_session_ref_access(session, visible)
             return
     elif operation == "owner":
         visible = await session.scalar(
-            select(XAgentSession.id).where(
+            select(XAgentSession).where(
                 XAgentSession.id == session_id,
                 text(f"owner_id = {actor_id}"),
             )
         )
         if visible is not None:
+            await _require_private_session_ref_access(session, visible)
             return
     raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+
+
+async def _private_session_refs_are_authorized(
+    session: AsyncSession,
+    item: XAgentSession,
+) -> bool:
+    if item.visibility != "private":
+        return True
+    inaccessible_session_ids = await _private_session_ids_with_inaccessible_refs(
+        session,
+        {item.id},
+    )
+    return item.id not in inaccessible_session_ids
+
+
+async def _private_session_ids_with_inaccessible_refs(
+    session: AsyncSession,
+    session_ids: set[UUID],
+) -> set[UUID]:
+    if not session_ids:
+        return set()
+    references = (
+        await session.execute(
+            select(
+                XAgentSessionProjectRef.session_id,
+                XAgentSessionProjectRef.project_id,
+            ).where(XAgentSessionProjectRef.session_id.in_(session_ids))
+        )
+    ).all()
+    if not references:
+        return set()
+    project_ids = {project_id for _, project_id in references}
+    visible_project_ids = set(
+        (
+            await session.scalars(
+                select(Project.id).where(Project.id.in_(project_ids))
+            )
+        ).all()
+    )
+    return {
+        session_id
+        for session_id, project_id in references
+        if project_id not in visible_project_ids
+    }
+
+
+async def _require_private_session_ref_access(
+    session: AsyncSession,
+    item: XAgentSession,
+) -> None:
+    if not await _private_session_refs_are_authorized(session, item):
+        raise SessionServiceError(SessionErrorCode.SESSION_NOT_FOUND)
 
 
 async def _visible_session(
@@ -250,6 +311,7 @@ async def _visible_session(
     item = await session.scalar(statement)
     if item is None:
         raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+    await _require_private_session_ref_access(session, item)
     return item
 
 
@@ -296,6 +358,7 @@ async def append_events(
     digest: str,
 ) -> dict[str, Any]:
     operation = f"session.append:{session_id}"
+    item = await _visible_session(session, session_id, lock=True)
     replay = await _idempotent_result(
         session,
         actor_id=principal.actor_id,
@@ -305,7 +368,6 @@ async def append_events(
     )
     if replay is not None:
         return replay
-    item = await _visible_session(session, session_id, lock=True)
     if item.last_event_sequence != expected_sequence:
         raise SessionServiceError(SessionErrorCode.SEQUENCE_CONFLICT)
     for offset, event in enumerate(events, start=1):
@@ -350,6 +412,7 @@ async def fork_session(
     digest: str,
 ) -> tuple[dict[str, Any], bool]:
     operation = f"session.fork:{source_id}"
+    source = await _visible_session(session, source_id, lock=True)
     replay = await _idempotent_result(
         session,
         actor_id=principal.actor_id,
@@ -359,7 +422,6 @@ async def fork_session(
     )
     if replay is not None:
         return replay, True
-    source = await _visible_session(session, source_id, lock=True)
     if through_sequence < -1 or through_sequence > source.last_event_sequence:
         raise SessionServiceError(SessionErrorCode.SEQUENCE_CONFLICT)
     target = XAgentSession(
@@ -373,6 +435,14 @@ async def fork_session(
     )
     session.add(target)
     await session.flush()
+    if source.visibility == "private":
+        await session.execute(
+            text(
+                "SELECT public.xagent_copy_private_session_project_refs("
+                ":source_id, :target_id)"
+            ),
+            {"source_id": source.id, "target_id": target.id},
+        )
     source_events = (
         await session.scalars(
             select(XAgentSessionEvent)
