@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,7 @@ class Principal(BaseModel):
     role: Role
     permission_revision: int
     auth_session_id: UUID
+    email: str = Field(exclude=True)
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ async def introspect(token: str, session: AsyncSession) -> Principal:
         await session.execute(
             select(
                 XAgentAuthSession,
+                Account.email,
                 Account.role,
                 Account.is_active,
                 XAgentPermissionRevision.revision,
@@ -191,6 +193,7 @@ async def introspect(token: str, session: AsyncSession) -> Principal:
         role=row.role,
         permission_revision=row.revision,
         auth_session_id=claims.auth_session_id,
+        email=row.email,
     )
 
 
