@@ -12,17 +12,20 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { HostObservable, InjectFace, PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './columns.ts'
 import type { createLayoutStore } from './stores.ts'
 import css from './AppFrame.module.css'
 import { XAgentAuthBlocker } from './xagent-auth-blocker.tsx'
 
 /** Full composed props: runtime share + child-slot render share + store share. */
+export type LayoutInjected = { hooks: { shellDetails: HostObservable<boolean> } }
+
 export type AppFrameProps =
   & PropsRuntime<'root'>
-  & PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.overlay'>
+  & PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.details' | 'shell.overlay'>
   & PropsStore<ReturnType<typeof createLayoutStore>>
+  & InjectFace<LayoutInjected>
 
 /** Center column grid item (session-body building block). */
 function CenterColumn(props: { children?: ReactNode }) {
@@ -30,8 +33,35 @@ function CenterColumn(props: { children?: ReactNode }) {
 }
 
 /** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
-function DetailsColumn(props: { children?: ReactNode }) {
-  return <div className={css.detailsCol}>{props.children}</div>
+function DetailsColumn(props: {
+  children?: ReactNode
+  drawer: boolean
+  concealed: boolean
+  dialogRef: React.Ref<HTMLDivElement>
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
+  onClose: () => void
+}) {
+  return (
+    <div
+      ref={props.dialogRef}
+      id="shell-details-drawer"
+      className={css.detailsCol}
+      data-drawer={props.drawer || undefined}
+      role={props.drawer ? 'dialog' : undefined}
+      aria-modal={props.drawer ? true : undefined}
+      aria-label={props.drawer ? '上下文栏' : undefined}
+      aria-hidden={props.concealed || undefined}
+      tabIndex={props.drawer ? -1 : undefined}
+      onKeyDown={props.onKeyDown}
+    >
+      {props.drawer && (
+        <button type="button" className={css.drawerClose} aria-label="关闭上下文栏" onClick={props.onClose}>
+          ×
+        </button>
+      )}
+      {props.children}
+    </div>
+  )
 }
 
 /**
@@ -90,8 +120,10 @@ export function AppFrame({
   useSessions,
   actions,
   renderSlot,
+  useShellDetails,
 }: AppFrameProps) {
   const panels = useStore(s => s)
+  const hasShellDetails = useShellDetails(occupied => occupied)
   const detailsSession = useSessions((s) => {
     const current = s.current
     return current !== undefined && s.byId[current]?.blank === false ? current : undefined
@@ -101,12 +133,12 @@ export function AppFrame({
 
   const lastSession = useRef(detailsSession)
   useLayoutEffect(() => {
-    if (detailsSession === undefined) return
+    if (hasShellDetails || detailsSession === undefined) return
     if (lastSession.current !== undefined && lastSession.current !== detailsSession) {
       actions.closeDetails()
     }
     lastSession.current = detailsSession
-  }, [actions, detailsSession])
+  }, [actions, detailsSession, hasShellDetails])
 
   // Track the frame's own box (not the window): rAF-throttled ResizeObserver.
   useEffect(() => {
@@ -140,7 +172,8 @@ export function AppFrame({
   const sidebarPreference = sidebarCollapsed
     ? 0
     : panels.sidebar === 0 ? SIDEBAR_DEFAULT : panels.sidebar
-  const cols = computeColumns(viewport, sidebarPreference, detailsSession === undefined ? 0 : panels.details)
+  const detailsAvailable = hasShellDetails || detailsSession !== undefined
+  const cols = computeColumns(viewport, sidebarPreference, detailsAvailable ? panels.details : 0)
   const colsRef = useRef(cols)
   colsRef.current = cols
 
@@ -152,6 +185,23 @@ export function AppFrame({
   // Track-level transitions pause for the whole gesture: eased tracks would
   // detach the column edge from the pointer (AppFrame.module.css).
   const [dragging, setDragging] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const drawerTriggerRef = useRef<HTMLButtonElement>(null)
+  const drawerRef = useRef<HTMLDivElement>(null)
+  const shellDetailsConceded = hasShellDetails && panels.details > 0 && cols.details === 0
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false)
+    drawerTriggerRef.current?.focus()
+  }, [])
+  useLayoutEffect(() => {
+    if (drawerOpen) drawerRef.current?.focus()
+  }, [drawerOpen])
+  useLayoutEffect(() => {
+    drawerRef.current?.toggleAttribute('inert', shellDetailsConceded && !drawerOpen)
+  }, [drawerOpen, shellDetailsConceded])
+  useEffect(() => {
+    if (!shellDetailsConceded && drawerOpen) setDrawerOpen(false)
+  }, [drawerOpen, shellDetailsConceded])
   const onDragEnd = useCallback(() => { setDragging(false) }, [])
   const onSidebarStart = useCallback(() => { sidebarBase.current = colsRef.current.sidebar; setDragging(true) }, [])
   const onDetailsStart = useCallback(() => { detailsBase.current = colsRef.current.details; setDragging(true) }, [])
@@ -189,12 +239,41 @@ export function AppFrame({
             is session-maybe; the strict details entry naturally renders
             empty while no session is current. */}
         <CenterColumn>{renderSlot('conversation', {})}</CenterColumn>
-        <DetailsColumn>{renderSlot('details', {})}</DetailsColumn>
+        {drawerOpen && (
+          <button
+            type="button"
+            className={css.drawerBackdrop}
+            aria-label="关闭上下文栏背景"
+            onClick={closeDrawer}
+          />
+        )}
+        <DetailsColumn
+          drawer={drawerOpen}
+          concealed={shellDetailsConceded && !drawerOpen}
+          dialogRef={drawerRef}
+          onKeyDown={(event) => { if (event.key === 'Escape') closeDrawer() }}
+          onClose={closeDrawer}
+        >
+          {hasShellDetails ? renderSlot('shell.details', {}) : renderSlot('details', {})}
+        </DetailsColumn>
       </>
       <div className={css.overlayLayer} data-shell-overlay>
         {renderSlot('shell.overlay', {})}
         <XAgentAuthBlocker />
       </div>
+      {shellDetailsConceded && (
+        <button
+          ref={drawerTriggerRef}
+          type="button"
+          className={css.detailsTrigger}
+          aria-label="打开上下文栏"
+          aria-controls="shell-details-drawer"
+          aria-expanded={drawerOpen}
+          onClick={() => { setDrawerOpen(true) }}
+        >
+          ‹
+        </button>
+      )}
       {/* The collapsed rail is fixed-width: no resize handle while closed. */}
       {!sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
       {cols.details > 0 && <DragHandle side="details" left={viewport - cols.details} onStart={onDetailsStart} onDrag={onDetailsDrag} onEnd={onDragEnd} />}

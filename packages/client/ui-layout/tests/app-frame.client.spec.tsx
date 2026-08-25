@@ -11,7 +11,7 @@
  * resizes are driven through the ResizeObserver stub.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useSyncExternalStore } from 'react'
 import { AppFrame } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
 import type { AppFrameProps } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
@@ -25,6 +25,7 @@ import type {
 const selectedSession = { current: 's-test' as SessionId | undefined }
 const selectedSessionBlank = { current: false }
 const baselinesReady = { current: true }
+const shellDetailsOccupied = { current: false }
 
 // Render-prop contract stub fed through the standard seat prop (the renderer
 // injects the real one in production): session mode runs children(id), empty
@@ -61,6 +62,7 @@ function mountFrame() {
     if (key === 'sidebar') return <div data-testid="sidebar-content" />
     if (key === 'conversation') return <div data-testid="center-content" />
     if (key === 'details') return <div data-testid="details-content" />
+    if (key === 'shell.details') return <div data-testid="shell-details-content" />
     if (key === 'conversation.empty') return <div data-testid="empty-content" />
     return <div data-testid="other-content" />
   }) as AppFrameProps['renderSlot']
@@ -88,6 +90,7 @@ function mountFrame() {
       useSessions={useSessions}
       useWorkspaces={((sel: (s: WorkspaceListState) => unknown) => sel(workspaceState)) as never}
       SessionProvider={SessionProviderStub}
+      useShellDetails={selector => selector(shellDetailsOccupied.current)}
     />
   )
   const utils = render(element())
@@ -115,6 +118,7 @@ beforeEach(() => {
   selectedSession.current = 's-test' as SessionId
   selectedSessionBlank.current = false
   baselinesReady.current = true
+  shellDetailsOccupied.current = false
   vi.useFakeTimers()
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => setTimeout(() => { cb(0) }, 16) as unknown as number)
@@ -214,6 +218,23 @@ describe('AppFrame', () => {
     expect(tracks(frame)).toEqual([280, 0])
   })
 
+  it('uses one root-scoped shell details occupant without a Session and keeps it across Session switches', () => {
+    shellDetailsOccupied.current = true
+    selectedSession.current = undefined
+    const { frame, instance, rerenderFrame, getByTestId, queryByTestId } = mountFrame()
+
+    act(() => { instance.actions.openDetails() })
+    expect(tracks(frame)).toEqual([280, 360])
+    expect(getByTestId('shell-details-content')).toBeTruthy()
+    expect(queryByTestId('details-content')).toBeNull()
+    const occupant = getByTestId('shell-details-content')
+
+    selectedSession.current = 's-next' as SessionId
+    act(() => { rerenderFrame() })
+    expect(tracks(frame)).toEqual([280, 360])
+    expect(getByTestId('shell-details-content')).toBe(occupant)
+  })
+
   it('sidebar slot receives live concession output as owner props', () => {
     const { slotCalls } = mountFrame()
     expect(slotCalls.find(c => c.key === 'sidebar')!.props).toEqual({ collapsed: false, width: 280 })
@@ -285,6 +306,36 @@ describe('AppFrame', () => {
 })
 
 describe('AppFrame — narrow-viewport auto-collapse', () => {
+  it('opens a concession-collapsed shell details occupant as one modal drawer and restores trigger focus', () => {
+    frameWidth = 980
+    shellDetailsOccupied.current = true
+    const { frame, instance, getByRole, getByTestId, queryByRole } = mountFrame()
+    act(() => { instance.actions.openDetails() })
+    expect(tracks(frame)).toEqual([SIDEBAR_COLLAPSED, 0])
+
+    const trigger = getByRole('button', { name: '打开上下文栏' })
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(getByRole('dialog', { name: '上下文栏' })).toBeTruthy()
+    const occupant = getByTestId('shell-details-content')
+
+    fireEvent.keyDown(getByRole('dialog', { name: '上下文栏' }), { key: 'Escape' })
+    expect(queryByRole('dialog', { name: '上下文栏' })).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+
+    fireEvent.click(trigger)
+    expect(getByTestId('shell-details-content')).toBe(occupant)
+    fireEvent.click(getByRole('button', { name: '关闭上下文栏背景' }))
+    expect(queryByRole('dialog', { name: '上下文栏' })).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+
+    fireEvent.click(trigger)
+    fireEvent.click(getByRole('button', { name: '关闭上下文栏' }))
+    expect(queryByRole('dialog', { name: '上下文栏' })).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
+
   it('mounts collapsed below the breakpoint with no sidebar handle', () => {
     frameWidth = 980
     const { frame, slotCalls } = mountFrame()

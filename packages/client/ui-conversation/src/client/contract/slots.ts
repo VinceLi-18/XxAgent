@@ -32,6 +32,8 @@ export interface ComposerAttachment {
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
+    /** Root-scoped project or product context rendered above the conversation header. */
+    'conversation.context': { kind: 'single'; scope: 'root' }
     /**
      * The entire body of one session: taking this seat means rendering that
      * session's conversation yourself. The occupant also owns the per-session
@@ -421,7 +423,11 @@ export interface ConversationInjected {
    * plugin raised one; the reason is the blocker's own localized copy, which
    * the root renders as the inert composer's placeholder.
    */
-  hooks: { composerBlock: ObservableSnapshot<ComposerBlock | undefined> }
+  hooks: {
+    composerBlock: ObservableSnapshot<ComposerBlock | undefined>
+    /** True while the optional root-scoped context seat has an occupant. */
+    conversationContext: ObservableSnapshot<boolean>
+  }
 }
 
 /** Business callbacks injected into the strict Session body seat. */
@@ -568,6 +574,7 @@ export interface ComposerChainProps {
  */
 export type ConversationSlotProps =
   PropsRuntime<'conversation'> & PropsRenderSlots<
+    | 'conversation.context'
     | 'conversation.session' | 'conversation.session.header'
     | 'conversation.composer' | 'conversation.composer.bar'
     | 'conversation.input.overlay'

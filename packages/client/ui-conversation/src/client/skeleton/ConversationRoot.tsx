@@ -14,8 +14,9 @@ export type ConversationRootProps = ConversationSlotProps
 
 export function ConversationRoot({
   sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock,
-  renderSlot, renderSlotChain, selectWorkspace, t,
+  useConversationContext, renderSlot, renderSlotChain, selectWorkspace, t,
 }: ConversationRootProps) {
+  const hasConversationContext = useConversationContext(occupied => occupied)
   const openState = useSession(s => s.openState)
   const composerPhase = useSession(s => s.composerPhase)
   const pending = useSession(s => s.pending) ?? []
@@ -185,6 +186,7 @@ export function ConversationRoot({
 
   return (
     <div className={css.root} data-phase={phase}>
+      {hasConversationContext && renderSlot('conversation.context', {})}
       {renderSlot('conversation.session.header', {})}
       <div className={css.scrollBody} data-conversation-scroll="">
         {renderSlot('conversation.session', {})}
