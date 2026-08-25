@@ -23,6 +23,8 @@ os.environ.update(
         "DATABASE_ADMIN_URL": _test_database_url,
         "POSTGRES_APP_USER": "xagent_api_test_app",
         "POSTGRES_APP_PASSWORD": "jiaxin-task2-test-app-password",
+        "POSTGRES_WORKER_USER": "xagent_api_test_worker",
+        "POSTGRES_WORKER_PASSWORD": "xagent-artifact-worker-test-password",
         "JWT_SECRET_KEY": "test-signing-key-not-for-production",
         "JWT_ISSUER": "xagent-tests",
         "JWT_AUDIENCE": "jiaxin-agent-api-tests",
@@ -109,13 +111,52 @@ async def _drop_temporary_application_role(engine: AsyncEngine) -> None:
         await connection.execute(text(drop_role))
 
 
+async def _create_temporary_worker_role(engine: AsyncEngine) -> bool:
+    worker_role = os.environ["POSTGRES_WORKER_USER"]
+    worker_password = os.environ["POSTGRES_WORKER_PASSWORD"]
+    async with engine.begin() as connection:
+        role_exists = await connection.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
+            {"role": worker_role},
+        )
+        if role_exists:
+            return False
+        create_role = await connection.scalar(
+            text(
+                "SELECT format("
+                "'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS', "
+                "CAST(:role AS text), CAST(:password AS text))"
+            ),
+            {"role": worker_role, "password": worker_password},
+        )
+        await connection.execute(text(create_role))
+    return True
+
+
+async def _drop_temporary_worker_role(engine: AsyncEngine) -> None:
+    worker_role = os.environ["POSTGRES_WORKER_USER"]
+    async with engine.begin() as connection:
+        drop_owned = await connection.scalar(
+            text("SELECT format('DROP OWNED BY %I', CAST(:role AS text))"),
+            {"role": worker_role},
+        )
+        drop_role = await connection.scalar(
+            text("SELECT format('DROP ROLE %I', CAST(:role AS text))"),
+            {"role": worker_role},
+        )
+        await connection.execute(text(drop_owned))
+        await connection.execute(text(drop_role))
+
+
 @asynccontextmanager
 async def _seeded_test_database() -> AsyncIterator[AsyncEngine]:
     _require_disposable_database()
     engine = create_async_engine(_test_database_url)
     created_application_role = False
+    created_worker_role = False
     try:
         created_application_role = await _create_temporary_application_role(engine)
+        created_worker_role = await _create_temporary_worker_role(engine)
         async with engine.begin() as connection:
             await connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             await connection.execute(text("CREATE SCHEMA public"))
@@ -138,6 +179,8 @@ async def _seeded_test_database() -> AsyncIterator[AsyncEngine]:
 
         yield engine
     finally:
+        if created_worker_role:
+            await _drop_temporary_worker_role(engine)
         if created_application_role:
             await _drop_temporary_application_role(engine)
         await engine.dispose()
@@ -201,6 +244,24 @@ def manager() -> SeededAccount:
 @pytest.fixture
 def application_role() -> str:
     return os.environ["POSTGRES_APP_USER"]
+
+
+@pytest.fixture
+def worker_role() -> str:
+    return os.environ["POSTGRES_WORKER_USER"]
+
+
+@pytest.fixture
+async def worker_engine(seeded_database: AsyncEngine, worker_role: str) -> AsyncIterator[AsyncEngine]:
+    runtime_url = make_url(_test_database_url).set(
+        username=worker_role,
+        password=os.environ["POSTGRES_WORKER_PASSWORD"],
+    )
+    engine = create_async_engine(runtime_url, pool_pre_ping=True)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture

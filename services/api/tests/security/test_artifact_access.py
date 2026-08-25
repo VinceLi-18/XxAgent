@@ -66,10 +66,22 @@ def artifact_gateway(monkeypatch: pytest.MonkeyPatch) -> MemoryGateway:
 async def private_artifact(seeded_database, alice, artifact_gateway: MemoryGateway):
     from app.models.artifact import Artifact, ArtifactVersion
 
-    artifact = Artifact(id=uuid4(), filename="private.txt", owner_id=alice.id)
+    artifact = Artifact(
+        id=uuid4(),
+        filename="private.txt",
+        created_by_id=alice.id,
+        owner_id=alice.id,
+    )
     version = ArtifactVersion(
         artifact_id=artifact.id,
         owner_id=alice.id,
+        version_number=1,
+        original_filename="private.txt",
+        uploaded_by_id=alice.id,
+        declared_size=len(b"private-content"),
+        actual_size=len(b"private-content"),
+        detected_content_type="text/plain",
+        scan_status="clean",
         object_key=f"artifacts/{artifact.id}/version",
         size=len(b"private-content"),
         content_type="text/plain",
@@ -88,10 +100,22 @@ async def shared_artifact(seeded_database, alice, bob, artifact_gateway: MemoryG
     from app.models.project import Project, ProjectMembership
 
     project = Project(id=uuid4(), name="Artifact project", owner_id=bob.id)
-    artifact = Artifact(id=uuid4(), filename="shared.txt", project_id=project.id)
+    artifact = Artifact(
+        id=uuid4(),
+        filename="shared.txt",
+        created_by_id=bob.id,
+        project_id=project.id,
+    )
     version = ArtifactVersion(
         artifact_id=artifact.id,
         project_id=project.id,
+        version_number=1,
+        original_filename="shared.txt",
+        uploaded_by_id=bob.id,
+        declared_size=len(b"private-content"),
+        actual_size=len(b"private-content"),
+        detected_content_type="text/plain",
+        scan_status="clean",
         object_key=f"artifacts/{artifact.id}/version",
         size=len(b"private-content"),
         content_type="text/plain",
@@ -379,7 +403,12 @@ async def test_scope_constraints_and_runtime_role_permissions(seeded_database, a
     assert (has_artifact_read, has_artifact_delete) == (True, False)
 
     await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
-    invalid = Artifact(filename="bad.txt", owner_id=alice.id, project_id=None)
+    invalid = Artifact(
+        filename="bad.txt",
+        created_by_id=alice.id,
+        owner_id=alice.id,
+        project_id=None,
+    )
     invalid.owner_id = None
     actor_session.add(invalid)
     with pytest.raises((IntegrityError, DBAPIError)):

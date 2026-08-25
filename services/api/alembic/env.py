@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.migration_config import migration_settings
 from app.models.audit import AuditEvent
-from app.models.artifact import Artifact, ArtifactVersion, StagingUpload
+from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion, StagingUpload
 from app.models.base import Base
 from app.models.identity import Account
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
@@ -22,6 +22,7 @@ config = context.config
 if config.get_main_option("sqlalchemy.url") == "postgresql+asyncpg://placeholder":
     config.set_main_option("sqlalchemy.url", migration_settings.DATABASE_ADMIN_URL)
 config.set_main_option("application_role", migration_settings.POSTGRES_APP_USER)
+config.set_main_option("worker_role", migration_settings.POSTGRES_WORKER_USER)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -161,6 +161,7 @@ class ArtifactService:
         artifact = Artifact(
             id=uuid4(),
             filename=upload.filename,
+            created_by_id=actor.id,
             owner_id=upload.owner_id,
             project_id=upload.project_id,
         )
@@ -169,6 +170,13 @@ class ArtifactService:
             artifact_id=artifact.id,
             owner_id=upload.owner_id,
             project_id=upload.project_id,
+            version_number=1,
+            original_filename=upload.filename,
+            uploaded_by_id=actor.id,
+            declared_size=metadata.size,
+            actual_size=metadata.size,
+            detected_content_type=metadata.content_type,
+            scan_status="clean",
             object_key=f"artifacts/{artifact.id}/{{version_id}}",
             size=metadata.size,
             content_type=metadata.content_type,
