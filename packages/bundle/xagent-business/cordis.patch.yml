@@ -68,6 +68,12 @@
   disabled: true
 - id: ui-workspace
   disabled: true
+- id: xagent-ui-account
+  name: '@xagent/dsh-ui-account'
+  disabled: false
+- id: xagent-ui-project
+  name: '@xagent/dsh-ui-project'
+  disabled: false
 
 - insert:
     - id: xagent-session-persistence-api
@@ -86,6 +92,12 @@
 
     - id: xagent-authorization
       name: '@xagent/dsh-authorization'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+
+    - id: xagent-project
+      name: '@xagent/dsh-project'
       config:
         backendOrigin: !!js process.env.XAGENT_API_ORIGIN
         serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN

@@ -21,17 +21,18 @@ function bootstrap(): XAgentWorkbenchBootstrap {
   }
 }
 
-function remote(): XAgentProjectRemoteClient {
+function remote(): { client: XAgentProjectRemoteClient; projectMock: ReturnType<typeof vi.fn> } {
   const ok = <T,>(value: T) => Promise.resolve({ ok: true as const, value })
-  return {
+  const projectMock = vi.fn(() => ok({
+    accountId: ACCOUNT_ID, id: 'project-1', name: 'Alpha', createdAt: '2026-08-25T08:00:00Z',
+    canEdit: true, sessionCount: 0,
+  }))
+  return { client: {
     bootstrap: vi.fn(() => ok(bootstrap())),
     'select-context': vi.fn(() => ok(bootstrap())),
     'create-project': vi.fn(() => ok(bootstrap())),
-    project: vi.fn(() => ok({
-      accountId: ACCOUNT_ID, id: 'project-1', name: 'Alpha', createdAt: '2026-08-25T08:00:00Z',
-      canEdit: true, sessionCount: 0,
-    })),
-  }
+    project: projectMock,
+  }, projectMock }
 }
 
 describe('XAgent Project UI 插件', () => {
@@ -50,7 +51,7 @@ describe('XAgent Project UI 插件', () => {
       },
     } as never, () => null)
     let disposeDeclaration = declare()
-    const projectRemote = remote()
+    const { client: projectRemote, projectMock } = remote()
     const sessions = { clear: vi.fn(), open: vi.fn() }
     ctx.provide('sessions', sessions as never)
     ctx.provide('remote', { xagentProject: projectRemote } as never)
@@ -72,8 +73,7 @@ describe('XAgent Project UI 插件', () => {
     expect(sessions.open).toHaveBeenCalledWith('session-1')
     const details = slots.entries('shell.details')[0]!.inject!() as unknown as WorkbenchDetailsInjected
     await details.loadProject('project-1')
-    // oxlint-disable-next-line typescript/unbound-method -- Vitest inspects the generated Remote mock itself.
-    expect(projectRemote.project).toHaveBeenCalledWith('project-1', expect.any(AbortSignal))
+    expect(projectMock).toHaveBeenCalledWith('project-1', expect.any(AbortSignal))
     expect(slots.entries('conversation.context')[0]!.inject!()).toBeDefined()
     expect(slots.entries('shell.overlay')[0]!.inject!()).toBeDefined()
 

@@ -306,6 +306,15 @@ importers:
       '@xagent/dsh-developer':
         specifier: workspace:^
         version: link:../../packages/bundle/xagent-developer
+      '@xagent/dsh-project':
+        specifier: workspace:^
+        version: link:../../packages/xagent/project
+      '@xagent/dsh-ui-account':
+        specifier: workspace:^
+        version: link:../../packages/xagent/ui-account
+      '@xagent/dsh-ui-project':
+        specifier: workspace:^
+        version: link:../../packages/xagent/ui-project
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -1441,6 +1450,12 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
+      '@xagent/dsh-ui-account':
+        specifier: workspace:^
+        version: link:../../xagent/ui-account
+      '@xagent/dsh-ui-project':
+        specifier: workspace:^
+        version: link:../../xagent/ui-project
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -1475,9 +1490,18 @@ importers:
       '@xagent/dsh-principal':
         specifier: workspace:^
         version: link:../../xagent/principal
+      '@xagent/dsh-project':
+        specifier: workspace:^
+        version: link:../../xagent/project
       '@xagent/dsh-session-persistence-api':
         specifier: workspace:^
         version: link:../../xagent/session-persistence-api
+      '@xagent/dsh-ui-account':
+        specifier: workspace:^
+        version: link:../../xagent/ui-account
+      '@xagent/dsh-ui-project':
+        specifier: workspace:^
+        version: link:../../xagent/ui-project
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^

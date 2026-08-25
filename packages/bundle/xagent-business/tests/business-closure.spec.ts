@@ -169,6 +169,28 @@ describe('xagent business bundle', () => {
     expect(JSON.stringify(patch)).not.toContain("dshProfileDataPath('sessions')")
   })
 
+  it('composes the authenticated project workbench and account browser surfaces', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(patch.flatMap(row => row.insert ?? [row]).map(row => [row.id, row]))
+
+    expect(rows.get('xagent-project')).toMatchObject({
+      name: '@xagent/dsh-project',
+      config: {
+        backendOrigin: { __jsExpr: 'process.env.XAGENT_API_ORIGIN' },
+        serviceToken: { __jsExpr: 'process.env.XAGENT_SERVICE_TOKEN' },
+      },
+    })
+    expect(rows.get('xagent-ui-project')).toMatchObject({
+      name: '@xagent/dsh-ui-project',
+      disabled: false,
+    })
+    expect(rows.get('xagent-ui-account')).toMatchObject({
+      name: '@xagent/dsh-ui-account',
+      disabled: false,
+    })
+  })
+
   it('declares every XAgent runtime package as a bundle dependency', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
@@ -180,7 +202,10 @@ describe('xagent business bundle', () => {
       '@xagent/dsh-backend-client': 'workspace:^',
       '@xagent/dsh-connection-auth': 'workspace:^',
       '@xagent/dsh-principal': 'workspace:^',
+      '@xagent/dsh-project': 'workspace:^',
       '@xagent/dsh-session-persistence-api': 'workspace:^',
+      '@xagent/dsh-ui-account': 'workspace:^',
+      '@xagent/dsh-ui-project': 'workspace:^',
     })
   })
 })
