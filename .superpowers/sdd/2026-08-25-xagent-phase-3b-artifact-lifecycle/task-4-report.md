@@ -6,7 +6,7 @@
 
 完成上传现在只把服务端 `stat` 返回的 ETag 写入 `ArtifactVersion.staging_etag`。处理器在扫描前、正文流结束后和复制前同时验证该 ETag 与记录大小，复制还使用源对象 ETag 前置条件。哈希、大小或 ETag 漂移直接进入 `failed + dead`，不会创建最终对象。
 
-干净正文复制到精确 `artifacts/{artifact_id}/{version_id}` 后，发布事务同时匹配 Job ID、Version ID、状态、token 和未过期时间，再原子写 Version `clean`、最终 key、实际大小、SHA-256、MIME 与 Job `succeeded`。失租、事务异常或提交失败删除本 worker 已复制的精确最终 key，Version 不变。感染正文原子进入 `quarantined + succeeded`，删除暂存 key 且不创建最终对象。ClamAV/对象流/存储暂不可用调用 Task 3 `retry_job`，第 5 次由同一契约收口为 `failed + dead`。
+干净正文复制到精确 `artifacts/{artifact_id}/{version_id}` 后，发布事务同时匹配 Job ID、Version ID、状态、token 和未过期时间，再原子写 Version `clean`、最终 key、实际大小、SHA-256、MIME 与 Job `succeeded`。最终 bucket 必须启用版本化，复制会捕获本 worker 创建的目标版本 ID；失租、事务异常或提交失败只删除该目标版本，Version 不变。感染正文原子进入 `quarantined + succeeded`，删除暂存 key 且不创建最终对象。ClamAV/对象流/存储暂不可用调用 Task 3 `retry_job`，第 5 次由同一契约收口为 `failed + dead`。
 
 ClamAV 仅把明确 `OK` 解释为干净、明确 `FOUND` 解释为感染；连接、超时、流读取和非终态协议响应均抛出 `MalwareServiceUnavailable`。HTML、SVG、shell script 和 UTF-8 文本先稳定分类，其余内容由 `python-magic` 识别；加载或识别错误回退 `application/octet-stream`。`python-magic>=0.4.27,<1.0` 已通过 `uv add` 写入直接依赖和锁文件，API 镜像安装 `libmagic1`。
 
@@ -39,5 +39,22 @@ JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:***@127.0.0.1:55432/xagent_ap
 ## 风险
 
 - 当前 macOS 宿主是 arm64 Python，但已存在的 Homebrew 位于 `/usr/local` 且提供 x86_64 `libmagic`；动态库无法由该 Python 加载。测试仍验证稳定 HTML/SVG/script/text 分类和未知二进制回退，Docker 的 Debian 镜像安装原生 `libmagic1` 后使用 `python-magic`。未在本任务启动真实 Docker MinIO/ClamAV；外部边界使用可控流与协议响应，数据库状态和失败回滚使用真实 PostgreSQL。
-- MinIO 删除 API 不提供 ETag 条件删除。本实现只删除由当前处理调用确定的精确 staging/final key，并在扫描与复制前使用 ETag/大小验证；后续若允许同一 Version 并发写最终 key，需要由对象版本或条件创建能力进一步收紧清理所有权。
+- 最终 bucket 的版本化是部署前置条件。API 新建 bucket 时启用并复验版本化；现有 bucket 为 Off 或 Suspended、晋级前状态漂移或复制没有返回目标版本 ID 时均失败关闭。补偿删除若因 MinIO 不可用而失败，异常会继续上抛，但本任务没有新增持久清理队列；需要运维依据对象版本记录处理这类外部存储故障。
 - Task 5 的查询、读取地址与审计不在本任务实现；本任务只更新现有处理 Agent Note 与 API 运行契约。
+
+## 修复轮 1
+
+评审指出的三项问题已按真实 SDK 契约修复。安装版本的 MinIO Python SDK 实证如下：`get_bucket_versioning()` 返回 `VersioningConfig`，状态为 `None`、`Suspended` 或 `Enabled`；新 bucket 通过 `set_bucket_versioning(bucket, VersioningConfig(status="Enabled"))` 启用；`copy_object()` 返回的 `ObjectWriteResult.version_id` 标识本次目标版本；`remove_object(bucket, key, version_id=...)` 可精确删除该版本。网关只为自己新建的 bucket 启用版本化，既有 Off/Suspended bucket 不会被静默改写；处理开始和复制前均要求 Enabled，复制缺少版本 ID 也失败关闭。
+
+双 worker 忠实版本状态模型覆盖两种确定性交错：W1 先写 V1 后失租、W2 写 V2 并发布，以及 W2 先发布 V2、W1 才完成晚到 V1。两种情况下 W1 发布均被数据库 token/expiry 条件拒绝，且只删除 `(final_key, V1)`；普通 key 仍能读取 W2，V2 可显式读取，V1 已不存在，数据库保持 `clean + succeeded`。数据库发布异常的单 worker 路径同样只删除本 worker 返回的目标版本 ID。
+
+共享 MinIO 与 ClamAV 模块不再导入或实例化 API 全局 `Settings()`。正式 `_resolve_processor()` 只依赖 worker 数据库、MinIO、ClamAV 与有限超时配置；真实 `uv run --project services/api xagent-api worker --once` 在没有 `DATABASE_URL`、`POSTGRES_APP_USER`、JWT 与服务 token 的环境中成功进入实际处理器，并把受控对象存储连接失败记录为 `inspection-unavailable`，而不是 `processor-error`。worker MinIO 连接和读取使用 `MINIO_TIMEOUT`，`urllib3>=2,<3` 已按 `uv add` 写入直接依赖和锁文件。
+
+MIME 分类在调用 libmagic 前只接受明确 HTML、SVG、shell shebang 或不含非空白 Unicode 控制字符的 UTF-8 文本；libmagic 加载、调用、空结果和无效结果均回退 `application/octet-stream`。无 NUL 的控制字节负例不会再成为 `text/plain`。
+
+### 修复轮 TDD 与验证
+
+- RED：处理器、网关与正式 CLI 合并命令收集 50 项，11 项按预期失败、39 项通过。失败分别证明无条件删除会在早到交错删除 W2、晚到交错调用 `version_id=None`，网关缺少 Enabled 前置、copy 版本 ID 和精确删除，worker-only resolver 触发 API 配置 ValidationError，控制字节在 libmagic 异常时误判文本。
+- 复制前状态漂移 RED：将 bucket 状态设为 Suspended 时，旧实现仍调用 `copy_object()`；加入复制前复验后该负例通过。
+- GREEN：修复聚焦命令 50 项通过；原 49 项 Task 4 命令加入新负控后 62 项通过；原 75 项 Task 3 CLI、权限、schema 与上传命令加入正式 resolver 覆盖后 76 项通过。
+- mutation：增加第二次正文读取使一次流测试失败；把 ClamAV 非 FOUND 结果视为 clean 使协议错误测试失败；分别删除发布 token 与 expiry 条件会使旧 worker错误发布 clean；把目标版本清理改回 `version_id=None` 会同时杀死双 worker 早到和晚到交错测试。每项 mutation 均已恢复。

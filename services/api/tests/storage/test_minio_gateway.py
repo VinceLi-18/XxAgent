@@ -4,6 +4,7 @@ from uuid import UUID
 
 import minio
 import pytest
+from minio.versioningconfig import VersioningConfig
 
 from app.storage.minio_gateway import MinioGateway, ObjectMetadata
 
@@ -71,6 +72,9 @@ def test_gateway_uses_configured_http_transport_for_local_minio(monkeypatch: pyt
         def get_bucket_policy(self, bucket: str) -> str:
             return '{"Statement": []}'
 
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Enabled")
+
         def set_bucket_lifecycle(self, bucket: str, config: object) -> None:
             assert bucket == "jiaxin-private"
 
@@ -111,6 +115,9 @@ def test_gateway_uses_browser_endpoint_only_for_staging_put(monkeypatch: pytest.
         def get_bucket_policy(self, bucket: str) -> str:
             return '{"Statement": []}'
 
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Enabled")
+
         def set_bucket_lifecycle(self, bucket: str, config: object) -> None:
             assert bucket == "jiaxin-private"
 
@@ -147,35 +154,145 @@ def test_gateway_fails_closed_for_anonymous_bucket_policy() -> None:
         def get_bucket_policy(self, bucket: str) -> str:
             return '{"Statement":[{"Principal":"*","Effect":"Allow","Action":"s3:GetObject"}]}'
 
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Enabled")
+
     with pytest.raises(RuntimeError, match="anonymous"):
         MinioGateway(PublicBucket(), bucket="jiaxin-private").ensure_bucket()
+
+
+@pytest.mark.parametrize("status", (None, "Suspended"))
+def test_gateway_rejects_a_bucket_without_enabled_versioning(status: str | None) -> None:
+    class UnversionedBucket:
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            assert bucket == "jiaxin-private"
+            return VersioningConfig(status=status)
+
+    gateway = MinioGateway(UnversionedBucket(), bucket="jiaxin-private")
+
+    with pytest.raises(RuntimeError, match="versioning"):
+        gateway.require_versioning()
+
+
+def test_gateway_enables_versioning_only_when_it_creates_the_bucket() -> None:
+    states: list[str] = []
+
+    class NewBucket:
+        def bucket_exists(self, bucket: str) -> bool:
+            return False
+
+        def make_bucket(self, bucket: str) -> None:
+            states.append("created")
+
+        def set_bucket_versioning(
+            self,
+            bucket: str,
+            config: VersioningConfig,
+        ) -> None:
+            states.append(config.status_string)
+
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Enabled")
+
+        def get_bucket_policy(self, bucket: str) -> str:
+            return '{"Statement": []}'
+
+    MinioGateway(NewBucket(), bucket="jiaxin-private").ensure_bucket()
+
+    assert states == ["created", "Enabled"]
 
 
 def test_gateway_copies_only_the_verified_etag() -> None:
     captured = {}
 
     class ObjectClient:
-        def copy_object(self, bucket: str, target: str, source: object) -> None:
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Enabled")
+
+        def copy_object(self, bucket: str, target: str, source: object) -> object:
             captured["source"] = source
+            return SimpleNamespace(version_id="target-version-1")
 
     gateway = MinioGateway(ObjectClient(), bucket="jiaxin-private")
-    gateway.copy("staging/upload-id", "artifacts/id/version", etag="verified-etag")
+    version_id = gateway.copy(
+        "staging/upload-id",
+        "artifacts/id/version",
+        etag="verified-etag",
+    )
 
     assert getattr(captured["source"], "match_etag") == "verified-etag"
+    assert version_id == "target-version-1"
+
+
+def test_gateway_does_not_copy_after_versioning_is_suspended() -> None:
+    class SuspendedCopy:
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Suspended")
+
+        def copy_object(self, bucket: str, target: str, source: object) -> object:
+            raise AssertionError("copy must not start without enabled versioning")
+
+    gateway = MinioGateway(SuspendedCopy(), bucket="jiaxin-private")
+
+    with pytest.raises(RuntimeError, match="versioning"):
+        gateway.copy("staging/upload-id", "artifacts/id/version", etag="etag")
+
+
+def test_gateway_rejects_a_copy_without_a_target_version() -> None:
+    class UnversionedCopy:
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Enabled")
+
+        def copy_object(self, bucket: str, target: str, source: object) -> object:
+            return SimpleNamespace(version_id=None)
+
+    gateway = MinioGateway(UnversionedCopy(), bucket="jiaxin-private")
+
+    with pytest.raises(RuntimeError, match="version"):
+        gateway.copy("staging/upload-id", "artifacts/id/version", etag="etag")
+
+
+def test_gateway_removes_only_the_owned_object_version() -> None:
+    removed: list[tuple[str, str, str]] = []
+
+    class VersionedRemoval:
+        def remove_object(
+            self,
+            bucket: str,
+            key: str,
+            version_id: str | None = None,
+        ) -> None:
+            assert version_id is not None
+            removed.append((bucket, key, version_id))
+
+    gateway = MinioGateway(VersionedRemoval(), bucket="jiaxin-private")
+    gateway.remove("artifacts/id/version", version_id="target-version-1")
+
+    assert removed == [("jiaxin-private", "artifacts/id/version", "target-version-1")]
 
 
 def test_gateway_proxies_private_object_operations() -> None:
     class ObjectClient:
+        def get_bucket_versioning(self, bucket: str) -> VersioningConfig:
+            return VersioningConfig(status="Enabled")
+
         def stat_object(self, bucket: str, key: str) -> SimpleNamespace:
             assert (bucket, key) == ("jiaxin-private", "staging/upload-id")
             return SimpleNamespace(size=7, content_type="text/plain", etag="etag-1")
 
-        def copy_object(self, bucket: str, target: str, source: object) -> None:
+        def copy_object(self, bucket: str, target: str, source: object) -> object:
             assert (bucket, target) == ("jiaxin-private", "artifacts/id/version")
             assert getattr(source, "object_name", None) == "staging/upload-id"
+            return SimpleNamespace(version_id="target-version-1")
 
-        def remove_object(self, bucket: str, key: str) -> None:
+        def remove_object(
+            self,
+            bucket: str,
+            key: str,
+            version_id: str | None = None,
+        ) -> None:
             assert (bucket, key) == ("jiaxin-private", "staging/upload-id")
+            assert version_id is None
 
         def get_object(self, bucket: str, key: str):
             assert (bucket, key) == ("jiaxin-private", "artifacts/id/version")

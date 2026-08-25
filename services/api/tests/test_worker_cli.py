@@ -39,10 +39,11 @@ async def _seed_job(engine: AsyncEngine, *, actor_id, now: datetime) -> Artifact
             text(
                 "INSERT INTO artifact_versions "
                 "(id, artifact_id, owner_id, version_number, original_filename, "
-                "uploaded_by_id, declared_size, scan_status, staging_key, "
-                "staging_expires_at, object_key, size, sha256) "
+                "uploaded_by_id, declared_size, actual_size, scan_status, staging_key, "
+                "staging_etag, staging_expires_at, object_key, size, sha256) "
                 "VALUES (:id, :artifact_id, :actor_id, 1, 'worker-loop.txt', :actor_id, "
-                "4, 'pending', :staging_key, :staging_expires_at, NULL, 4, :sha256)"
+                "4, 4, 'pending', :staging_key, 'worker-etag', :staging_expires_at, "
+                "NULL, 4, :sha256)"
             ),
             {
                 "id": version_id,
@@ -79,11 +80,33 @@ def _worker_url(test_database_url: str, worker_role: str) -> str:
     )
 
 
-def _run_shipping_worker_once(worker_role: str) -> subprocess.CompletedProcess[str]:
+def _worker_only_environment(worker_role: str) -> dict[str, str]:
+    return {
+        "PATH": os.environ["PATH"],
+        "DATABASE_WORKER_URL": _worker_url(os.environ["JX_TEST_DATABASE_URL"], worker_role),
+        "MINIO_ENDPOINT": "127.0.0.1:1",
+        "MINIO_ACCESS_KEY": "worker-access",
+        "MINIO_SECRET_KEY": "worker-secret",
+        "MINIO_SECURE": "false",
+        "MINIO_BUCKET": "worker-private",
+        "MINIO_TIMEOUT": "0.05",
+        "CLAMAV_HOST": "127.0.0.1",
+        "CLAMAV_PORT": "1",
+        "CLAMAV_TIMEOUT": "0.05",
+    }
+
+
+def _run_shipping_worker_once(
+    worker_role: str,
+    *,
+    configured: bool = False,
+) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": os.environ["PATH"],
         "DATABASE_WORKER_URL": _worker_url(os.environ["JX_TEST_DATABASE_URL"], worker_role),
     }
+    if configured:
+        env = _worker_only_environment(worker_role)
     return subprocess.run(
         ["uv", "run", "--project", "services/api", "xagent-api", "worker", "--once"],
         cwd=Path(__file__).resolve().parents[3],
@@ -121,7 +144,7 @@ async def test_worker_once_needs_only_worker_database_configuration(
 
 
 @pytest.mark.anyio
-async def test_shipping_worker_once_safely_retries_missing_processor_configuration(
+async def test_shipping_worker_once_enters_processor_with_only_worker_configuration(
     seeded_database: AsyncEngine,
     worker_role: str,
     alice,
@@ -129,7 +152,7 @@ async def test_shipping_worker_once_safely_retries_missing_processor_configurati
     started_at = datetime.now(UTC)
     seeded = await _seed_job(seeded_database, actor_id=alice.id, now=started_at)
 
-    completed = _run_shipping_worker_once(worker_role)
+    completed = _run_shipping_worker_once(worker_role, configured=True)
 
     async with AsyncSession(seeded_database) as session:
         job = await session.get(ArtifactProcessingJob, seeded.id)
@@ -137,11 +160,38 @@ async def test_shipping_worker_once_safely_retries_missing_processor_configurati
     assert completed.returncode == 0
     assert completed.stdout == ""
     assert completed.stderr == ""
-    assert job is not None and job.status == "ready" and job.attempts == 1
+    assert job is not None
+    assert (job.status, job.attempts, job.failure_code) == (
+        "ready",
+        1,
+        "inspection-unavailable",
+    )
     assert job.lease_token is None and job.lease_expires_at is None
-    assert job.failure_code == "processor-error"
     assert job.next_attempt_at > started_at
     assert version is not None and version.scan_status == "scanning"
+
+
+def test_processor_resolves_without_api_only_configuration(worker_role: str) -> None:
+    completed = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--project",
+            "services/api",
+            "python",
+            "-c",
+            "from app.worker import _resolve_processor; assert callable(_resolve_processor())",
+        ],
+        cwd=Path(__file__).resolve().parents[3],
+        env=_worker_only_environment(worker_role),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
 
 
 @pytest.mark.anyio

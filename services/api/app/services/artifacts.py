@@ -39,7 +39,7 @@ class ArtifactNotFound(Exception):
 
 
 def _runtime_gateway() -> MinioGateway:
-    return MinioGateway.from_settings()
+    return MinioGateway.from_settings(settings)
 
 
 async def _require_project_edit(

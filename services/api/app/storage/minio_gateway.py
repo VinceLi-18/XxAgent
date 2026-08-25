@@ -5,7 +5,12 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
-from app.core.config import Settings, settings
+from minio.versioningconfig import ENABLED, VersioningConfig
+from urllib3 import PoolManager, Timeout
+
+
+class ObjectVersioningUnavailable(RuntimeError):
+    """The target bucket cannot provide an owned version for safe cleanup."""
 
 
 @dataclass(frozen=True)
@@ -22,15 +27,15 @@ class MinioGateway:
         self._bucket = bucket
 
     @classmethod
-    def from_settings(cls, configured_settings: Settings = settings) -> "MinioGateway":
+    def from_settings(cls, configured_settings: Any) -> "MinioGateway":
         from minio import Minio
 
         internal_client = Minio(
-                configured_settings.MINIO_ENDPOINT,
-                access_key=configured_settings.MINIO_ACCESS_KEY,
-                secret_key=configured_settings.MINIO_SECRET_KEY,
-                secure=configured_settings.MINIO_SECURE,
-            )
+            configured_settings.MINIO_ENDPOINT,
+            access_key=configured_settings.MINIO_ACCESS_KEY,
+            secret_key=configured_settings.MINIO_SECRET_KEY,
+            secure=configured_settings.MINIO_SECURE,
+        )
         public_client = Minio(
             configured_settings.MINIO_PUBLIC_ENDPOINT,
             access_key=configured_settings.MINIO_ACCESS_KEY,
@@ -54,13 +59,26 @@ class MinioGateway:
                 access_key=configured_settings.MINIO_ACCESS_KEY,
                 secret_key=configured_settings.MINIO_SECRET_KEY,
                 secure=configured_settings.MINIO_SECURE,
+                http_client=PoolManager(
+                    timeout=Timeout(
+                        connect=configured_settings.MINIO_TIMEOUT,
+                        read=configured_settings.MINIO_TIMEOUT,
+                    ),
+                    retries=False,
+                ),
             ),
             configured_settings.MINIO_BUCKET,
         )
 
     def ensure_bucket(self) -> None:
-        if not self._client.bucket_exists(self._bucket):
+        created = not self._client.bucket_exists(self._bucket)
+        if created:
             self._client.make_bucket(self._bucket)
+            self._client.set_bucket_versioning(
+                self._bucket,
+                VersioningConfig(status=ENABLED),
+            )
+        self.require_versioning()
         try:
             policy = self._client.get_bucket_policy(self._bucket)
         except Exception as exc:
@@ -76,6 +94,13 @@ class MinioGateway:
             for statement in statements
         ):
             raise RuntimeError("Bucket permits anonymous access")
+
+    def require_versioning(self) -> None:
+        """Require enabled bucket versioning before fixed-key promotion."""
+
+        configuration = self._client.get_bucket_versioning(self._bucket)
+        if configuration.status != ENABLED:
+            raise ObjectVersioningUnavailable("Bucket versioning must be Enabled")
 
     def configure_staging_lifecycle(self, expiry_days: int) -> None:
         from minio.commonconfig import Filter
@@ -123,17 +148,22 @@ class MinioGateway:
         source: str,
         target: str,
         etag: str | None = None,
-    ) -> None:
+    ) -> str:
         from minio.commonconfig import CopySource
 
-        self._client.copy_object(
+        self.require_versioning()
+        result = self._client.copy_object(
             self._bucket,
             target,
             CopySource(self._bucket, source, match_etag=etag),
         )
+        version_id = getattr(result, "version_id", None)
+        if not isinstance(version_id, str) or not version_id:
+            raise ObjectVersioningUnavailable("Copy returned no target version")
+        return version_id
 
-    def remove(self, key: str) -> None:
-        self._client.remove_object(self._bucket, key)
+    def remove(self, key: str, version_id: str | None = None) -> None:
+        self._client.remove_object(self._bucket, key, version_id=version_id)
 
     def stream(self, key: str) -> Iterator[bytes]:
         response = self._client.get_object(self._bucket, key)

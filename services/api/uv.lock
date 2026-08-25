@@ -1268,6 +1268,7 @@ dependencies = [
     { name = "pyjwt" },
     { name = "python-magic" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "urllib3" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1291,6 +1292,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0,<9.0" },
     { name = "python-magic", specifier = ">=0.4.27,<1.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0,<3.0" },
+    { name = "urllib3", specifier = ">=2,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
 provides-extras = ["dev"]

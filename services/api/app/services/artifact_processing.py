@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import unicodedata
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from urllib3.exceptions import HTTPError
 
 from app.models.artifact import ArtifactVersion
 from app.services.artifact_jobs import (
@@ -26,7 +28,11 @@ from app.services.malware import (
     MalwareServiceUnavailable,
     MalwareVerdict,
 )
-from app.storage.minio_gateway import MinioGateway, ObjectMetadata
+from app.storage.minio_gateway import (
+    MinioGateway,
+    ObjectMetadata,
+    ObjectVersioningUnavailable,
+)
 
 _MIME_SAMPLE_BYTES = 64 * 1024
 _IDENTITY_FAILURE = "content-identity-mismatch"
@@ -46,6 +52,7 @@ class _ArtifactProcessingSettings(BaseSettings):
     MINIO_SECRET_KEY: str
     MINIO_SECURE: bool
     MINIO_BUCKET: str = "xagent-private"
+    MINIO_TIMEOUT: float = Field(default=10, gt=0)
     CLAMAV_HOST: str = "clamav"
     CLAMAV_PORT: int = 3310
     CLAMAV_TIMEOUT: float = Field(default=10, gt=0)
@@ -62,6 +69,8 @@ class ArtifactInspection:
 
 
 class _ArtifactGateway(Protocol):
+    def require_versioning(self) -> None: ...
+
     def stat(self, key: str) -> ObjectMetadata: ...
 
     def stream(self, key: str) -> Iterable[bytes]: ...
@@ -71,9 +80,9 @@ class _ArtifactGateway(Protocol):
         source: str,
         target: str,
         etag: str | None = None,
-    ) -> None: ...
+    ) -> str: ...
 
-    def remove(self, key: str) -> None: ...
+    def remove(self, key: str, version_id: str | None = None) -> None: ...
 
 
 class _MalwareScanner(Protocol):
@@ -155,15 +164,20 @@ def _detect_content_type(sample: bytes) -> str:
     if normalized.startswith((b"#!/bin/sh", b"#!/bin/bash", b"#!/usr/bin/env sh")):
         return "text/x-shellscript"
     try:
+        decoded = sample.decode("utf-8")
+    except UnicodeDecodeError:
+        decoded = ""
+    if decoded and all(
+        character in "\t\n\r" or unicodedata.category(character)[0] != "C"
+        for character in decoded
+    ):
+        return "text/plain"
+    try:
         import magic
 
         detected = magic.from_buffer(sample, mime=True)
     except Exception:
-        try:
-            sample.decode("utf-8")
-        except UnicodeDecodeError:
-            return "application/octet-stream"
-        return "text/plain" if b"\x00" not in sample else "application/octet-stream"
+        return "application/octet-stream"
     if not isinstance(detected, str) or not detected.strip():
         return "application/octet-stream"
     content_type = detected.split(";", 1)[0].strip().lower()
@@ -199,10 +213,10 @@ def _promote(
     work: _ArtifactWork,
     lease: ArtifactJobLease,
     final_key: str,
-) -> None:
+) -> str:
     _stat_exact(gateway, work)
     try:
-        gateway.copy(
+        return gateway.copy(
             work.staging_key,
             final_key,
             etag=work.staging_etag,
@@ -289,6 +303,11 @@ async def _process_with_dependencies(
         await _fail_identity(dependencies, lease)
         return
     try:
+        await asyncio.to_thread(dependencies.gateway.require_versioning)
+    except (ObjectVersioningUnavailable, HTTPError, OSError, TimeoutError, S3Error):
+        await _retry(dependencies, lease)
+        return
+    try:
         inspection = await asyncio.to_thread(
             _inspect,
             dependencies.gateway,
@@ -319,7 +338,7 @@ async def _process_with_dependencies(
 
     final_key = f"artifacts/{work.artifact_id}/{lease.version_id}"
     try:
-        await asyncio.to_thread(
+        target_version_id = await asyncio.to_thread(
             _promote,
             dependencies.gateway,
             work,
@@ -329,7 +348,7 @@ async def _process_with_dependencies(
     except _ContentIdentityMismatch:
         await _fail_identity(dependencies, lease)
         return
-    except (OSError, TimeoutError, S3Error):
+    except (ObjectVersioningUnavailable, HTTPError, OSError, TimeoutError, S3Error):
         await _retry(dependencies, lease)
         return
 
@@ -346,10 +365,18 @@ async def _process_with_dependencies(
                     content_type=inspection.content_type,
                 )
     except BaseException:
-        await asyncio.to_thread(dependencies.gateway.remove, final_key)
+        await asyncio.to_thread(
+            dependencies.gateway.remove,
+            final_key,
+            version_id=target_version_id,
+        )
         raise
     if not published:
-        await asyncio.to_thread(dependencies.gateway.remove, final_key)
+        await asyncio.to_thread(
+            dependencies.gateway.remove,
+            final_key,
+            version_id=target_version_id,
+        )
         return
     await asyncio.to_thread(dependencies.gateway.remove, work.staging_key)
 

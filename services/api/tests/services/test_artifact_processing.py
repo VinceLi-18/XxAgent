@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import sys
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -41,10 +42,14 @@ class ControlledGateway:
         self.stream_calls = 0
         self.copy_calls: list[tuple[str, str, str | None]] = []
         self.removed: list[str] = []
+        self.removal_versions: list[tuple[str, str | None]] = []
         self.after_stream = None
         self.copy_started: threading.Event | None = None
         self.copy_release: threading.Event | None = None
         self.stream_error: Exception | None = None
+
+    def require_versioning(self) -> None:
+        pass
 
     def stat(self, key: str) -> ObjectMetadata:
         body = self.objects[key]
@@ -66,7 +71,7 @@ class ControlledGateway:
         source: str,
         target: str,
         etag: str | None = None,
-    ) -> None:
+    ) -> str:
         self.copy_calls.append((source, target, etag))
         if self.copy_started is not None:
             self.copy_started.set()
@@ -76,9 +81,11 @@ class ControlledGateway:
             raise RuntimeError("source precondition failed")
         self.objects[target] = self.objects[source]
         self.etags[target] = self.etags[source]
+        return "target-version-1"
 
-    def remove(self, key: str) -> None:
+    def remove(self, key: str, version_id: str | None = None) -> None:
         self.removed.append(key)
+        self.removal_versions.append((key, version_id))
         self.objects.pop(key, None)
         self.etags.pop(key, None)
 
@@ -91,6 +98,106 @@ class ConsumingScanner:
     def scan_stream(self, chunks) -> MalwareVerdict:
         self.payloads.append(b"".join(chunks))
         return self.verdict
+
+
+@pytest.mark.parametrize(
+    ("sample", "expected"),
+    [
+        (b"safe text\n", "text/plain"),
+        (b"<!doctype html><title>x</title>", "text/html"),
+        (b"<svg xmlns='http://www.w3.org/2000/svg'/>", "image/svg+xml"),
+        (b"#!/bin/sh\necho x\n", "text/x-shellscript"),
+    ],
+)
+def test_deterministic_text_signatures_do_not_depend_on_magic(
+    monkeypatch: pytest.MonkeyPatch,
+    sample: bytes,
+    expected: str,
+) -> None:
+    class BrokenMagic:
+        @staticmethod
+        def from_buffer(_sample: bytes, *, mime: bool) -> str:
+            del mime
+            raise RuntimeError("libmagic unavailable")
+
+    monkeypatch.setitem(sys.modules, "magic", BrokenMagic)
+
+    assert artifact_processing._detect_content_type(sample) == expected
+
+
+def test_magic_failure_does_not_classify_control_bytes_as_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenMagic:
+        @staticmethod
+        def from_buffer(_sample: bytes, *, mime: bool) -> str:
+            del mime
+            raise RuntimeError("libmagic unavailable")
+
+    monkeypatch.setitem(sys.modules, "magic", BrokenMagic)
+
+    assert artifact_processing._detect_content_type(b"\x01\x02\x03\x04") == (
+        "application/octet-stream"
+    )
+
+
+class VersionedPromotionGateway(ControlledGateway):
+    def __init__(self, seeded: SeededArtifactJob, *, first_copy: str) -> None:
+        super().__init__(seeded)
+        self.first_copy = first_copy
+        self.first_copy_reached = threading.Event()
+        self.release_first_copy = threading.Event()
+        self.final_versions: dict[str, list[tuple[str, bytes]]] = {}
+        self.copy_versions: dict[int, str] = {}
+        self.versioned_removals: list[tuple[str, str | None]] = []
+        self._copy_lock = threading.Lock()
+        self._copy_count = 0
+
+    def require_versioning(self) -> None:
+        pass
+
+    def copy(
+        self,
+        source: str,
+        target: str,
+        etag: str | None = None,
+    ) -> str:
+        body = self.objects[source]
+        with self._copy_lock:
+            self._copy_count += 1
+            ordinal = self._copy_count
+        version_id = f"target-version-{ordinal}"
+        if ordinal == 1 and self.first_copy == "late":
+            self.first_copy_reached.set()
+            assert self.release_first_copy.wait(timeout=2)
+        self.final_versions.setdefault(target, []).append((version_id, body))
+        self.copy_versions[ordinal] = version_id
+        if ordinal == 1 and self.first_copy == "early":
+            self.first_copy_reached.set()
+            assert self.release_first_copy.wait(timeout=2)
+        return version_id
+
+    def remove(self, key: str, version_id: str | None = None) -> None:
+        if key.startswith("staging/"):
+            super().remove(key)
+            return
+        self.versioned_removals.append((key, version_id))
+        versions = self.final_versions[key]
+        if version_id is None:
+            versions.pop()
+            return
+        self.final_versions[key] = [
+            version for version in versions if version[0] != version_id
+        ]
+
+    def current_version(self, key: str) -> str:
+        return self.final_versions[key][-1][0]
+
+    def read_version(self, key: str, version_id: str) -> bytes:
+        for candidate, body in self.final_versions[key]:
+            if candidate == version_id:
+                return body
+        raise KeyError(version_id)
 
 
 async def _seed_claimed_job(
@@ -170,6 +277,28 @@ def _install_dependencies(
         )
 
     monkeypatch.setattr(artifact_processing, "_runtime_dependencies", dependencies)
+
+
+async def _replace_lease(
+    database: AsyncEngine,
+    lease: ArtifactJobLease,
+) -> ArtifactJobLease:
+    replacement_token = uuid4()
+    async with database.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE artifact_processing_jobs SET attempts = attempts + 1, "
+                "lease_token = :token, lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '1 minute' "
+                "WHERE id = :id"
+            ),
+            {"token": replacement_token, "id": lease.job_id},
+        )
+    return ArtifactJobLease(
+        job_id=lease.job_id,
+        version_id=lease.version_id,
+        lease_token=replacement_token,
+        attempt=lease.attempt + 1,
+    )
 
 
 async def _load_state(
@@ -395,6 +524,7 @@ async def test_lost_lease_after_copy_removes_only_this_workers_final_object(
     assert version.scan_status == "scanning" and version.object_key is None
     assert job.status == "leased" and job.lease_token == expected_token
     assert gateway.removed == [final_key]
+    assert gateway.removal_versions == [(final_key, "target-version-1")]
     assert seeded.staging_key in gateway.objects
 
 
@@ -430,7 +560,46 @@ async def test_database_publication_failure_removes_the_created_final_object(
     assert version.scan_status == "scanning" and version.object_key is None
     assert job.status == "leased" and job.lease_token == lease.lease_token
     assert gateway.removed == [final_key]
+    assert gateway.removal_versions == [(final_key, "target-version-1")]
     assert seeded.staging_key in gateway.objects
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first_copy", ("early", "late"))
+async def test_stale_worker_removes_only_its_target_version_after_new_worker_publishes(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+    first_copy: str,
+) -> None:
+    seeded, first_lease = await _seed_claimed_job(
+        seeded_database,
+        worker_engine,
+        actor_id=alice.id,
+        body=b"version-owned-content",
+    )
+    gateway = VersionedPromotionGateway(seeded, first_copy=first_copy)
+    _install_dependencies(monkeypatch, worker_engine, gateway, ConsumingScanner())
+
+    first_worker = asyncio.create_task(process_artifact_job(first_lease))
+    assert await asyncio.to_thread(gateway.first_copy_reached.wait, 2)
+    second_lease = await _replace_lease(seeded_database, first_lease)
+    await process_artifact_job(second_lease)
+    second_version = gateway.copy_versions[2]
+    gateway.release_first_copy.set()
+    await first_worker
+
+    version, job = await _load_state(seeded_database, seeded)
+    final_key = f"artifacts/{seeded.artifact_id}/{seeded.version_id}"
+    first_version = gateway.copy_versions[1]
+    assert version.scan_status == "clean" and version.object_key == final_key
+    assert job.status == "succeeded" and job.lease_token is None
+    assert gateway.current_version(final_key) == second_version
+    assert gateway.read_version(final_key, second_version) == seeded.body
+    with pytest.raises(KeyError):
+        gateway.read_version(final_key, first_version)
+    assert gateway.versioned_removals == [(final_key, first_version)]
 
 
 def test_artifact_inspection_is_immutable_processing_output() -> None:
