@@ -61,14 +61,20 @@ describe('XAgent 正式账号界面', () => {
     } as never, () => null)
     let disposeDeclaration = declare()
     ctx.provide('xagentWorkbench', bridge() as never)
+    const layout = { openDetails: vi.fn(), closeDetails: vi.fn() }
+    ctx.provide('layout', layout as never)
     const requestHeaders = new BrowserRequestHeadersService(ctx)
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })))
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, {
+      status: 204,
+      headers: { 'x-xagent-auth': '1' },
+    })))
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
     document.cookie = 'xagent_csrf=plugin-token; Path=/'
     expect(requestHeaders.resolve().get('x-xagent-csrf')).toBe('plugin-token')
     expect(slots.entries('shell.overlay')[0]?.component).toBe(AccountOverlay)
     expect(slots.entries('sidebar.footer.action')[0]?.component).toBe(AccountFooter)
+    await waitFor(() => { expect(layout.openDetails).toHaveBeenCalledOnce() })
     disposeDeclaration()
     expect(slots.entries('shell.overlay')).toHaveLength(0)
     expect(slots.entries('sidebar.footer.action')).toHaveLength(0)

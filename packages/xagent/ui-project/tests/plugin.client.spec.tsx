@@ -55,6 +55,8 @@ describe('XAgent Project UI 插件', () => {
     const { client: projectRemote, projectMock } = remote()
     const sessions = { clear: vi.fn(), open: vi.fn() }
     ctx.provide('sessions', sessions as never)
+    const layout = { openDetails: vi.fn(), closeDetails: vi.fn() }
+    ctx.provide('layout', layout as never)
     const disposeNamespace = ctx.reflect.provide('remote.xagentProject', projectRemote)
     const mount = vi.fn(async () => async () => { await disposeNamespace() })
     ctx.provide('remote', { $mount: mount, xagentProject: projectRemote } as never)
@@ -73,6 +75,7 @@ describe('XAgent Project UI 插件', () => {
     await browser.createProject('Alpha')
     browser.openSession('session-1')
     expect(sessions.clear).toHaveBeenCalledTimes(2)
+    expect(layout.openDetails).toHaveBeenCalledTimes(2)
     expect(sessions.open).toHaveBeenCalledWith('session-1')
     const details = slots.entries('shell.details')[0]!.inject!() as unknown as WorkbenchDetailsInjected
     await details.loadProject('project-1')

@@ -22,7 +22,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /** Project UI 依赖本地 Slot、Session 与生成式 Remote 装配服务。 */
-export const inject = ['slots', 'sessions', 'remote']
+export const inject = ['slots', 'sessions', 'remote', 'layout']
 
 /** 注册工作台服务以及左栏、中央上下文和第三栏详情。 */
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
@@ -36,8 +36,14 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
 
     const browserInjected = (): ProjectBrowserInjected => ({
       hooks: { workbench: workbench.snapshot },
-      selectContext: context => workbench.selectContext(context),
-      createProject: name => workbench.createProject(name),
+      selectContext: (context) => {
+        scope.layout.openDetails()
+        return workbench.selectContext(context)
+      },
+      createProject: (name) => {
+        scope.layout.openDetails()
+        return workbench.createProject(name)
+      },
       openSession: (sessionId) => { scope.sessions.open(sessionId as never) },
     })
     const detailsInjected = (): WorkbenchDetailsInjected => ({

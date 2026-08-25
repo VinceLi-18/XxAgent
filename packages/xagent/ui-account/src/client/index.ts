@@ -9,11 +9,17 @@ import { AccountController, csrfCookie, type AccountWorkbenchBridge } from './se
 export { AccountController } from './service.ts'
 export type { AccountState, AccountWorkbenchBridge, XAgentAccountSummary } from './service.ts'
 
-export const inject = ['slots', 'xagentWorkbench', 'browserRequestHeaders']
+export const inject = ['slots', 'xagentWorkbench', 'browserRequestHeaders', 'layout']
 
 export function apply(ctx: ClientContext): void {
   const workbench = (ctx as ClientContext & { xagentWorkbench: AccountWorkbenchBridge }).xagentWorkbench
   const account = new AccountController(workbench)
+  let authenticated = false
+  ctx.effect(() => account.subscribe(() => {
+    const next = account.getSnapshot().phase === 'authenticated'
+    if (next && !authenticated) ctx.layout.openDetails()
+    authenticated = next
+  }), 'xagent account: open workbench details after authentication')
   ctx.effect(() => ctx.browserRequestHeaders.register(() => {
     const token = csrfCookie()
     return token === undefined ? undefined : { 'x-xagent-csrf': token }
