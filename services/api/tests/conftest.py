@@ -194,6 +194,11 @@ def bob() -> SeededAccount:
 
 
 @pytest.fixture
+def manager() -> SeededAccount:
+    return MANAGER
+
+
+@pytest.fixture
 def application_role() -> str:
     return os.environ["POSTGRES_APP_USER"]
 

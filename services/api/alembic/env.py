@@ -13,6 +13,11 @@ from app.models.base import Base
 from app.models.conversation import ConversationThread
 from app.models.identity import Account
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
+from app.models.workbench import (
+    XAgentAccountCapabilityGrant,
+    XAgentSessionProjectRef,
+    XAgentWorkbenchPreference,
+)
 
 config = context.config
 if config.get_main_option("sqlalchemy.url") == "postgresql+asyncpg://placeholder":
