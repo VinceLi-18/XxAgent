@@ -46,10 +46,10 @@ async def test_hidden_project_detail_is_not_found(api_client, alice_token, bob_p
 
 
 @pytest.mark.anyio
-async def test_create_project_assigns_the_authenticated_actor_as_owner(api_client, alice_token):
+async def test_create_project_assigns_the_authenticated_manager_as_owner(api_client, manager_token):
     response = await api_client.post(
         "/api/v1/projects",
-        headers={"Authorization": f"Bearer {alice_token}"},
+        headers={"Authorization": f"Bearer {manager_token}"},
         json={"name": "  New project  "},
     )
 
@@ -58,7 +58,7 @@ async def test_create_project_assigns_the_authenticated_actor_as_owner(api_clien
 
     detail = await api_client.get(
         f"/api/v1/projects/{response.json()['id']}",
-        headers={"Authorization": f"Bearer {alice_token}"},
+        headers={"Authorization": f"Bearer {manager_token}"},
     )
     assert detail.status_code == 200
 

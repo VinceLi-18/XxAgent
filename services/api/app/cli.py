@@ -12,6 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models.auth import XAgentAccountCredential, XAgentAuthSession, XAgentPermissionRevision
 from app.models.identity import Account, Role
+from app.models.workbench import XAgentCapability
+from app.services.capabilities import (
+    CapabilityOperationRejected,
+    effective_capabilities_for_email,
+    grant_capability,
+    revoke_capability,
+)
 
 _password_hasher = PasswordHasher()
 
@@ -144,6 +151,29 @@ def _parser() -> argparse.ArgumentParser:
 
     deactivate = account_commands.add_parser("deactivate")
     deactivate.add_argument("--email", required=True)
+
+    capability = account_commands.add_parser("capability")
+    capability_commands = capability.add_subparsers(
+        dest="capability_operation",
+        required=True,
+    )
+    grant = capability_commands.add_parser("grant")
+    grant.add_argument("--email", required=True)
+    grant.add_argument(
+        "--capability",
+        choices=[capability.value for capability in XAgentCapability],
+        required=True,
+    )
+    grant.add_argument("--granted-by", required=True)
+    revoke_capability_parser = capability_commands.add_parser("revoke")
+    revoke_capability_parser.add_argument("--email", required=True)
+    revoke_capability_parser.add_argument(
+        "--capability",
+        choices=[capability.value for capability in XAgentCapability],
+        required=True,
+    )
+    show_capabilities = capability_commands.add_parser("show")
+    show_capabilities.add_argument("--email", required=True)
     return parser
 
 
@@ -159,6 +189,35 @@ async def _run(args: argparse.Namespace, sessions: async_sessionmaker[AsyncSessi
     if args.operation == "deactivate":
         await _deactivate_account(sessions, args.email)
         return "账号已停用，既有登录已撤销"
+    if args.operation == "capability" and args.capability_operation == "grant":
+        async with sessions() as session:
+            async with session.begin():
+                changed = await grant_capability(
+                    session,
+                    email=args.email,
+                    capability=XAgentCapability(args.capability),
+                    granted_by=args.granted_by,
+                )
+        state = "已授予" if changed else "已存在"
+        return f"能力{state}：{args.capability}"
+    if args.operation == "capability" and args.capability_operation == "revoke":
+        async with sessions() as session:
+            async with session.begin():
+                changed = await revoke_capability(
+                    session,
+                    email=args.email,
+                    capability=XAgentCapability(args.capability),
+                )
+        state = "已撤销" if changed else "不存在"
+        return f"能力{state}：{args.capability}"
+    if args.operation == "capability" and args.capability_operation == "show":
+        async with sessions() as session:
+            capabilities = await effective_capabilities_for_email(
+                session,
+                args.email,
+            )
+        rendered = "、".join(sorted(capability.value for capability in capabilities))
+        return f"有效能力：{rendered or '无'}"
     raise AccountOperationRejected
 
 
@@ -179,7 +238,7 @@ def main() -> None:
     except ValueError as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(2) from None
-    except (AccountOperationRejected, IntegrityError):
+    except (AccountOperationRejected, CapabilityOperationRejected, IntegrityError):
         print("账号操作失败", file=sys.stderr)
         raise SystemExit(2) from None
     print(message)

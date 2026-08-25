@@ -8,7 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_session
 from app.core.db_context import set_actor_context
 from app.core.security import Actor, get_current_actor
-from app.services.projects import create_project, get_visible_project, list_visible_projects
+from app.services.projects import (
+    ProjectCreationForbidden,
+    create_project,
+    get_visible_project,
+    list_visible_projects,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -52,7 +57,14 @@ async def create_new_project(
     session: AsyncSession = Depends(get_session),
 ) -> ProjectResponse:
     await set_actor_context(session, actor)
-    return ProjectResponse.model_validate(await create_project(session, actor, payload.name))
+    try:
+        project = await create_project(session, actor, payload.name)
+    except ProjectCreationForbidden:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "forbidden"},
+        ) from None
+    return ProjectResponse.model_validate(project)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)

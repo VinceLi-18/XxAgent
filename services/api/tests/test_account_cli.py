@@ -7,11 +7,12 @@ from uuid import uuid4
 
 import pytest
 from argon2 import PasswordHasher
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auth import XAgentAccountCredential, XAgentAuthSession
 from app.models.identity import Account
+from app.models.workbench import XAgentAccountCapabilityGrant
 
 
 def _run_cli(*args: str, input_text: str = "") -> subprocess.CompletedProcess[str]:
@@ -169,3 +170,299 @@ async def test_deactivate_revokes_sessions_and_advances_permission_revision(
     assert account is not None and not account.is_active
     assert auth_session is not None and auth_session.revoked_at is not None
     assert revision == 2
+
+
+@pytest.mark.anyio
+async def test_capability_grant_advances_revision_and_revokes_existing_sessions(
+    seeded_database,
+    alice,
+) -> None:
+    now = datetime.now(UTC)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            session.add(
+                XAgentAuthSession(
+                    id=uuid4(),
+                    account_id=alice.id,
+                    jti_hash="e" * 64,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=8),
+                )
+            )
+
+    granted = _run_cli(
+        "account",
+        "capability",
+        "grant",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+        "--granted-by",
+        "manager@example.test",
+    )
+
+    assert granted.returncode == 0
+    assert granted.stdout.strip() == "能力已授予：project.create"
+    assert granted.stderr == ""
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        grant = await session.get(
+            XAgentAccountCapabilityGrant,
+            (alice.id, "project.create"),
+        )
+        auth_session = await session.scalar(select(XAgentAuthSession))
+        revision = await session.scalar(
+            text(
+                "SELECT revision FROM xagent_permission_revisions "
+                "WHERE account_id = :account_id"
+            ),
+            {"account_id": alice.id},
+        )
+
+    assert grant is not None
+    assert auth_session is not None and auth_session.revoked_at is not None
+    assert revision == 2
+
+
+@pytest.mark.anyio
+async def test_capability_revoke_advances_revision_and_revokes_new_sessions(
+    seeded_database,
+    alice,
+) -> None:
+    granted = _run_cli(
+        "account",
+        "capability",
+        "grant",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+        "--granted-by",
+        "manager@example.test",
+    )
+    assert granted.returncode == 0
+
+    now = datetime.now(UTC)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            session.add(
+                XAgentAuthSession(
+                    id=uuid4(),
+                    account_id=alice.id,
+                    jti_hash="f" * 64,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=8),
+                )
+            )
+
+    revoked = _run_cli(
+        "account",
+        "capability",
+        "revoke",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+    )
+
+    assert revoked.returncode == 0
+    assert revoked.stdout.strip() == "能力已撤销：project.create"
+    assert revoked.stderr == ""
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        grant = await session.get(
+            XAgentAccountCapabilityGrant,
+            (alice.id, "project.create"),
+        )
+        auth_session = await session.scalar(select(XAgentAuthSession))
+        revision = await session.scalar(
+            text(
+                "SELECT revision FROM xagent_permission_revisions "
+                "WHERE account_id = :account_id"
+            ),
+            {"account_id": alice.id},
+        )
+
+    assert grant is None
+    assert auth_session is not None and auth_session.revoked_at is not None
+    assert revision == 3
+
+
+@pytest.mark.anyio
+async def test_capability_show_reports_effective_manager_and_specialist_capabilities(
+    seeded_database,
+) -> None:
+    specialist_before = _run_cli(
+        "account",
+        "capability",
+        "show",
+        "--email",
+        "alice@example.test",
+    )
+    manager = _run_cli(
+        "account",
+        "capability",
+        "show",
+        "--email",
+        "manager@example.test",
+    )
+
+    assert specialist_before.returncode == 0
+    assert specialist_before.stdout.strip() == "有效能力：无"
+    assert specialist_before.stderr == ""
+    assert manager.returncode == 0
+    assert manager.stdout.strip() == "有效能力：project.create"
+    assert manager.stderr == ""
+
+    granted = _run_cli(
+        "account",
+        "capability",
+        "grant",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+        "--granted-by",
+        "manager@example.test",
+    )
+    specialist_after = _run_cli(
+        "account",
+        "capability",
+        "show",
+        "--email",
+        "alice@example.test",
+    )
+
+    assert granted.returncode == 0
+    assert specialist_after.returncode == 0
+    assert specialist_after.stdout.strip() == "有效能力：project.create"
+    assert specialist_after.stderr == ""
+
+
+@pytest.mark.anyio
+async def test_capability_grant_and_revoke_are_idempotent(
+    seeded_database,
+) -> None:
+    grant_args = (
+        "account",
+        "capability",
+        "grant",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+        "--granted-by",
+        "manager@example.test",
+    )
+    first_grant = _run_cli(*grant_args)
+    duplicate_grant = _run_cli(*grant_args)
+
+    assert first_grant.stdout.strip() == "能力已授予：project.create"
+    assert duplicate_grant.returncode == 0
+    assert duplicate_grant.stdout.strip() == "能力已存在：project.create"
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        revision_after_grants = await session.scalar(
+            text(
+                "SELECT revision FROM xagent_permission_revisions "
+                "WHERE account_id = (SELECT id FROM accounts WHERE email = 'alice@example.test')"
+            )
+        )
+    assert revision_after_grants == 2
+
+    revoke_args = (
+        "account",
+        "capability",
+        "revoke",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+    )
+    first_revoke = _run_cli(*revoke_args)
+    duplicate_revoke = _run_cli(*revoke_args)
+
+    assert first_revoke.stdout.strip() == "能力已撤销：project.create"
+    assert duplicate_revoke.returncode == 0
+    assert duplicate_revoke.stdout.strip() == "能力不存在：project.create"
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        revision_after_revokes = await session.scalar(
+            text(
+                "SELECT revision FROM xagent_permission_revisions "
+                "WHERE account_id = (SELECT id FROM accounts WHERE email = 'alice@example.test')"
+            )
+        )
+    assert revision_after_revokes == 3
+
+
+@pytest.mark.anyio
+async def test_capability_grant_requires_an_active_manager(
+    seeded_database,
+    manager,
+) -> None:
+    specialist_grantor = _run_cli(
+        "account",
+        "capability",
+        "grant",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+        "--granted-by",
+        "bob@example.test",
+    )
+    assert specialist_grantor.returncode == 2
+    assert specialist_grantor.stdout == ""
+    assert specialist_grantor.stderr.strip() == "账号操作失败"
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text("UPDATE accounts SET is_active = false WHERE id = :account_id"),
+                {"account_id": manager.id},
+            )
+    inactive_manager = _run_cli(
+        "account",
+        "capability",
+        "grant",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.create",
+        "--granted-by",
+        "manager@example.test",
+    )
+
+    assert inactive_manager.returncode == 2
+    assert inactive_manager.stdout == ""
+    assert inactive_manager.stderr.strip() == "账号操作失败"
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        grant_count = await session.scalar(
+            select(func.count()).select_from(XAgentAccountCapabilityGrant)
+        )
+    assert grant_count == 0
+
+
+@pytest.mark.anyio
+async def test_capability_cli_rejects_unknown_capability_without_writing(
+    seeded_database,
+) -> None:
+    rejected = _run_cli(
+        "account",
+        "capability",
+        "grant",
+        "--email",
+        "alice@example.test",
+        "--capability",
+        "project.delete",
+        "--granted-by",
+        "manager@example.test",
+    )
+
+    assert rejected.returncode == 2
+    assert rejected.stdout == ""
+    assert "project.delete" in rejected.stderr
+    assert "xagent_account_capability_grants" not in rejected.stderr
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        grant_count = await session.scalar(
+            select(func.count()).select_from(XAgentAccountCapabilityGrant)
+        )
+    assert grant_count == 0

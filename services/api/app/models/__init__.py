@@ -5,6 +5,7 @@ from app.models.auth import XAgentAccountCredential, XAgentAuthSession, XAgentPe
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
 from app.models.workbench import (
     XAgentAccountCapabilityGrant,
+    XAgentCapability,
     XAgentSessionProjectRef,
     XAgentWorkbenchPreference,
 )
@@ -20,6 +21,7 @@ __all__ = (
     "XAgentSession",
     "XAgentSessionEvent",
     "XAgentAccountCapabilityGrant",
+    "XAgentCapability",
     "XAgentSessionProjectRef",
     "XAgentWorkbenchPreference",
 )
