@@ -75,6 +75,157 @@ async def test_application_role_cannot_claim_artifact_jobs(
 
 
 @pytest.mark.anyio
+async def test_application_role_can_enqueue_but_cannot_read_or_update_artifact_jobs(
+    seeded_database: AsyncEngine,
+    application_role: str,
+    alice,
+) -> None:
+    artifact_id = uuid4()
+    version_id = uuid4()
+    job_id = uuid4()
+    async with seeded_database.begin() as connection:
+        set_role = await connection.scalar(
+            text("SELECT format('SET LOCAL ROLE %I', CAST(:role AS text))"),
+            {"role": application_role},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
+                "VALUES (:id, 'enqueue.txt', :actor_id, :actor_id)"
+            ),
+            {"id": artifact_id, "actor_id": alice.id},
+        )
+        await connection.execute(text(set_role))
+        await connection.execute(
+            text("SELECT set_config('app.actor_id', :actor_id, true)"),
+            {"actor_id": str(alice.id)},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_versions "
+                "(id, artifact_id, owner_id, version_number, original_filename, "
+                "uploaded_by_id, declared_size, scan_status, object_key, size, sha256) "
+                "VALUES (:id, :artifact_id, :actor_id, 1, 'enqueue.txt', :actor_id, "
+                "7, 'pending', NULL, 7, :sha256)"
+            ),
+            {
+                "id": version_id,
+                "artifact_id": artifact_id,
+                "actor_id": alice.id,
+                "sha256": "0" * 64,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_processing_jobs "
+                "(id, version_id, status, attempts, next_attempt_at) "
+                "VALUES (:id, :version_id, 'ready', 0, CURRENT_TIMESTAMP)"
+            ),
+            {"id": job_id, "version_id": version_id},
+        )
+
+    for statement in (
+        "SELECT id FROM artifact_processing_jobs WHERE id = :job_id FOR UPDATE",
+        "UPDATE artifact_processing_jobs SET status = 'running' WHERE id = :job_id",
+    ):
+        with pytest.raises(ProgrammingError) as rejected:
+            async with seeded_database.begin() as connection:
+                await connection.execute(text(set_role))
+                await connection.execute(
+                    text("SELECT set_config('app.actor_id', :actor_id, true)"),
+                    {"actor_id": str(alice.id)},
+                )
+                await connection.execute(text(statement), {"job_id": job_id})
+        assert rejected.value.orig.sqlstate == "42501"
+
+
+@pytest.mark.anyio
+async def test_application_role_cannot_attribute_artifacts_or_versions_to_another_account(
+    seeded_database: AsyncEngine,
+    application_role: str,
+    alice,
+    bob,
+) -> None:
+    project_id = uuid4()
+    artifact_id = uuid4()
+    async with seeded_database.begin() as connection:
+        set_role = await connection.scalar(
+            text("SELECT format('SET LOCAL ROLE %I', CAST(:role AS text))"),
+            {"role": application_role},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO projects (id, name, owner_id) "
+                "VALUES (:id, 'Attribution project', :owner_id)"
+            ),
+            {"id": project_id, "owner_id": alice.id},
+        )
+
+    with pytest.raises(DBAPIError):
+        async with seeded_database.begin() as connection:
+            await connection.execute(text(set_role))
+            await connection.execute(
+                text("SELECT set_config('app.actor_id', :actor_id, true)"),
+                {"actor_id": str(alice.id)},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO artifacts "
+                    "(id, filename, project_id, created_by_id) "
+                    "VALUES (:id, 'forged.txt', :project_id, :created_by_id)"
+                ),
+                {
+                    "id": uuid4(),
+                    "project_id": project_id,
+                    "created_by_id": bob.id,
+                },
+            )
+
+    async with seeded_database.begin() as connection:
+        await connection.execute(text(set_role))
+        await connection.execute(
+            text("SELECT set_config('app.actor_id', :actor_id, true)"),
+            {"actor_id": str(alice.id)},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifacts "
+                "(id, filename, project_id, created_by_id) "
+                "VALUES (:id, 'owned.txt', :project_id, :created_by_id)"
+            ),
+            {
+                "id": artifact_id,
+                "project_id": project_id,
+                "created_by_id": alice.id,
+            },
+        )
+
+    with pytest.raises(DBAPIError):
+        async with seeded_database.begin() as connection:
+            await connection.execute(text(set_role))
+            await connection.execute(
+                text("SELECT set_config('app.actor_id', :actor_id, true)"),
+                {"actor_id": str(alice.id)},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_versions "
+                    "(id, artifact_id, project_id, version_number, original_filename, "
+                    "uploaded_by_id, declared_size, scan_status, object_key, size, sha256) "
+                    "VALUES (:id, :artifact_id, :project_id, 1, 'forged.txt', "
+                    ":uploaded_by_id, 7, 'pending', NULL, 7, :sha256)"
+                ),
+                {
+                    "id": uuid4(),
+                    "artifact_id": artifact_id,
+                    "project_id": project_id,
+                    "uploaded_by_id": bob.id,
+                    "sha256": "0" * 64,
+                },
+            )
+
+
+@pytest.mark.anyio
 async def test_worker_can_claim_jobs_and_update_only_processing_columns(
     seeded_database: AsyncEngine,
     worker_engine: AsyncEngine,

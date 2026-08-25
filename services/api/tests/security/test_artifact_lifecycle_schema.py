@@ -323,6 +323,51 @@ async def test_audit_event_rejects_unknown_executor_kind(
 
 
 @pytest.mark.anyio
+async def test_downgrade_rejects_pending_versions_without_changing_data(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    artifact_id = await _insert_artifact(seeded_database, alice.id)
+    version_id = await _insert_version(
+        seeded_database,
+        artifact_id=artifact_id,
+        account_id=alice.id,
+        version_number=1,
+        scan_status="pending",
+        object_key=None,
+    )
+    config = _alembic_config(
+        seeded_database.url.render_as_string(hide_password=False)
+    )
+    await seeded_database.dispose()
+
+    with pytest.raises(DBAPIError, match="cannot downgrade artifact lifecycle"):
+        await to_thread.run_sync(
+            command.downgrade,
+            config,
+            "011_drop_legacy_threads",
+        )
+
+    await seeded_database.dispose()
+    async with seeded_database.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT scan_status, object_key FROM artifact_versions "
+                    "WHERE id = :id"
+                ),
+                {"id": version_id},
+            )
+        ).one()
+        revision = await connection.scalar(
+            text("SELECT version_num FROM alembic_version")
+        )
+
+    assert row == ("pending", None)
+    assert revision == "012_xagent_artifact_lifecycle"
+
+
+@pytest.mark.anyio
 async def test_artifact_lifecycle_migration_round_trip_backfills_legacy_rows(
     seeded_database: AsyncEngine,
     alice,

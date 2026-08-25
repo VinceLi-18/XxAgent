@@ -232,6 +232,36 @@ def upgrade() -> None:
     op.execute("ALTER TABLE artifact_processing_jobs ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE artifact_processing_jobs FORCE ROW LEVEL SECURITY")
 
+    artifact_scope = (
+        "owner_id = NULLIF(current_setting('app.actor_id', true), '')::uuid "
+        "OR project_id IN (SELECT public.authorized_project_ids())"
+    )
+    op.execute("DROP POLICY artifacts_insert ON artifacts")
+    op.execute(
+        f"CREATE POLICY artifacts_insert ON artifacts FOR INSERT TO {application_role} "
+        "WITH CHECK (created_by_id = "
+        "NULLIF(current_setting('app.actor_id', true), '')::uuid "
+        f"AND ({artifact_scope}))"
+    )
+    op.execute("DROP POLICY artifact_versions_insert ON artifact_versions")
+    op.execute(
+        f"CREATE POLICY artifact_versions_insert ON artifact_versions "
+        f"FOR INSERT TO {application_role} "
+        "WITH CHECK (uploaded_by_id = "
+        "NULLIF(current_setting('app.actor_id', true), '')::uuid "
+        f"AND ({artifact_scope}))"
+    )
+    op.execute(
+        f"CREATE POLICY application_job_insert ON artifact_processing_jobs "
+        f"FOR INSERT TO {application_role} WITH CHECK ("
+        "status = 'ready' AND attempts = 0 "
+        "AND lease_token IS NULL AND lease_expires_at IS NULL "
+        "AND failure_code IS NULL AND EXISTS ("
+        "SELECT 1 FROM artifact_versions "
+        "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
+        "AND artifact_versions.uploaded_by_id = "
+        "NULLIF(current_setting('app.actor_id', true), '')::uuid))"
+    )
     op.execute(
         f"CREATE POLICY artifact_worker_job_read ON artifact_processing_jobs "
         f"FOR SELECT TO {worker_role} USING (true)"
@@ -273,6 +303,9 @@ def upgrade() -> None:
     )
 
     op.execute(f"GRANT USAGE ON SCHEMA public TO {worker_role}")
+    op.execute(
+        f"GRANT INSERT ON artifact_processing_jobs TO {application_role}"
+    )
     op.execute(f"GRANT SELECT ON artifact_processing_jobs TO {worker_role}")
     op.execute(
         "GRANT UPDATE (status, attempts, next_attempt_at, lease_token, lease_expires_at, "
@@ -303,6 +336,24 @@ def downgrade() -> None:
     application_role = _configured_role("application_role")
     worker_role = _configured_role("worker_role")
 
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM artifact_versions WHERE object_key IS NULL
+            ) THEN
+                RAISE EXCEPTION
+                    'cannot downgrade artifact lifecycle: non-clean versions have no final object';
+            END IF;
+        END
+        $$
+        """
+    )
+
+    op.execute(
+        f"REVOKE INSERT ON artifact_processing_jobs FROM {application_role}"
+    )
     op.execute(f"REVOKE ALL PRIVILEGES ON artifact_processing_jobs FROM {worker_role}")
     op.execute(f"REVOKE ALL PRIVILEGES ON artifacts, artifact_versions, staging_uploads, audit_events FROM {worker_role}")
     op.execute(f"REVOKE USAGE ON SCHEMA public FROM {worker_role}")
@@ -323,6 +374,7 @@ def downgrade() -> None:
 
     op.execute("DROP POLICY artifact_worker_job_update ON artifact_processing_jobs")
     op.execute("DROP POLICY artifact_worker_job_read ON artifact_processing_jobs")
+    op.execute("DROP POLICY application_job_insert ON artifact_processing_jobs")
     op.execute("ALTER TABLE artifact_processing_jobs NO FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE artifact_processing_jobs DISABLE ROW LEVEL SECURITY")
     op.drop_table("artifact_processing_jobs")
@@ -337,6 +389,21 @@ def downgrade() -> None:
     op.drop_constraint("ck_artifact_version_declared_size", "artifact_versions", type_="check")
     op.drop_constraint("ck_artifact_version_number", "artifact_versions", type_="check")
     op.drop_constraint("uq_artifact_version_number", "artifact_versions", type_="unique")
+
+    artifact_scope = (
+        "owner_id = NULLIF(current_setting('app.actor_id', true), '')::uuid "
+        "OR project_id IN (SELECT public.authorized_project_ids())"
+    )
+    op.execute("DROP POLICY artifact_versions_insert ON artifact_versions")
+    op.execute(
+        "CREATE POLICY artifact_versions_insert ON artifact_versions "
+        f"FOR INSERT WITH CHECK ({artifact_scope})"
+    )
+    op.execute("DROP POLICY artifacts_insert ON artifacts")
+    op.execute(
+        "CREATE POLICY artifacts_insert ON artifacts "
+        f"FOR INSERT WITH CHECK ({artifact_scope})"
+    )
 
     op.alter_column("artifact_versions", "object_key", existing_type=sa.String(length=512), nullable=False)
     op.drop_constraint(
