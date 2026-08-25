@@ -92,3 +92,23 @@
 
 - 单项 GREEN：连续取消测试 1 项通过。
 - `JX_TEST_DATABASE_URL=... JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test -- tests/services/test_artifact_jobs.py tests/test_worker_cli.py`：23 项通过，覆盖正式 CLI、attempt 封顶、普通失租、processor 异常、停止信号、单次与连续取消。
+
+## 修复轮 4
+
+### 技术核验与 RED
+
+- heartbeat 已异常完成时，原 `_await_task_quiescence()` 跳过 shield loop，随后在最终 `gather(done_task)` 接收新取消并直接退出；异常清理因此没有等待仍在真实 `asyncio.to_thread()` 中阻塞的 processor sibling。
+- 新用例在 cleanup 开始收割已完成 heartbeat 时用事件循环回调投递取消，并用下一轮回调确认取消已经到达。旧实现稳定失败于 processor 释放前 worker task 已完成；Job 保持断言同时覆盖无 finish/retry 和不领取下一项。
+- `JX_TEST_DATABASE_URL=... JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test -- tests/test_worker_cli.py::test_cancel_while_harvesting_done_heartbeat_waits_for_processor`：1 项失败，失败点为 `assert not worker_task.done()`。
+
+### 最小 GREEN
+
+- `_await_task_quiescence()` 在 child 已完成后同步调用 `task.exception()` 消费结果；cancelled child 无需读取异常。该路径不再产生取消点，新取消会在仍运行 sibling 的 shield 等待中被记录，两个 child 收敛后才统一传播取消。
+- 实现不增加 shield/gather 窗口，不调用 `uncancel()`；child 异常被实际消费，持续到达的调用方取消仍由现有循环记录，processor 结束前 cleanup 不返回。
+- 单项 GREEN：新增时序测试 1 项通过；释放 processor 后线程已退出，worker 传播 `CancelledError`，active Job 保持 `leased` 且无失败码，下一项 Job 保持 `ready/attempts=0`。
+
+### 修复轮验证
+
+- `JX_TEST_DATABASE_URL=... JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test -- tests/services/test_artifact_jobs.py tests/test_worker_cli.py`：24 项通过，包含正式 `worker --once`、第 5 次过期租约封顶、普通失租、processor/heartbeat 异常、停止和单次/连续/已完成 child 窗口取消。
+- 正式 `uv run --project services/api xagent-api worker` 在真实 PostgreSQL 领取并安全 retry 后收到 SIGTERM：返回码 0，stdout/stderr 均为空。
+- `services/api/.venv/bin/python -m py_compile ...`：Task 3 的 8 个实现与测试文件通过。

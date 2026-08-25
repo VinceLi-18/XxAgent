@@ -499,6 +499,101 @@ async def test_repeated_cancellation_waits_for_all_worker_tasks(
 
 
 @pytest.mark.anyio
+async def test_cancel_while_harvesting_done_heartbeat_waits_for_processor(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    active_job = await _seed_job(
+        seeded_database,
+        actor_id=alice.id,
+        now=now - timedelta(seconds=1),
+    )
+    untouched_job = await _seed_job(seeded_database, actor_id=alice.id, now=now)
+    release_thread = threading.Event()
+    thread_stopped = threading.Event()
+    processor_thread_started = asyncio.Event()
+    cancellation_dispatched = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    original_await_task_quiescence = artifact_worker._await_task_quiescence
+    worker_task: asyncio.Task[None] | None = None
+    cancellation_scheduled = False
+
+    def cancel_worker() -> None:
+        assert worker_task is not None
+        worker_task.cancel()
+        loop.call_soon(cancellation_dispatched.set)
+
+    async def observed_await_task_quiescence(task):
+        nonlocal cancellation_scheduled
+        if task.done() and not cancellation_scheduled:
+            cancellation_scheduled = True
+            loop.call_soon(cancel_worker)
+        return await original_await_task_quiescence(task)
+
+    monkeypatch.setattr(
+        artifact_worker,
+        "_await_task_quiescence",
+        observed_await_task_quiescence,
+    )
+
+    def blocking_processor() -> None:
+        loop.call_soon_threadsafe(processor_thread_started.set)
+        try:
+            assert release_thread.wait(timeout=2)
+        finally:
+            thread_stopped.set()
+
+    async def processor(lease) -> None:
+        if lease.job_id != active_job.id:
+            raise AssertionError("worker claimed another job during cleanup")
+        await asyncio.to_thread(blocking_processor)
+
+    async def failing_heartbeat(
+        _sessions,
+        _lease,
+        *,
+        stop_event: asyncio.Event,
+        heartbeat_seconds: float,
+        lease_seconds: float,
+    ) -> bool:
+        del stop_event, heartbeat_seconds, lease_seconds
+        await processor_thread_started.wait()
+        raise RuntimeError("heartbeat failed")
+
+    monkeypatch.setattr(artifact_worker, "_heartbeat_lease", failing_heartbeat)
+    worker_task = asyncio.create_task(
+        _run_worker_loop(
+            _sessions(worker_engine),
+            once=True,
+            processor=processor,
+            lease_seconds=60,
+            heartbeat_seconds=20,
+            poll_seconds=0,
+        )
+    )
+    await asyncio.wait_for(cancellation_dispatched.wait(), timeout=1)
+    try:
+        assert not worker_task.done()
+        assert not thread_stopped.is_set()
+    finally:
+        release_thread.set()
+        assert await asyncio.to_thread(thread_stopped.wait, 1)
+        result = await asyncio.gather(worker_task, return_exceptions=True)
+
+    async with AsyncSession(seeded_database) as session:
+        active = await session.get(ArtifactProcessingJob, active_job.id)
+        untouched = await session.get(ArtifactProcessingJob, untouched_job.id)
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert active is not None and active.status == "leased"
+    assert active.failure_code is None
+    assert untouched is not None and untouched.status == "ready"
+    assert untouched.attempts == 0
+
+
+@pytest.mark.anyio
 async def test_stop_request_prevents_another_claim_after_processor_settles(
     seeded_database: AsyncEngine,
     worker_engine: AsyncEngine,

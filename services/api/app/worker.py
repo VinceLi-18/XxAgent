@@ -99,7 +99,8 @@ async def _await_task_quiescence(
             break
         except Exception:
             break
-    await asyncio.gather(task, return_exceptions=True)
+    if not task.cancelled():
+        task.exception()
     return pending_cancellation
 
 
