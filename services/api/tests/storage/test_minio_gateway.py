@@ -1,5 +1,6 @@
 from datetime import timedelta
 from types import SimpleNamespace
+from uuid import UUID
 
 import minio
 import pytest
@@ -23,10 +24,11 @@ def fake_minio() -> FakeMinio:
 
 def test_gateway_only_signs_staging_put_and_never_get(fake_minio: FakeMinio) -> None:
     gateway = MinioGateway(fake_minio, bucket="jiaxin-private")
+    upload_id = UUID("00000000-0000-0000-0000-000000000123")
 
-    url = gateway.create_staging_put_url("staging/upload-id", timedelta(minutes=10))
+    url = gateway.create_staging_put_url(f"staging/{upload_id}", timedelta(minutes=10))
 
-    assert fake_minio.presigned_calls == [("PUT", "jiaxin-private", "staging/upload-id")]
+    assert fake_minio.presigned_calls == [("PUT", "jiaxin-private", f"staging/{upload_id}")]
     assert "GET" not in url
 
 
@@ -35,6 +37,24 @@ def test_gateway_refuses_to_sign_non_staging_keys(fake_minio: FakeMinio) -> None
 
     with pytest.raises(ValueError, match="staging"):
         gateway.create_staging_put_url("artifacts/private-object", timedelta(minutes=10))
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "staging/",
+        "staging/not-a-uuid",
+        "staging/00000000-0000-0000-0000-000000000123/extra",
+    ),
+)
+def test_gateway_refuses_to_sign_a_staging_prefix_instead_of_one_upload_object(
+    fake_minio: FakeMinio,
+    key: str,
+) -> None:
+    gateway = MinioGateway(fake_minio, bucket="jiaxin-private")
+
+    with pytest.raises(ValueError, match="staging"):
+        gateway.create_staging_put_url(key, timedelta(minutes=10))
 
 
 def test_gateway_uses_configured_http_transport_for_local_minio(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,9 +133,10 @@ def test_gateway_uses_browser_endpoint_only_for_staging_put(monkeypatch: pytest.
     )
 
     assert [client.endpoint for client in clients] == ["minio:9000", "localhost:9000"]
-    assert gateway.create_staging_put_url("staging/upload-id", timedelta(minutes=10)).startswith(
-        "https://localhost:9000/"
-    )
+    upload_id = UUID("00000000-0000-0000-0000-000000000123")
+    assert gateway.create_staging_put_url(
+        f"staging/{upload_id}", timedelta(minutes=10)
+    ).startswith("https://localhost:9000/")
 
 
 def test_gateway_fails_closed_for_anonymous_bucket_policy() -> None:

@@ -25,6 +25,21 @@ def upgrade() -> None:
     application_role = _configured_role("application_role")
     worker_role = _configured_role("worker_role")
 
+    op.add_column("staging_uploads", sa.Column("artifact_id", sa.UUID(), nullable=True))
+    op.add_column("staging_uploads", sa.Column("expected_size", sa.Integer(), nullable=True))
+    op.create_foreign_key(
+        "fk_staging_uploads_artifact_id_artifacts",
+        "staging_uploads",
+        "artifacts",
+        ["artifact_id"],
+        ["id"],
+    )
+    op.create_check_constraint(
+        "ck_staging_upload_expected_size",
+        "staging_uploads",
+        "expected_size IS NULL OR expected_size BETWEEN 0 AND 52428800",
+    )
+
     op.add_column("artifacts", sa.Column("created_by_id", sa.UUID(), nullable=True))
     op.create_foreign_key(
         "fk_artifacts_created_by_id_accounts",
@@ -425,4 +440,12 @@ def downgrade() -> None:
         op.drop_column("artifact_versions", column_name)
     op.drop_constraint("fk_artifacts_created_by_id_accounts", "artifacts", type_="foreignkey")
     op.drop_column("artifacts", "created_by_id")
+    op.drop_constraint("ck_staging_upload_expected_size", "staging_uploads", type_="check")
+    op.drop_constraint(
+        "fk_staging_uploads_artifact_id_artifacts",
+        "staging_uploads",
+        type_="foreignkey",
+    )
+    op.drop_column("staging_uploads", "expected_size")
+    op.drop_column("staging_uploads", "artifact_id")
     op.drop_column("audit_events", "executor_kind")

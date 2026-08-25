@@ -32,6 +32,8 @@ async def _require_lifecycle_schema(engine: AsyncEngine) -> None:
         "artifact_versions.version_number",
         "artifacts.created_by_id",
         "audit_events.executor_kind",
+        "staging_uploads.artifact_id",
+        "staging_uploads.expected_size",
     }
     async with engine.connect() as connection:
         rows = await connection.execute(
@@ -106,6 +108,51 @@ async def test_artifact_lifecycle_schema_has_required_tables_and_columns(
     seeded_database: AsyncEngine,
 ) -> None:
     await _require_lifecycle_schema(seeded_database)
+
+
+@pytest.mark.anyio
+async def test_staging_upload_rejects_a_missing_artifact_target(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    await _require_lifecycle_schema(seeded_database)
+
+    with pytest.raises(IntegrityError, match="fk_staging_uploads_artifact_id_artifacts"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO staging_uploads "
+                    "(id, artifact_id, created_by_id, filename, expected_size, owner_id, "
+                    "staging_key, expires_at) VALUES "
+                    "(:id, :artifact_id, :account_id, 'target.txt', 1, :account_id, "
+                    "'staging/missing-target', CURRENT_TIMESTAMP + INTERVAL '10 minutes')"
+                ),
+                {
+                    "id": uuid4(),
+                    "artifact_id": uuid4(),
+                    "account_id": alice.id,
+                },
+            )
+
+
+@pytest.mark.anyio
+async def test_staging_upload_rejects_a_negative_expected_size(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    await _require_lifecycle_schema(seeded_database)
+
+    with pytest.raises(IntegrityError, match="ck_staging_upload_expected_size"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO staging_uploads "
+                    "(id, created_by_id, filename, expected_size, owner_id, staging_key, expires_at) "
+                    "VALUES (:id, :account_id, 'negative.txt', -1, :account_id, "
+                    "'staging/negative-size', CURRENT_TIMESTAMP + INTERVAL '10 minutes')"
+                ),
+                {"id": uuid4(), "account_id": alice.id},
+            )
 
 
 @pytest.mark.anyio

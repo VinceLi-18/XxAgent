@@ -1,249 +1,310 @@
-from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+import re
 from datetime import UTC, datetime, timedelta
-from hashlib import sha256
-from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import event, select
+from minio.error import S3Error
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import Actor
 from app.core.config import settings
-from app.models.artifact import Artifact, ArtifactVersion, StagingUpload
+from app.models.artifact import (
+    Artifact,
+    ArtifactProcessingJob,
+    ArtifactVersion,
+    StagingUpload,
+)
 from app.models.project import ProjectAction
-from app.services.authorization import authorize_project
-from app.services.malware import ClamAvScanner
+from app.models.xagent_session import XAgentIdempotencyKey
+from app.services.authorization import ForbiddenError, authorize_project
+from app.services.auth import Principal
+from app.services.workbench import normalize_context
+from app.services.xagent_sessions import request_hash
 from app.storage.minio_gateway import MinioGateway
 
 
-def _value(values: Mapping[str, Any] | Any, name: str, default: Any = None) -> Any:
-    return values.get(name, default) if isinstance(values, Mapping) else getattr(values, name, default)
-
-
-def _uuid(value: UUID | str | None) -> UUID | None:
-    return UUID(str(value)) if value is not None else None
-
-
-_PROMOTION_CLEANUPS = "artifact_promotion_cleanups"
-_PROMOTION_CLEANUP_LISTENERS = "artifact_promotion_cleanup_listeners"
-
-
 class UploadRejectedError(Exception):
-    """The caller's completed staging object did not satisfy validation."""
+    """暂存对象未通过完成校验。"""
 
 
 class ArtifactStorageError(Exception):
-    """The private object store could not complete a storage operation."""
+    """私有对象存储无法完成操作。"""
 
 
-@dataclass
-class _PromotionCleanup:
-    gateway: Any
-    staging_key: str
-    object_key: str
-    transaction: Any
-    rolled_back: bool = False
+class ArtifactIdempotencyConflict(Exception):
+    pass
 
 
-@dataclass
-class AuthorizedArtifactStream:
-    content_type: str | None
-    chunks: Iterable[bytes]
-
-    def __iter__(self) -> Iterator[bytes]:
-        return iter(self.chunks)
+class ArtifactNotFound(Exception):
+    pass
 
 
-def _promotion_cleanups(session: AsyncSession) -> list[_PromotionCleanup]:
-    info = session.sync_session.info
-    cleanups = info.setdefault(_PROMOTION_CLEANUPS, [])
-    if info.get(_PROMOTION_CLEANUP_LISTENERS):
-        return cleanups
-
-    def after_commit(sync_session: Any) -> None:
-        if sync_session.get_nested_transaction() is not None:
-            return
-        for cleanup in sync_session.info.pop(_PROMOTION_CLEANUPS, []):
-            try:
-                cleanup.gateway.remove(cleanup.object_key if cleanup.rolled_back else cleanup.staging_key)
-            except Exception:
-                continue
-
-    def after_soft_rollback(sync_session: Any, transaction: Any) -> None:
-        cleanups = sync_session.info.get(_PROMOTION_CLEANUPS, [])
-        if transaction.parent is None:
-            for cleanup in cleanups:
-                try:
-                    cleanup.gateway.remove(cleanup.object_key)
-                except Exception:
-                    continue
-            cleanups.clear()
-        elif transaction.nested:
-            for cleanup in cleanups:
-                if cleanup.transaction is transaction:
-                    cleanup.rolled_back = True
-
-    event.listen(session.sync_session, "after_commit", after_commit)
-    event.listen(session.sync_session, "after_soft_rollback", after_soft_rollback)
-    info[_PROMOTION_CLEANUP_LISTENERS] = True
-    return cleanups
+def _runtime_gateway() -> MinioGateway:
+    return MinioGateway.from_settings()
 
 
-class ArtifactService:
-    def __init__(self, gateway: Any, scanner: Any) -> None:
-        self.gateway = gateway
-        self.scanner = scanner
-
-    async def create(
-        self,
-        session: AsyncSession,
-        actor: Actor,
-        metadata: Mapping[str, Any] | Any,
-    ) -> StagingUpload:
-        project_id = _uuid(_value(metadata, "project_id"))
-        if project_id is not None:
-            await authorize_project(session, actor.id, project_id, ProjectAction.EDIT)
-        upload_id = uuid4()
-        upload = StagingUpload(
-            id=upload_id,
-            created_by_id=actor.id,
-            filename=str(_value(metadata, "filename", "upload")),
-            owner_id=None if project_id else actor.id,
-            project_id=project_id,
-            staging_key=f"staging/{upload_id}",
-            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+async def create_upload(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    filename: str,
+    expected_size: int,
+    artifact_id: UUID | None,
+    idempotency_key: str,
+) -> StagingUpload:
+    if artifact_id is None:
+        context = await normalize_context(session, principal, None)
+        owner_id = principal.actor_id if context.kind == "workbench" else None
+        project_id = context.project_id
+    else:
+        artifact = await session.scalar(
+            select(Artifact).where(Artifact.id == artifact_id)
         )
-        session.add(upload)
-        await session.flush()
-        return upload
+        if artifact is None:
+            raise ArtifactNotFound
+        owner_id = artifact.owner_id
+        project_id = artifact.project_id
+    if project_id is not None:
+        try:
+            await authorize_project(
+                session,
+                principal.actor_id,
+                project_id,
+                ProjectAction.EDIT,
+            )
+        except ForbiddenError:
+            raise ArtifactNotFound from None
+    operation = "artifact.upload.create"
+    digest = request_hash(
+        {
+            "filename": filename,
+            "expected_size": expected_size,
+            "artifact_id": str(artifact_id) if artifact_id is not None else None,
+            "owner_id": str(owner_id) if owner_id is not None else None,
+            "project_id": str(project_id) if project_id is not None else None,
+        }
+    )
+    lock_name = f"{principal.actor_id}:{operation}:{idempotency_key}"
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
+        {"lock_name": lock_name},
+    )
+    now = datetime.now(UTC)
+    stored = await session.get(
+        XAgentIdempotencyKey,
+        (principal.actor_id, operation, idempotency_key),
+    )
+    if stored is not None and stored.expires_at > now:
+        if stored.request_hash != digest:
+            raise ArtifactIdempotencyConflict
+        upload = await session.get(StagingUpload, UUID(stored.result["upload_id"]))
+        if upload is not None:
+            return upload
 
-    async def complete(
-        self,
-        session: AsyncSession,
-        actor: Actor,
-        upload_id: UUID,
-        declared: Mapping[str, Any] | Any,
-    ) -> ArtifactVersion | None:
-        upload = await session.scalar(
-            select(StagingUpload).where(
-                StagingUpload.id == upload_id,
-                StagingUpload.created_by_id == actor.id,
-                StagingUpload.expires_at > datetime.now(UTC),
+    upload_id = uuid4()
+    expires_at = now + timedelta(minutes=10)
+    upload = StagingUpload(
+        id=upload_id,
+        artifact_id=artifact_id,
+        created_by_id=principal.actor_id,
+        filename=filename,
+        expected_size=expected_size,
+        owner_id=owner_id,
+        project_id=project_id,
+        staging_key=f"staging/{upload_id}",
+        expires_at=expires_at,
+    )
+    session.add(upload)
+    result = {"upload_id": str(upload_id)}
+    if stored is None:
+        session.add(
+            XAgentIdempotencyKey(
+                actor_id=principal.actor_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+                request_hash=digest,
+                result=result,
+                expires_at=expires_at,
             )
         )
-        if upload is None:
-            return None
+    else:
+        stored.request_hash = digest
+        stored.result = result
+        stored.expires_at = expires_at
+    await session.flush()
+    return upload
 
-        try:
-            metadata = self.gateway.stat(upload.staging_key)
-        except Exception as exc:
-            raise ArtifactStorageError from exc
-        if (
-            metadata.size != _value(declared, "size")
-            or metadata.size > settings.MAX_ARTIFACT_SIZE_BYTES
-            or metadata.content_type != _value(declared, "content_type")
-            or not isinstance(_value(declared, "sha256"), str)
-            or not metadata.etag
-        ):
-            raise UploadRejectedError
 
-        digest = sha256()
+async def complete_upload(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    upload_id: UUID,
+    actual_size: int,
+    sha256: str,
+    idempotency_key: str,
+) -> ArtifactVersion:
+    normalized_sha256 = sha256.lower()
+    operation = "artifact.upload.complete"
+    digest = request_hash(
+        {
+            "upload_id": str(upload_id),
+            "actual_size": actual_size,
+            "sha256": normalized_sha256,
+        }
+    )
+    lock_name = f"{principal.actor_id}:{operation}:{idempotency_key}"
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
+        {"lock_name": lock_name},
+    )
+    now = datetime.now(UTC)
+    stored = await session.get(
+        XAgentIdempotencyKey,
+        (principal.actor_id, operation, idempotency_key),
+    )
+    if stored is not None and stored.expires_at > now:
+        if stored.request_hash != digest:
+            raise ArtifactIdempotencyConflict
+        version = await session.get(
+            ArtifactVersion,
+            UUID(stored.result["version_id"]),
+        )
+        if version is None:
+            raise ArtifactNotFound
+        return version
 
-        def content() -> Iterable[bytes]:
-            for chunk in self.gateway.stream(upload.staging_key):
-                digest.update(chunk)
-                yield chunk
+    upload = await session.scalar(
+        select(StagingUpload).where(
+            StagingUpload.id == upload_id,
+            StagingUpload.created_by_id == principal.actor_id,
+            StagingUpload.expires_at > datetime.now(UTC),
+        )
+    )
+    if upload is None:
+        raise ArtifactNotFound
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+        raise UploadRejectedError
 
-        if not self.scanner.scan_stream(content()).clean or digest.hexdigest() != _value(declared, "sha256"):
-            raise UploadRejectedError
+    try:
+        metadata = _runtime_gateway().stat(upload.staging_key)
+    except KeyError:
+        raise UploadRejectedError from None
+    except S3Error as exc:
+        if exc.code in {"NoSuchKey", "NoSuchObject"}:
+            raise UploadRejectedError from None
+        raise ArtifactStorageError from exc
+    except Exception as exc:
+        raise ArtifactStorageError from exc
+    if (
+        upload.expected_size is None
+        or metadata.size != upload.expected_size
+        or metadata.size != actual_size
+        or metadata.size > settings.MAX_ARTIFACT_SIZE_BYTES
+        or not isinstance(metadata.etag, str)
+        or not metadata.etag.strip()
+    ):
+        raise UploadRejectedError
 
+    if upload.artifact_id is None:
+        if upload.project_id is not None:
+            try:
+                await authorize_project(
+                    session,
+                    principal.actor_id,
+                    upload.project_id,
+                    ProjectAction.EDIT,
+                )
+            except ForbiddenError:
+                raise ArtifactNotFound from None
         artifact = Artifact(
             id=uuid4(),
             filename=upload.filename,
-            created_by_id=actor.id,
+            created_by_id=principal.actor_id,
             owner_id=upload.owner_id,
             project_id=upload.project_id,
         )
-        version = ArtifactVersion(
-            id=uuid4(),
-            artifact_id=artifact.id,
-            owner_id=upload.owner_id,
-            project_id=upload.project_id,
-            version_number=1,
-            original_filename=upload.filename,
-            uploaded_by_id=actor.id,
-            declared_size=metadata.size,
-            actual_size=metadata.size,
-            detected_content_type=metadata.content_type,
-            scan_status="clean",
-            object_key=f"artifacts/{artifact.id}/{{version_id}}",
-            size=metadata.size,
-            content_type=metadata.content_type,
-            sha256=digest.hexdigest(),
+        next_version = 1
+        session.add(artifact)
+        await session.flush()
+    else:
+        lock_name = f"artifact-version:{upload.artifact_id}"
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
+            {"lock_name": lock_name},
         )
-        version.object_key = version.object_key.format(version_id=version.id)
-        try:
-            self.gateway.copy(upload.staging_key, version.object_key, etag=metadata.etag)
-        except Exception as exc:
-            raise UploadRejectedError from exc
-        cleanups = _promotion_cleanups(session)
-        cleanup = _PromotionCleanup(
-            self.gateway,
-            upload.staging_key,
-            version.object_key,
-            session.sync_session.get_nested_transaction() or session.sync_session.get_transaction(),
+        artifact = await session.scalar(
+            select(Artifact).where(Artifact.id == upload.artifact_id)
         )
-        cleanups.append(cleanup)
-        try:
-            session.add_all((artifact, version))
-            await session.flush()
-            await session.delete(upload)
-            await session.flush()
-        except Exception:
-            cleanups.remove(cleanup)
+        if artifact is None:
+            raise ArtifactNotFound
+        if artifact.project_id is not None:
             try:
-                self.gateway.remove(version.object_key)
-            except Exception:
-                pass
-            raise
-        return version
-
-    async def open_authorized_stream(
-        self,
-        session: AsyncSession,
-        artifact_id: UUID,
-    ) -> AuthorizedArtifactStream | None:
-        version = await session.scalar(
-            select(ArtifactVersion)
-            .where(ArtifactVersion.artifact_id == artifact_id)
-            .order_by(ArtifactVersion.created_at.desc())
-            .limit(1)
+                await authorize_project(
+                    session,
+                    principal.actor_id,
+                    artifact.project_id,
+                    ProjectAction.EDIT,
+                )
+            except ForbiddenError:
+                raise ArtifactNotFound from None
+        current_version = await session.scalar(
+            select(func.max(ArtifactVersion.version_number)).where(
+                ArtifactVersion.artifact_id == artifact.id
+            )
         )
-        if version is None:
-            return None
-        return AuthorizedArtifactStream(
-            content_type=version.content_type,
-            chunks=self.gateway.stream(version.object_key),
+        next_version = (current_version or 0) + 1
+
+    version = ArtifactVersion(
+        id=uuid4(),
+        artifact_id=artifact.id,
+        owner_id=artifact.owner_id,
+        project_id=artifact.project_id,
+        version_number=next_version,
+        original_filename=upload.filename,
+        uploaded_by_id=principal.actor_id,
+        declared_size=upload.expected_size,
+        actual_size=metadata.size,
+        detected_content_type=None,
+        scan_status="pending",
+        staging_key=upload.staging_key,
+        staging_expires_at=now + timedelta(days=1),
+        object_key=None,
+        size=metadata.size,
+        content_type=None,
+        sha256=normalized_sha256,
+    )
+    session.add(version)
+    await session.flush()
+    job = ArtifactProcessingJob(
+        id=uuid4(),
+        version_id=version.id,
+        status="ready",
+        attempts=0,
+        next_attempt_at=now,
+        lease_token=None,
+        lease_expires_at=None,
+        failure_code=None,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(job)
+    await session.flush()
+    result = {"version_id": str(version.id)}
+    expires_at = now + timedelta(hours=24)
+    if stored is None:
+        session.add(
+            XAgentIdempotencyKey(
+                actor_id=principal.actor_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+                request_hash=digest,
+                result=result,
+                expires_at=expires_at,
+            )
         )
-
-
-def _runtime_service() -> ArtifactService:
-    return ArtifactService(MinioGateway.from_settings(), ClamAvScanner.from_settings())
-
-
-async def create_staging_upload(
-    session: AsyncSession,
-    actor: Actor,
-    metadata: Mapping[str, Any] | Any,
-) -> StagingUpload:
-    return await ArtifactService(None, None).create(session, actor, metadata)
-
-
-async def complete_staging_upload(
-    session: AsyncSession,
-    actor: Actor,
-    upload_id: UUID,
-    declared: Mapping[str, Any] | Any,
-) -> ArtifactVersion | None:
-    return await _runtime_service().complete(session, actor, upload_id, declared)
+    else:
+        stored.request_hash = digest
+        stored.result = result
+        stored.expires_at = expires_at
+    await session.flush()
+    return version

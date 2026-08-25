@@ -1,8 +1,8 @@
 from fastapi import Depends, FastAPI
 
-from app.api.routes.artifacts import router as artifacts_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.internal_auth import router as internal_auth_router
+from app.api.routes.internal_artifacts import router as internal_artifacts_router
 from app.api.routes.internal_sessions import router as internal_sessions_router
 from app.api.routes.internal_workbench import (
     projects_router as internal_projects_router,
@@ -14,10 +14,10 @@ from app.core.config import settings
 from app.core.security import Actor, get_current_actor
 
 app = FastAPI(title=settings.PROJECT_NAME)
-app.include_router(artifacts_router, prefix=settings.API_V1_STR)
 app.include_router(projects_router, prefix=settings.API_V1_STR)
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(internal_auth_router)
+app.include_router(internal_artifacts_router)
 app.include_router(internal_sessions_router)
 app.include_router(internal_workbench_router)
 app.include_router(internal_projects_router)

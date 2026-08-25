@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
 from app.core.config import Settings, settings
 
@@ -79,8 +80,18 @@ class MinioGateway:
         )
 
     def create_staging_put_url(self, key: str, expires: timedelta) -> str:
-        if not key.startswith("staging/"):
-            raise ValueError("Only staging keys can receive upload URLs")
+        prefix, separator, upload_id = key.partition("/")
+        try:
+            canonical_upload_id = str(UUID(upload_id))
+        except ValueError:
+            canonical_upload_id = ""
+        if (
+            prefix != "staging"
+            or separator != "/"
+            or not upload_id
+            or upload_id != canonical_upload_id
+        ):
+            raise ValueError("仅可为单个 staging/{upload_id} 对象签发上传 URL")
         return self._public_client.presigned_put_object(self._bucket, key, expires=expires)
 
     def stat(self, key: str) -> ObjectMetadata:

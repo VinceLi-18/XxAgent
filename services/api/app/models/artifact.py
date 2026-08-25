@@ -96,11 +96,17 @@ class StagingUpload(Base):
     __tablename__ = "staging_uploads"
     __table_args__ = (
         CheckConstraint("(owner_id IS NOT NULL) <> (project_id IS NOT NULL)", name="ck_staging_upload_scope"),
+        CheckConstraint(
+            "expected_size IS NULL OR expected_size BETWEEN 0 AND 52428800",
+            name="ck_staging_upload_expected_size",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    artifact_id: Mapped[UUID | None] = mapped_column(ForeignKey("artifacts.id"))
     created_by_id: Mapped[UUID] = mapped_column(ForeignKey("accounts.id"), nullable=False)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    expected_size: Mapped[int | None] = mapped_column(Integer)
     owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("accounts.id"))
     project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"))
     staging_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
