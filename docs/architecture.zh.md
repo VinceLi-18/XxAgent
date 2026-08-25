@@ -48,6 +48,10 @@ FastAPI 拥有密码、可撤销登录记录、权限版本、账号状态、会
 
 `xagent-developer`、`web`、`headless` 和其他上游 Profile 继续使用原有本地持久化，也不会装载 XAgent 服务凭据、认证、授权或委托密钥。Profile 目录仍只是组织边界，不是多用户安全边界。
 
+Business 项目工作台把账号能力、可见项目、所选工作台或项目上下文，以及 Session 作用域保存在 FastAPI/PostgreSQL 中。`@xagent/dsh-project` 公开四个请求作用域 Remote 方法，其用户令牌只来自已认证连接。`@xagent/dsh-ui-project` 通过可逆 Slot 消费 Bootstrap，分别提供项目浏览器、中央上下文标识、操作遮罩和第三栏详情。它不在浏览器存储中保留项目缓存，并会在账号变化后丢弃迟到响应。
+
+`@xagent/dsh-ui-account` 向浏览器连接的生成式 Remote 与既有 Web API 传输贡献 CSRF Cookie 请求头。没有贡献者时，该请求头服务保持惰性。只有 `xagent-business` 挂载这些 XAgent 配置项；通用布局、Developer Profile 和上游 Profile 保持原有 UI 与传输行为。
+
 ## 核心包
 
 以下是向 Cordis 树贡献内容的部分核心包。

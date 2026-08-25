@@ -48,6 +48,10 @@ New-session publication is atomic across the runtime boundary: the remote header
 
 `xagent-developer`, `web`, `headless`, and other upstream profiles retain their existing local persistence and do not load XAgent service credentials, authentication, authorization, or delegation keys. Profile directories remain an organization boundary, not a multi-user security boundary.
 
+The Business project workbench keeps account capabilities, visible projects, the selected workbench or project context, and Session scope in FastAPI/PostgreSQL. `@xagent/dsh-project` exposes four request-scoped Remote methods whose user token comes only from the authenticated connection. `@xagent/dsh-ui-project` consumes their Bootstrap through reversible Slots for the project browser, central context marker, operation shield, and third-column details. It keeps no project cache in browser storage and discards late responses after an account change.
+
+`@xagent/dsh-ui-account` contributes the CSRF cookie header to the browser connection's generated Remote and existing Web API transports. This header service is inert without a contributor. Only `xagent-business` mounts these XAgent rows; the generic layout, Developer profile, and upstream profiles keep their prior UI and transport behavior.
+
 ## Core packages
 
 Here are some core packages that contribute to the Cordis tree.
