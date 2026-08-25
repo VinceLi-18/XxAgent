@@ -42,6 +42,22 @@ class MinioGateway:
         gateway.configure_staging_lifecycle(configured_settings.STAGING_EXPIRY_DAYS)
         return gateway
 
+    @classmethod
+    def from_worker_settings(cls, configured_settings: Any) -> "MinioGateway":
+        """Create the worker's private object client without browser signing setup."""
+
+        from minio import Minio
+
+        return cls(
+            Minio(
+                configured_settings.MINIO_ENDPOINT,
+                access_key=configured_settings.MINIO_ACCESS_KEY,
+                secret_key=configured_settings.MINIO_SECRET_KEY,
+                secure=configured_settings.MINIO_SECURE,
+            ),
+            configured_settings.MINIO_BUCKET,
+        )
+
     def ensure_bucket(self) -> None:
         if not self._client.bucket_exists(self._bucket):
             self._client.make_bucket(self._bucket)
@@ -102,7 +118,12 @@ class MinioGateway:
             etag=getattr(object_stat, "etag", None),
         )
 
-    def copy(self, source: str, target: str, etag: str | None = None) -> None:
+    def copy(
+        self,
+        source: str,
+        target: str,
+        etag: str | None = None,
+    ) -> None:
         from minio.commonconfig import CopySource
 
         self._client.copy_object(

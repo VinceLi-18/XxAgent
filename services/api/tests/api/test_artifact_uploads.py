@@ -878,10 +878,11 @@ async def test_complete_upload_enqueues_pending_work_without_synchronous_process
         version.detected_content_type,
         version.scan_status,
         version.staging_key,
+        version.staging_etag,
         version.object_key,
         version.size,
         version.sha256,
-    ) == (1, 7, 7, None, "pending", staging_key, None, 7, "a" * 64)
+    ) == (1, 7, 7, None, "pending", staging_key, "etag-7", None, 7, "a" * 64)
     assert version.staging_expires_at is not None
     assert before + timedelta(days=1) <= version.staging_expires_at <= after + timedelta(days=1)
     assert (jobs[0].version_id, jobs[0].status, jobs[0].attempts) == (

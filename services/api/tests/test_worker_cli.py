@@ -121,7 +121,7 @@ async def test_worker_once_needs_only_worker_database_configuration(
 
 
 @pytest.mark.anyio
-async def test_shipping_worker_once_claims_and_safely_retries_without_task4(
+async def test_shipping_worker_once_safely_retries_missing_processor_configuration(
     seeded_database: AsyncEngine,
     worker_role: str,
     alice,
@@ -139,7 +139,7 @@ async def test_shipping_worker_once_claims_and_safely_retries_without_task4(
     assert completed.stderr == ""
     assert job is not None and job.status == "ready" and job.attempts == 1
     assert job.lease_token is None and job.lease_expires_at is None
-    assert job.failure_code == "processor-unavailable"
+    assert job.failure_code == "processor-error"
     assert job.next_attempt_at > started_at
     assert version is not None and version.scan_status == "scanning"
 

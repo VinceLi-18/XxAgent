@@ -107,6 +107,7 @@ async def claim_due_job(
 def _owned_live_lease(lease: ArtifactJobLease, *, now: datetime):
     return (
         ArtifactProcessingJob.id == lease.job_id,
+        ArtifactProcessingJob.version_id == lease.version_id,
         ArtifactProcessingJob.status == "leased",
         ArtifactProcessingJob.lease_token == lease.lease_token,
         ArtifactProcessingJob.lease_expires_at > now,
@@ -197,3 +198,124 @@ async def finish_job(
         )
     )
     return result.rowcount == 1
+
+
+async def fail_job(
+    session: AsyncSession,
+    lease: ArtifactJobLease,
+    *,
+    now: datetime,
+    failure_code: str,
+) -> bool:
+    """Close an unrecoverable inspection failure while the lease is live."""
+
+    result = await session.execute(
+        update(ArtifactProcessingJob)
+        .where(*_owned_live_lease(lease, now=now))
+        .values(
+            status="dead",
+            lease_token=None,
+            lease_expires_at=None,
+            failure_code=failure_code,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        return False
+    version = await session.execute(
+        update(ArtifactVersion)
+        .where(
+            ArtifactVersion.id == lease.version_id,
+            ArtifactVersion.scan_status == "scanning",
+        )
+        .values(scan_status="failed")
+    )
+    if version.rowcount != 1:
+        raise RuntimeError("leased artifact version cannot enter failed state")
+    return True
+
+
+async def quarantine_job(
+    session: AsyncSession,
+    lease: ArtifactJobLease,
+    *,
+    now: datetime,
+    actual_size: int,
+    sha256: str,
+    content_type: str,
+) -> bool:
+    """Atomically quarantine an infected version and close its live job."""
+
+    result = await session.execute(
+        update(ArtifactProcessingJob)
+        .where(*_owned_live_lease(lease, now=now))
+        .values(
+            status="succeeded",
+            lease_token=None,
+            lease_expires_at=None,
+            failure_code=None,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        return False
+    version = await session.execute(
+        update(ArtifactVersion)
+        .where(
+            ArtifactVersion.id == lease.version_id,
+            ArtifactVersion.scan_status == "scanning",
+        )
+        .values(
+            scan_status="quarantined",
+            actual_size=actual_size,
+            sha256=sha256,
+            detected_content_type=content_type,
+        )
+    )
+    if version.rowcount != 1:
+        raise RuntimeError("leased artifact version cannot enter quarantine")
+    return True
+
+
+async def publish_clean_job(
+    session: AsyncSession,
+    lease: ArtifactJobLease,
+    *,
+    now: datetime,
+    object_key: str,
+    actual_size: int,
+    sha256: str,
+    content_type: str,
+) -> bool:
+    """Atomically publish clean metadata and close the live job."""
+
+    result = await session.execute(
+        update(ArtifactProcessingJob)
+        .where(*_owned_live_lease(lease, now=now))
+        .values(
+            status="succeeded",
+            lease_token=None,
+            lease_expires_at=None,
+            failure_code=None,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        return False
+    version = await session.execute(
+        update(ArtifactVersion)
+        .where(
+            ArtifactVersion.id == lease.version_id,
+            ArtifactVersion.scan_status == "scanning",
+        )
+        .values(
+            scan_status="clean",
+            object_key=object_key,
+            actual_size=actual_size,
+            sha256=sha256,
+            detected_content_type=content_type,
+        )
+    )
+    if version.rowcount != 1:
+        raise RuntimeError("leased artifact version cannot enter clean state")
+    return True

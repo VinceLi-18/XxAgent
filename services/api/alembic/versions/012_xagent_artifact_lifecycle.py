@@ -77,6 +77,7 @@ def upgrade() -> None:
         sa.Column("detected_content_type", sa.String(length=255), nullable=True),
         sa.Column("scan_status", sa.String(length=16), nullable=True),
         sa.Column("staging_key", sa.String(length=512), nullable=True),
+        sa.Column("staging_etag", sa.String(length=255), nullable=True),
         sa.Column("staging_expires_at", sa.DateTime(timezone=True), nullable=True),
     ):
         op.add_column("artifact_versions", column)
@@ -351,7 +352,8 @@ def upgrade() -> None:
     )
     op.execute(
         "GRANT SELECT (id, artifact_id, uploaded_by_id, declared_size, actual_size, "
-        "detected_content_type, sha256, scan_status, staging_key, staging_expires_at, object_key) "
+        "detected_content_type, sha256, scan_status, staging_key, staging_etag, "
+        "staging_expires_at, object_key) "
         f"ON artifact_versions TO {worker_role}"
     )
     op.execute(
@@ -451,6 +453,7 @@ def downgrade() -> None:
     )
     for column_name in (
         "staging_expires_at",
+        "staging_etag",
         "staging_key",
         "scan_status",
         "detected_content_type",

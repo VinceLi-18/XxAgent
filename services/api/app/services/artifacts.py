@@ -342,6 +342,7 @@ async def complete_upload(
         detected_content_type=None,
         scan_status="pending",
         staging_key=upload.staging_key,
+        staging_etag=metadata.etag,
         staging_expires_at=now + timedelta(days=1),
         object_key=None,
         size=metadata.size,

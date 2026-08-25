@@ -36,7 +36,9 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-`.env` 包含秘密，已被 Git 忽略，不得提交。`migrate` 使用管理员数据库连接完成迁移后，API 和 worker 只使用最低权限应用角色。API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
+`.env` 包含秘密，已被 Git 忽略，不得提交。`migrate` 使用管理员数据库连接完成迁移后，API 和 worker 只使用各自最低权限数据库角色。API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
+
+`xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 
 ## 账号管理
 

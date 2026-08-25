@@ -12,6 +12,10 @@ PostgreSQL 保存 `ArtifactProcessingJob`、Version 扫描状态和租约。一�
 
 完成上传的 PUT 授权窗口为十分钟。完成事务将暂存正文的一天保留截止时间复制到 Version 的 `staging_expires_at`；过期正文不能重用原 PUT 授权重试。单文件声明大小和实际大小都不得超过 50 MiB。
 
+完成事务把服务端 MinIO `stat` 返回的 ETag 和大小记录到 Version；客户端不能提交或覆盖对象身份。worker 在扫描前、正文流结束后和复制前复核两项记录，并在一次正文流中同时累计大小、SHA-256、有限 MIME 样本和 ClamAV 输入。只有 ClamAV 明确返回 `OK` 或 `FOUND` 才产生终态；连接、超时、流和协议错误进入有限重试，哈希或对象身份漂移直接关闭为 `failed`。
+
+干净正文复制到精确的 `artifacts/{artifact_id}/{version_id}` 后，worker 在短事务中同时匹配 Job ID、Version ID、租约 token 和未过期时间，再原子写 Version `clean` 与 Job `succeeded`。事务失败或失租时只删除本次确定的最终 key，Version 保持原状态；感染正文原子进入 `quarantined` 并删除暂存对象，不创建最终对象。网络和扫描期间不持有数据库事务。
+
 独立 worker 数据库角色使用 `NOINHERIT NOBYPASSRLS`。该角色只读取任务、必要的暂存/Version/Artifact 列，只更新任务领取字段和 Version 扫描结果，并且只能以 `executor_kind=artifact_worker` 插入审计；应用角色只能以 `executor_kind=account` 插入审计且不能读取或领取 Job。worker 不获得账号、账号密码、认证、Session 或项目成员关系数据权限，API 进程不读取 `DATABASE_WORKER_URL`。
 
 ## Alternatives considered
@@ -28,6 +32,8 @@ PostgreSQL 保存 `ArtifactProcessingJob`、Version 扫描状态和租约。一�
 - 数据库拒绝重复版本号、非法扫描状态、状态外跳、`clean` 缺少最终对象、非 `clean` 保存最终对象，以及一个 Version 对应多个 Job。
 - worker 可以领取和更新 Job、读取扫描所需列、更新 Version 扫描结果并写 `artifact_worker` 审计；应用角色不能领取 Job。
 - worker 对账号、账号密码、认证、Session 和项目成员关系的读取由数据库权限拒绝。
+- 正文只读取一次；对象 ETag、大小或 SHA-256 漂移不能晋级，ClamAV 非终态响应不能被解释为安全。
+- 最终发布同时验证 Job、Version、token 和租约期限；失租或数据库提交失败删除精确最终 key，且不把 Version 标记为 `clean`。
 
 ## Risks
 

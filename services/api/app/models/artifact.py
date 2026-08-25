@@ -57,6 +57,7 @@ class ArtifactVersion(Base):
     detected_content_type: Mapped[str | None] = mapped_column(String(255))
     scan_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     staging_key: Mapped[str | None] = mapped_column(String(512))
+    staging_etag: Mapped[str | None] = mapped_column(String(255))
     staging_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     object_key: Mapped[str | None] = mapped_column(String(512), unique=True)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
