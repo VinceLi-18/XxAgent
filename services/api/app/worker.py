@@ -80,7 +80,9 @@ async def _retry_owned_lease(
             )
 
 
-async def _await_task_quiescence(task: asyncio.Task[_TaskResult]) -> None:
+async def _await_task_quiescence(
+    task: asyncio.Task[_TaskResult],
+) -> asyncio.CancelledError | None:
     current_task = asyncio.current_task()
     pending_cancellation: asyncio.CancelledError | None = None
     while not task.done():
@@ -98,8 +100,7 @@ async def _await_task_quiescence(task: asyncio.Task[_TaskResult]) -> None:
         except Exception:
             break
     await asyncio.gather(task, return_exceptions=True)
-    if pending_cancellation is not None:
-        raise pending_cancellation
+    return pending_cancellation
 
 
 async def _process_lease(
@@ -140,13 +141,17 @@ async def _process_lease(
         if heartbeat_task in completed:
             still_owned = await heartbeat_task
             if not still_owned:
-                await _await_task_quiescence(processor_task)
+                pending_cancellation = await _await_task_quiescence(processor_task)
+                if pending_cancellation is not None:
+                    raise pending_cancellation
                 return
 
         heartbeat_stop.set()
         still_owned = await heartbeat_task
         if not still_owned:
-            await _await_task_quiescence(processor_task)
+            pending_cancellation = await _await_task_quiescence(processor_task)
+            if pending_cancellation is not None:
+                raise pending_cancellation
             return
 
         try:
@@ -160,10 +165,17 @@ async def _process_lease(
         async with sessions() as session:
             async with session.begin():
                 await finish_job(session, lease, now=datetime.now(UTC))
-    except BaseException:
+    except BaseException as error:
         heartbeat_stop.set()
-        await _await_task_quiescence(heartbeat_task)
-        await _await_task_quiescence(processor_task)
+        pending_cancellation = (
+            error if isinstance(error, asyncio.CancelledError) else None
+        )
+        heartbeat_cancellation = await _await_task_quiescence(heartbeat_task)
+        pending_cancellation = pending_cancellation or heartbeat_cancellation
+        processor_cancellation = await _await_task_quiescence(processor_task)
+        pending_cancellation = pending_cancellation or processor_cancellation
+        if pending_cancellation is not None:
+            raise pending_cancellation
         raise
 
 

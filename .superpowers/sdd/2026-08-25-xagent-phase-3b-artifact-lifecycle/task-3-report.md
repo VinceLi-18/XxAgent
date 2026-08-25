@@ -74,3 +74,21 @@
 - 单项 GREEN：新增时序测试 1 项通过。
 - 指定回归：正式 CLI、原失租真实线程、失租等待期取消、原外层取消和 attempt 上限共 5 项通过。
 - `JX_TEST_DATABASE_URL=... JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test -- tests/services/test_artifact_jobs.py tests/test_worker_cli.py`：22 项通过。
+
+## 修复轮 3
+
+### 技术核验与 RED
+
+- 复审指出的连续取消时序成立：第一次取消使 `_process_lease` 进入异常清理，受 Event 控制的 heartbeat 确认清理已经开始；第二次取消在等待 heartbeat 时到达。仅释放 heartbeat 后，旧实现已经结束 worker task，而真实 `asyncio.to_thread()` processor 线程仍在运行。
+- `JX_TEST_DATABASE_URL=... JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test -- tests/test_worker_cli.py::test_repeated_cancellation_waits_for_all_worker_tasks`：1 项失败；失败点为 heartbeat 已结束后 worker task 已提前完成。
+
+### 最小 GREEN
+
+- 单 child helper 等待 task 真正结束并返回期间观察到的调用方取消，不再自行重抛。`_process_lease` 清理层保留原异常或取消，依次等待 heartbeat 与 processor 两个 sibling；任一等待期间新增的取消都会被记录，两个 sibling 都收敛后才统一传播 `CancelledError`。无取消请求时仍传播原异常。
+- 实现不调用 `uncancel()`；child 自身取消或异常仍由其正常处理路径决定 retry 或由清理 gather 消费，不会被误判为调用方取消。
+- 新测试证明只释放 heartbeat 时 worker 仍未完成且 processor 线程仍运行；释放 processor 后线程已退出，worker 才以 `CancelledError` 结束，Job 保持 `leased` 且无 finish/retry。
+
+### 修复轮验证
+
+- 单项 GREEN：连续取消测试 1 项通过。
+- `JX_TEST_DATABASE_URL=... JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test -- tests/services/test_artifact_jobs.py tests/test_worker_cli.py`：23 项通过，覆盖正式 CLI、attempt 封顶、普通失租、processor 异常、停止信号、单次与连续取消。
