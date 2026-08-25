@@ -3079,7 +3079,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/project/src/index.ts:31`](../packages/xagent/project/src/index.ts)
+来源：[`packages/xagent/project/src/index.ts:34`](../packages/xagent/project/src/index.ts)
 
 <a id="xagentdsh-session-persistence-api"></a>
 

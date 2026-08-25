@@ -65,6 +65,7 @@
   - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
   - `docs/superpowers/progress/2026-08-22-xagent-phase-1.md`
   - `docs/superpowers/progress/2026-08-25-xagent-phase-2b.md`
+  - `docs/superpowers/progress/2026-08-25-xagent-phase-3a.md`
   - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
   - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
   - `docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md`

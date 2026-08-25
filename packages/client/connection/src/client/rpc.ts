@@ -15,6 +15,7 @@ const ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
 
 /**
  * Create the browser-backed generic RPC caller.
+ * @param requestHeaders optional page-scoped header contributors resolved for each request.
  * @returns caller that owns request correlation and response-envelope validation.
  */
 export function createWebConnectionRpc(requestHeaders?: BrowserRequestHeadersService): ClientConnectionRpc {

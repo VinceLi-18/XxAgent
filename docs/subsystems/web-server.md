@@ -192,5 +192,5 @@ async withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<
 @Remote('project') async project(projectId: string, signal?: AbortSignal): Promise<XAgentProjectDetail>
 ```
 
-Source: [`packages/xagent/project/src/index.ts:62`](../../packages/xagent/project/src/index.ts)
+Source: [`packages/xagent/project/src/index.ts:65`](../../packages/xagent/project/src/index.ts)
 <!-- END GENERATED cordis-surface -->

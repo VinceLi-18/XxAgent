@@ -5,7 +5,7 @@ export type BrowserRequestHeadersProvider = () => HeadersInit | undefined
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    /** 当前页面插件为浏览器 RPC 提供的非敏感请求头。 */
+    /** 当前页面插件按同源请求边界为浏览器 RPC 提供的附加头。 */
     browserRequestHeaders: BrowserRequestHeadersService
   }
 }
@@ -18,13 +18,21 @@ export class BrowserRequestHeadersService extends Service {
     super(ctx, 'browserRequestHeaders')
   }
 
-  /** 注册一个页面生命周期内的请求头贡献者。 */
+  /**
+   * 注册一个页面生命周期内的请求头贡献者。
+   * @param provider 每次请求前解析附加头的贡献者。
+   * @returns 注销该贡献者的幂等清理函数。
+   */
   register(provider: BrowserRequestHeadersProvider): () => void {
     this.providers.add(provider)
     return () => { this.providers.delete(provider) }
   }
 
-  /** 合并基础请求头和当前全部贡献；贡献者不得静默覆盖已有字段。 */
+  /**
+   * 合并基础请求头和当前全部贡献；贡献者不得静默覆盖已有字段。
+   * @param base 调用方已经确定的基础请求头。
+   * @returns 包含全部贡献且没有重复字段的请求头。
+   */
   resolve(base?: HeadersInit): Headers {
     const headers = new Headers(base)
     for (const provider of this.providers) {

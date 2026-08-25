@@ -30,6 +30,10 @@ export interface AccountState {
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+/**
+ * 读取 Host 写入的当前页面 CSRF Cookie。
+ * @returns 已解码的 CSRF token；Cookie 不存在时返回 `undefined`。
+ */
 export function csrfCookie(): string | undefined {
   for (const item of document.cookie.split(';')) {
     const [rawName, ...rest] = item.trim().split('=')
