@@ -235,18 +235,20 @@ def application():
 
 
 @pytest.fixture
-async def alice_private_thread(seeded_database: AsyncEngine):
-    from app.models.conversation import ConversationThread
+async def alice_private_xagent_session(seeded_database: AsyncEngine):
+    from app.models.xagent_session import XAgentSession
 
-    thread = ConversationThread(
+    xagent_session = XAgentSession(
         id=UUID("00000000-0000-0000-0000-000000000110"),
-        title="Alice API private thread",
+        title="Alice private XAgent session",
         owner_id=ALICE.id,
+        visibility="private",
+        permission_revision_created=1,
     )
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
-            session.add(thread)
-    return thread
+            session.add(xagent_session)
+    return xagent_session
 
 
 @pytest.fixture
@@ -280,34 +282,39 @@ async def bob_project(seeded_database: AsyncEngine):
 
 
 @pytest.fixture
-async def bob_private_thread(seeded_database: AsyncEngine):
-    from app.models.conversation import ConversationThread
+async def bob_private_xagent_session(seeded_database: AsyncEngine):
+    from app.models.xagent_session import XAgentSession
 
-    thread = ConversationThread(
+    xagent_session = XAgentSession(
         id=UUID("00000000-0000-0000-0000-000000000111"),
-        title="Bob API private thread",
+        title="Bob private XAgent session",
         owner_id=BOB.id,
+        visibility="private",
+        permission_revision_created=1,
     )
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
-            session.add(thread)
-    return thread
+            session.add(xagent_session)
+    return xagent_session
 
 
 @pytest.fixture
-async def shared_thread(seeded_database: AsyncEngine):
-    from app.models.conversation import ConversationThread
+async def shared_xagent_session(seeded_database: AsyncEngine):
     from app.models.project import Project, ProjectMembership
+    from app.models.xagent_session import XAgentSession
 
     project = Project(
         id=UUID("00000000-0000-0000-0000-000000000201"),
         name="Shared project",
         owner_id=BOB.id,
     )
-    thread = ConversationThread(
+    xagent_session = XAgentSession(
         id=UUID("00000000-0000-0000-0000-000000000202"),
-        title="Shared project thread",
+        title="Shared project XAgent session",
+        owner_id=BOB.id,
         project_id=project.id,
+        visibility="project",
+        permission_revision_created=1,
     )
     membership = ProjectMembership(
         id=UUID("00000000-0000-0000-0000-000000000203"),
@@ -318,8 +325,8 @@ async def shared_thread(seeded_database: AsyncEngine):
         async with session.begin():
             session.add(project)
             await session.flush()
-            session.add_all((thread, membership))
-    return thread
+            session.add_all((xagent_session, membership))
+    return xagent_session
 
 
 @pytest.fixture

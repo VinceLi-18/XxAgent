@@ -10,7 +10,6 @@ from app.core.migration_config import migration_settings
 from app.models.audit import AuditEvent
 from app.models.artifact import Artifact, ArtifactVersion, StagingUpload
 from app.models.base import Base
-from app.models.conversation import ConversationThread
 from app.models.identity import Account
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
 from app.models.workbench import (

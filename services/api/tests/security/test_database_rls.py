@@ -12,9 +12,9 @@ from app.core.db_context import set_actor_context
 from app.core.config import Settings
 from app.core.security import Actor
 from app.models.audit import AuditEvent
-from app.models.conversation import ConversationThread
 from app.models.identity import Role
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
+from app.models.xagent_session import XAgentSession
 
 
 def _api_root() -> Path:
@@ -119,44 +119,6 @@ async def actor_session(seeded_database: AsyncEngine, application_role: str):
 
 
 @pytest.fixture
-async def bob_thread(seeded_database: AsyncEngine) -> ConversationThread:
-    thread = ConversationThread(
-        id=UUID("00000000-0000-0000-0000-000000000101"),
-        title="Bob private thread",
-        owner_id=UUID("00000000-0000-0000-0000-000000000002"),
-    )
-    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
-        async with session.begin():
-            session.add(thread)
-    return thread
-
-
-@pytest.fixture
-async def shared_thread(seeded_database: AsyncEngine) -> ConversationThread:
-    project = Project(
-        id=UUID("00000000-0000-0000-0000-000000000201"),
-        name="Shared project",
-        owner_id=UUID("00000000-0000-0000-0000-000000000002"),
-    )
-    thread = ConversationThread(
-        id=UUID("00000000-0000-0000-0000-000000000202"),
-        title="Shared project thread",
-        project_id=project.id,
-    )
-    membership = ProjectMembership(
-        id=UUID("00000000-0000-0000-0000-000000000203"),
-        project_id=project.id,
-        account_id=UUID("00000000-0000-0000-0000-000000000001"),
-    )
-    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
-        async with session.begin():
-            session.add(project)
-            await session.flush()
-            session.add_all((thread, membership))
-    return thread
-
-
-@pytest.fixture
 async def unrelated_project_rows(seeded_database: AsyncEngine):
     project = Project(
         id=UUID("00000000-0000-0000-0000-000000000301"),
@@ -180,7 +142,7 @@ async def unrelated_project_rows(seeded_database: AsyncEngine):
         id=UUID("00000000-0000-0000-0000-000000000304"),
         actor_id=UUID("00000000-0000-0000-0000-000000000002"),
         action="read",
-        resource_type="conversation_thread",
+        resource_type="xagent_session",
         resource_id=UUID("00000000-0000-0000-0000-000000000101"),
         request_id=UUID("00000000-0000-0000-0000-000000000305"),
         result="allowed",
@@ -192,9 +154,17 @@ async def unrelated_project_rows(seeded_database: AsyncEngine):
 
 
 @pytest.mark.anyio
-async def test_rls_hides_another_specialists_private_thread(actor_session, alice, bob_thread):
+async def test_rls_hides_another_specialists_private_session(
+    actor_session,
+    alice,
+    bob_private_xagent_session,
+):
     await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == bob_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(
+            XAgentSession.id == bob_private_xagent_session.id
+        )
+    )
     assert row is None
 
 
@@ -255,29 +225,47 @@ async def test_rls_allows_project_creation_for_the_current_actor(actor_session, 
 
 
 @pytest.mark.anyio
-async def test_rls_allows_a_project_member_to_read_shared_thread(actor_session, alice, shared_thread):
+async def test_rls_allows_a_project_member_to_read_shared_session(
+    actor_session,
+    alice,
+    shared_xagent_session,
+):
     await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == shared_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(XAgentSession.id == shared_xagent_session.id)
+    )
     assert row is not None
 
 
 @pytest.mark.anyio
-async def test_rls_allows_manager_to_read_a_project_shared_thread(actor_session, shared_thread):
+async def test_rls_allows_manager_to_read_a_project_shared_session(
+    actor_session,
+    shared_xagent_session,
+):
     await set_actor_context(
         actor_session,
         Actor(id=UUID("00000000-0000-0000-0000-000000000003"), role=Role.MANAGER),
     )
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == shared_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(XAgentSession.id == shared_xagent_session.id)
+    )
     assert row is not None
 
 
 @pytest.mark.anyio
-async def test_rls_hides_another_specialists_private_thread_from_manager(actor_session, bob_thread):
+async def test_rls_hides_another_specialists_private_session_from_manager(
+    actor_session,
+    bob_private_xagent_session,
+):
     await set_actor_context(
         actor_session,
         Actor(id=UUID("00000000-0000-0000-0000-000000000003"), role=Role.MANAGER),
     )
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == bob_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(
+            XAgentSession.id == bob_private_xagent_session.id
+        )
+    )
     assert row is None
 
 
