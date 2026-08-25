@@ -248,14 +248,17 @@ async def test_shipping_worker_once_retries_due_cleanup_with_only_worker_configu
 
 
 @pytest.mark.anyio
-async def test_worker_once_processes_one_body_job_and_one_cleanup_without_starvation(
+async def test_worker_once_drains_body_and_cleanup_backlogs_without_starvation(
     seeded_database: AsyncEngine,
     worker_engine: AsyncEngine,
     alice,
 ) -> None:
     now = datetime.now(UTC)
-    body = await _seed_job(seeded_database, actor_id=alice.id, now=now)
-    cleanup = await _seed_cleanup(seeded_database, now=now)
+    bodies = [
+        await _seed_job(seeded_database, actor_id=alice.id, now=now)
+        for _ in range(2)
+    ]
+    cleanups = [await _seed_cleanup(seeded_database, now=now) for _ in range(2)]
     handled: list[str] = []
 
     async def processor(lease) -> None:
@@ -275,11 +278,64 @@ async def test_worker_once_processes_one_body_job_and_one_cleanup_without_starva
     )
 
     async with AsyncSession(seeded_database) as session:
-        body_row = await session.get(ArtifactProcessingJob, body.id)
-        cleanup_row = await session.get(ArtifactObjectCleanupJob, cleanup.id)
-    assert handled == [f"body:{body.id}", f"cleanup:{cleanup.id}"]
-    assert body_row is not None and body_row.status == "succeeded"
-    assert cleanup_row is not None and cleanup_row.status == "succeeded"
+        body_rows = [await session.get(ArtifactProcessingJob, body.id) for body in bodies]
+        cleanup_rows = [
+            await session.get(ArtifactObjectCleanupJob, cleanup.id)
+            for cleanup in cleanups
+        ]
+    assert [entry.split(":", 1)[0] for entry in handled] == [
+        "body",
+        "cleanup",
+        "body",
+        "cleanup",
+    ]
+    assert {entry for entry in handled if entry.startswith("body:")} == {
+        f"body:{body.id}" for body in bodies
+    }
+    assert {entry for entry in handled if entry.startswith("cleanup:")} == {
+        f"cleanup:{cleanup.id}" for cleanup in cleanups
+    }
+    assert all(row is not None and row.status == "succeeded" for row in body_rows)
+    assert all(row is not None and row.status == "succeeded" for row in cleanup_rows)
+
+
+@pytest.mark.anyio
+async def test_shipping_worker_once_drains_due_body_and_cleanup_backlogs(
+    seeded_database: AsyncEngine,
+    worker_role: str,
+    alice,
+) -> None:
+    now = datetime.now(UTC)
+    bodies = [
+        await _seed_job(seeded_database, actor_id=alice.id, now=now)
+        for _ in range(2)
+    ]
+    cleanups = [await _seed_cleanup(seeded_database, now=now) for _ in range(2)]
+
+    completed = _run_shipping_worker_once(worker_role, configured=True)
+
+    async with AsyncSession(seeded_database) as session:
+        body_rows = [await session.get(ArtifactProcessingJob, body.id) for body in bodies]
+        cleanup_rows = [
+            await session.get(ArtifactObjectCleanupJob, cleanup.id)
+            for cleanup in cleanups
+        ]
+    assert completed.returncode == 0
+    assert completed.stdout == "" and completed.stderr == ""
+    assert all(
+        row is not None
+        and row.status == "ready"
+        and row.attempts == 1
+        and row.failure_code == "inspection-unavailable"
+        for row in body_rows
+    )
+    assert all(
+        row is not None
+        and row.status == "ready"
+        and row.attempts == 1
+        and row.failure_code == "remove-failed"
+        for row in cleanup_rows
+    )
 
 
 @pytest.mark.anyio
@@ -786,16 +842,22 @@ async def test_stop_request_prevents_another_claim_after_processor_settles(
     now = datetime.now(UTC)
     first = await _seed_job(seeded_database, actor_id=alice.id, now=now)
     second = await _seed_job(seeded_database, actor_id=alice.id, now=now)
+    cleanup = await _seed_cleanup(seeded_database, now=now)
     stop = asyncio.Event()
+    handled_cleanup: list[str] = []
 
     async def processor(_lease) -> None:
         stop.set()
         await asyncio.sleep(0)
 
+    async def cleanup_processor(lease) -> None:
+        handled_cleanup.append(str(lease.job_id))
+
     await _run_worker_loop(
         _sessions(worker_engine),
         once=False,
         processor=processor,
+        cleanup_processor=cleanup_processor,
         stop_event=stop,
         lease_seconds=60,
         heartbeat_seconds=20,
@@ -812,4 +874,8 @@ async def test_stop_request_prevents_another_claim_after_processor_settles(
                 )
             ).all()
         )
+        cleanup_row = await session.get(ArtifactObjectCleanupJob, cleanup.id)
     assert sorted(statuses.values()) == ["ready", "succeeded"]
+    assert handled_cleanup == []
+    assert cleanup_row is not None and cleanup_row.status == "ready"
+    assert cleanup_row.attempts == 0

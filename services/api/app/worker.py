@@ -344,6 +344,8 @@ async def _run_worker_loop(
                 heartbeat_seconds=heartbeat_seconds,
                 lease_seconds=lease_seconds,
             )
+        if resolved_stop_event.is_set():
+            return
         async with sessions() as session:
             async with session.begin():
                 cleanup_lease = await claim_due_cleanup(
@@ -361,9 +363,11 @@ async def _run_worker_loop(
                 heartbeat_seconds=heartbeat_seconds,
                 lease_seconds=lease_seconds,
             )
-        if once:
+        if resolved_stop_event.is_set():
             return
         if not worked:
+            if once:
+                return
             await _wait_for_stop(resolved_stop_event, poll_seconds)
 
 

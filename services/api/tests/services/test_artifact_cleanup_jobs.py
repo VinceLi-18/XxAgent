@@ -41,9 +41,10 @@ async def test_cleanup_identity_is_nonempty_and_unique(
     seeded_database: AsyncEngine,
 ) -> None:
     now = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
+    key = f"artifacts/{uuid4()}/{uuid4()}"
     valid = {
         "id": uuid4(),
-        "object_key": "artifacts/a/v",
+        "object_key": key,
         "version_id": "minio-version-1",
         "now": now,
     }
@@ -82,13 +83,14 @@ async def test_enqueue_cleanup_is_idempotent(
     sessions = _sessions(worker_engine)
     now = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
 
-    await _enqueue(sessions, "artifacts/a/v", "minio-version-1", now)
-    await _enqueue(sessions, "artifacts/a/v", "minio-version-1", now)
+    key = f"artifacts/{uuid4()}/{uuid4()}"
+    await _enqueue(sessions, key, "minio-version-1", now)
+    await _enqueue(sessions, key, "minio-version-1", now)
 
     async with AsyncSession(seeded_database) as session:
         rows = (await session.scalars(select(ArtifactObjectCleanupJob))).all()
     assert len(rows) == 1
-    assert rows[0].object_key == "artifacts/a/v"
+    assert rows[0].object_key == key
     assert rows[0].version_id == "minio-version-1"
 
 
@@ -96,8 +98,10 @@ async def test_enqueue_cleanup_is_idempotent(
 async def test_cleanup_claim_uses_skip_locked(worker_engine: AsyncEngine) -> None:
     sessions = _sessions(worker_engine)
     now = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
-    await _enqueue(sessions, "artifacts/a/v1", "version-1", now)
-    await _enqueue(sessions, "artifacts/a/v2", "version-2", now)
+    first_key = f"artifacts/{uuid4()}/{uuid4()}"
+    second_key = f"artifacts/{uuid4()}/{uuid4()}"
+    await _enqueue(sessions, first_key, "version-1", now)
+    await _enqueue(sessions, second_key, "version-2", now)
 
     async with sessions() as first, sessions() as second:
         async with first.begin():
@@ -107,8 +111,8 @@ async def test_cleanup_claim_uses_skip_locked(worker_engine: AsyncEngine) -> Non
 
     assert first_lease is not None and second_lease is not None
     assert {first_lease.object_key, second_lease.object_key} == {
-        "artifacts/a/v1",
-        "artifacts/a/v2",
+        first_key,
+        second_key,
     }
 
 
@@ -119,7 +123,12 @@ async def test_cleanup_stale_token_cannot_close_reclaimed_lease(
 ) -> None:
     sessions = _sessions(worker_engine)
     first_at = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
-    await _enqueue(sessions, "artifacts/a/v", "version-1", first_at)
+    await _enqueue(
+        sessions,
+        f"artifacts/{uuid4()}/{uuid4()}",
+        "version-1",
+        first_at,
+    )
     async with sessions() as session:
         async with session.begin():
             old = await claim_due_cleanup(session, now=first_at, lease_seconds=60)
@@ -163,7 +172,7 @@ async def test_cleanup_retry_is_bounded_and_preserves_identity(
 ) -> None:
     sessions = _sessions(worker_engine)
     claimed_at = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
-    key = f"artifacts/a/v{prior_attempts}"
+    key = f"artifacts/{uuid4()}/{uuid4()}"
     version_id = f"version-{prior_attempts}"
     await _enqueue(sessions, key, version_id, claimed_at)
     async with AsyncSession(seeded_database) as session:
@@ -196,3 +205,55 @@ async def test_cleanup_retry_is_bounded_and_preserves_identity(
     assert row.next_attempt_at == failed_at + timedelta(seconds=expected_delay)
     assert row.object_key == key and row.version_id == version_id
     assert row.lease_token is None and row.lease_expires_at is None
+
+
+@pytest.mark.anyio
+async def test_expired_fifth_cleanup_lease_closes_before_claiming_next_due_job(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+) -> None:
+    now = datetime(2026, 8, 26, 10, 0, tzinfo=UTC)
+    exhausted_key = f"artifacts/{uuid4()}/{uuid4()}"
+    exhausted_version = "exhausted-object-version"
+    next_key = f"artifacts/{uuid4()}/{uuid4()}"
+    next_version = "next-object-version"
+    exhausted_id = uuid4()
+    next_id = uuid4()
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_object_cleanup_jobs "
+                "(id, object_key, version_id, status, attempts, next_attempt_at, "
+                "lease_token, lease_expires_at) VALUES "
+                "(:exhausted_id, :exhausted_key, :exhausted_version, 'leased', 5, "
+                ":exhausted_due, :token, :expired_at), "
+                "(:next_id, :next_key, :next_version, 'ready', 0, :next_due, NULL, NULL)"
+            ),
+            {
+                "exhausted_id": exhausted_id,
+                "exhausted_key": exhausted_key,
+                "exhausted_version": exhausted_version,
+                "exhausted_due": now - timedelta(minutes=2),
+                "token": uuid4(),
+                "expired_at": now - timedelta(seconds=1),
+                "next_id": next_id,
+                "next_key": next_key,
+                "next_version": next_version,
+                "next_due": now - timedelta(minutes=1),
+            },
+        )
+
+    sessions = _sessions(worker_engine)
+    async with sessions() as session:
+        async with session.begin():
+            lease = await claim_due_cleanup(session, now=now, lease_seconds=60)
+
+    async with AsyncSession(seeded_database) as session:
+        exhausted = await session.get(ArtifactObjectCleanupJob, exhausted_id)
+    assert lease is not None and lease.job_id == next_id and lease.attempt == 1
+    assert exhausted is not None and exhausted.status == "dead"
+    assert exhausted.attempts == 5
+    assert exhausted.failure_code == "lease-expired"
+    assert exhausted.lease_token is None and exhausted.lease_expires_at is None
+    assert exhausted.object_key == exhausted_key
+    assert exhausted.version_id == exhausted_version

@@ -75,3 +75,18 @@ cleanup 使用独立的 `FOR UPDATE SKIP LOCKED` 领取、heartbeat、finish 和
 - 聚焦真实 PostgreSQL 回归覆盖 cleanup、正文处理、Task 3 租约、ClamAV、MinIO、正式 CLI、worker 权限和 lifecycle schema，共 122 项通过；资料上传 API 回归 34 项通过。
 - mutation 分别删除 cleanup token 条件、删除持久 handoff、让 staging 删除异常重新外泄；陈旧租约、publication cleanup 行和 processor 直接入口测试均按预期失败，恢复后纳入最终回归。
 - 文档限定门禁通过：Agent Note 格式 555 项、Markdown 软换行 1924 文件、文档预算 9 项、全量翻译配对 948 对。owning Agent Note 与 API README 是 manifest 明确列出的 XAgent 中文单语例外；同主题 active 记录只有该 proposed Note，因 Task 5 尚未完成而保留，不归档或拒绝其他记录。
+
+## 修复轮 3
+
+cleanup object key 的数据库约束现在只接受区分大小写的小写 UUID 形式 `artifacts/{artifact_id}/{version_id}`。约束同时写入 012 migration 与 ORM；worker 角色真实 PostgreSQL 直写会拒绝非 `artifacts/` 前缀、非 UUID、任一 UUID 大写、额外层级、尾随字符和换行，MinIO 版本 ID 仍只要求非空。正式处理器产生的 `str(UUID)` key 可正常写入。
+
+worker 在正文处理收敛后、领取 cleanup 前复检停止事件，cleanup 收敛后也在进入下一轮前复检。停止期间不会领取另一类任务，已经开始的正文或 cleanup 仍沿用既有等待收敛语义。`--once` 每轮仍按正文最多一项、cleanup 最多一项保持公平，但不再首轮直接返回；它跳过空闲等待并持续到首次完整空轮，因此执行开始时的两类到期 backlog 会排空。
+
+第五次 cleanup 租约过期由领取事务原子改为 `dead + lease-expired`，不产生第六次尝试，不清空 object key 或版本 ID，并继续在同一事务领取后续到期任务。
+
+### 修复轮 3 TDD
+
+- RED：真实 PostgreSQL 与正式 CLI 聚焦 48 项，38 项通过、10 项按预期失败。7 个非法 key 均被旧 CHECK 接受；loop 与正式 CLI 的 2+2 backlog 均只处理 1+1；正文处理内触发停止后仍领取 due cleanup。
+- GREEN：相同 48 项全部通过。既定 Task 4、Task 3、正式 CLI、worker 权限与 lifecycle schema 回归在新增负控后共 132 项通过；上传、并发与资料访问回归 44 项通过；012 migration round trip 单项通过。
+- mutation：把第五次过期判断改为直接领取后，真实 PostgreSQL 尝试写入 attempts 6 并触发 `ck_artifact_object_cleanup_job_attempts`，指定回归失败；恢复分支后单项通过。
+- 文档限定门禁通过：Agent Note 格式 555 项、Markdown 软换行 1924 文件、文档预算 9 项、翻译配对 948 对。

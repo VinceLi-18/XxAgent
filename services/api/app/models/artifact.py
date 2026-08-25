@@ -101,7 +101,9 @@ class ArtifactObjectCleanupJob(Base):
     __tablename__ = "artifact_object_cleanup_jobs"
     __table_args__ = (
         CheckConstraint(
-            "length(btrim(object_key)) > 0",
+            "object_key ~ '^artifacts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            "[0-9a-f]{4}-[0-9a-f]{12}/[0-9a-f]{8}-[0-9a-f]{4}-"
+            "[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'",
             name="ck_artifact_object_cleanup_job_object_key",
         ),
         CheckConstraint(

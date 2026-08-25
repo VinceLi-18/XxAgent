@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, ProgrammingError
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 
@@ -121,6 +121,64 @@ async def test_only_worker_role_can_manage_cleanup_rows(
             await connection.execute(text(set_role))
             await connection.execute(text("SELECT id FROM artifact_object_cleanup_jobs"))
     assert app_read.value.orig.sqlstate == "42501"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "object_key",
+    (
+        "backups/account-dump.bin",
+        "artifacts/not-a-uuid/also-not-a-uuid",
+        "artifacts/AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA/"
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "artifacts/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+        "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB",
+        "artifacts/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/extra",
+        "artifacts/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb-suffix",
+        "artifacts/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/"
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n",
+    ),
+)
+async def test_worker_cleanup_insert_rejects_keys_outside_final_artifact_namespace(
+    worker_engine: AsyncEngine,
+    object_key: str,
+) -> None:
+    with pytest.raises(IntegrityError, match="ck_artifact_object_cleanup_job_object_key"):
+        async with worker_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_object_cleanup_jobs "
+                    "(id, object_key, version_id, status, attempts, next_attempt_at) "
+                    "VALUES (:id, :key, 'opaque-version', 'ready', 0, CURRENT_TIMESTAMP)"
+                ),
+                {"id": uuid4(), "key": object_key},
+            )
+
+
+@pytest.mark.anyio
+async def test_worker_cleanup_insert_accepts_canonical_final_artifact_key(
+    worker_engine: AsyncEngine,
+) -> None:
+    artifact_id = uuid4()
+    artifact_version_id = uuid4()
+
+    async with worker_engine.begin() as connection:
+        inserted = await connection.scalar(
+            text(
+                "INSERT INTO artifact_object_cleanup_jobs "
+                "(id, object_key, version_id, status, attempts, next_attempt_at) "
+                "VALUES (:id, :key, 'opaque-version', 'ready', 0, CURRENT_TIMESTAMP) "
+                "RETURNING object_key"
+            ),
+            {
+                "id": uuid4(),
+                "key": f"artifacts/{artifact_id}/{artifact_version_id}",
+            },
+        )
+
+    assert inserted == f"artifacts/{artifact_id}/{artifact_version_id}"
 
 
 @pytest.mark.anyio
