@@ -67,6 +67,7 @@
   - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
   - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
   - `docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md`
+  - `docs/superpowers/specs/2026-08-25-xagent-phase-3a-project-workbench-design.md`
   - `docs/upstream/dsh-baseline.md`
   - `docs/upstream/jiaxin-api-baseline.md`
   - `packages/bundle/xagent-business/README.md`
