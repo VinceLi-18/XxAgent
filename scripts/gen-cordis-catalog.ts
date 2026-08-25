@@ -157,6 +157,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   slots: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
   theme: 'client-side interface-typed browser service — packages/client/ui-theme/README.md owns the API',
   workspaces: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
+  xagentWorkbench: 'client-side account-scoped project workbench service — packages/xagent/ui-project/README.md owns the API',
 }
 
 /**

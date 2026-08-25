@@ -77,6 +77,8 @@
   - `packages/xagent/project/architecture.md`
   - `packages/xagent/ui-account/README.md`
   - `packages/xagent/ui-account/architecture.md`
+  - `packages/xagent/ui-project/README.md`
+  - `packages/xagent/ui-project/architecture.md`
   - `services/api/README.md`
 
 **统一要求**：除上述精确排除项外，当前及今后纳入范围的每篇文档，合并时都必须构成完整的双语配对。[scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) 只包含显式排除项；不存在 XAgent 目录级例外、逐文件推进清单、日期分界或 README 专用政策类别。
