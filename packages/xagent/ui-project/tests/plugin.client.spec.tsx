@@ -37,6 +37,7 @@ function remote(): { client: XAgentProjectRemoteClient; projectMock: ReturnType<
 
 describe('XAgent Project UI 插件', () => {
   it('只通过正式插槽注册，并随声明重载和插件卸载', async () => {
+    expect(inject).not.toContain('remote.xagentProject')
     applyHost()
     const ctx = new Context()
     await ctx.plugin(SlotRegistry).await()
@@ -54,8 +55,9 @@ describe('XAgent Project UI 插件', () => {
     const { client: projectRemote, projectMock } = remote()
     const sessions = { clear: vi.fn(), open: vi.fn() }
     ctx.provide('sessions', sessions as never)
-    ctx.provide('remote', { xagentProject: projectRemote } as never)
-    ctx.provide('remote.xagentProject', projectRemote as never)
+    const disposeNamespace = ctx.reflect.provide('remote.xagentProject', projectRemote)
+    const mount = vi.fn(async () => async () => { await disposeNamespace() })
+    ctx.provide('remote', { $mount: mount, xagentProject: projectRemote } as never)
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
 
@@ -65,6 +67,7 @@ describe('XAgent Project UI 插件', () => {
     expect(slots.entries('shell.overlay')[0]?.component).toBe(WorkbenchOperationShield)
     const workbench = ctx.get('xagentWorkbench')!
     await workbench.bootstrap()
+    expect(mount).toHaveBeenCalledTimes(1)
     const browser = slots.entries('sidebar.workspaces')[0]!.inject!() as unknown as ProjectBrowserInjected
     await browser.selectContext({ kind: 'workbench' })
     await browser.createProject('Alpha')

@@ -30,7 +30,7 @@ export interface AccountState {
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-function csrfCookie(): string | undefined {
+export function csrfCookie(): string | undefined {
   for (const item of document.cookie.split(';')) {
     const [rawName, ...rest] = item.trim().split('=')
     if (rawName === 'xagent_csrf') return decodeURIComponent(rest.join('='))

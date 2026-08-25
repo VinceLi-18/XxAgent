@@ -11,6 +11,7 @@ import {
   Remote,
   RemoteScope,
   TypertLookupFailure,
+  TypertRemoteFailure,
   type InvocationDescriptor,
   type TypertContext,
   type TypertLookup,
@@ -1104,6 +1105,22 @@ describe('TypertGatewayService', () => {
     await expect(handler('goals/create', {
       args: { agentId: 'agent-1', request: { title: 'ship' } },
     }, new AbortController().signal)).resolves.toEqual({ ok: false, error: failure })
+  })
+
+  it('preserves a Remote business rejection through the Connection RPC result', async () => {
+    const ctx = new Context()
+    await ctx.plugin(TypertRegistry)
+    await ctx.plugin(FakeConnectionService)
+    await ctx.plugin(TypertGatewayService)
+    await ctx.plugin(GoalService)
+    const failure = { code: 'forbidden', message: 'operation forbidden', details: {} }
+    const service = ctx.get('goals') as unknown as GoalService
+    service.businessError = new TypertRemoteFailure(failure)
+    const handler = rawConnection(ctx).handler
+    if (handler === undefined) throw new Error('fixture Connection did not retain the /api interceptor')
+
+    await expect(handler('goals/fail', { args: { request: {} } }, new AbortController().signal))
+      .resolves.toEqual({ ok: false, error: failure })
   })
 
   it('caches SRC ownership until the Cordis Service set changes', async () => {

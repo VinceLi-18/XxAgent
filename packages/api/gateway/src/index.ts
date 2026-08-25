@@ -13,6 +13,7 @@ import type {
 import {
   remoteMethods,
   TypertLookupFailure,
+  TypertRemoteFailure,
   type InvocationDescriptor,
   type InvocationParameterDescriptor,
   type TypertCodec,
@@ -483,6 +484,9 @@ function rpcFailure(error: unknown): ConnectionRpcResult {
     }
   }
   if (error instanceof TypertLookupFailure) {
+    return { ok: false, error: error.failure as ConnectionRpcError }
+  }
+  if (error instanceof TypertRemoteFailure) {
     return { ok: false, error: error.failure as ConnectionRpcError }
   }
   return {

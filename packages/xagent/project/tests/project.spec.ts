@@ -1,5 +1,5 @@
 import { Context } from '@deepseek-ai/cordis'
-import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
+import { remoteMethods, TypertRemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import {
   XAgentBackendError,
   type XAgentWorkbenchBackend,
@@ -191,7 +191,7 @@ describe('XAgent Project Remote', () => {
 
     remote.bootstrap = vi.fn(async () => bootstrap(bob.principal.actorId))
     await expect(service.withRequest(alice, () => service.bootstrap()))
-      .rejects.toMatchObject({ code: 'service-unavailable' })
+      .rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
 
     remote.project = vi.fn(async (_token: string, projectId: string) => ({
       accountId: bob.principal.actorId,
@@ -202,7 +202,7 @@ describe('XAgent Project Remote', () => {
       sessionCount: 0,
     }))
     await expect(service.withRequest(alice, () => service.project('00000000-0000-0000-0000-000000000201')))
-      .rejects.toMatchObject({ code: 'service-unavailable' })
+      .rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
   })
 
   test('后端稳定错误保持稳定且不会改写 detail', async () => {
@@ -210,6 +210,8 @@ describe('XAgent Project Remote', () => {
     remote.createProject = vi.fn(async () => { throw new XAgentBackendError('forbidden') })
     const service = new XAgentProjectService(new Context(), remote)
     await expect(service.withRequest(alice, () => service.createProject('Alpha', 'create-1')))
-      .rejects.toEqual(new XAgentBackendError('forbidden'))
+      .rejects.toEqual(new TypertRemoteFailure({
+        code: 'forbidden', message: 'XAgent project request failed', details: {},
+      }))
   })
 })

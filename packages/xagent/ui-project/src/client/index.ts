@@ -2,7 +2,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import type {} from '@xagent/dsh-project/remote'
+import projectRemote from '@xagent/dsh-project/remote'
 import { ContextMarker } from './ContextMarker.tsx'
 import { ProjectBrowser, type ProjectBrowserInjected } from './ProjectBrowser.tsx'
 import { XAgentWorkbenchController, type IXAgentWorkbench, type XAgentProjectRemoteClient } from './service.ts'
@@ -21,40 +21,54 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** Project UI 依赖正式 Slot、Session 导航和生成式 Project Remote。 */
-export const inject = ['slots', 'sessions', 'remote', 'remote.xagentProject']
+/** Project UI 依赖本地 Slot、Session 与生成式 Remote 装配服务。 */
+export const inject = ['slots', 'sessions', 'remote']
 
 /** 注册工作台服务以及左栏、中央上下文和第三栏详情。 */
-export function apply(ctx: ClientContext): void {
-  const remote = (ctx.remote as typeof ctx.remote & { xagentProject: XAgentProjectRemoteClient }).xagentProject
-  const workbench = new XAgentWorkbenchController(remote, {
-    clear: () => { ctx.sessions.clear() },
-  })
-  ctx.provide('xagentWorkbench', workbench)
-  ctx.effect(() => () => { workbench.dispose() }, 'dispose xagent workbench')
+export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
+  const disposeRemote = await ctx.remote.$mount(projectRemote)
+  const feature = ctx.inject(['remote.xagentProject'], (scope: ClientContext) => {
+    const remote = scope.get('remote.xagentProject') as XAgentProjectRemoteClient
+    const workbench = new XAgentWorkbenchController(remote, {
+      clear: () => { scope.sessions.clear() },
+    })
+    scope.provide('xagentWorkbench', workbench)
 
-  const browserInjected = (): ProjectBrowserInjected => ({
-    hooks: { workbench: workbench.snapshot },
-    selectContext: context => workbench.selectContext(context),
-    createProject: name => workbench.createProject(name),
-    openSession: (sessionId) => { ctx.sessions.open(sessionId as never) },
+    const browserInjected = (): ProjectBrowserInjected => ({
+      hooks: { workbench: workbench.snapshot },
+      selectContext: context => workbench.selectContext(context),
+      createProject: name => workbench.createProject(name),
+      openSession: (sessionId) => { scope.sessions.open(sessionId as never) },
+    })
+    const detailsInjected = (): WorkbenchDetailsInjected => ({
+      hooks: { workbench: workbench.snapshot },
+      loadProject: projectId => workbench.loadProject(projectId),
+    })
+    scope.slots.inject('sidebar.workspaces', () => scope.slots.register({
+      name: 'sidebar.workspaces', registrant: 'xagent-project-browser', inject: browserInjected,
+    }, ProjectBrowser))
+    scope.slots.inject('conversation.context', () => scope.slots.register({
+      name: 'conversation.context', registrant: 'xagent-project-context',
+      inject: () => ({ hooks: { workbench: workbench.snapshot } }),
+    }, ContextMarker))
+    scope.slots.inject('shell.details', () => scope.slots.register({
+      name: 'shell.details', registrant: 'xagent-workbench-details', inject: detailsInjected,
+    }, WorkbenchDetails))
+    scope.slots.inject('shell.overlay', () => scope.slots.register({
+      name: 'shell.overlay', id: 'xagent-workbench-operation-shield', order: -90,
+      inject: () => ({ hooks: { workbench: workbench.snapshot } }),
+    }, WorkbenchOperationShield))
+    return () => { workbench.dispose() }
   })
-  const detailsInjected = (): WorkbenchDetailsInjected => ({
-    hooks: { workbench: workbench.snapshot },
-    loadProject: projectId => workbench.loadProject(projectId),
-  })
-  ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register({
-    name: 'sidebar.workspaces', registrant: 'xagent-project-browser', inject: browserInjected,
-  }, ProjectBrowser))
-  ctx.slots.inject('conversation.context', () => ctx.slots.register({
-    name: 'conversation.context', registrant: 'xagent-project-context',
-    inject: () => ({ hooks: { workbench: workbench.snapshot } }),
-  }, ContextMarker))
-  ctx.slots.inject('shell.details', () => ctx.slots.register({
-    name: 'shell.details', registrant: 'xagent-workbench-details', inject: detailsInjected,
-  }, WorkbenchDetails))
-  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-    name: 'shell.overlay', id: 'xagent-workbench-operation-shield', order: -90,
-    inject: () => ({ hooks: { workbench: workbench.snapshot } }),
-  }, WorkbenchOperationShield))
+  try {
+    await feature.await()
+  } catch (error) {
+    await feature.dispose()
+    await disposeRemote()
+    throw error
+  }
+  return async () => {
+    await feature.dispose()
+    await disposeRemote()
+  }
 }

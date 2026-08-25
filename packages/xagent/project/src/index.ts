@@ -3,7 +3,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Remote, TypertRemoteFailure, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
   XAgentBackendClient,
   XAgentBackendError,
@@ -21,6 +21,9 @@ import type {
 export type * from './types.ts'
 
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+const PROJECT_FAILURE_CODES = new Set([
+  'unauthenticated', 'forbidden', 'not-found', 'idempotency-conflict', 'unsupported-version', 'service-unavailable',
+])
 
 interface RequestScopeState {
   readonly scope: XAgentProjectRequestScope
@@ -95,7 +98,8 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
   @Remote('bootstrap')
   async bootstrap(signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap> {
     const scope = this.requireScope()
-    return this.assertBootstrapAccount(await this.backend.bootstrap(scope.userToken, signal), scope)
+    return this.callBackend(async () =>
+      this.assertBootstrapAccount(await this.backend.bootstrap(scope.userToken, signal), scope))
   }
 
   /**
@@ -107,7 +111,8 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
   @Remote('select-context')
   async selectContext(context: XAgentWorkbenchContext, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap> {
     const scope = this.requireScope()
-    return this.assertBootstrapAccount(await this.backend.selectContext(scope.userToken, context, signal), scope)
+    return this.callBackend(async () =>
+      this.assertBootstrapAccount(await this.backend.selectContext(scope.userToken, context, signal), scope))
   }
 
   /**
@@ -120,10 +125,9 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
   @Remote('create-project')
   async createProject(name: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap> {
     const scope = this.requireScope()
-    return this.assertBootstrapAccount(
-      await this.backend.createProject(scope.userToken, { name, idempotencyKey }, signal),
-      scope,
-    )
+    return this.callBackend(async () => this.assertBootstrapAccount(
+      await this.backend.createProject(scope.userToken, { name, idempotencyKey }, signal), scope,
+    ))
   }
 
   /**
@@ -135,9 +139,21 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
   @Remote('project')
   async project(projectId: string, signal?: AbortSignal): Promise<XAgentProjectDetail> {
     const scope = this.requireScope()
-    const result = await this.backend.project(scope.userToken, projectId, signal)
-    if (result.accountId !== scope.principal.actorId) throw new XAgentBackendError('service-unavailable')
-    return result
+    return this.callBackend(async () => {
+      const result = await this.backend.project(scope.userToken, projectId, signal)
+      if (result.accountId !== scope.principal.actorId) throw new XAgentBackendError('service-unavailable')
+      return result
+    })
+  }
+
+  private async callBackend<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      if (!(error instanceof XAgentBackendError)) throw error
+      const code = PROJECT_FAILURE_CODES.has(error.code) ? error.code : 'service-unavailable'
+      throw new TypertRemoteFailure({ code, message: 'XAgent project request failed', details: {} })
+    }
   }
 
   private requireScope(): XAgentProjectRequestScope {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useSyncExternalStore } from 'react'
 import { Context } from '@deepseek-ai/cordis'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-runtime/client'
+import { BrowserRequestHeadersService } from '@deepseek-ai/dsh-client-connection/client'
 import { AccountController } from '../src/client/service.ts'
 import { AccountFooter } from '../src/client/AccountFooter.tsx'
 import { AccountOverlay } from '../src/client/AccountOverlay.tsx'
@@ -60,9 +61,12 @@ describe('XAgent 正式账号界面', () => {
     } as never, () => null)
     let disposeDeclaration = declare()
     ctx.provide('xagentWorkbench', bridge() as never)
+    const requestHeaders = new BrowserRequestHeadersService(ctx)
     vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })))
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
+    document.cookie = 'xagent_csrf=plugin-token; Path=/'
+    expect(requestHeaders.resolve().get('x-xagent-csrf')).toBe('plugin-token')
     expect(slots.entries('shell.overlay')[0]?.component).toBe(AccountOverlay)
     expect(slots.entries('sidebar.footer.action')[0]?.component).toBe(AccountFooter)
     disposeDeclaration()
@@ -73,6 +77,7 @@ describe('XAgent 正式账号界面', () => {
     expect(slots.entries('shell.overlay')).toHaveLength(1)
     expect(slots.entries('sidebar.footer.action')).toHaveLength(1)
     await fiber.dispose()
+    expect(requestHeaders.resolve().get('x-xagent-csrf')).toBeNull()
     expect(slots.entries('shell.overlay')).toHaveLength(0)
     expect(slots.entries('sidebar.footer.action')).toHaveLength(0)
     disposeDeclaration()

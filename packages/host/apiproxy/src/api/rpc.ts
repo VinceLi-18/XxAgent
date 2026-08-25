@@ -32,6 +32,11 @@ export function RpcId(id: string): RpcId {
 export interface RpcErrorDetailsMap {
   'bad-request': { issues: ZodIssue[] }
   'unauthenticated': {}
+  'forbidden': {}
+  'not-found': {}
+  'idempotency-conflict': {}
+  'unsupported-version': {}
+  'service-unavailable': {}
   'cancelled': {}
   'session-not-found': { sessionId: SessionId }
   'model-unavailable': { provider: string; model: string }
