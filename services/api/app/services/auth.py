@@ -170,7 +170,7 @@ async def introspect(token: str, session: AsyncSession) -> Principal:
             .join(Account, Account.id == XAgentAuthSession.account_id)
             .join(XAgentPermissionRevision, XAgentPermissionRevision.account_id == Account.id)
             .where(XAgentAuthSession.id == claims.auth_session_id)
-            .with_for_update()
+            .with_for_update(of=XAgentAuthSession)
         )
     ).one_or_none()
     if row is None:

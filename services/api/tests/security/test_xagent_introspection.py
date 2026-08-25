@@ -2,9 +2,10 @@ import os
 
 import pytest
 from argon2 import PasswordHasher
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import admin_engine
 from app.models.auth import XAgentAuthSession
 
 PASSWORD = "correct horse battery staple"
@@ -64,6 +65,33 @@ async def test_introspection_requires_service_identity_and_returns_current_princ
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         auth_session = await session.scalar(select(XAgentAuthSession))
     assert auth_session is not None and auth_session.last_verified_at is not None
+
+
+@pytest.mark.anyio
+async def test_introspection_locks_only_the_auth_session_it_updates(
+    client,
+    seeded_database,
+    alice,
+) -> None:
+    token = await _login(client, seeded_database, alice.id)
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany) -> None:
+        statements.append(statement)
+
+    event.listen(admin_engine.sync_engine, "before_cursor_execute", capture_statement)
+    try:
+        response = await client.post(
+            "/internal/xagent/auth/introspect",
+            headers=_headers(token),
+        )
+    finally:
+        event.remove(admin_engine.sync_engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 200
+    locking_statements = [statement for statement in statements if "FOR UPDATE" in statement]
+    assert len(locking_statements) == 1
+    assert "FOR UPDATE OF xagent_auth_sessions" in locking_statements[0]
 
 
 @pytest.mark.anyio
