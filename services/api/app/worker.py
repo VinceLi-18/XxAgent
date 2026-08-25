@@ -81,14 +81,25 @@ async def _retry_owned_lease(
 
 
 async def _await_task_quiescence(task: asyncio.Task[_TaskResult]) -> None:
+    current_task = asyncio.current_task()
+    pending_cancellation: asyncio.CancelledError | None = None
     while not task.done():
+        cancellation_requests = current_task.cancelling() if current_task is not None else 0
         try:
             await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
+        except asyncio.CancelledError as error:
+            if (
+                current_task is not None
+                and current_task.cancelling() > cancellation_requests
+            ):
+                pending_cancellation = pending_cancellation or error
+                continue
+            break
         except Exception:
             break
     await asyncio.gather(task, return_exceptions=True)
+    if pending_cancellation is not None:
+        raise pending_cancellation
 
 
 async def _process_lease(

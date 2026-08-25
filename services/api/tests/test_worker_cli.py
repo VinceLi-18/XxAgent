@@ -11,6 +11,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+import app.worker as artifact_worker
 from app.core.config import ArtifactWorkerSettings, Settings
 from app.models.artifact import ArtifactProcessingJob, ArtifactVersion
 from app.worker import _run_worker_loop
@@ -286,6 +287,91 @@ async def test_lost_heartbeat_cancels_publication_and_waits_for_processor_cleanu
     assert job is not None and job.status == "leased"
     assert job.lease_token == replacement_token
     assert job.failure_code is None
+
+
+@pytest.mark.anyio
+async def test_cancel_during_lost_lease_cleanup_propagates_after_processor_stops(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    lost_job = await _seed_job(
+        seeded_database,
+        actor_id=alice.id,
+        now=now - timedelta(seconds=1),
+    )
+    untouched_job = await _seed_job(seeded_database, actor_id=alice.id, now=now)
+    thread_started = threading.Event()
+    release_thread = threading.Event()
+    thread_stopped = threading.Event()
+    entered_quiescence = asyncio.Event()
+    replacement_token = uuid4()
+    original_await_task_quiescence = artifact_worker._await_task_quiescence
+
+    async def observed_await_task_quiescence(task) -> None:
+        entered_quiescence.set()
+        await original_await_task_quiescence(task)
+
+    monkeypatch.setattr(
+        artifact_worker,
+        "_await_task_quiescence",
+        observed_await_task_quiescence,
+    )
+
+    def blocking_processor() -> None:
+        thread_started.set()
+        try:
+            assert release_thread.wait(timeout=2)
+        finally:
+            thread_stopped.set()
+
+    async def processor(lease) -> None:
+        if lease.job_id != lost_job.id:
+            raise AssertionError("worker claimed another job after cancellation")
+        async with AsyncSession(seeded_database) as session:
+            async with session.begin():
+                await session.execute(
+                    update(ArtifactProcessingJob)
+                    .where(ArtifactProcessingJob.id == lease.job_id)
+                    .values(
+                        lease_token=replacement_token,
+                        lease_expires_at=datetime.now(UTC) + timedelta(seconds=60),
+                    )
+                )
+        await asyncio.to_thread(blocking_processor)
+
+    worker_task = asyncio.create_task(
+        _run_worker_loop(
+            _sessions(worker_engine),
+            once=True,
+            processor=processor,
+            lease_seconds=0.1,
+            heartbeat_seconds=0.01,
+            poll_seconds=0,
+        )
+    )
+    assert await asyncio.to_thread(thread_started.wait, 1)
+    await asyncio.wait_for(entered_quiescence.wait(), timeout=1)
+    worker_task.cancel()
+    try:
+        await asyncio.sleep(0.05)
+        assert not worker_task.done()
+    finally:
+        release_thread.set()
+        result = await asyncio.gather(worker_task, return_exceptions=True)
+
+    async with AsyncSession(seeded_database) as session:
+        lost = await session.get(ArtifactProcessingJob, lost_job.id)
+        untouched = await session.get(ArtifactProcessingJob, untouched_job.id)
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert thread_stopped.is_set()
+    assert lost is not None and lost.status == "leased"
+    assert lost.lease_token == replacement_token
+    assert lost.failure_code is None
+    assert untouched is not None and untouched.status == "ready"
+    assert untouched.attempts == 0
 
 
 @pytest.mark.anyio
