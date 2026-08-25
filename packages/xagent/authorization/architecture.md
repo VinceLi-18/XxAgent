@@ -4,6 +4,8 @@
 
 服务先验证不可变 Principal、用户令牌与物理 `connectionId` 的一致性，再把 Session ID 规范化为 FastAPI UUID。list/search 执行可见列表预检；具体 Session 操作调用 read 或 edit 授权接口。FastAPI 在当前用户事务和 RLS 下返回成功或统一 not-found。
 
+项目 RPC 使用独立的 `xagentProject` 封闭方法表。Authorizer 从同一可信连接创建只含 actor、role、权限修订、用户令牌和连接标识的请求 scope，并让 `@xagent/dsh-project` 的 `AsyncLocalStorage` 包围完整 Remote operation。项目服务按请求从 Cordis Context 读取，HMR 移除或替换不会遗留旧实例；Profile 没有安装它时项目 endpoint 返回稳定内部错误，普通 endpoint 仍按上游路径执行。
+
 授权成功后，业务调用在远端 Session Persistence 的显式令牌作用域中执行。作用域整体串行且在 `finally` 清除当前令牌；并发请求不会共享 actor，后台事件写入只使用目标 Session 的内部租约。
 
 Business 仍挂载通用 API Gateway 启动所需的内部 Workspace registry，但授权表不开放任何 Workspace RPC。已知 Workspace 方法和未知方法都在进入下游实现前拒绝，因此这个内部依赖不会成为浏览器访问本地 Workspace 数据的旁路。

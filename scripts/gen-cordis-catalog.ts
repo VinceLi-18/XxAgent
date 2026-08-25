@@ -108,6 +108,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   web: 'web.md',
   workflowEngine: 'workflow.md',
   workspaceRegistry: 'workspace.md',
+  xagentProject: 'web-server.md',
   xagentPrincipal: 'web-server.md',
 }
 
@@ -525,6 +526,10 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   ConnectionRequestContext: 'XAgent connection authorization context is owned by packages/xagent/authorization/architecture.md',
   ResolvedConnectionRequestContext: 'XAgent authenticated connection context is owned by packages/xagent/connection-auth/architecture.md',
   RpcResult: 'wire result contract is owned by packages/host/apiproxy/src/api/rpc.ts',
+  XAgentProjectDetail: 'XAgent project response contract is owned by packages/xagent/project/architecture.md',
+  XAgentProjectRequestScope: 'XAgent project request identity is owned by packages/xagent/project/architecture.md',
+  XAgentWorkbenchBootstrap: 'XAgent workbench response contract is owned by packages/xagent/project/architecture.md',
+  XAgentWorkbenchContext: 'XAgent workbench selection contract is owned by packages/xagent/project/architecture.md',
   XAgentPrincipal: 'XAgent principal contract is owned by packages/xagent/principal/architecture.md',
   ApprovalRequestId: 'dynamic Plugin approval identity is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisErrorDetails: 'Cordis runtime error payload is owned by packages/extensions/cordis-host-runner/src/types.ts',

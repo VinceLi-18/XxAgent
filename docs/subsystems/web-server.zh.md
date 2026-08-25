@@ -143,4 +143,54 @@ abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal):
 ```
 
 Source: [`packages/xagent/principal/src/index.ts:55`](../../packages/xagent/principal/src/index.ts)
+
+<a id="ctxxagentproject--xagentprojectservice"></a>
+
+### `ctx.xagentProject` — `XAgentProjectService`
+
+将账号绑定请求转发给 FastAPI 的项目工作台服务。
+
+```ts cordis-catalog
+/**
+ * 在 Host 认证所得的单请求身份内执行完整 Remote 调用。
+ * @param scope - 物理连接绑定的可信 Principal 与用户令牌。
+ * @param operation - 下游完整 Remote 操作。
+ * @returns 下游结果；退出时自动清除请求身份。
+ */
+async withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * 读取当前账号的完整工作台状态。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 当前可见的账号、能力、上下文、项目和会话摘要。
+ */
+@Remote('bootstrap') async bootstrap(signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>
+
+/**
+ * 为当前账号选择跨项目工作台或单项目上下文。
+ * @param context - 目标工作台或项目上下文。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 提交选择后重新读取的完整工作台状态。
+ */
+@Remote('select-context') async selectContext(context: XAgentWorkbenchContext, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>
+
+/**
+ * 使用服务端能力检查为当前账号创建项目。
+ * @param name - 用户提交的项目名称。
+ * @param idempotencyKey - 当前创建意图的幂等键。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 创建项目后重新读取的完整工作台状态。
+ */
+@Remote('create-project') async createProject(name: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>
+
+/**
+ * 读取当前账号可见的一个项目详情。
+ * @param projectId - 当前账号请求查看的项目 UUID。
+ * @param signal - 物理请求的取消信号。
+ * @returns 与请求 Principal 账号一致的项目详情。
+ */
+@Remote('project') async project(projectId: string, signal?: AbortSignal): Promise<XAgentProjectDetail>
+```
+
+Source: [`packages/xagent/project/src/index.ts:60`](../../packages/xagent/project/src/index.ts)
 <!-- END GENERATED cordis-surface -->

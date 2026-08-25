@@ -9,6 +9,10 @@ import type {
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
+import type {
+  XAgentProjectRequestScope,
+  XAgentProjectScopeRunner,
+} from '@xagent/dsh-project'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
@@ -65,6 +69,17 @@ function sessionMethod(endpoint: string): string | undefined {
   return undefined
 }
 
+const PROJECT_METHODS = new Set(['bootstrap', 'select-context', 'create-project', 'project'])
+
+function projectNamespace(endpoint: string): boolean {
+  return endpoint.startsWith('xagentProject/') || endpoint.startsWith('xagentProject.')
+}
+
+function projectMethod(endpoint: string): string | undefined {
+  const method = endpoint.slice('xagentProject'.length + 1)
+  return PROJECT_METHODS.has(method) ? method : undefined
+}
+
 function sessionPermission(
   endpoint: string,
   values: Record<string, unknown> | undefined,
@@ -110,6 +125,10 @@ function unauthenticated<T>(): RpcResult<T> {
   return { ok: false, error: { code: 'unauthenticated', message: 'authentication required', details: {} } }
 }
 
+function tokenScoped(value: Partial<TokenScopedPersistence>): value is TokenScopedPersistence {
+  return typeof value.withUserToken === 'function'
+}
+
 function visibleSessionIds(value: unknown): ReadonlySet<string> {
   if (typeof value !== 'object' || value === null) throw new TypeError('invalid session visibility response')
   const sessions = (value as Record<string, unknown>).sessions
@@ -144,6 +163,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
   constructor(
     private readonly backend: XAgentBackend,
     private readonly persistence: TokenScopedPersistence,
+    private readonly project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
   ) {}
 
   async run<T>(
@@ -153,6 +173,28 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     signal: AbortSignal,
     operation: () => Promise<RpcResult<T>>,
   ): Promise<RpcResult<T>> {
+    if (projectNamespace(endpoint)) {
+      if (!authenticated(request)) return unauthenticated()
+      if (projectMethod(endpoint) === undefined) return unauthenticated()
+      const project = typeof this.project === 'function' ? this.project() : this.project
+      if (project === undefined) {
+        return { ok: false, error: { code: 'internal', message: 'project service unavailable', details: {} } }
+      }
+      const scope: XAgentProjectRequestScope = {
+        principal: {
+          actorId: request.principal.actorId,
+          role: request.principal.role,
+          permissionRevision: request.principal.permissionRevision,
+        },
+        userToken: request.userToken,
+        connectionId: request.connectionId,
+      }
+      try {
+        return await project.withRequest(scope, operation)
+      } catch {
+        return { ok: false, error: { code: 'internal', message: 'project operation unavailable', details: {} } }
+      }
+    }
     const method = sessionMethod(endpoint)
     const values = args(payload)
     const permission = sessionPermission(endpoint, values)
@@ -250,9 +292,14 @@ function objectFrame(value: unknown): Record<string, unknown> | undefined {
 export class XAgentAuthorizationService extends Service implements ConnectionRequestAuthorizer {
   private readonly implementation: XAgentAuthorization
 
-  constructor(ctx: Context, backend: XAgentBackend, persistence: TokenScopedPersistence) {
+  constructor(
+    ctx: Context,
+    backend: XAgentBackend,
+    persistence: TokenScopedPersistence,
+    project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
+  ) {
     super(ctx, 'connectionRequestAuthorizer')
-    this.implementation = new XAgentAuthorization(backend, persistence)
+    this.implementation = new XAgentAuthorization(backend, persistence, project)
   }
 
   /**
@@ -295,12 +342,13 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
 /** 安装 Business Session 授权；不改变未装载该插件的 Profile。 */
 export function apply(ctx: Context, config: Config): void {
   const persistence = ctx.sessionPersistence as typeof ctx.sessionPersistence & Partial<TokenScopedPersistence>
-  if (typeof persistence.withUserToken !== 'function') {
+  if (!tokenScoped(persistence)) {
     throw new Error('xagent authorization requires token-scoped session persistence')
   }
   new XAgentAuthorizationService(
     ctx,
     new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken }),
-    persistence as TokenScopedPersistence,
+    persistence,
+    () => ctx.get('xagentProject'),
   )
 }

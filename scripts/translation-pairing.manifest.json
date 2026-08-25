@@ -39,6 +39,8 @@
     "packages/xagent/delegation-token/architecture.md",
     "packages/xagent/principal/README.md",
     "packages/xagent/principal/architecture.md",
+    "packages/xagent/project/README.md",
+    "packages/xagent/project/architecture.md",
     "packages/xagent/session-persistence-api/README.md",
     "packages/xagent/session-persistence-api/architecture.md",
     "services/api/README.md"

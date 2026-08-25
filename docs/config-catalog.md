@@ -3037,7 +3037,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/authorization/src/index.ts:41`](../packages/xagent/authorization/src/index.ts)
+Source: [`packages/xagent/authorization/src/index.ts:45`](../packages/xagent/authorization/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 
@@ -3062,6 +3062,22 @@ export interface Config {
 ```
 
 Source: [`packages/xagent/connection-auth/src/index.ts:23`](../packages/xagent/connection-auth/src/index.ts)
+
+<a id="xagentdsh-project"></a>
+
+## `@xagent/dsh-project`
+
+```ts config-catalog
+/** XAgent Project Host plugin configuration. */
+export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
+  backendOrigin: string
+  /** Host 调用内部项目接口时使用的服务身份。 */
+  serviceToken: string
+}
+```
+
+Source: [`packages/xagent/project/src/index.ts:31`](../packages/xagent/project/src/index.ts)
 
 <a id="xagentdsh-session-persistence-api"></a>
 

@@ -2215,6 +2215,43 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
     ],
   },
+  {
+    key: 'xagentProject',
+    summary: '将账号绑定请求转发给 FastAPI 的项目工作台服务。',
+    description: '将账号绑定请求转发给 FastAPI 的项目工作台服务。',
+    methods: [
+      {
+        signature: 'async withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: '在 Host 认证所得的单请求身份内执行完整 Remote 调用。',
+        parameters: [{ name: 'scope', description: '物理连接绑定的可信 Principal 与用户令牌。' }, { name: 'operation', description: '下游完整 Remote 操作。' }],
+        returns: '下游结果；退出时自动清除请求身份。',
+      },
+      {
+        signature: '@Remote(\'bootstrap\') async bootstrap(signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>',
+        description: '读取当前账号的完整工作台状态。',
+        parameters: [{ name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 当前可见的账号、能力、上下文、项目和会话摘要。',
+      },
+      {
+        signature: '@Remote(\'select-context\') async selectContext(context: XAgentWorkbenchContext, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>',
+        description: '为当前账号选择跨项目工作台或单项目上下文。',
+        parameters: [{ name: 'context', description: '目标工作台或项目上下文。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 提交选择后重新读取的完整工作台状态。',
+      },
+      {
+        signature: '@Remote(\'create-project\') async createProject(name: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>',
+        description: '使用服务端能力检查为当前账号创建项目。',
+        parameters: [{ name: 'name', description: '用户提交的项目名称。' }, { name: 'idempotencyKey', description: '当前创建意图的幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 创建项目后重新读取的完整工作台状态。',
+      },
+      {
+        signature: '@Remote(\'project\') async project(projectId: string, signal?: AbortSignal): Promise<XAgentProjectDetail>',
+        description: '读取当前账号可见的一个项目详情。',
+        parameters: [{ name: 'projectId', description: '当前账号请求查看的项目 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '与请求 Principal 账号一致的项目详情。',
+      },
+    ],
+  },
 ]
 
 /** Every harness event, sorted by name. */
@@ -4714,6 +4751,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'XAgentPrincipal',
     declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
+  },
+  {
+    name: 'XAgentProjectRequestScope',
+    declaration: 'export interface XAgentProjectRequestScope {\n    readonly principal: {\n        readonly actorId: string;\n        readonly role: \'manager\' | \'specialist\';\n        readonly permissionRevision: number;\n    };\n    readonly userToken: string;\n    readonly connectionId: string;\n}',
   },
   {
     name: 'XAgentRole',

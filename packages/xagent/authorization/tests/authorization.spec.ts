@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { XAgentBackend, XAgentSessionBackend } from '@xagent/dsh-backend-client'
 import { XAgentBackendError } from '@xagent/dsh-backend-client'
+import type { XAgentProjectRequestScope, XAgentProjectScopeRunner } from '../../project/src/index.ts'
 import { describe, expect, test, vi } from 'vitest'
 import * as authorizationModule from '../src/index.ts'
 import {
@@ -44,6 +45,25 @@ function persistence(onToken?: (token: string) => void): TokenScopedPersistence 
 }
 
 const success = async (): Promise<RpcResult<string>> => ({ ok: true, value: 'ok' })
+
+function projectScope(onScope?: (scope: XAgentProjectRequestScope) => void): XAgentProjectScopeRunner & {
+  readonly active: () => XAgentProjectRequestScope | undefined
+} {
+  let active: XAgentProjectRequestScope | undefined
+  return {
+    active: () => active,
+    async withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<T>): Promise<T> {
+      if (active !== undefined) throw new Error('nested project request scope')
+      active = scope
+      onScope?.(scope)
+      try {
+        return await operation()
+      } finally {
+        active = undefined
+      }
+    },
+  }
+}
 
 describe('XAgent Session 授权', () => {
   test('模块插件入口只暴露带配置的安装函数', () => {
@@ -274,6 +294,78 @@ describe('XAgent Session 授权', () => {
     await expect(auth.run('host/describe', { args: {} }, context, new AbortController().signal, operation))
       .resolves.toEqual({ ok: true, value: 'ok' })
     expect(operation).toHaveBeenCalledOnce()
+  })
+
+  test.each([
+    'xagentProject/bootstrap',
+    'xagentProject/select-context',
+    'xagentProject/create-project',
+    'xagentProject/project',
+  ])('%s 在认证账号请求 scope 内执行完整 Remote operation', async (endpoint) => {
+    const scopes: XAgentProjectRequestScope[] = []
+    const scope = projectScope(value => scopes.push(value))
+    const operation = vi.fn(async (): Promise<RpcResult<string>> => {
+      expect(scope.active()).toEqual({
+        principal: {
+          actorId: '00000000-0000-0000-0000-000000000001',
+          role: 'specialist',
+          permissionRevision: 3,
+        },
+        userToken: 'alice-token',
+        connectionId: 'connection-1',
+      })
+      return { ok: true, value: 'ok' }
+    })
+    const auth = new XAgentAuthorization(backend(), persistence(), scope)
+
+    await expect(auth.run(endpoint, { args: {} }, context, new AbortController().signal, operation))
+      .resolves.toEqual({ ok: true, value: 'ok' })
+    expect(operation).toHaveBeenCalledOnce()
+    expect(scope.active()).toBeUndefined()
+    expect(scopes).toHaveLength(1)
+  })
+
+  test('项目 endpoint 在异常后清空 scope，缺服务或缺认证时失败关闭', async () => {
+    const scope = projectScope()
+    const failure = new Error('operation failed')
+    const auth = new XAgentAuthorization(backend(), persistence(), scope)
+    await expect(auth.run(
+      'xagentProject/bootstrap',
+      { args: {} },
+      context,
+      new AbortController().signal,
+      async () => { throw failure },
+    )).resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+    expect(scope.active()).toBeUndefined()
+
+    const operation = vi.fn(success)
+    const missing = new XAgentAuthorization(backend(), persistence())
+    await expect(missing.run('xagentProject/bootstrap', {}, context, new AbortController().signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+    await expect(auth.run(
+      'xagentProject/bootstrap',
+      {},
+      { connectionId: 'anonymous' },
+      new AbortController().signal,
+      operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test('未知项目方法拒绝，点式 endpoint 与普通 Profile endpoint 保持明确边界', async () => {
+    const scope = projectScope()
+    const operation = vi.fn(success)
+    const auth = new XAgentAuthorization(backend(), persistence(), scope)
+    await expect(auth.run(
+      'xagentProject.unknown', {}, context, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentProject.bootstrap', {}, context, new AbortController().signal, operation,
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+    await expect(auth.run(
+      'host/describe', {}, context, new AbortController().signal, operation,
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+    expect(operation).toHaveBeenCalledTimes(2)
   })
 
   test.each([

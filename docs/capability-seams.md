@@ -45,13 +45,15 @@ flowchart LR
   pkg_hooks_claude_code["hooks-claude-code"]
   pkg_hooks_codex["hooks-codex"]
   pkg_xagent_authorization["xagent-authorization"]
-  svc_connectionRequestAuthorizer["ctx.connectionRequestAuthorizer<br/>Connection-bound Session authorization"]
+  svc_connectionRequestAuthorizer["ctx.connectionRequestAuthorizer<br/>Connection-bound XAgent authorization"]
   pkg_apiproxy["apiproxy"]
   pkg_xagent_connection_auth["xagent-connection-auth"]
   svc_connectionRequestContextResolver["ctx.connectionRequestContextResolver<br/>Browser connection authentication"]
   pkg_connection["connection"]
   pkg_xagent_principal["xagent-principal"]
   svc_xagentPrincipal["ctx.xagentPrincipal<br/>XAgent Principal seam"]
+  pkg_xagent_project["xagent-project"]
+  svc_xagentProject["ctx.xagentProject<br/>XAgent project workbench Remote"]
   pkg_settings["settings"]
   svc_settings["ctx.settings<br/>User-settings seam"]
   pkg_settings_file["settings-file"]
@@ -303,6 +305,7 @@ flowchart LR
   pkg_xagent_authorization --> svc_connectionRequestAuthorizer
   pkg_xagent_connection_auth --> svc_connectionRequestContextResolver
   pkg_xagent_principal --> svc_xagentPrincipal
+  pkg_xagent_project --> svc_xagentProject
   svc_agentDefaultModel --> pkg_headless
   svc_agentDefaultModel --> pkg_host_apiproxy
   svc_agentLoop --> pkg_agent_spine_demo
@@ -417,6 +420,8 @@ flowchart LR
   svc_workflowEngine --> pkg_tool_ralph
   svc_workflowEngine --> pkg_tool_workflow
   svc_workspaceRegistry --> pkg_apiproxy
+  svc_xagentProject --> pkg_api_gateway
+  svc_xagentProject --> pkg_xagent_authorization
   svc_fs -. event gate .-> pkg_fs_observation_policy
 ```
 
@@ -431,9 +436,10 @@ flowchart LR
 | `ctx.typert` | `core` | [`typert-registry`](../packages/typert/registry) | - | [`typert-loader`](../packages/typert/loader), [`api-gateway`](../packages/api/gateway) | - | Plugins register live zod contributions directly or through dsh-typert-loader; the API gateway consumes invocation descriptors and providers, while other runtime consumers query schemas and reflection metadata at their own edges. |
 | `ctx.typertGateway` | `core` | [`api-gateway`](../packages/api/gateway) | - | - | - | Associates generated Remote descriptors with live Cordis services, resolves registered identities, and exposes unary calls through the shared Connection RPC carrier. |
 | `ctx.sessionPersistence` | `seam` | [`session-persistence`](../packages/session/session-persistence) | [`session-persistence-jsonl`](../packages/session/session-persistence-jsonl), [`session-persistence-sqlite`](../packages/session/session-persistence-sqlite) | [`agent-loop`](../packages/core/agent-loop), [`tool-bash`](../packages/shell/tool-bash), [`hooks-claude-code`](../packages/hooks/hooks-claude-code), [`hooks-codex`](../packages/hooks/hooks-codex), [`session-query`](../packages/session-query/session-query), [`session-query-sqlite`](../packages/session-query/session-query-sqlite), [`message-feedback`](../packages/feedback/message-feedback) | - | Backends persist the same SessionEvent vocabulary; apps choose a backend at composition time. |
-| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy` | - | Validates a Host-created Principal against a closed method table and runs admitted Session operations inside an explicit user-token scope. |
+| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy` | - | Validates a Host-created Principal against closed Session and project method tables, then runs admitted operations inside their explicit request scopes. |
 | `ctx.connectionRequestContextResolver` | `core` | `xagent-connection-auth` | - | `connection` | - | Exchanges Host-managed cookies for a FastAPI-introspected Principal bound to the physical HTTP or WebSocket connection. |
 | `ctx.xagentPrincipal` | `seam` | `xagent-principal` | - | - | - | Defines the immutable validated actor contract; browser payloads and identity-like headers cannot construct a Principal. |
+| `ctx.xagentProject` | `core` | `xagent-project` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | Reads the user token only from the active connection request scope and forwards four fixed workbench operations to FastAPI. |
 | `ctx.settings` | `seam` | [`settings`](../packages/settings/settings) | [`settings-file`](../packages/settings/settings-file) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | Plugins register namespace schemas and resolve layered values; providers store the raw document. The LLM adapters register their entry config as the composition base under the user section; the web gateway serves redacted layered descriptors and writes the user layer. |
 | `ctx.credentials` | `seam` | [`credentials`](../packages/credentials/credentials) | [`credentials-local`](../packages/credentials/credentials-local) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | Configuration carries references to secrets; providers own the values. Consumers resolve per operation, so a rotated credential reaches the very next request; the web gateway exposes value-free views and write-only storage. |
 | `ctx.sessionTelemetry` | `seam` | [`session-telemetry`](../packages/session/session-telemetry) | [`session-telemetry-otel`](../packages/session/session-telemetry-otel) | - | - | The seam captures, redacts, and hands session records to one backend; nothing else consumes the service — its output leaves the process. |

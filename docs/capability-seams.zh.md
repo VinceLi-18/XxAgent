@@ -47,13 +47,15 @@ flowchart LR
   pkg_hooks_claude_code["hooks-claude-code"]
   pkg_hooks_codex["hooks-codex"]
   pkg_xagent_authorization["xagent-authorization"]
-  svc_connectionRequestAuthorizer["ctx.connectionRequestAuthorizer<br/>Connection-bound Session authorization"]
+  svc_connectionRequestAuthorizer["ctx.connectionRequestAuthorizer<br/>Connection-bound XAgent authorization"]
   pkg_apiproxy["apiproxy"]
   pkg_xagent_connection_auth["xagent-connection-auth"]
   svc_connectionRequestContextResolver["ctx.connectionRequestContextResolver<br/>Browser connection authentication"]
   pkg_connection["connection"]
   pkg_xagent_principal["xagent-principal"]
   svc_xagentPrincipal["ctx.xagentPrincipal<br/>XAgent Principal seam"]
+  pkg_xagent_project["xagent-project"]
+  svc_xagentProject["ctx.xagentProject<br/>XAgent project workbench Remote"]
   pkg_settings["settings"]
   svc_settings["ctx.settings<br/>User-settings seam"]
   pkg_settings_file["settings-file"]
@@ -305,6 +307,7 @@ flowchart LR
   pkg_xagent_authorization --> svc_connectionRequestAuthorizer
   pkg_xagent_connection_auth --> svc_connectionRequestContextResolver
   pkg_xagent_principal --> svc_xagentPrincipal
+  pkg_xagent_project --> svc_xagentProject
   svc_agentDefaultModel --> pkg_headless
   svc_agentDefaultModel --> pkg_host_apiproxy
   svc_agentLoop --> pkg_agent_spine_demo
@@ -419,6 +422,8 @@ flowchart LR
   svc_workflowEngine --> pkg_tool_ralph
   svc_workflowEngine --> pkg_tool_workflow
   svc_workspaceRegistry --> pkg_apiproxy
+  svc_xagentProject --> pkg_api_gateway
+  svc_xagentProject --> pkg_xagent_authorization
   svc_fs -. event gate .-> pkg_fs_observation_policy
 ```
 
@@ -433,9 +438,10 @@ flowchart LR
 | `ctx.typert` | `core` | [`typert-registry`](../packages/typert/registry) | - | [`typert-loader`](../packages/typert/loader), [`api-gateway`](../packages/api/gateway) | - | 插件直接或通过 dsh-typert-loader 注册实时 zod 贡献；API 网关消费调用描述符和提供方，其他运行时消费方则在各自边界查询 schema 与反射元数据。 |
 | `ctx.typertGateway` | `core` | [`api-gateway`](../packages/api/gateway) | - | - | - | 将生成的 Remote 描述符与实时 Cordis 服务关联，解析已注册的身份，并通过共享的 Connection RPC 载体提供一元调用。 |
 | `ctx.sessionPersistence` | `seam` | [`session-persistence`](../packages/session/session-persistence) | [`session-persistence-jsonl`](../packages/session/session-persistence-jsonl), [`session-persistence-sqlite`](../packages/session/session-persistence-sqlite) | [`agent-loop`](../packages/core/agent-loop), [`tool-bash`](../packages/shell/tool-bash), [`hooks-claude-code`](../packages/hooks/hooks-claude-code), [`hooks-codex`](../packages/hooks/hooks-codex), [`session-query`](../packages/session-query/session-query), [`session-query-sqlite`](../packages/session-query/session-query-sqlite), [`message-feedback`](../packages/feedback/message-feedback) | - | 各后端持久化同一套 SessionEvent 词汇；应用在组合时选择后端。 |
-| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy` | - | 对照封闭方法表校验 Host 创建的 Principal，并在显式用户令牌作用域内运行获准的 Session 操作。 |
+| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy` | - | 对照封闭的 Session 与项目方法表校验 Host 创建的 Principal，再在对应的显式请求作用域内运行获准的操作。 |
 | `ctx.connectionRequestContextResolver` | `core` | `xagent-connection-auth` | - | `connection` | - | 将 Host 管理的 Cookie 交换为 FastAPI introspection 后、绑定到物理 HTTP 或 WebSocket 连接的 Principal。 |
 | `ctx.xagentPrincipal` | `seam` | `xagent-principal` | - | - | - | 定义不可变且经过校验的 actor 契约；浏览器 payload 和身份外观请求头不能构造 Principal。 |
+| `ctx.xagentProject` | `core` | `xagent-project` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | 只从当前连接请求作用域读取用户令牌，并将 4 个固定工作台操作转发给 FastAPI。 |
 | `ctx.settings` | `seam` | [`settings`](../packages/settings/settings) | [`settings-file`](../packages/settings/settings-file) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | 插件注册命名空间 schema 并解析分层值；提供方存储原始文档。LLM（大语言模型）适配器在用户分区下将其入口配置注册为组合基础；Web 网关提供经过脱敏的分层描述符，并写入用户层。 |
 | `ctx.credentials` | `seam` | [`credentials`](../packages/credentials/credentials) | [`credentials-local`](../packages/credentials/credentials-local) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | 配置携带对机密信息的引用；提供方拥有实际值。消费方按操作解析，因此轮换后的凭据会在紧接着的下一次请求中生效；Web 网关提供不含实际值的视图和只写存储。 |
 | `ctx.sessionTelemetry` | `seam` | [`session-telemetry`](../packages/session/session-telemetry) | [`session-telemetry-otel`](../packages/session/session-telemetry-otel) | - | - | 该 seam 捕获会话记录、进行脱敏并交给一个后端；没有其他组件消费该服务，其输出会离开当前进程。 |
