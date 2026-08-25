@@ -39,7 +39,7 @@ JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:***@127.0.0.1:55432/xagent_ap
 ## 风险
 
 - 当前 macOS 宿主是 arm64 Python，但已存在的 Homebrew 位于 `/usr/local` 且提供 x86_64 `libmagic`；动态库无法由该 Python 加载。测试仍验证稳定 HTML/SVG/script/text 分类和未知二进制回退，Docker 的 Debian 镜像安装原生 `libmagic1` 后使用 `python-magic`。未在本任务启动真实 Docker MinIO/ClamAV；外部边界使用可控流与协议响应，数据库状态和失败回滚使用真实 PostgreSQL。
-- 最终 bucket 的版本化是部署前置条件。API 新建 bucket 时启用并复验版本化；现有 bucket 为 Off 或 Suspended、晋级前状态漂移或复制没有返回目标版本 ID 时均失败关闭。补偿删除若因 MinIO 不可用而失败，异常会继续上抛，但本任务没有新增持久清理队列；需要运维依据对象版本记录处理这类外部存储故障。
+- 最终 bucket 的版本化是部署前置条件。API 新建 bucket 时启用并复验版本化；现有 bucket 为 Off 或 Suspended、晋级前状态漂移或复制没有返回目标版本 ID 时均失败关闭。补偿删除因 MinIO 不可用而失败时，独立 cleanup 队列持久保存精确 key 与版本 ID；第五次失败仍保留身份并进入 `dead`，需要运维处置。
 - Task 5 的查询、读取地址与审计不在本任务实现；本任务只更新现有处理 Agent Note 与 API 运行契约。
 
 ## 修复轮 1
@@ -58,3 +58,20 @@ MIME 分类在调用 libmagic 前只接受明确 HTML、SVG、shell shebang 或�
 - 复制前状态漂移 RED：将 bucket 状态设为 Suspended 时，旧实现仍调用 `copy_object()`；加入复制前复验后该负例通过。
 - GREEN：修复聚焦命令 50 项通过；原 49 项 Task 4 命令加入新负控后 62 项通过；原 75 项 Task 3 CLI、权限、schema 与上传命令加入正式 resolver 覆盖后 76 项通过。
 - mutation：增加第二次正文读取使一次流测试失败；把 ClamAV 非 FOUND 结果视为 clean 使协议错误测试失败；分别删除发布 token 与 expiry 条件会使旧 worker错误发布 clean；把目标版本清理改回 `version_id=None` 会同时杀死双 worker 早到和晚到交错测试。每项 mutation 均已恢复。
+
+## 修复轮 2
+
+最终对象版本的删除所有权由独立 `artifact_object_cleanup_jobs` 持久队列接管。记录以随机 ID 为主键，以非空 `(object_key, version_id)` 唯一；`ready | leased | succeeded | dead`、0 到 5 次尝试、下次执行时间和成对租约字段由数据库约束。worker 角色只能插入 cleanup 身份、读取记录并更新租约状态字段，不能改写 object key 或版本 ID；应用角色不能读取或领取 cleanup。
+
+cleanup 使用独立的 `FOR UPDATE SKIP LOCKED` 领取、heartbeat、finish 和 retry 操作，所有关闭操作同时匹配 job id、token 和未过期时间。正式 worker 每轮最多领取一个正文 Job 和一个 cleanup Job；cleanup 只调用 `remove_object(key, version_id=...)`，暂时失败按 5/10/20/40 秒退避，第五次进入 `dead` 且不清空对象身份。取消会等待阻塞删除返回后再传播，沿用正文处理器的收敛语义。
+
+发布失败或失租后的即时精确删除若失败，处理器先幂等写入 cleanup 再释放本地所有权。发布事务异常仍作为主异常传播，并附带已排队的删除错误；若 cleanup 持久化也失败，`BaseExceptionGroup` 同时保存 publication 与稳定的 handoff 异常，后者保留删除和数据库错误。发布成功后的 staging 删除失败只记录日志，Version 与正文 Job 保持 `clean + succeeded`，staging 由既有生命周期回收。
+
+### 修复轮 2 TDD
+
+- cleanup 队列首轮 RED 在导入缺失的 `ArtifactObjectCleanupJob` 时 collection error；schema/model/service 最小实现后 9 项通过。
+- 正式 CLI 与双队列 RED 证明 worker 不领取 cleanup 且没有 cleanup processor 参数；实现后正式 CLI 进入真实删除处理器，受控存储故障写入 `remove-failed`，单轮正文和 cleanup 各处理一项。
+- publication 与精确删除同时失败的 RED 证明删除异常覆盖主异常；修复后 publication 异常保持主异常，cleanup 行持久保存目标身份。持久化也失败的负例同时观察 publication、删除与数据库三项事实。
+- 聚焦真实 PostgreSQL 回归覆盖 cleanup、正文处理、Task 3 租约、ClamAV、MinIO、正式 CLI、worker 权限和 lifecycle schema，共 122 项通过；资料上传 API 回归 34 项通过。
+- mutation 分别删除 cleanup token 条件、删除持久 handoff、让 staging 删除异常重新外泄；陈旧租约、publication cleanup 行和 processor 直接入口测试均按预期失败，恢复后纳入最终回归。
+- 文档限定门禁通过：Agent Note 格式 555 项、Markdown 软换行 1924 文件、文档预算 9 项、全量翻译配对 948 对。owning Agent Note 与 API README 是 manifest 明确列出的 XAgent 中文单语例外；同主题 active 记录只有该 proposed Note，因 Task 5 尚未完成而保留，不归档或拒绝其他记录。

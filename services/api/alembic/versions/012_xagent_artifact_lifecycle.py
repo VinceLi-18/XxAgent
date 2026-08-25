@@ -270,6 +270,59 @@ def upgrade() -> None:
     )
     op.execute("ALTER TABLE artifact_processing_jobs ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE artifact_processing_jobs FORCE ROW LEVEL SECURITY")
+    op.create_table(
+        "artifact_object_cleanup_jobs",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("object_key", sa.String(length=512), nullable=False),
+        sa.Column("version_id", sa.String(length=255), nullable=False),
+        sa.Column("status", sa.String(length=16), nullable=False, server_default=sa.text("'ready'")),
+        sa.Column("attempts", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("lease_token", sa.UUID(), nullable=True),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("failure_code", sa.String(length=64), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
+        sa.CheckConstraint(
+            "length(btrim(object_key)) > 0",
+            name="ck_artifact_object_cleanup_job_object_key",
+        ),
+        sa.CheckConstraint(
+            "length(btrim(version_id)) > 0",
+            name="ck_artifact_object_cleanup_job_version_id",
+        ),
+        sa.CheckConstraint(
+            "attempts BETWEEN 0 AND 5",
+            name="ck_artifact_object_cleanup_job_attempts",
+        ),
+        sa.CheckConstraint(
+            "status IN ('ready', 'leased', 'succeeded', 'dead')",
+            name="ck_artifact_object_cleanup_job_status",
+        ),
+        sa.CheckConstraint(
+            "(status = 'leased') = "
+            "(lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="ck_artifact_object_cleanup_job_lease",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "object_key",
+            "version_id",
+            name="uq_artifact_object_cleanup_job_identity",
+        ),
+    )
+    op.execute("ALTER TABLE artifact_object_cleanup_jobs ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE artifact_object_cleanup_jobs FORCE ROW LEVEL SECURITY")
 
     artifact_scope = (
         "owner_id = NULLIF(current_setting('app.actor_id', true), '')::uuid "
@@ -307,6 +360,19 @@ def upgrade() -> None:
     )
     op.execute(
         f"CREATE POLICY artifact_worker_job_update ON artifact_processing_jobs "
+        f"FOR UPDATE TO {worker_role} USING (true) WITH CHECK (true)"
+    )
+    op.execute(
+        f"CREATE POLICY artifact_worker_cleanup_insert ON artifact_object_cleanup_jobs "
+        f"FOR INSERT TO {worker_role} WITH CHECK (status = 'ready' AND attempts = 0 "
+        "AND lease_token IS NULL AND lease_expires_at IS NULL AND failure_code IS NULL)"
+    )
+    op.execute(
+        f"CREATE POLICY artifact_worker_cleanup_read ON artifact_object_cleanup_jobs "
+        f"FOR SELECT TO {worker_role} USING (true)"
+    )
+    op.execute(
+        f"CREATE POLICY artifact_worker_cleanup_update ON artifact_object_cleanup_jobs "
         f"FOR UPDATE TO {worker_role} USING (true) WITH CHECK (true)"
     )
     op.execute(
@@ -349,6 +415,16 @@ def upgrade() -> None:
     op.execute(
         "GRANT UPDATE (status, attempts, next_attempt_at, lease_token, lease_expires_at, "
         f"failure_code, updated_at) ON artifact_processing_jobs TO {worker_role}"
+    )
+    op.execute(
+        "GRANT INSERT (id, object_key, version_id, status, attempts, next_attempt_at, "
+        "lease_token, lease_expires_at, failure_code, updated_at), "
+        "SELECT (id, object_key, version_id, status, attempts, next_attempt_at, "
+        f"lease_token, lease_expires_at) ON artifact_object_cleanup_jobs TO {worker_role}"
+    )
+    op.execute(
+        "GRANT UPDATE (status, attempts, next_attempt_at, lease_token, lease_expires_at, "
+        f"failure_code, updated_at) ON artifact_object_cleanup_jobs TO {worker_role}"
     )
     op.execute(
         "GRANT SELECT (id, artifact_id, uploaded_by_id, declared_size, actual_size, "
@@ -395,6 +471,7 @@ def downgrade() -> None:
         f"REVOKE INSERT ON artifact_processing_jobs FROM {application_role}"
     )
     op.execute(f"REVOKE ALL PRIVILEGES ON artifact_processing_jobs FROM {worker_role}")
+    op.execute(f"REVOKE ALL PRIVILEGES ON artifact_object_cleanup_jobs FROM {worker_role}")
     op.execute(f"REVOKE ALL PRIVILEGES ON artifacts, artifact_versions, staging_uploads, audit_events FROM {worker_role}")
     op.execute(f"REVOKE USAGE ON SCHEMA public FROM {worker_role}")
 
@@ -418,6 +495,12 @@ def downgrade() -> None:
     op.execute("ALTER TABLE artifact_processing_jobs NO FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE artifact_processing_jobs DISABLE ROW LEVEL SECURITY")
     op.drop_table("artifact_processing_jobs")
+    op.execute("DROP POLICY artifact_worker_cleanup_update ON artifact_object_cleanup_jobs")
+    op.execute("DROP POLICY artifact_worker_cleanup_read ON artifact_object_cleanup_jobs")
+    op.execute("DROP POLICY artifact_worker_cleanup_insert ON artifact_object_cleanup_jobs")
+    op.execute("ALTER TABLE artifact_object_cleanup_jobs NO FORCE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE artifact_object_cleanup_jobs DISABLE ROW LEVEL SECURITY")
+    op.drop_table("artifact_object_cleanup_jobs")
 
     op.execute("DROP TRIGGER artifact_version_scan_status_transition ON artifact_versions")
     op.execute("DROP FUNCTION public.enforce_artifact_scan_status_transition()")

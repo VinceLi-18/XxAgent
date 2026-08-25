@@ -9,15 +9,20 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.models.artifact import ArtifactProcessingJob, ArtifactVersion
+from app.models.artifact import (
+    ArtifactObjectCleanupJob,
+    ArtifactProcessingJob,
+    ArtifactVersion,
+)
 from app.services import artifact_processing
 from app.services.artifact_jobs import ArtifactJobLease, claim_due_job
 from app.services.artifact_processing import ArtifactInspection, process_artifact_job
 from app.services.malware import MalwareServiceUnavailable, MalwareVerdict
 from app.storage.minio_gateway import ObjectMetadata
+from app.worker import _process_lease, _run_worker_loop
 
 EICAR = (
     b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!"
@@ -47,6 +52,8 @@ class ControlledGateway:
         self.copy_started: threading.Event | None = None
         self.copy_release: threading.Event | None = None
         self.stream_error: Exception | None = None
+        self.final_remove_error: Exception | None = None
+        self.staging_remove_error: Exception | None = None
 
     def require_versioning(self) -> None:
         pass
@@ -84,6 +91,10 @@ class ControlledGateway:
         return "target-version-1"
 
     def remove(self, key: str, version_id: str | None = None) -> None:
+        if version_id is not None and self.final_remove_error is not None:
+            raise self.final_remove_error
+        if key.startswith("staging/") and self.staging_remove_error is not None:
+            raise self.staging_remove_error
         self.removed.append(key)
         self.removal_versions.append((key, version_id))
         self.objects.pop(key, None)
@@ -152,6 +163,7 @@ class VersionedPromotionGateway(ControlledGateway):
         self.versioned_removals: list[tuple[str, str | None]] = []
         self._copy_lock = threading.Lock()
         self._copy_count = 0
+        self.fail_versioned_removals = False
 
     def require_versioning(self) -> None:
         pass
@@ -182,6 +194,8 @@ class VersionedPromotionGateway(ControlledGateway):
             super().remove(key)
             return
         self.versioned_removals.append((key, version_id))
+        if self.fail_versioned_removals:
+            raise RuntimeError("cleanup-failed")
         versions = self.final_versions[key]
         if version_id is None:
             versions.pop()
@@ -565,6 +579,106 @@ async def test_database_publication_failure_removes_the_created_final_object(
 
 
 @pytest.mark.anyio
+async def test_publication_error_remains_primary_after_cleanup_is_persisted(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded, lease = await _seed_claimed_job(
+        seeded_database, worker_engine, actor_id=alice.id, body=b"content"
+    )
+    gateway = ControlledGateway(seeded)
+    gateway.final_remove_error = RuntimeError("cleanup-failed")
+    _install_dependencies(monkeypatch, worker_engine, gateway, ConsumingScanner())
+
+    async def fail_publication(*_args, **_kwargs):
+        raise ValueError("publish-failed")
+
+    monkeypatch.setattr(artifact_processing, "publish_clean_job", fail_publication)
+
+    with pytest.raises(ValueError, match="publish-failed") as raised:
+        await process_artifact_job(lease)
+
+    assert any("cleanup-failed" in note for note in raised.value.__notes__)
+    async with AsyncSession(seeded_database) as session:
+        cleanup = await session.scalar(select(ArtifactObjectCleanupJob))
+    final_key = f"artifacts/{seeded.artifact_id}/{seeded.version_id}"
+    assert cleanup is not None
+    assert (cleanup.object_key, cleanup.version_id, cleanup.status) == (
+        final_key,
+        "target-version-1",
+        "ready",
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("entry", ("processor", "worker"))
+async def test_successful_publication_ignores_staging_cleanup_failure(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+    entry: str,
+) -> None:
+    seeded, lease = await _seed_claimed_job(
+        seeded_database, worker_engine, actor_id=alice.id, body=b"content"
+    )
+    gateway = ControlledGateway(seeded)
+    gateway.staging_remove_error = RuntimeError("staging-cleanup-failed")
+    _install_dependencies(monkeypatch, worker_engine, gateway, ConsumingScanner())
+
+    if entry == "processor":
+        await process_artifact_job(lease)
+    else:
+        await _process_lease(
+            async_sessionmaker(worker_engine, expire_on_commit=False),
+            lease,
+            processor=process_artifact_job,
+            processor_resolver=lambda: process_artifact_job,
+            heartbeat_seconds=20,
+            lease_seconds=60,
+        )
+
+    version, job = await _load_state(seeded_database, seeded)
+    assert version.scan_status == "clean"
+    assert job.status == "succeeded" and job.failure_code is None
+
+
+@pytest.mark.anyio
+async def test_cleanup_handoff_failure_preserves_publication_and_cleanup_facts(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded, lease = await _seed_claimed_job(
+        seeded_database, worker_engine, actor_id=alice.id, body=b"content"
+    )
+    gateway = ControlledGateway(seeded)
+    gateway.final_remove_error = RuntimeError("cleanup-failed")
+    _install_dependencies(monkeypatch, worker_engine, gateway, ConsumingScanner())
+
+    async def fail_publication(*_args, **_kwargs):
+        raise ValueError("publish-failed")
+
+    async def fail_handoff(*_args, **_kwargs):
+        raise OSError("handoff-failed")
+
+    monkeypatch.setattr(artifact_processing, "publish_clean_job", fail_publication)
+    monkeypatch.setattr(artifact_processing, "enqueue_cleanup", fail_handoff)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await process_artifact_job(lease)
+
+    publication, handoff = raised.value.exceptions
+    assert isinstance(publication, ValueError) and str(publication) == "publish-failed"
+    assert isinstance(handoff, artifact_processing.ArtifactCleanupHandoffError)
+    assert str(handoff.cleanup_error) == "cleanup-failed"
+    assert str(handoff.persistence_error) == "handoff-failed"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("first_copy", ("early", "late"))
 async def test_stale_worker_removes_only_its_target_version_after_new_worker_publishes(
     seeded_database: AsyncEngine,
@@ -600,6 +714,68 @@ async def test_stale_worker_removes_only_its_target_version_after_new_worker_pub
     with pytest.raises(KeyError):
         gateway.read_version(final_key, first_version)
     assert gateway.versioned_removals == [(final_key, first_version)]
+
+
+@pytest.mark.anyio
+async def test_cleanup_worker_removes_w1_version_without_harming_published_w2(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded, first_lease = await _seed_claimed_job(
+        seeded_database,
+        worker_engine,
+        actor_id=alice.id,
+        body=b"version-owned-content",
+    )
+    gateway = VersionedPromotionGateway(seeded, first_copy="early")
+    gateway.fail_versioned_removals = True
+    _install_dependencies(monkeypatch, worker_engine, gateway, ConsumingScanner())
+
+    first_worker = asyncio.create_task(process_artifact_job(first_lease))
+    assert await asyncio.to_thread(gateway.first_copy_reached.wait, 2)
+    second_lease = await _replace_lease(seeded_database, first_lease)
+    await process_artifact_job(second_lease)
+    gateway.release_first_copy.set()
+    await first_worker
+
+    async with AsyncSession(seeded_database) as session:
+        cleanup = await session.scalar(select(ArtifactObjectCleanupJob))
+    assert cleanup is not None and cleanup.version_id == gateway.copy_versions[1]
+    final_key = f"artifacts/{seeded.artifact_id}/{seeded.version_id}"
+    second_version = gateway.copy_versions[2]
+    assert gateway.current_version(final_key) == second_version
+
+    gateway.fail_versioned_removals = False
+
+    async def cleanup_processor(lease) -> None:
+        await asyncio.to_thread(
+            gateway.remove,
+            lease.object_key,
+            version_id=lease.version_id,
+        )
+
+    sessions = async_sessionmaker(worker_engine, expire_on_commit=False)
+    await _run_worker_loop(
+        sessions,
+        once=True,
+        processor=lambda _lease: None,
+        cleanup_processor=cleanup_processor,
+        lease_seconds=60,
+        heartbeat_seconds=20,
+        poll_seconds=0,
+    )
+
+    async with AsyncSession(seeded_database) as session:
+        cleanup = await session.get(ArtifactObjectCleanupJob, cleanup.id)
+    version, job = await _load_state(seeded_database, seeded)
+    assert cleanup is not None and cleanup.status == "succeeded"
+    assert version.scan_status == "clean" and job.status == "succeeded"
+    assert gateway.current_version(final_key) == second_version
+    assert gateway.read_version(final_key, second_version) == seeded.body
+    with pytest.raises(KeyError):
+        gateway.read_version(final_key, gateway.copy_versions[1])
 
 
 def test_artifact_inspection_is_immutable_processing_output() -> None:

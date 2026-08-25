@@ -75,6 +75,55 @@ async def test_application_role_cannot_claim_artifact_jobs(
 
 
 @pytest.mark.anyio
+async def test_only_worker_role_can_manage_cleanup_rows(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    application_role: str,
+) -> None:
+    cleanup_id = uuid4()
+    key = f"artifacts/{uuid4()}/{uuid4()}"
+    async with worker_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_object_cleanup_jobs "
+                "(id, object_key, version_id, status, attempts, next_attempt_at) "
+                "VALUES (:id, :key, 'target-version-1', 'ready', 0, CURRENT_TIMESTAMP)"
+            ),
+            {"id": cleanup_id, "key": key},
+        )
+        await connection.execute(
+            text(
+                "UPDATE artifact_object_cleanup_jobs SET status = 'leased', attempts = 1, "
+                "lease_token = :token, lease_expires_at = CURRENT_TIMESTAMP + INTERVAL '1 minute' "
+                "WHERE id = :id"
+            ),
+            {"id": cleanup_id, "token": uuid4()},
+        )
+
+    with pytest.raises(ProgrammingError) as identity_update:
+        async with worker_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE artifact_object_cleanup_jobs SET version_id = 'forged' "
+                    "WHERE id = :id"
+                ),
+                {"id": cleanup_id},
+            )
+    assert identity_update.value.orig.sqlstate == "42501"
+
+    async with seeded_database.begin() as connection:
+        set_role = await connection.scalar(
+            text("SELECT format('SET LOCAL ROLE %I', CAST(:role AS text))"),
+            {"role": application_role},
+        )
+    with pytest.raises(ProgrammingError) as app_read:
+        async with seeded_database.begin() as connection:
+            await connection.execute(text(set_role))
+            await connection.execute(text("SELECT id FROM artifact_object_cleanup_jobs"))
+    assert app_read.value.orig.sqlstate == "42501"
+
+
+@pytest.mark.anyio
 async def test_application_role_can_enqueue_but_cannot_read_or_update_artifact_jobs(
     seeded_database: AsyncEngine,
     application_role: str,

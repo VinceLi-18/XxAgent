@@ -20,6 +20,9 @@ def _alembic_config(database_url: str) -> Config:
 
 async def _require_lifecycle_schema(engine: AsyncEngine) -> None:
     required = {
+        "artifact_object_cleanup_jobs",
+        "artifact_object_cleanup_jobs.object_key",
+        "artifact_object_cleanup_jobs.version_id",
         "artifact_processing_jobs",
         "artifact_versions.actual_size",
         "artifact_versions.declared_size",

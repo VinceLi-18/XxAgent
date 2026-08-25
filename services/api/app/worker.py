@@ -7,6 +7,13 @@ from typing import TypeAlias, TypeVar
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.worker_config import ArtifactWorkerSettings
+from app.services.artifact_cleanup_jobs import (
+    ArtifactCleanupLease,
+    claim_due_cleanup,
+    finish_cleanup,
+    heartbeat_cleanup,
+    retry_cleanup,
+)
 from app.services.artifact_jobs import (
     ArtifactJobLease,
     claim_due_job,
@@ -21,6 +28,8 @@ DEFAULT_POLL_SECONDS = 1
 
 ArtifactProcessor: TypeAlias = Callable[[ArtifactJobLease], Awaitable[None]]
 ArtifactProcessorResolver: TypeAlias = Callable[[], ArtifactProcessor]
+ArtifactCleanupProcessor: TypeAlias = Callable[[ArtifactCleanupLease], Awaitable[None]]
+ArtifactCleanupProcessorResolver: TypeAlias = Callable[[], ArtifactCleanupProcessor]
 _TaskResult = TypeVar("_TaskResult")
 
 
@@ -28,6 +37,12 @@ def _resolve_processor() -> ArtifactProcessor:
     from app.services.artifact_processing import process_artifact_job
 
     return process_artifact_job
+
+
+def _resolve_cleanup_processor() -> ArtifactCleanupProcessor:
+    from app.services.artifact_processing import process_artifact_cleanup_job
+
+    return process_artifact_cleanup_job
 
 
 async def _wait_for_stop(stop_event: asyncio.Event, timeout: float) -> bool:
@@ -55,6 +70,28 @@ async def _heartbeat_lease(
         async with sessions() as session:
             async with session.begin():
                 owned = await heartbeat_job(
+                    session,
+                    lease,
+                    now=datetime.now(UTC),
+                    lease_seconds=lease_seconds,
+                )
+        if not owned:
+            return False
+    return True
+
+
+async def _heartbeat_cleanup_lease(
+    sessions: async_sessionmaker[AsyncSession],
+    lease: ArtifactCleanupLease,
+    *,
+    stop_event: asyncio.Event,
+    heartbeat_seconds: float,
+    lease_seconds: float,
+) -> bool:
+    while not await _wait_for_stop(stop_event, heartbeat_seconds):
+        async with sessions() as session:
+            async with session.begin():
+                owned = await heartbeat_cleanup(
                     session,
                     lease,
                     now=datetime.now(UTC),
@@ -180,12 +217,96 @@ async def _process_lease(
         raise
 
 
+async def _process_cleanup_lease(
+    sessions: async_sessionmaker[AsyncSession],
+    lease: ArtifactCleanupLease,
+    *,
+    processor: ArtifactCleanupProcessor | None,
+    processor_resolver: ArtifactCleanupProcessorResolver,
+    heartbeat_seconds: float,
+    lease_seconds: float,
+) -> None:
+    if processor is None:
+        try:
+            processor = processor_resolver()
+        except Exception:
+            async with sessions() as session:
+                async with session.begin():
+                    await retry_cleanup(
+                        session,
+                        lease,
+                        now=datetime.now(UTC),
+                        failure_code="processor-error",
+                    )
+            return
+
+    heartbeat_stop = asyncio.Event()
+    processor_task = asyncio.create_task(processor(lease))
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_cleanup_lease(
+            sessions,
+            lease,
+            stop_event=heartbeat_stop,
+            heartbeat_seconds=heartbeat_seconds,
+            lease_seconds=lease_seconds,
+        )
+    )
+    try:
+        completed, _pending = await asyncio.wait(
+            (processor_task, heartbeat_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if heartbeat_task in completed and not await heartbeat_task:
+            pending_cancellation = await _await_task_quiescence(processor_task)
+            if pending_cancellation is not None:
+                raise pending_cancellation
+            return
+
+        heartbeat_stop.set()
+        if not await heartbeat_task:
+            pending_cancellation = await _await_task_quiescence(processor_task)
+            if pending_cancellation is not None:
+                raise pending_cancellation
+            return
+
+        try:
+            await processor_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            async with sessions() as session:
+                async with session.begin():
+                    await retry_cleanup(
+                        session,
+                        lease,
+                        now=datetime.now(UTC),
+                        failure_code="remove-failed",
+                    )
+            return
+
+        async with sessions() as session:
+            async with session.begin():
+                await finish_cleanup(session, lease, now=datetime.now(UTC))
+    except BaseException as error:
+        heartbeat_stop.set()
+        pending_cancellation = error if isinstance(error, asyncio.CancelledError) else None
+        heartbeat_cancellation = await _await_task_quiescence(heartbeat_task)
+        pending_cancellation = pending_cancellation or heartbeat_cancellation
+        processor_cancellation = await _await_task_quiescence(processor_task)
+        pending_cancellation = pending_cancellation or processor_cancellation
+        if pending_cancellation is not None:
+            raise pending_cancellation
+        raise
+
+
 async def _run_worker_loop(
     sessions: async_sessionmaker[AsyncSession],
     *,
     once: bool = False,
     processor: ArtifactProcessor | None = None,
     processor_resolver: ArtifactProcessorResolver | None = None,
+    cleanup_processor: ArtifactCleanupProcessor | None = None,
+    cleanup_processor_resolver: ArtifactCleanupProcessorResolver | None = None,
     stop_event: asyncio.Event | None = None,
     lease_seconds: float = DEFAULT_LEASE_SECONDS,
     heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
@@ -199,9 +320,12 @@ async def _run_worker_loop(
         raise ValueError("worker poll interval cannot be negative")
     if processor is not None and processor_resolver is not None:
         raise ValueError("provide either a processor or a processor resolver")
+    if cleanup_processor is not None and cleanup_processor_resolver is not None:
+        raise ValueError("provide either a cleanup processor or resolver")
 
     resolved_stop_event = stop_event or asyncio.Event()
     resolved_processor = processor_resolver or _resolve_processor
+    resolved_cleanup_processor = cleanup_processor_resolver or _resolve_cleanup_processor
     while not resolved_stop_event.is_set():
         async with sessions() as session:
             async with session.begin():
@@ -210,19 +334,37 @@ async def _run_worker_loop(
                     now=datetime.now(UTC),
                     lease_seconds=lease_seconds,
                 )
-        if lease is None:
-            if once:
-                return
+        worked = lease is not None
+        if lease is not None:
+            await _process_lease(
+                sessions,
+                lease,
+                processor=processor,
+                processor_resolver=resolved_processor,
+                heartbeat_seconds=heartbeat_seconds,
+                lease_seconds=lease_seconds,
+            )
+        async with sessions() as session:
+            async with session.begin():
+                cleanup_lease = await claim_due_cleanup(
+                    session,
+                    now=datetime.now(UTC),
+                    lease_seconds=lease_seconds,
+                )
+        worked = worked or cleanup_lease is not None
+        if cleanup_lease is not None:
+            await _process_cleanup_lease(
+                sessions,
+                cleanup_lease,
+                processor=cleanup_processor,
+                processor_resolver=resolved_cleanup_processor,
+                heartbeat_seconds=heartbeat_seconds,
+                lease_seconds=lease_seconds,
+            )
+        if once:
+            return
+        if not worked:
             await _wait_for_stop(resolved_stop_event, poll_seconds)
-            continue
-        await _process_lease(
-            sessions,
-            lease,
-            processor=processor,
-            processor_resolver=resolved_processor,
-            heartbeat_seconds=heartbeat_seconds,
-            lease_seconds=lease_seconds,
-        )
 
 
 async def run_worker(*, once: bool = False) -> None:

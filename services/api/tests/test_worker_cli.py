@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 import app.worker as artifact_worker
 from app.core.config import ArtifactWorkerSettings, Settings
-from app.models.artifact import ArtifactProcessingJob, ArtifactVersion
+from app.models.artifact import (
+    ArtifactObjectCleanupJob,
+    ArtifactProcessingJob,
+    ArtifactVersion,
+)
 from app.worker import _run_worker_loop
 
 
@@ -63,6 +67,32 @@ async def _seed_job(engine: AsyncEngine, *, actor_id, now: datetime) -> Artifact
             {"id": job.id, "version_id": version_id, "now": now},
         )
     return job
+
+
+async def _seed_cleanup(engine: AsyncEngine, *, now: datetime) -> ArtifactObjectCleanupJob:
+    cleanup = ArtifactObjectCleanupJob(
+        id=uuid4(),
+        object_key=f"artifacts/{uuid4()}/{uuid4()}",
+        version_id=f"target-version-{uuid4()}",
+        status="ready",
+        attempts=0,
+        next_attempt_at=now,
+    )
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_object_cleanup_jobs "
+                "(id, object_key, version_id, status, attempts, next_attempt_at) "
+                "VALUES (:id, :key, :version_id, 'ready', 0, :now)"
+            ),
+            {
+                "id": cleanup.id,
+                "key": cleanup.object_key,
+                "version_id": cleanup.version_id,
+                "now": now,
+            },
+        )
+    return cleanup
 
 
 def _sessions(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
@@ -192,6 +222,110 @@ def test_processor_resolves_without_api_only_configuration(worker_role: str) -> 
     assert completed.returncode == 0
     assert completed.stdout == ""
     assert completed.stderr == ""
+
+
+@pytest.mark.anyio
+async def test_shipping_worker_once_retries_due_cleanup_with_only_worker_configuration(
+    seeded_database: AsyncEngine,
+    worker_role: str,
+) -> None:
+    started_at = datetime.now(UTC)
+    seeded = await _seed_cleanup(seeded_database, now=started_at)
+
+    completed = _run_shipping_worker_once(worker_role, configured=True)
+
+    async with AsyncSession(seeded_database) as session:
+        cleanup = await session.get(ArtifactObjectCleanupJob, seeded.id)
+    assert completed.returncode == 0
+    assert completed.stdout == "" and completed.stderr == ""
+    assert cleanup is not None
+    assert (cleanup.status, cleanup.attempts, cleanup.failure_code) == (
+        "ready",
+        1,
+        "remove-failed",
+    )
+    assert cleanup.next_attempt_at > started_at
+
+
+@pytest.mark.anyio
+async def test_worker_once_processes_one_body_job_and_one_cleanup_without_starvation(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+) -> None:
+    now = datetime.now(UTC)
+    body = await _seed_job(seeded_database, actor_id=alice.id, now=now)
+    cleanup = await _seed_cleanup(seeded_database, now=now)
+    handled: list[str] = []
+
+    async def processor(lease) -> None:
+        handled.append(f"body:{lease.job_id}")
+
+    async def cleanup_processor(lease) -> None:
+        handled.append(f"cleanup:{lease.job_id}")
+
+    await _run_worker_loop(
+        _sessions(worker_engine),
+        once=True,
+        processor=processor,
+        cleanup_processor=cleanup_processor,
+        lease_seconds=60,
+        heartbeat_seconds=20,
+        poll_seconds=0,
+    )
+
+    async with AsyncSession(seeded_database) as session:
+        body_row = await session.get(ArtifactProcessingJob, body.id)
+        cleanup_row = await session.get(ArtifactObjectCleanupJob, cleanup.id)
+    assert handled == [f"body:{body.id}", f"cleanup:{cleanup.id}"]
+    assert body_row is not None and body_row.status == "succeeded"
+    assert cleanup_row is not None and cleanup_row.status == "succeeded"
+
+
+@pytest.mark.anyio
+async def test_cleanup_cancellation_waits_for_blocking_remove_to_stop(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+) -> None:
+    seeded = await _seed_cleanup(seeded_database, now=datetime.now(UTC))
+    started = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+
+    def blocking_remove() -> None:
+        started.set()
+        try:
+            assert release.wait(timeout=2)
+        finally:
+            stopped.set()
+
+    async def cleanup_processor(_lease) -> None:
+        await asyncio.to_thread(blocking_remove)
+
+    worker_task = asyncio.create_task(
+        _run_worker_loop(
+            _sessions(worker_engine),
+            once=True,
+            cleanup_processor=cleanup_processor,
+            lease_seconds=60,
+            heartbeat_seconds=20,
+            poll_seconds=0,
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+    worker_task.cancel()
+    try:
+        await asyncio.sleep(0.05)
+        assert not worker_task.done()
+    finally:
+        release.set()
+        result = await asyncio.gather(worker_task, return_exceptions=True)
+
+    async with AsyncSession(seeded_database) as session:
+        cleanup = await session.get(ArtifactObjectCleanupJob, seeded.id)
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert stopped.is_set()
+    assert cleanup is not None and cleanup.status == "leased"
 
 
 @pytest.mark.anyio

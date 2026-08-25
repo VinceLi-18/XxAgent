@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 import unicodedata
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from urllib3.exceptions import HTTPError
 
 from app.models.artifact import ArtifactVersion
+from app.services.artifact_cleanup_jobs import ArtifactCleanupLease, enqueue_cleanup
 from app.services.artifact_jobs import (
     ArtifactJobLease,
     fail_job,
@@ -37,6 +39,7 @@ from app.storage.minio_gateway import (
 _MIME_SAMPLE_BYTES = 64 * 1024
 _IDENTITY_FAILURE = "content-identity-mismatch"
 _RETRYABLE_FAILURE = "inspection-unavailable"
+_logger = logging.getLogger(__name__)
 
 
 class _ArtifactProcessingSettings(BaseSettings):
@@ -108,6 +111,23 @@ class _ArtifactWork:
 
 class _ContentIdentityMismatch(Exception):
     pass
+
+
+class ArtifactCleanupHandoffError(Exception):
+    """Exact object-version ownership could not be persisted after removal failed."""
+
+    def __init__(
+        self,
+        object_key: str,
+        version_id: str,
+        cleanup_error: BaseException,
+        persistence_error: BaseException,
+    ) -> None:
+        super().__init__(f"cleanup ownership handoff failed for {object_key}@{version_id}")
+        self.object_key = object_key
+        self.version_id = version_id
+        self.cleanup_error = cleanup_error
+        self.persistence_error = persistence_error
 
 
 class _InspectingChunks:
@@ -294,6 +314,39 @@ async def _fail_identity(
             )
 
 
+async def _remove_or_enqueue_cleanup(
+    dependencies: _ArtifactProcessingDependencies,
+    *,
+    object_key: str,
+    version_id: str,
+) -> BaseException | None:
+    try:
+        await asyncio.to_thread(
+            dependencies.gateway.remove,
+            object_key,
+            version_id=version_id,
+        )
+    except BaseException as cleanup_error:
+        try:
+            async with dependencies.sessions() as session:
+                async with session.begin():
+                    await enqueue_cleanup(
+                        session,
+                        object_key=object_key,
+                        version_id=version_id,
+                        now=dependencies.clock(),
+                    )
+        except BaseException as persistence_error:
+            raise ArtifactCleanupHandoffError(
+                object_key,
+                version_id,
+                cleanup_error,
+                persistence_error,
+            ) from persistence_error
+        return cleanup_error
+    return None
+
+
 async def _process_with_dependencies(
     lease: ArtifactJobLease,
     dependencies: _ArtifactProcessingDependencies,
@@ -364,21 +417,38 @@ async def _process_with_dependencies(
                     sha256=inspection.sha256,
                     content_type=inspection.content_type,
                 )
-    except BaseException:
-        await asyncio.to_thread(
-            dependencies.gateway.remove,
-            final_key,
-            version_id=target_version_id,
-        )
+    except BaseException as publication_error:
+        try:
+            cleanup_error = await _remove_or_enqueue_cleanup(
+                dependencies,
+                object_key=final_key,
+                version_id=target_version_id,
+            )
+        except ArtifactCleanupHandoffError as handoff_error:
+            raise BaseExceptionGroup(
+                "artifact publication and cleanup handoff failed",
+                [publication_error, handoff_error],
+            ) from publication_error
+        if cleanup_error is not None:
+            publication_error.add_note(
+                f"exact object cleanup failed and was queued: {cleanup_error}"
+            )
         raise
     if not published:
-        await asyncio.to_thread(
-            dependencies.gateway.remove,
-            final_key,
+        await _remove_or_enqueue_cleanup(
+            dependencies,
+            object_key=final_key,
             version_id=target_version_id,
         )
         return
-    await asyncio.to_thread(dependencies.gateway.remove, work.staging_key)
+    try:
+        await asyncio.to_thread(dependencies.gateway.remove, work.staging_key)
+    except Exception:
+        _logger.warning(
+            "staging cleanup failed after artifact publication",
+            extra={"staging_key": work.staging_key},
+            exc_info=True,
+        )
 
 
 @asynccontextmanager
@@ -407,3 +477,16 @@ async def process_artifact_job(lease: ArtifactJobLease) -> None:
 
     async with _runtime_dependencies() as dependencies:
         await _process_with_dependencies(lease, dependencies)
+
+
+async def process_artifact_cleanup_job(lease: ArtifactCleanupLease) -> None:
+    """Remove the exact object version owned by a cleanup lease."""
+
+    configured = _ArtifactProcessingSettings()
+    gateway = MinioGateway.from_worker_settings(configured)
+    await asyncio.to_thread(gateway.require_versioning)
+    await asyncio.to_thread(
+        gateway.remove,
+        lease.object_key,
+        version_id=lease.version_id,
+    )

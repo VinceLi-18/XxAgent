@@ -97,6 +97,61 @@ class ArtifactProcessingJob(Base):
     )
 
 
+class ArtifactObjectCleanupJob(Base):
+    __tablename__ = "artifact_object_cleanup_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "length(btrim(object_key)) > 0",
+            name="ck_artifact_object_cleanup_job_object_key",
+        ),
+        CheckConstraint(
+            "length(btrim(version_id)) > 0",
+            name="ck_artifact_object_cleanup_job_version_id",
+        ),
+        CheckConstraint(
+            "attempts BETWEEN 0 AND 5",
+            name="ck_artifact_object_cleanup_job_attempts",
+        ),
+        CheckConstraint(
+            "status IN ('ready', 'leased', 'succeeded', 'dead')",
+            name="ck_artifact_object_cleanup_job_status",
+        ),
+        CheckConstraint(
+            "(status = 'leased') = "
+            "(lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            name="ck_artifact_object_cleanup_job_lease",
+        ),
+        UniqueConstraint(
+            "object_key",
+            "version_id",
+            name="uq_artifact_object_cleanup_job_identity",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    version_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    lease_token: Mapped[UUID | None] = mapped_column()
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class StagingUpload(Base):
     __tablename__ = "staging_uploads"
     __table_args__ = (
