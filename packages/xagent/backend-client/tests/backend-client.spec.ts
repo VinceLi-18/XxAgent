@@ -53,6 +53,66 @@ const projectResponse = {
   session_summary: { session_count: 4 },
 }
 
+const artifactIds = {
+  private: '00000000-0000-0000-0000-000000000401',
+  project: '00000000-0000-0000-0000-000000000402',
+  failedVersion: '00000000-0000-0000-0000-000000000411',
+  cleanVersion: '00000000-0000-0000-0000-000000000412',
+  upload: '00000000-0000-0000-0000-000000000421',
+  uploader: '00000000-0000-0000-0000-000000000431',
+}
+
+const privateArtifactSummary = {
+  id: artifactIds.private,
+  display_name: '合同.txt',
+  scope: { kind: 'private' },
+  latest_version: 2,
+  latest_status: 'failed',
+  latest_clean_version: 1,
+}
+
+const projectArtifactSummary = {
+  id: artifactIds.project,
+  display_name: '项目说明.pdf',
+  scope: { kind: 'project', project_id: projectResponse.project.id },
+  latest_version: 1,
+  latest_status: 'pending',
+}
+
+const artifactDetailResponse = {
+  ...privateArtifactSummary,
+  can_edit: true,
+  versions: [
+    {
+      id: artifactIds.failedVersion,
+      version: 2,
+      original_filename: '合同-修订.txt',
+      uploaded_by: artifactIds.uploader,
+      size: 12,
+      content_type: 'text/plain',
+      status: 'failed',
+      created_at: '2026-08-25T09:00:00+00:00',
+    },
+    {
+      id: artifactIds.cleanVersion,
+      version: 1,
+      original_filename: '合同.txt',
+      uploaded_by: artifactIds.uploader,
+      size: 10,
+      content_type: 'text/plain',
+      sha256: 'a'.repeat(64),
+      status: 'clean',
+      created_at: '2026-08-25T08:00:00Z',
+    },
+  ],
+}
+
+const artifactUploadResponse = {
+  upload_id: artifactIds.upload,
+  put_url: 'https://storage.example.test/staging/upload?signature=opaque',
+  expires_at: '2026-08-25T08:10:00Z',
+}
+
 function requestUrl(input: string | URL | Request): string {
   if (typeof input === 'string') return input
   return input instanceof URL ? input.href : input.url
@@ -259,7 +319,7 @@ describe('XAgent 后端客户端', () => {
     [409, { detail: { code: 1 } }, 'service-unavailable'],
     [409, { detail: { code: 'sequence-conflict' } }, 'sequence-conflict'],
     [409, { detail: { code: 'idempotency-conflict' } }, 'idempotency-conflict'],
-    [409, { detail: { code: 'unsupported-version' } }, 'unsupported-version'],
+    [400, { detail: { code: 'unsupported-version' } }, 'unsupported-version'],
   ])('规范化后端错误 %#', async (status, body, code) => {
     const client = new XAgentBackendClient({
       origin: 'https://api.example.test',
@@ -549,5 +609,410 @@ describe('XAgent 后端客户端', () => {
       fetch: async () => new Response(null, { status: 302, headers: { location: 'https://evil.test' } }),
     })
     await expect(redirected.workbench.bootstrap('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('Artifact 方法使用 Task 5 的固定 POST 请求并转换 snake_case 响应', async () => {
+    const calls: Array<{
+      path: string
+      body: unknown
+      headers: Headers
+      signal: AbortSignal | null | undefined
+      redirect: RequestRedirect | undefined
+    }> = []
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(requestUrl(input)).pathname
+      calls.push({
+        path,
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined,
+        headers: new Headers(init?.headers),
+        signal: init?.signal,
+        redirect: init?.redirect,
+      })
+      if (path.endsWith('/uploads') && !path.includes(`/artifacts/${artifactIds.private}`)) {
+        return Response.json(artifactUploadResponse, { status: 201 })
+      }
+      if (path.endsWith('/uploads')) return Response.json(artifactUploadResponse, { status: 201 })
+      if (path.endsWith('/complete')) return Response.json(artifactDetailResponse, { status: 201 })
+      if (path.endsWith('/retry')) return Response.json(artifactDetailResponse)
+      if (path.endsWith('/preview')) return Response.json({ url: '/api/v1/xagent/artifact-content/opaque?signature=preview' })
+      if (path.endsWith('/download')) {
+        return Response.json({ url: 'https://api.example.test/api/v1/xagent/artifact-content/opaque?signature=download' })
+      }
+      if (path.endsWith('/list')) return Response.json([privateArtifactSummary, projectArtifactSummary])
+      return Response.json(artifactDetailResponse)
+    })
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test/base',
+      serviceToken: 'service-secret',
+      fetch: fetcher,
+    })
+    const controllers = Array.from({ length: 8 }, () => new AbortController())
+
+    await expect(client.artifacts.list('user-secret', controllers[0]!.signal)).resolves.toEqual([
+      {
+        id: artifactIds.private,
+        displayName: '合同.txt',
+        scope: { kind: 'private' },
+        latestVersion: 2,
+        latestStatus: 'failed',
+        latestCleanVersion: 1,
+      },
+      {
+        id: artifactIds.project,
+        displayName: '项目说明.pdf',
+        scope: { kind: 'project', projectId: projectResponse.project.id },
+        latestVersion: 1,
+        latestStatus: 'pending',
+      },
+    ])
+    await expect(client.artifacts.detail('user-secret', artifactIds.private, controllers[1]!.signal))
+      .resolves.toEqual({
+        id: artifactIds.private,
+        displayName: '合同.txt',
+        scope: { kind: 'private' },
+        latestVersion: 2,
+        latestStatus: 'failed',
+        latestCleanVersion: 1,
+        canEdit: true,
+        versions: [
+          {
+            id: artifactIds.failedVersion,
+            version: 2,
+            originalFilename: '合同-修订.txt',
+            uploadedBy: artifactIds.uploader,
+            size: 12,
+            contentType: 'text/plain',
+            status: 'failed',
+            createdAt: '2026-08-25T09:00:00+00:00',
+          },
+          {
+            id: artifactIds.cleanVersion,
+            version: 1,
+            originalFilename: '合同.txt',
+            uploadedBy: artifactIds.uploader,
+            size: 10,
+            contentType: 'text/plain',
+            sha256: 'a'.repeat(64),
+            status: 'clean',
+            createdAt: '2026-08-25T08:00:00Z',
+          },
+        ],
+      })
+    await expect(client.artifacts.createUpload('user-secret', {
+      filename: '合同.txt', size: 10, idempotencyKey: 'create-1',
+    }, controllers[2]!.signal)).resolves.toEqual({
+      id: artifactIds.upload,
+      putUrl: artifactUploadResponse.put_url,
+      expiresAt: artifactUploadResponse.expires_at,
+    })
+    await expect(client.artifacts.createVersionUpload('user-secret', artifactIds.private, {
+      filename: '合同-修订.txt', size: 12, idempotencyKey: 'version-1',
+    }, controllers[3]!.signal)).resolves.toEqual({
+      id: artifactIds.upload,
+      putUrl: artifactUploadResponse.put_url,
+      expiresAt: artifactUploadResponse.expires_at,
+    })
+    await expect(client.artifacts.completeUpload('user-secret', artifactIds.upload, {
+      size: 12, sha256: 'b'.repeat(64), idempotencyKey: 'complete-1',
+    }, controllers[4]!.signal)).resolves.toMatchObject({ id: artifactIds.private, latestVersion: 2 })
+    await expect(client.artifacts.retry(
+      'user-secret', artifactIds.failedVersion, 'retry-1', controllers[5]!.signal,
+    )).resolves.toEqual(await client.artifacts.detail('user-secret', artifactIds.private))
+    await expect(client.artifacts.preview('user-secret', artifactIds.cleanVersion, controllers[6]!.signal))
+      .resolves.toEqual({ url: '/api/v1/xagent/artifact-content/opaque?signature=preview' })
+    await expect(client.artifacts.download('user-secret', artifactIds.cleanVersion, controllers[7]!.signal))
+      .resolves.toEqual({
+        url: 'https://api.example.test/api/v1/xagent/artifact-content/opaque?signature=download',
+      })
+
+    expect(calls.map(call => call.path)).toEqual([
+      '/internal/xagent/artifacts/list',
+      `/internal/xagent/artifacts/${artifactIds.private}`,
+      '/internal/xagent/artifacts/uploads',
+      `/internal/xagent/artifacts/${artifactIds.private}/uploads`,
+      `/internal/xagent/artifacts/uploads/${artifactIds.upload}/complete`,
+      `/internal/xagent/artifact-versions/${artifactIds.failedVersion}/retry`,
+      `/internal/xagent/artifacts/${artifactIds.private}`,
+      `/internal/xagent/artifact-versions/${artifactIds.cleanVersion}/preview`,
+      `/internal/xagent/artifact-versions/${artifactIds.cleanVersion}/download`,
+    ])
+    expect(calls.map(call => call.body)).toEqual([
+      {},
+      {},
+      { filename: '合同.txt', size: 10, idempotency_key: 'create-1' },
+      { filename: '合同-修订.txt', size: 12, idempotency_key: 'version-1' },
+      { actual_size: 12, sha256: 'b'.repeat(64), idempotency_key: 'complete-1' },
+      { idempotency_key: 'retry-1' },
+      {},
+      {},
+      {},
+    ])
+    expect(calls.every(call => call.headers.get('authorization') === 'Bearer user-secret')).toBe(true)
+    expect(calls.every(call => call.headers.get('x-xagent-service-token') === 'service-secret')).toBe(true)
+    expect(calls.every(call => !call.headers.has('idempotency-key'))).toBe(true)
+    expect(calls.every(call => call.redirect === 'manual')).toBe(true)
+    expect(calls.slice(0, 6).every((call, index) => call.signal !== controllers[index]?.signal
+      && call.signal?.aborted === false)).toBe(true)
+    expect(calls[7]?.signal?.aborted).toBe(false)
+    expect(calls[8]?.signal?.aborted).toBe(false)
+  })
+
+  test.each([
+    [null],
+    [{ ...privateArtifactSummary, extra: true }],
+    [(({ display_name: _removed, ...value }) => value)(privateArtifactSummary)],
+    [{ ...privateArtifactSummary, id: 'bad' }],
+    [{ ...privateArtifactSummary, display_name: '' }],
+    [{ ...privateArtifactSummary, display_name: 'x'.repeat(256) }],
+    [{ ...privateArtifactSummary, latest_version: 0 }],
+    [{ ...privateArtifactSummary, latest_version: 1.5 }],
+    [{ ...privateArtifactSummary, latest_status: 'ready' }],
+    [{ ...privateArtifactSummary, latest_clean_version: 3 }],
+    [{ ...privateArtifactSummary, scope: { kind: 'private', project_id: projectResponse.project.id } }],
+    [{ ...privateArtifactSummary, scope: { kind: 'project' } }],
+    [{ ...privateArtifactSummary, scope: { kind: 'project', project_id: 'bad' } }],
+  ])('拒绝畸形 Artifact 摘要 %#', async (value) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json([value]),
+    })
+    await expect(client.artifacts.list('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('拒绝非数组、重复资料和超限 Artifact 列表', async () => {
+    for (const value of [
+      { items: [] },
+      [privateArtifactSummary, privateArtifactSummary],
+      Array.from({ length: 1_001 }, (_unused, index) => ({
+        ...privateArtifactSummary,
+        id: `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`,
+      })),
+    ]) {
+      const client = new XAgentBackendClient({
+        origin: 'https://api.example.test',
+        serviceToken: 'service-secret',
+        fetch: async () => Response.json(value),
+      })
+      await expect(client.artifacts.list('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+  })
+
+  test.each([
+    [{ ...artifactUploadResponse, extra: true }],
+    [(({ expires_at: _removed, ...value }) => value)(artifactUploadResponse)],
+    [{ ...artifactUploadResponse, upload_id: 'bad' }],
+    [{ ...artifactUploadResponse, put_url: 'javascript:alert(1)' }],
+    [{ ...artifactUploadResponse, put_url: 'https://user:pass@storage.example.test/put' }],
+    [{ ...artifactUploadResponse, expires_at: 'tomorrow' }],
+    [{ ...artifactUploadResponse, expires_at: '2026-08-25' }],
+    [{ ...artifactUploadResponse, expires_at: '2026-02-30T08:10:00Z' }],
+    [{ ...artifactUploadResponse, put_url: 'https://storage.example.test/a b' }],
+  ])('拒绝畸形上传授权 %#', async (value) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(value),
+    })
+    await expect(client.artifacts.createUpload('token', {
+      filename: 'file.txt', size: 1, idempotencyKey: 'create',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [{ ...artifactDetailResponse, extra: true }],
+    [(({ can_edit: _removed, ...value }) => value)(artifactDetailResponse)],
+    [{ ...artifactDetailResponse, can_edit: 'yes' }],
+    [{ ...artifactDetailResponse, versions: null }],
+    [{ ...artifactDetailResponse, versions: [] }],
+    [{ ...artifactDetailResponse, versions: [artifactDetailResponse.versions[1], artifactDetailResponse.versions[0]] }],
+    [{ ...artifactDetailResponse, versions: [artifactDetailResponse.versions[0], artifactDetailResponse.versions[0]] }],
+    [{
+      ...artifactDetailResponse,
+      versions: [
+        artifactDetailResponse.versions[0],
+        { ...artifactDetailResponse.versions[1]!, id: artifactDetailResponse.versions[0]!.id },
+      ],
+    }],
+    [{ ...artifactDetailResponse, latest_version: 1 }],
+    [{ ...artifactDetailResponse, latest_status: 'clean' }],
+    [{ ...artifactDetailResponse, latest_clean_version: 2 }],
+    [(({ latest_clean_version: _removed, ...value }) => value)(artifactDetailResponse)],
+    [{
+      ...artifactDetailResponse,
+      versions: artifactDetailResponse.versions.map(version => ({ ...version, status: 'failed' })),
+    }],
+    [{ ...artifactDetailResponse, versions: Array.from({ length: 1_001 }, () => artifactDetailResponse.versions[0]) }],
+  ])('拒绝不一致或超限 Artifact Detail %#', async (value) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(value),
+    })
+    await expect(client.artifacts.detail('token', artifactIds.private))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [(({ original_filename: _removed, ...value }) => value)(artifactDetailResponse.versions[0]!)],
+    [{ ...artifactDetailResponse.versions[0], id: 'bad' }],
+    [{ ...artifactDetailResponse.versions[0], version: 0 }],
+    [{ ...artifactDetailResponse.versions[0], original_filename: 'x'.repeat(256) }],
+    [{ ...artifactDetailResponse.versions[0], uploaded_by: 'bad' }],
+    [{ ...artifactDetailResponse.versions[0], size: -1 }],
+    [{ ...artifactDetailResponse.versions[0], size: 50 * 1024 * 1024 + 1 }],
+    [{ ...artifactDetailResponse.versions[0], size: 1.5 }],
+    [{ ...artifactDetailResponse.versions[0], content_type: '' }],
+    [{ ...artifactDetailResponse.versions[0], sha256: 'A'.repeat(64) }],
+    [{ ...artifactDetailResponse.versions[0], status: 'ready' }],
+    [{ ...artifactDetailResponse.versions[0], created_at: 'not-a-date' }],
+  ])('拒绝畸形 Artifact Version %#', async (version) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json({ ...artifactDetailResponse, versions: [
+        version,
+        artifactDetailResponse.versions[1],
+      ] }),
+    })
+    await expect(client.artifacts.detail('token', artifactIds.private))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each(['object_key', 'staging_key', 'lease_token', 'failure_code', 'raw_scan_output'])(
+    '拒绝非 clean 版本携带内部字段 %s',
+    async (field) => {
+      const client = new XAgentBackendClient({
+        origin: 'https://api.example.test',
+        serviceToken: 'service-secret',
+        fetch: async () => Response.json({
+          ...artifactDetailResponse,
+          versions: [
+            { ...artifactDetailResponse.versions[0], [field]: 'internal-secret' },
+            artifactDetailResponse.versions[1],
+          ],
+        }),
+      })
+      await expect(client.artifacts.detail('token', artifactIds.private))
+        .rejects.toMatchObject({ code: 'service-unavailable' })
+    },
+  )
+
+  test('complete 与 retry 都必须返回完整 Detail', async () => {
+    for (const [method, body] of [
+      ['complete', { ...privateArtifactSummary, can_edit: true, versions: [] }],
+      ['retry', privateArtifactSummary],
+    ] as const) {
+      const client = new XAgentBackendClient({
+        origin: 'https://api.example.test',
+        serviceToken: 'service-secret',
+        fetch: async () => Response.json(body),
+      })
+      const operation = method === 'complete'
+        ? client.artifacts.completeUpload('token', artifactIds.upload, {
+          size: 1, sha256: 'a'.repeat(64), idempotencyKey: 'complete',
+        })
+        : client.artifacts.retry('token', artifactIds.failedVersion, 'retry')
+      await expect(operation).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+  })
+
+  test.each([
+    ['/api/v1/xagent/artifact-content/opaque?expires=1&signature=abc'],
+    ['https://api.example.test/api/v1/xagent/artifact-content/opaque?expires=1&signature=abc'],
+  ])('接受相对或绝对 opaque 读取 URL 且不读取其正文 %#', async (url) => {
+    const fetcher = vi.fn(async () => Response.json({ url }))
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: fetcher,
+    })
+    await expect(client.artifacts.preview('token', artifactIds.cleanVersion)).resolves.toEqual({ url })
+    expect(fetcher).toHaveBeenCalledOnce()
+  })
+
+  test.each([
+    ['content'],
+    [{ url: '/content', extra: true }],
+    [{ url: 'relative/content' }],
+    [{ url: '//evil.example.test/content' }],
+    [{ url: 'javascript:alert(1)' }],
+    [{ url: 'https://user:pass@api.example.test/content' }],
+    [{ url: 'https://api.example.test/artifacts/00000000-0000-0000-0000-000000000401/00000000-0000-0000-0000-000000000412' }],
+    [{ url: '/%61rtifacts%2F00000000-0000-0000-0000-000000000401%2F00000000-0000-0000-0000-000000000412' }],
+    [{ url: '/content#secret' }],
+  ])('拒绝畸形或泄漏对象 Key 的读取 URL %#', async (value) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: async () => Response.json(value),
+    })
+    await expect(client.artifacts.download('token', artifactIds.cleanVersion))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('Artifact 响应正文仍受共享字节上限约束', async () => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      maxResponseBytes: 64,
+      fetch: async () => Response.json([privateArtifactSummary]),
+    })
+    await expect(client.artifacts.list('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('每个 Artifact 方法都把调用方取消传播到共享请求管线', async () => {
+    const invoke = [
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.list('token', signal),
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.detail('token', artifactIds.private, signal),
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.createUpload('token', {
+        filename: 'file.txt', size: 1, idempotencyKey: 'create',
+      }, signal),
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.createVersionUpload(
+        'token', artifactIds.private, { filename: 'file.txt', size: 1, idempotencyKey: 'version' }, signal,
+      ),
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.completeUpload(
+        'token', artifactIds.upload, { size: 1, sha256: 'a'.repeat(64), idempotencyKey: 'complete' }, signal,
+      ),
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.retry(
+        'token', artifactIds.failedVersion, 'retry', signal,
+      ),
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.preview(
+        'token', artifactIds.cleanVersion, signal,
+      ),
+      (client: XAgentBackendClient, signal: AbortSignal) => client.artifacts.download(
+        'token', artifactIds.cleanVersion, signal,
+      ),
+    ]
+    for (const operation of invoke) {
+      const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new Error('aborted'))
+          }, { once: true })
+        }))
+      const client = new XAgentBackendClient({
+        origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: fetcher,
+      })
+      const controller = new AbortController()
+      const pending = operation(client, controller.signal)
+      controller.abort()
+      await expect(pending).rejects.toMatchObject({ code: 'service-unavailable' })
+      expect(fetcher.mock.calls[0]![1]?.signal?.aborted).toBe(true)
+    }
+  })
+
+  test.each([
+    [403, { detail: { code: 'forbidden' } }, 'forbidden'],
+    [404, { detail: { code: 'not-found' } }, 'not-found'],
+    [410, { detail: { code: 'upload-expired' } }, 'upload-expired'],
+    [422, { detail: { code: 'upload-rejected' } }, 'upload-rejected'],
+    [500, { detail: { code: 'upload-rejected' } }, 'service-unavailable'],
+    [410, { detail: { code: 'unknown-code' } }, 'service-unavailable'],
+    [410, { detail: 'internal detail' }, 'service-unavailable'],
+    [410, '<html>secret</html>', 'service-unavailable'],
+  ])('按 Task 5 状态与固定 code 映射 Artifact 错误 %#', async (status, body, code) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }),
+    })
+    await expect(client.artifacts.list('token')).rejects.toMatchObject({ code })
   })
 })

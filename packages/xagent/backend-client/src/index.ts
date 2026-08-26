@@ -5,6 +5,13 @@ import { parseXAgentPrincipal, type XAgentPrincipal } from '@xagent/dsh-principa
 import type {
   XAgentBackend,
   XAgentBackendErrorCode,
+  XAgentArtifactBackend,
+  XAgentArtifactDetail,
+  XAgentArtifactScope,
+  XAgentArtifactStatus,
+  XAgentArtifactSummary,
+  XAgentArtifactUpload,
+  XAgentArtifactVersionSummary,
   XAgentCapability,
   XAgentIssuedLogin,
   XAgentProjectDetail,
@@ -19,6 +26,15 @@ import type {
 export type {
   XAgentBackend,
   XAgentBackendErrorCode,
+  XAgentArtifactBackend,
+  XAgentArtifactCompleteInput,
+  XAgentArtifactDetail,
+  XAgentArtifactScope,
+  XAgentArtifactStatus,
+  XAgentArtifactSummary,
+  XAgentArtifactUpload,
+  XAgentArtifactUploadInput,
+  XAgentArtifactVersionSummary,
   XAgentCapability,
   XAgentIssuedLogin,
   XAgentProjectDetail,
@@ -38,6 +54,8 @@ const STABLE_CODES = new Set<XAgentBackendErrorCode>([
   'session-not-found',
   'sequence-conflict',
   'idempotency-conflict',
+  'upload-expired',
+  'upload-rejected',
   'unsupported-version',
   'service-unavailable',
 ])
@@ -78,6 +96,20 @@ function exactRecord(value: unknown, keys: readonly string[]): Record<string, un
   return row
 }
 
+function exactRecordWithOptional(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[],
+): Record<string, unknown> {
+  const row = record(value)
+  const allowedKeys = new Set([...required, ...optional])
+  if (
+    Object.keys(row).some(key => !allowedKeys.has(key))
+    || required.some(key => !Object.hasOwn(row, key))
+  ) failSchema()
+  return row
+}
+
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const SESSION_ID_PATTERN = /^(?:session-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 
@@ -94,6 +126,17 @@ function requiredSessionId(value: unknown): string {
 function requiredString(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) failSchema()
   return value
+}
+
+function boundedString(value: unknown, maximum: number): string {
+  const result = requiredString(value)
+  if (Array.from(result).length > maximum) failSchema()
+  return result
+}
+
+function positiveInteger(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) failSchema()
+  return value as number
 }
 
 function count(value: unknown): number {
@@ -232,6 +275,198 @@ function parseProjectDetail(value: unknown): XAgentProjectDetail {
   }
 }
 
+const ARTIFACT_STATUSES = new Set<XAgentArtifactStatus>([
+  'pending', 'scanning', 'clean', 'quarantined', 'failed',
+])
+const MAX_ARTIFACT_SIZE = 50 * 1024 * 1024
+const MAX_ARTIFACT_ITEMS = 1_000
+const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/
+const SHA256_PATTERN = /^[0-9a-f]{64}$/
+const OBJECT_KEY_PATTERN = /artifacts\/[0-9a-f-]{36}\/[0-9a-f-]{36}(?:[/?#]|$)/i
+
+function artifactStatus(value: unknown): XAgentArtifactStatus {
+  if (typeof value !== 'string' || !ARTIFACT_STATUSES.has(value as XAgentArtifactStatus)) failSchema()
+  return value as XAgentArtifactStatus
+}
+
+function instant(value: unknown): string {
+  const result = requiredString(value)
+  const match = ISO_INSTANT_PATTERN.exec(result)
+  if (match === null || !Number.isFinite(Date.parse(result))) failSchema()
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  const second = Number(match[6])
+  const offsetHour = match[8] === undefined ? 0 : Number(match[8])
+  const offsetMinute = match[9] === undefined ? 0 : Number(match[9])
+  if (
+    year < 1
+    || month < 1
+    || month > 12
+    || day < 1
+    || day > new Date(Date.UTC(year, month, 0)).getUTCDate()
+    || hour > 23
+    || minute > 59
+    || second > 59
+    || offsetHour > 23
+    || offsetMinute > 59
+  ) failSchema()
+  return result
+}
+
+function artifactSize(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > MAX_ARTIFACT_SIZE) failSchema()
+  return value as number
+}
+
+function parseArtifactScope(value: unknown): XAgentArtifactScope {
+  const row = record(value)
+  if (row.kind === 'private') {
+    exactRecord(row, ['kind'])
+    return { kind: 'private' }
+  }
+  if (row.kind === 'project') {
+    exactRecord(row, ['kind', 'project_id'])
+    return { kind: 'project', projectId: requiredUuid(row.project_id) }
+  }
+  return failSchema()
+}
+
+function parseArtifactSummary(value: unknown): XAgentArtifactSummary {
+  const row = exactRecordWithOptional(value, [
+    'id', 'display_name', 'scope', 'latest_version', 'latest_status',
+  ], ['latest_clean_version'])
+  const latestVersion = positiveInteger(row.latest_version)
+  const latestCleanVersion = Object.hasOwn(row, 'latest_clean_version')
+    ? positiveInteger(row.latest_clean_version)
+    : undefined
+  if (latestCleanVersion !== undefined && latestCleanVersion > latestVersion) failSchema()
+  return {
+    id: requiredUuid(row.id),
+    displayName: boundedString(row.display_name, 255),
+    scope: parseArtifactScope(row.scope),
+    latestVersion,
+    latestStatus: artifactStatus(row.latest_status),
+    ...(latestCleanVersion === undefined ? {} : { latestCleanVersion }),
+  }
+}
+
+function parseArtifactVersion(value: unknown): XAgentArtifactVersionSummary {
+  const row = exactRecordWithOptional(value, [
+    'id', 'version', 'original_filename', 'uploaded_by', 'status', 'created_at',
+  ], ['size', 'content_type', 'sha256'])
+  const size = Object.hasOwn(row, 'size') ? artifactSize(row.size) : undefined
+  const contentType = Object.hasOwn(row, 'content_type') ? boundedString(row.content_type, 255) : undefined
+  let sha256: string | undefined
+  if (Object.hasOwn(row, 'sha256')) {
+    if (typeof row.sha256 !== 'string' || !SHA256_PATTERN.test(row.sha256)) failSchema()
+    sha256 = row.sha256
+  }
+  return {
+    id: requiredUuid(row.id),
+    version: positiveInteger(row.version),
+    originalFilename: boundedString(row.original_filename, 255),
+    uploadedBy: requiredUuid(row.uploaded_by),
+    ...(size === undefined ? {} : { size }),
+    ...(contentType === undefined ? {} : { contentType }),
+    ...(sha256 === undefined ? {} : { sha256 }),
+    status: artifactStatus(row.status),
+    createdAt: instant(row.created_at),
+  }
+}
+
+function parseArtifactDetail(value: unknown): XAgentArtifactDetail {
+  const row = exactRecordWithOptional(value, [
+    'id', 'display_name', 'scope', 'latest_version', 'latest_status', 'can_edit', 'versions',
+  ], ['latest_clean_version'])
+  if (typeof row.can_edit !== 'boolean' || !Array.isArray(row.versions)) failSchema()
+  if (row.versions.length < 1 || row.versions.length > MAX_ARTIFACT_ITEMS) failSchema()
+  const summary = parseArtifactSummary(Object.fromEntries(
+    Object.entries(row).filter(([key]) => key !== 'can_edit' && key !== 'versions'),
+  ))
+  const versions = row.versions.map(parseArtifactVersion)
+  const versionIds = new Set<string>()
+  const versionNumbers = new Set<number>()
+  let previousVersion = Number.POSITIVE_INFINITY
+  for (const version of versions) {
+    if (
+      versionIds.has(version.id)
+      || versionNumbers.has(version.version)
+      || previousVersion <= version.version
+    ) failSchema()
+    versionIds.add(version.id)
+    versionNumbers.add(version.version)
+    previousVersion = version.version
+  }
+  const latest = versions[0]
+  if (latest === undefined) failSchema()
+  if (summary.latestVersion !== latest.version || summary.latestStatus !== latest.status) failSchema()
+  const latestClean = versions.find(version => version.status === 'clean')
+  if (summary.latestCleanVersion !== latestClean?.version) failSchema()
+  return { ...summary, canEdit: row.can_edit, versions }
+}
+
+function safeHttpUrl(value: unknown, allowRelative: boolean): string {
+  const result = requiredString(value)
+  if (
+    result.length > 16_384
+    || /\s/.test(result)
+    || result.includes('\\')
+    || /[\u0000-\u001f\u007f]/.test(result)
+  ) failSchema()
+  const relative = result.startsWith('/') && !result.startsWith('//')
+  if ((!allowRelative && relative) || (allowRelative && !relative && !/^https?:\/\//i.test(result))) failSchema()
+  let parsed: URL
+  try {
+    parsed = new URL(result, relative ? 'https://xagent.invalid' : undefined)
+  } catch {
+    return failSchema()
+  }
+  if (
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+    || parsed.username !== ''
+    || parsed.password !== ''
+    || parsed.hash !== ''
+  ) failSchema()
+  return result
+}
+
+function parseArtifactUpload(value: unknown): XAgentArtifactUpload {
+  const row = exactRecord(value, ['upload_id', 'put_url', 'expires_at'])
+  return {
+    id: requiredUuid(row.upload_id),
+    putUrl: safeHttpUrl(row.put_url, false),
+    expiresAt: instant(row.expires_at),
+  }
+}
+
+function decodedUrl(value: string): string {
+  let result = value
+  try {
+    result = decodeURIComponent(result)
+    return decodeURIComponent(result)
+  } catch {
+    return failSchema()
+  }
+}
+
+function parseArtifactRead(value: unknown): { readonly url: string } {
+  const row = exactRecord(value, ['url'])
+  const url = safeHttpUrl(row.url, true)
+  if (OBJECT_KEY_PATTERN.test(decodedUrl(url))) failSchema()
+  return { url }
+}
+
+function parseArtifactList(value: unknown): readonly XAgentArtifactSummary[] {
+  if (!Array.isArray(value) || value.length > MAX_ARTIFACT_ITEMS) failSchema()
+  const artifacts = value.map(parseArtifactSummary)
+  const ids = artifacts.map(artifact => artifact.id)
+  if (new Set(ids).size !== ids.length) failSchema()
+  return artifacts
+}
+
 async function readBounded(response: Response, limit: number): Promise<string> {
   if (response.body === null) return ''
   const reader = response.body.getReader()
@@ -268,12 +503,20 @@ function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
   const code = typeof detail === 'object' && detail !== null
     ? (detail as Record<string, unknown>).code
     : undefined
-  return typeof code === 'string' && STABLE_CODES.has(code as XAgentBackendErrorCode)
-    ? code as XAgentBackendErrorCode
-    : 'service-unavailable'
+  if (typeof code !== 'string' || !STABLE_CODES.has(code as XAgentBackendErrorCode)) {
+    return 'service-unavailable'
+  }
+  const accepted = status === 400 && code === 'unsupported-version'
+    || status === 403 && code === 'forbidden'
+    || status === 404 && (code === 'not-found' || code === 'session-not-found')
+    || status === 409 && (code === 'sequence-conflict' || code === 'idempotency-conflict')
+    || status === 410 && code === 'upload-expired'
+    || status === 422 && code === 'upload-rejected'
+    || status === 503 && code === 'service-unavailable'
+  return accepted ? code : 'service-unavailable'
 }
 
-/** Bounded Host client for XAgent authentication and Session APIs. */
+/** Bounded Host client for XAgent authentication, Session, workbench, and Artifact APIs. */
 export class XAgentBackendClient implements XAgentBackend {
   private readonly origin: URL
   private readonly fetcher: typeof globalThis.fetch
@@ -283,6 +526,7 @@ export class XAgentBackendClient implements XAgentBackend {
   private readonly connectionId: () => string
   readonly sessions: XAgentSessionBackend
   readonly workbench: XAgentWorkbenchBackend
+  readonly artifacts: XAgentArtifactBackend
 
   constructor(private readonly options: XAgentBackendClientOptions) {
     let origin: URL
@@ -381,6 +625,45 @@ export class XAgentBackendClient implements XAgentBackend {
       },
     }
     this.workbench = Object.freeze(workbench)
+    const artifacts: XAgentArtifactBackend = {
+      list: async (token, signal) => parseArtifactList(await this.request(
+        token, '/internal/xagent/artifacts/list', {}, signal,
+      )),
+      detail: async (token, artifactId, signal) => parseArtifactDetail(await this.request(
+        token, `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}`, {}, signal,
+      )),
+      createUpload: async (token, input, signal) => parseArtifactUpload(await this.request(
+        token,
+        '/internal/xagent/artifacts/uploads',
+        { filename: input.filename, size: input.size, idempotency_key: input.idempotencyKey },
+        signal,
+      )),
+      createVersionUpload: async (token, artifactId, input, signal) => parseArtifactUpload(await this.request(
+        token,
+        `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}/uploads`,
+        { filename: input.filename, size: input.size, idempotency_key: input.idempotencyKey },
+        signal,
+      )),
+      completeUpload: async (token, uploadId, input, signal) => parseArtifactDetail(await this.request(
+        token,
+        `/internal/xagent/artifacts/uploads/${encodeURIComponent(uploadId)}/complete`,
+        { actual_size: input.size, sha256: input.sha256, idempotency_key: input.idempotencyKey },
+        signal,
+      )),
+      retry: async (token, versionId, idempotencyKey, signal) => parseArtifactDetail(await this.request(
+        token,
+        `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/retry`,
+        { idempotency_key: idempotencyKey },
+        signal,
+      )),
+      preview: async (token, versionId, signal) => parseArtifactRead(await this.request(
+        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/preview`, {}, signal,
+      )),
+      download: async (token, versionId, signal) => parseArtifactRead(await this.request(
+        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/download`, {}, signal,
+      )),
+    }
+    this.artifacts = Object.freeze(artifacts)
   }
 
   async login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin> {

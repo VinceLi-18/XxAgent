@@ -8,6 +8,8 @@ export type XAgentBackendErrorCode =
   | 'session-not-found'
   | 'sequence-conflict'
   | 'idempotency-conflict'
+  | 'upload-expired'
+  | 'upload-rejected'
   | 'unsupported-version'
   | 'service-unavailable'
 
@@ -113,11 +115,101 @@ export interface XAgentWorkbenchBackend {
   ): Promise<void>
 }
 
-/** Authentication and Session contract implemented by the XAgent FastAPI client. */
+/** 资料版本在异步安全处理流程中的公开状态。 */
+export type XAgentArtifactStatus = 'pending' | 'scanning' | 'clean' | 'quarantined' | 'failed'
+
+/** 当前工作台内资料的私人或项目归属。 */
+export type XAgentArtifactScope =
+  | { readonly kind: 'private'; readonly projectId?: never }
+  | { readonly kind: 'project'; readonly projectId: string }
+
+/** 资料列表返回的当前状态与最近安全版本。 */
+export interface XAgentArtifactSummary {
+  readonly id: string
+  readonly displayName: string
+  readonly scope: XAgentArtifactScope
+  readonly latestVersion: number
+  readonly latestStatus: XAgentArtifactStatus
+  readonly latestCleanVersion?: number
+}
+
+/** 资料详情中的单个不可变版本。 */
+export interface XAgentArtifactVersionSummary {
+  readonly id: string
+  readonly version: number
+  readonly originalFilename: string
+  readonly uploadedBy: string
+  readonly size?: number
+  readonly contentType?: string
+  readonly sha256?: string
+  readonly status: XAgentArtifactStatus
+  readonly createdAt: string
+}
+
+/** 资料摘要、当前编辑权限与严格降序版本历史。 */
+export interface XAgentArtifactDetail extends XAgentArtifactSummary {
+  readonly canEdit: boolean
+  readonly versions: readonly XAgentArtifactVersionSummary[]
+}
+
+/** 创建资料或新版本暂存上传的输入。 */
+export interface XAgentArtifactUploadInput {
+  readonly filename: string
+  readonly size: number
+  readonly idempotencyKey: string
+}
+
+/** 完成暂存上传并进入异步扫描队列的输入。 */
+export interface XAgentArtifactCompleteInput {
+  readonly size: number
+  readonly sha256: string
+  readonly idempotencyKey: string
+}
+
+/** Browser 直接 PUT 暂存正文所需的短期授权。 */
+export interface XAgentArtifactUpload {
+  readonly id: string
+  readonly putUrl: string
+  readonly expiresAt: string
+}
+
+/** 绑定用户令牌的固定资料后端操作。 */
+export interface XAgentArtifactBackend {
+  list(userToken: string, signal?: AbortSignal): Promise<readonly XAgentArtifactSummary[]>
+  detail(userToken: string, artifactId: string, signal?: AbortSignal): Promise<XAgentArtifactDetail>
+  createUpload(
+    userToken: string,
+    input: XAgentArtifactUploadInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentArtifactUpload>
+  createVersionUpload(
+    userToken: string,
+    artifactId: string,
+    input: XAgentArtifactUploadInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentArtifactUpload>
+  completeUpload(
+    userToken: string,
+    uploadId: string,
+    input: XAgentArtifactCompleteInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentArtifactDetail>
+  retry(
+    userToken: string,
+    versionId: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<XAgentArtifactDetail>
+  preview(userToken: string, versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>
+  download(userToken: string, versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>
+}
+
+/** Authentication, Session, workbench, and Artifact operations implemented by the XAgent FastAPI client. */
 export interface XAgentBackend {
   login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin>
   introspect(userToken: string, signal?: AbortSignal): Promise<XAgentPrincipal>
   revoke(userToken: string, signal?: AbortSignal): Promise<void>
   readonly sessions: XAgentSessionBackend
   readonly workbench?: XAgentWorkbenchBackend
+  readonly artifacts?: XAgentArtifactBackend
 }

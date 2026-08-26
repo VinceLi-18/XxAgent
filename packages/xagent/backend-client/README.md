@@ -4,7 +4,11 @@
 
 会话接口覆盖 list、create、open、events、append、fork 和 archive。工作台接口覆盖账号态初始化、上下文选择、项目创建、项目详情和 Session 项目引用登记。上下文选择与项目创建成功后会重新读取完整 Bootstrap，调用方得到的账号、权限、项目、当前上下文、会话范围索引和会话计数均来自服务端当前状态。范围索引严格校验 private/null 与 project/UUID 组合，并拒绝重复 Session 或不可见项目引用。
 
-请求和响应都受字节上限约束。工作台响应按固定字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、无效计数、错误版本或操作响应与 Bootstrap 账号不一致时全部失败关闭。非成功响应只映射为稳定错误码，FastAPI 正文、JWT 和服务身份不会进入异常消息。
+资料接口覆盖列表、详情、新资料上传、新版本上传、上传完成、失败重试、预览和下载。上传创建只返回短期 PUT 授权；完成和重试返回包含不可变版本历史的完整详情。预览与下载只返回服务端授权后的 opaque URL，客户端不跟随该 URL，也不读取资料正文。
+
+请求和响应都受字节上限约束。工作台与资料响应按固定 snake_case 字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、日期、状态、计数、大小或 URL 全部失败关闭。资料范围只接受 private 或带 UUID 的 project，详情版本号唯一且严格降序，latest 字段必须与版本历史一致，latest clean 必须指向最高 clean 版本。列表和版本历史各最多接受 1,000 项，单版本大小不超过 50 MiB。
+
+非成功响应按实际 HTTP 状态只映射固定错误码，包括 `upload-expired` 和 `upload-rejected`；未知 code、畸形 detail、非 JSON、重定向和超限正文统一为 `service-unavailable`。FastAPI detail、JWT、服务身份、对象 Key、暂存 Key、租约和内部扫描失败信息不会进入返回对象或异常消息。
 
 ## Model Experience
 
@@ -27,4 +31,5 @@
 - 当前响应上限按完整字节流执行，不提供流式事件订阅接口。
 - 上下文选择和项目创建各需要一次操作请求及一次 Bootstrap 请求；同账号并发切换时返回服务端最终可见状态。
 - 客户端只接受固定的 FastAPI JSON 协议，不做跨版本自动降级。
+- 资料列表和版本历史没有分页协议；超过 1,000 项的响应失败关闭。
 - 所有网络、解析和未知错误均失败关闭为 `service-unavailable`，不会回退本地持久化。
