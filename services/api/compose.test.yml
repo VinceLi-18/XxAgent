@@ -6,9 +6,11 @@ services:
       context: .
     image: xagent-api:test
     environment:
-      DATABASE_URL: postgresql+asyncpg://xagent_e2e_app:xagent-e2e-app-password@postgres:5432/xagent_api_test
-      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres:xagent-api-test@postgres:5432/xagent_api_test
+      DATABASE_URL: postgresql+asyncpg://xagent_e2e_app@postgres:5432/xagent_api_test
+      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres@postgres:5432/xagent_api_test
       POSTGRES_APP_USER: xagent_e2e_app
+      POSTGRES_APP_PASSWORD: p@ss:word/%-e2e-app
+      POSTGRES_PASSWORD: xagent-api-test
       JWT_SECRET_KEY: xagent-e2e-signing-key-test-only
       JWT_ISSUER: xagent-e2e
       JWT_AUDIENCE: xagent-e2e-api
@@ -94,9 +96,10 @@ services:
   roles:
     image: xagent-api:test
     environment:
-      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres:xagent-api-test@postgres:5432/xagent_api_test
+      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres@postgres:5432/xagent_api_test
+      POSTGRES_PASSWORD: xagent-api-test
       POSTGRES_APP_USER: xagent_e2e_app
-      POSTGRES_APP_PASSWORD: xagent-e2e-app-password
+      POSTGRES_APP_PASSWORD: p@ss:word/%-e2e-app
       POSTGRES_WORKER_USER: xagent_e2e_worker
       POSTGRES_WORKER_PASSWORD: p@ss:word/%-e2e-worker
     command: ["xagent-api", "roles", "ensure"]
@@ -107,7 +110,8 @@ services:
   migrate:
     image: xagent-api:test
     environment:
-      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres:xagent-api-test@postgres:5432/xagent_api_test
+      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres@postgres:5432/xagent_api_test
+      POSTGRES_PASSWORD: xagent-api-test
       POSTGRES_APP_USER: xagent_e2e_app
       POSTGRES_WORKER_USER: xagent_e2e_worker
     command: ["alembic", "upgrade", "head"]

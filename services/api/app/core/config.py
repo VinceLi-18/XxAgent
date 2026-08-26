@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     DATABASE_ADMIN_URL: str | None = None
     POSTGRES_APP_USER: str
+    POSTGRES_APP_PASSWORD: str | None = None
+    POSTGRES_PASSWORD: str | None = None
     JWT_SECRET_KEY: str
     JWT_ISSUER: str
     JWT_AUDIENCE: str

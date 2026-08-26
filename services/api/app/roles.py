@@ -1,7 +1,9 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from app.core.database_engine import create_database_engine
 
 
 class DatabaseRoleSettings(BaseSettings):
@@ -14,6 +16,7 @@ class DatabaseRoleSettings(BaseSettings):
     )
 
     DATABASE_ADMIN_URL: str
+    POSTGRES_PASSWORD: str | None = None
     POSTGRES_APP_USER: str = Field(min_length=1)
     POSTGRES_APP_PASSWORD: str = Field(min_length=1)
     POSTGRES_WORKER_USER: str = Field(min_length=1)
@@ -42,7 +45,10 @@ async def ensure_database_roles() -> None:
     """Create or repair both runtime roles from raw deployment credentials."""
 
     settings = DatabaseRoleSettings()
-    engine = create_async_engine(settings.DATABASE_ADMIN_URL, pool_pre_ping=True)
+    engine = create_database_engine(
+        settings.DATABASE_ADMIN_URL,
+        password=settings.POSTGRES_PASSWORD,
+    )
     try:
         async with engine.begin() as connection:
             await _ensure_role(

@@ -8,8 +8,9 @@ from argon2 import PasswordHasher
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.database_engine import create_database_engine
 from app.models.auth import XAgentAccountCredential, XAgentAuthSession, XAgentPermissionRevision
 from app.models.identity import Account, Role
 from app.models.workbench import XAgentCapability
@@ -31,6 +32,7 @@ class AccountAdminSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file="../.env", env_ignore_empty=True, extra="ignore")
 
     DATABASE_ADMIN_URL: str
+    POSTGRES_PASSWORD: str | None = None
 
 
 def _normalize_email(email: str) -> str:
@@ -229,7 +231,10 @@ async def _run(args: argparse.Namespace, sessions: async_sessionmaker[AsyncSessi
 
 async def _run_and_dispose(args: argparse.Namespace) -> str:
     settings = AccountAdminSettings()
-    engine = create_async_engine(settings.DATABASE_ADMIN_URL, pool_pre_ping=True)
+    engine = create_database_engine(
+        settings.DATABASE_ADMIN_URL,
+        password=settings.POSTGRES_PASSWORD,
+    )
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         return await _run(args, sessions)

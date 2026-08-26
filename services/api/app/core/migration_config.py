@@ -9,6 +9,7 @@ class MigrationSettings(BaseSettings):
     )
 
     DATABASE_ADMIN_URL: str
+    POSTGRES_PASSWORD: str | None = None
     POSTGRES_APP_USER: str
     POSTGRES_WORKER_USER: str
 

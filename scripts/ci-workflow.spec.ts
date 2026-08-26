@@ -249,6 +249,7 @@ describe('CI workflow', () => {
 
   it('deploys the artifact worker with isolated credentials and healthy dependencies', () => {
     const compose = loadWorkflow('services/api/compose.yml')
+    const environmentExample = readFileSync(resolve(root, 'services/api/.env.example'), 'utf8')
     const api = composeService(compose, 'api')
     const worker = composeService(compose, 'worker')
     const postgres = composeService(compose, 'postgres')
@@ -270,6 +271,22 @@ describe('CI workflow', () => {
     }
 
     expect(composeServiceNames(compose)).not.toContain('redis')
+    expect(environmentExample).toContain(
+      'DATABASE_URL=postgresql+asyncpg://${POSTGRES_APP_USER}@postgres:5432/${POSTGRES_DB}',
+    )
+    expect(environmentExample).toContain(
+      'DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}@postgres:5432/${POSTGRES_DB}',
+    )
+    expect(environmentExample).toContain(
+      'DATABASE_WORKER_URL=postgresql+asyncpg://${POSTGRES_WORKER_USER}@postgres:5432/${POSTGRES_DB}',
+    )
+    expect(environmentExample).not.toMatch(/DATABASE_\w+_URL=.*\$\{POSTGRES_\w*PASSWORD\}/)
+    expect(api.environment).toMatchObject({
+      DATABASE_URL: '${DATABASE_URL}',
+      DATABASE_ADMIN_URL: '${DATABASE_ADMIN_URL}',
+      POSTGRES_APP_PASSWORD: '${POSTGRES_APP_PASSWORD}',
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}',
+    })
     expect(worker.command).toEqual(['xagent-api', 'worker'])
     expect(worker.environment).toMatchObject({
       DATABASE_WORKER_URL: '${DATABASE_WORKER_URL}',
@@ -287,6 +304,8 @@ describe('CI workflow', () => {
       'DATABASE_URL',
       'DATABASE_ADMIN_URL',
       'POSTGRES_APP_USER',
+      'POSTGRES_APP_PASSWORD',
+      'POSTGRES_PASSWORD',
       'POSTGRES_WORKER_USER',
       'JWT_SECRET_KEY',
       'XAGENT_SERVICE_TOKEN',
@@ -299,6 +318,7 @@ describe('CI workflow', () => {
     expect(roles.command).toEqual(['xagent-api', 'roles', 'ensure'])
     expect(roles.environment).toMatchObject({
       DATABASE_ADMIN_URL: '${DATABASE_ADMIN_URL}',
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}',
       POSTGRES_APP_USER: '${POSTGRES_APP_USER}',
       POSTGRES_APP_PASSWORD: '${POSTGRES_APP_PASSWORD}',
       POSTGRES_WORKER_USER: '${POSTGRES_WORKER_USER}',
@@ -312,8 +332,11 @@ describe('CI workflow', () => {
       'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
     ])
     expect(migrate.environment).toMatchObject({
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}',
       POSTGRES_WORKER_USER: '${POSTGRES_WORKER_USER}',
     })
+    expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
+    expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
     expect(migrate.depends_on).toMatchObject({
       roles: { condition: 'service_completed_successfully' },
     })
@@ -365,6 +388,12 @@ describe('CI workflow', () => {
     ])
     expect(api.environment).not.toHaveProperty('DATABASE_WORKER_URL')
     expect(api.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
+    expect(api.environment).toMatchObject({
+      DATABASE_URL: 'postgresql+asyncpg://xagent_e2e_app@postgres:5432/xagent_api_test',
+      DATABASE_ADMIN_URL: 'postgresql+asyncpg://postgres@postgres:5432/xagent_api_test',
+      POSTGRES_APP_PASSWORD: 'p@ss:word/%-e2e-app',
+      POSTGRES_PASSWORD: 'xagent-api-test',
+    })
     expect(worker.command).toEqual(['xagent-api', 'worker'])
     expect(worker.environment).toMatchObject({
       DATABASE_WORKER_URL: 'postgresql+asyncpg://xagent_e2e_worker@postgres:5432/xagent_api_test',
@@ -373,7 +402,10 @@ describe('CI workflow', () => {
     })
     expect(roles.command).toEqual(['xagent-api', 'roles', 'ensure'])
     expect(roles.environment).toMatchObject({
+      DATABASE_ADMIN_URL: 'postgresql+asyncpg://postgres@postgres:5432/xagent_api_test',
+      POSTGRES_PASSWORD: 'xagent-api-test',
       POSTGRES_APP_USER: 'xagent_e2e_app',
+      POSTGRES_APP_PASSWORD: 'p@ss:word/%-e2e-app',
       POSTGRES_WORKER_USER: 'xagent_e2e_worker',
       POSTGRES_WORKER_PASSWORD: 'p@ss:word/%-e2e-worker',
     })
@@ -385,6 +417,12 @@ describe('CI workflow', () => {
       'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
     ])
     expect(migrate.environment).toHaveProperty('POSTGRES_WORKER_USER')
+    expect(migrate.environment).toMatchObject({
+      DATABASE_ADMIN_URL: 'postgresql+asyncpg://postgres@postgres:5432/xagent_api_test',
+      POSTGRES_PASSWORD: 'xagent-api-test',
+    })
+    expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
+    expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
     expect(migrate.depends_on).toMatchObject({
       roles: { condition: 'service_completed_successfully' },
     })

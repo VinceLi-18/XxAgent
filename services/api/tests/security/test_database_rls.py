@@ -21,17 +21,23 @@ def _api_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def test_compose_uses_dedicated_non_superuser_application_credentials():
+def test_compose_uses_passwordless_urls_and_dedicated_runtime_secrets():
     environment_example = (_api_root() / ".env.example").read_text()
     compose_configuration = (_api_root() / "compose.yml").read_text()
 
     assert "POSTGRES_APP_USER=xagent_app" in environment_example
     assert "POSTGRES_APP_PASSWORD=" in environment_example
     assert (
-        "DATABASE_URL=postgresql+asyncpg://${POSTGRES_APP_USER}:${POSTGRES_APP_PASSWORD}"
+        "DATABASE_URL=postgresql+asyncpg://${POSTGRES_APP_USER}"
         "@postgres:5432/${POSTGRES_DB}"
     ) in environment_example
-    assert "./postgres/init:/docker-entrypoint-initdb.d:ro" in compose_configuration
+    assert (
+        "DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}"
+        "@postgres:5432/${POSTGRES_DB}"
+    ) in environment_example
+    assert "POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}" in compose_configuration
+    assert "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}" in compose_configuration
+    assert "./postgres/init:/docker-entrypoint-initdb.d:ro" not in compose_configuration
     assert "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env to a high-entropy value}" in compose_configuration
     assert "${JWT_ISSUER:?Set JWT_ISSUER in .env}" in compose_configuration
     assert "${JWT_AUDIENCE:?Set JWT_AUDIENCE in .env}" in compose_configuration
@@ -60,8 +66,9 @@ def test_alembic_uses_a_separate_admin_database_url():
     alembic_environment = (_api_root() / "alembic/env.py").read_text()
     compose_configuration = (_api_root() / "compose.yml").read_text()
 
-    assert "DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}" in environment_example
-    assert "settings.DATABASE_ADMIN_URL" in alembic_environment
+    assert "DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}@postgres" in environment_example
+    assert "migration_settings.DATABASE_ADMIN_URL" in alembic_environment
+    assert "password=migration_settings.POSTGRES_PASSWORD" in alembic_environment
     assert "DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}" in compose_configuration
 
 

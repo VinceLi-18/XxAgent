@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from app.core.database_engine import create_database_engine
 
 
 class ArtifactWorkerSettings(BaseSettings):
@@ -20,13 +22,7 @@ def create_worker_database_engine(
 ) -> AsyncEngine:
     """Create a worker engine with an optional raw asyncpg password."""
 
-    connect_args = (
-        {"password": settings.POSTGRES_WORKER_PASSWORD}
-        if settings.POSTGRES_WORKER_PASSWORD is not None
-        else {}
-    )
-    return create_async_engine(
+    return create_database_engine(
         settings.DATABASE_WORKER_URL,
-        pool_pre_ping=True,
-        connect_args=connect_args,
+        password=settings.POSTGRES_WORKER_PASSWORD,
     )

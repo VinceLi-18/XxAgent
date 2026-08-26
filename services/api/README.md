@@ -36,9 +36,9 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-`.env` 包含秘密，已被 Git 忽略，不得提交。PostgreSQL 健康后，正式 API 镜像运行一次幂等 `xagent-api roles ensure`，每次启动都创建或修正应用与 worker 登录角色；`migrate` 只在该命令成功后运行，因此全新数据卷和没有旧完成标记的数据卷使用同一顺序。
+`.env` 包含秘密，已被 Git 忽略，不得提交。PostgreSQL 健康后，正式 API 镜像运行幂等 `xagent-api roles ensure` one-shot。该命令在每次启动时创建缺失的应用与 worker 登录角色，或用当前环境中的属性和密码 `ALTER` 既有角色；`migrate` 只在命令成功后运行。全新数据卷和保留的既有数据卷使用同一顺序，保留卷中的应用与 worker 密码会同步为当前部署 secret。轮换这两个密码时，先更新部署 secret，再重启栈并确认 roles 成功，依赖服务随后才会启动。roles 不修改 PostgreSQL 管理员密码；`POSTGRES_PASSWORD` 的轮换由 PostgreSQL 容器的既有数据卷机制或部署运维流程另行处理，并须先保证管理连接可用。
 
-API 进程同时接收最低权限业务连接 `DATABASE_URL` 和受信管理连接 `DATABASE_ADMIN_URL`。当前登录、token introspection、工作台与 Session 内部入口、opaque content GET 等路径实际使用管理会话；这是现有受信 API 的权限边界，不是只持有应用角色的部署。API 不接收 `DATABASE_WORKER_URL`、worker 用户名或 worker 密码。worker 只接收无密码的 `DATABASE_WORKER_URL` 和独立原始 `POSTGRES_WORKER_PASSWORD`，并通过 asyncpg 连接参数组合两者，不要求运维人员把 `@`、`:`、`/` 或 `%` 手工 percent-encode 到 URL。既有只提供显式完整 `DATABASE_WORKER_URL` 的外部部署仍受支持。worker 用户名仅另行提供给 roles 与 migrate one-shot；API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
+API 进程同时接收最低权限业务连接 `DATABASE_URL` 和受信管理连接 `DATABASE_ADMIN_URL`。当前登录、token introspection、工作台与 Session 内部入口、opaque content GET 等路径实际使用管理会话；这是现有受信 API 的权限边界，不是只持有应用角色的部署。API 不接收 `DATABASE_WORKER_URL`、worker 用户名或 worker 密码。Compose 的三条数据库 URL 都不含密码，应用、管理和 worker 的原始密码分别通过 `POSTGRES_APP_PASSWORD`、`POSTGRES_PASSWORD` 与 `POSTGRES_WORKER_PASSWORD` 交给统一的 asyncpg 连接参数，不要求把 `@`、`:`、`/` 或 `%` 手工 percent-encode 到 URL。显式完整 URL 仍受支持；同时提供 URL 密码与原始密码时，原始密码优先。worker 用户名仅另行提供给 roles 与 migrate one-shot；API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
 
 `xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 
