@@ -393,6 +393,7 @@ jobs:
             fi
             cleanup_status=0
             docker compose -f services/api/compose.test.yml down --volumes --remove-orphans || cleanup_status=$?
+            docker compose --project-name xagent-api-upgrade -f services/api/compose.test.yml down --volumes --remove-orphans || cleanup_status=$?
             if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
               status=$cleanup_status
             fi
@@ -400,6 +401,9 @@ jobs:
           }
           trap cleanup EXIT
           docker compose -f services/api/compose.test.yml down --volumes --remove-orphans
+          docker compose --project-name xagent-api-upgrade -f services/api/compose.test.yml down --volumes --remove-orphans
+          docker compose -f services/api/compose.test.yml build api
+          XAGENT_COMPOSE_UPGRADE_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_compose_upgrade.py
           docker compose -f services/api/compose.test.yml up -d --build --wait
           uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_artifact_pipeline.py
 

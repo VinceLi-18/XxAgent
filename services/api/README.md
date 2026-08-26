@@ -1,6 +1,6 @@
 # XAgent API
 
-此目录包含 XAgent 的 FastAPI 服务、Alembic 迁移、最低权限 PostgreSQL 角色初始化和本地容器编排。运行 Python 命令需要 Python 3.11 与 `uv`。
+此目录包含 XAgent 的 FastAPI 服务、Alembic 迁移、最低权限 PostgreSQL 角色引导和本地容器编排。运行 Python 命令需要 Python 3.11 与 `uv`。
 
 ## 本地 Python 环境
 
@@ -36,7 +36,9 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-`.env` 包含秘密，已被 Git 忽略，不得提交。PostgreSQL 初始化先安全创建应用与 worker 登录角色并写入完成标志；`migrate` 只在该标志和数据库健康检查通过后运行。迁移完成后，API 只接收 `DATABASE_URL`，worker 只接收 `DATABASE_WORKER_URL`；worker 用户名供迁移授予最小权限，worker 密码和连接不得进入 API。API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
+`.env` 包含秘密，已被 Git 忽略，不得提交。PostgreSQL 健康后，正式 API 镜像运行一次幂等 `xagent-api roles ensure`，每次启动都创建或修正应用与 worker 登录角色；`migrate` 只在该命令成功后运行，因此全新数据卷和没有旧完成标记的数据卷使用同一顺序。
+
+API 进程同时接收最低权限业务连接 `DATABASE_URL` 和受信管理连接 `DATABASE_ADMIN_URL`。当前登录、token introspection、工作台与 Session 内部入口、opaque content GET 等路径实际使用管理会话；这是现有受信 API 的权限边界，不是只持有应用角色的部署。API 不接收 `DATABASE_WORKER_URL`、worker 用户名或 worker 密码。worker 只接收无密码的 `DATABASE_WORKER_URL` 和独立原始 `POSTGRES_WORKER_PASSWORD`，并通过 asyncpg 连接参数组合两者，不要求运维人员把 `@`、`:`、`/` 或 `%` 手工 percent-encode 到 URL。既有只提供显式完整 `DATABASE_WORKER_URL` 的外部部署仍受支持。worker 用户名仅另行提供给 roles 与 migrate one-shot；API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
 
 `xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 

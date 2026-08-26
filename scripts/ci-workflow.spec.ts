@@ -252,13 +252,18 @@ describe('CI workflow', () => {
     const api = composeService(compose, 'api')
     const worker = composeService(compose, 'worker')
     const postgres = composeService(compose, 'postgres')
+    const roles = composeService(compose, 'roles')
     const migrate = composeService(compose, 'migrate')
     const minio = composeService(compose, 'minio')
     const clamav = composeService(compose, 'clamav')
     if (!isRecord(api.environment)
       || !isRecord(worker.environment)
       || !isRecord(postgres.environment)
+      || !isRecord(postgres.healthcheck)
+      || !isRecord(roles.environment)
+      || !isRecord(roles.depends_on)
       || !isRecord(migrate.environment)
+      || !isRecord(migrate.depends_on)
       || !isRecord(worker.depends_on)
       || !isRecord(minio.healthcheck)) {
       throw new TypeError('Artifact deployment services must define environments, dependencies, and health checks')
@@ -268,6 +273,7 @@ describe('CI workflow', () => {
     expect(worker.command).toEqual(['xagent-api', 'worker'])
     expect(worker.environment).toMatchObject({
       DATABASE_WORKER_URL: '${DATABASE_WORKER_URL}',
+      POSTGRES_WORKER_PASSWORD: '${POSTGRES_WORKER_PASSWORD}',
       MINIO_ENDPOINT: '${MINIO_ENDPOINT}',
       MINIO_ACCESS_KEY: '${MINIO_ACCESS_KEY}',
       MINIO_SECRET_KEY: '${MINIO_SECRET_KEY}',
@@ -282,7 +288,6 @@ describe('CI workflow', () => {
       'DATABASE_ADMIN_URL',
       'POSTGRES_APP_USER',
       'POSTGRES_WORKER_USER',
-      'POSTGRES_WORKER_PASSWORD',
       'JWT_SECRET_KEY',
       'XAGENT_SERVICE_TOKEN',
     ]) {
@@ -291,12 +296,26 @@ describe('CI workflow', () => {
     for (const forbidden of ['DATABASE_WORKER_URL', 'POSTGRES_WORKER_USER', 'POSTGRES_WORKER_PASSWORD']) {
       expect(api.environment).not.toHaveProperty(forbidden)
     }
-    expect(postgres.environment).toMatchObject({
+    expect(roles.command).toEqual(['xagent-api', 'roles', 'ensure'])
+    expect(roles.environment).toMatchObject({
+      DATABASE_ADMIN_URL: '${DATABASE_ADMIN_URL}',
+      POSTGRES_APP_USER: '${POSTGRES_APP_USER}',
+      POSTGRES_APP_PASSWORD: '${POSTGRES_APP_PASSWORD}',
       POSTGRES_WORKER_USER: '${POSTGRES_WORKER_USER}',
       POSTGRES_WORKER_PASSWORD: '${POSTGRES_WORKER_PASSWORD}',
     })
+    expect(roles.depends_on).toMatchObject({
+      postgres: { condition: 'service_healthy' },
+    })
+    expect(postgres.healthcheck.test).toEqual([
+      'CMD-SHELL',
+      'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
+    ])
     expect(migrate.environment).toMatchObject({
       POSTGRES_WORKER_USER: '${POSTGRES_WORKER_USER}',
+    })
+    expect(migrate.depends_on).toMatchObject({
+      roles: { condition: 'service_completed_successfully' },
     })
     expect(worker.depends_on).toMatchObject({
       migrate: { condition: 'service_completed_successfully' },
@@ -314,14 +333,20 @@ describe('CI workflow', () => {
     const packageJson = loadWorkflow('package.json')
     const api = composeService(compose, 'api')
     const worker = composeService(compose, 'worker')
+    const postgres = composeService(compose, 'postgres')
+    const roles = composeService(compose, 'roles')
     const migrate = composeService(compose, 'migrate')
     const minio = composeService(compose, 'minio')
     const clamav = composeService(compose, 'clamav')
     if (!isRecord(packageJson.scripts)
       || !isRecord(api.environment)
       || !isRecord(worker.environment)
+      || !isRecord(postgres.healthcheck)
+      || !isRecord(roles.environment)
+      || !isRecord(roles.depends_on)
       || !isRecord(worker.depends_on)
       || !isRecord(api.depends_on)
+      || !isRecord(migrate.depends_on)
       || !isRecord(minio.healthcheck)) {
       throw new TypeError('Artifact test deployment must define API and worker wiring')
     }
@@ -335,14 +360,34 @@ describe('CI workflow', () => {
       'migrate',
       'minio',
       'postgres',
+      'roles',
       'worker',
     ])
     expect(api.environment).not.toHaveProperty('DATABASE_WORKER_URL')
     expect(api.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
     expect(worker.command).toEqual(['xagent-api', 'worker'])
-    expect(worker.environment).toHaveProperty('DATABASE_WORKER_URL')
-    expect(worker.environment).toMatchObject({ MINIO_BUCKET: 'xagent-private' })
+    expect(worker.environment).toMatchObject({
+      DATABASE_WORKER_URL: 'postgresql+asyncpg://xagent_e2e_worker@postgres:5432/xagent_api_test',
+      POSTGRES_WORKER_PASSWORD: 'p@ss:word/%-e2e-worker',
+      MINIO_BUCKET: 'xagent-private',
+    })
+    expect(roles.command).toEqual(['xagent-api', 'roles', 'ensure'])
+    expect(roles.environment).toMatchObject({
+      POSTGRES_APP_USER: 'xagent_e2e_app',
+      POSTGRES_WORKER_USER: 'xagent_e2e_worker',
+      POSTGRES_WORKER_PASSWORD: 'p@ss:word/%-e2e-worker',
+    })
+    expect(roles.depends_on).toMatchObject({
+      postgres: { condition: 'service_healthy' },
+    })
+    expect(postgres.healthcheck.test).toEqual([
+      'CMD-SHELL',
+      'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
+    ])
     expect(migrate.environment).toHaveProperty('POSTGRES_WORKER_USER')
+    expect(migrate.depends_on).toMatchObject({
+      roles: { condition: 'service_completed_successfully' },
+    })
     expect(worker.depends_on).toMatchObject({
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
@@ -379,6 +424,7 @@ describe('CI workflow', () => {
     expect(e2eStep.run).toContain('trap cleanup EXIT')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml up -d --build --wait')
     expect(e2eStep.run).toContain('tests/e2e/test_artifact_pipeline.py')
+    expect(e2eStep.run).toContain('tests/e2e/test_compose_upgrade.py')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml logs')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
     expect(aggregate.needs).toContain('xagent-artifact-e2e')

@@ -177,6 +177,9 @@ def _parser() -> argparse.ArgumentParser:
 
     worker = commands.add_parser("worker")
     worker.add_argument("--once", action="store_true")
+    roles = commands.add_parser("roles")
+    roles_commands = roles.add_subparsers(dest="operation", required=True)
+    roles_commands.add_parser("ensure")
     return parser
 
 
@@ -240,6 +243,11 @@ def main() -> None:
         from app.worker import run_worker
 
         asyncio.run(run_worker(once=args.once))
+        return
+    if args.domain == "roles":
+        from app.roles import ensure_database_roles
+
+        asyncio.run(ensure_database_roles())
         return
     try:
         message = asyncio.run(_run_and_dispose(args))

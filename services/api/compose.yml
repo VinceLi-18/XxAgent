@@ -47,6 +47,7 @@ services:
     image: xagent-api:local
     environment:
       DATABASE_WORKER_URL: ${DATABASE_WORKER_URL}
+      POSTGRES_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
@@ -74,22 +75,30 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
-      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
-      POSTGRES_WORKER_USER: ${POSTGRES_WORKER_USER}
-      POSTGRES_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD}
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && test -f $${PGDATA}/.xagent-roles-ready",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
         ]
       interval: 5s
       timeout: 5s
       retries: 10
     volumes:
       - xagent-api-postgres:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+  roles:
+    image: xagent-api:local
+    environment:
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      POSTGRES_WORKER_USER: ${POSTGRES_WORKER_USER}
+      POSTGRES_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD}
+    command: ["xagent-api", "roles", "ensure"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   migrate:
     image: xagent-api:local
@@ -99,8 +108,8 @@ services:
       POSTGRES_WORKER_USER: ${POSTGRES_WORKER_USER}
     command: ["alembic", "upgrade", "head"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      roles:
+        condition: service_completed_successfully
 
   minio:
     image: minio/minio:RELEASE.2024-10-13T13-34-11Z

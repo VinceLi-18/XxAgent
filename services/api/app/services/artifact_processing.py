@@ -11,11 +11,11 @@ from uuid import UUID
 
 from minio.error import S3Error
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from urllib3.exceptions import HTTPError
 
+from app.core.worker_config import ArtifactWorkerSettings, create_worker_database_engine
 from app.models.artifact import ArtifactVersion
 from app.services.artifact_cleanup_jobs import ArtifactCleanupLease, enqueue_cleanup
 from app.services.artifact_jobs import (
@@ -42,14 +42,7 @@ _RETRYABLE_FAILURE = "inspection-unavailable"
 _logger = logging.getLogger(__name__)
 
 
-class _ArtifactProcessingSettings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file="../.env",
-        env_ignore_empty=True,
-        extra="ignore",
-    )
-
-    DATABASE_WORKER_URL: str
+class _ArtifactProcessingSettings(ArtifactWorkerSettings):
     MINIO_ENDPOINT: str
     MINIO_ACCESS_KEY: str
     MINIO_SECRET_KEY: str
@@ -454,7 +447,7 @@ async def _process_with_dependencies(
 @asynccontextmanager
 async def _runtime_dependencies() -> AsyncIterator[_ArtifactProcessingDependencies]:
     configured = _ArtifactProcessingSettings()
-    engine = create_async_engine(configured.DATABASE_WORKER_URL, pool_pre_ping=True)
+    engine = create_worker_database_engine(configured)
     try:
         yield _ArtifactProcessingDependencies(
             sessions=async_sessionmaker(engine, expire_on_commit=False),

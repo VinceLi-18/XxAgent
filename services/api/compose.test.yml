@@ -48,7 +48,8 @@ services:
   worker:
     image: xagent-api:test
     environment:
-      DATABASE_WORKER_URL: postgresql+asyncpg://xagent_e2e_worker:xagent-e2e-worker-password@postgres:5432/xagent_api_test
+      DATABASE_WORKER_URL: postgresql+asyncpg://xagent_e2e_worker@postgres:5432/xagent_api_test
+      POSTGRES_WORKER_PASSWORD: p@ss:word/%-e2e-worker
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: xagent-e2e-minio
       MINIO_SECRET_KEY: xagent-e2e-minio-secret
@@ -76,24 +77,32 @@ services:
       POSTGRES_DB: xagent_api_test
       POSTGRES_PASSWORD: xagent-api-test
       POSTGRES_USER: postgres
-      POSTGRES_APP_USER: xagent_e2e_app
-      POSTGRES_APP_PASSWORD: xagent-e2e-app-password
-      POSTGRES_WORKER_USER: xagent_e2e_worker
-      POSTGRES_WORKER_PASSWORD: xagent-e2e-worker-password
     ports:
       - "127.0.0.1:55432:5432"
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && test -f $${PGDATA}/.xagent-roles-ready",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
         ]
       interval: 2s
       timeout: 5s
       retries: 20
     volumes:
       - xagent-api-test-postgres:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+  roles:
+    image: xagent-api:test
+    environment:
+      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres:xagent-api-test@postgres:5432/xagent_api_test
+      POSTGRES_APP_USER: xagent_e2e_app
+      POSTGRES_APP_PASSWORD: xagent-e2e-app-password
+      POSTGRES_WORKER_USER: xagent_e2e_worker
+      POSTGRES_WORKER_PASSWORD: p@ss:word/%-e2e-worker
+    command: ["xagent-api", "roles", "ensure"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   migrate:
     image: xagent-api:test
@@ -103,8 +112,8 @@ services:
       POSTGRES_WORKER_USER: xagent_e2e_worker
     command: ["alembic", "upgrade", "head"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      roles:
+        condition: service_completed_successfully
 
   minio:
     image: minio/minio:RELEASE.2024-10-13T13-34-11Z

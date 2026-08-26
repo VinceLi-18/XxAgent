@@ -99,21 +99,34 @@ def _sessions(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
-def _worker_url(test_database_url: str, worker_role: str) -> str:
+def _worker_url(
+    test_database_url: str,
+    worker_role: str,
+    *,
+    password: str | None = None,
+) -> str:
     return (
         make_url(test_database_url)
         .set(
             username=worker_role,
-            password=os.environ["POSTGRES_WORKER_PASSWORD"],
+            password=password or os.environ["POSTGRES_WORKER_PASSWORD"],
         )
         .render_as_string(hide_password=False)
     )
 
 
-def _worker_only_environment(worker_role: str) -> dict[str, str]:
-    return {
+def _worker_only_environment(
+    worker_role: str,
+    *,
+    raw_password: str | None = None,
+) -> dict[str, str]:
+    environment = {
         "PATH": os.environ["PATH"],
-        "DATABASE_WORKER_URL": _worker_url(os.environ["JX_TEST_DATABASE_URL"], worker_role),
+        "DATABASE_WORKER_URL": _worker_url(
+            os.environ["JX_TEST_DATABASE_URL"],
+            worker_role,
+            password=raw_password,
+        ),
         "MINIO_ENDPOINT": "127.0.0.1:1",
         "MINIO_ACCESS_KEY": "worker-access",
         "MINIO_SECRET_KEY": "worker-secret",
@@ -124,19 +137,30 @@ def _worker_only_environment(worker_role: str) -> dict[str, str]:
         "CLAMAV_PORT": "1",
         "CLAMAV_TIMEOUT": "0.05",
     }
+    if raw_password is not None:
+        environment["DATABASE_WORKER_URL"] = (
+            make_url(os.environ["JX_TEST_DATABASE_URL"])
+            .set(username=worker_role, password=None)
+            .render_as_string(hide_password=False)
+        )
+        environment["POSTGRES_WORKER_PASSWORD"] = raw_password
+    return environment
 
 
 def _run_shipping_worker_once(
     worker_role: str,
     *,
     configured: bool = False,
+    raw_password: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = {
         "PATH": os.environ["PATH"],
         "DATABASE_WORKER_URL": _worker_url(os.environ["JX_TEST_DATABASE_URL"], worker_role),
     }
+    if raw_password is not None:
+        env = _worker_only_environment(worker_role, raw_password=raw_password)
     if configured:
-        env = _worker_only_environment(worker_role)
+        env = _worker_only_environment(worker_role, raw_password=raw_password)
     return subprocess.run(
         ["uv", "run", "--project", "services/api", "xagent-api", "worker", "--once"],
         cwd=Path(__file__).resolve().parents[3],
@@ -152,11 +176,14 @@ def test_api_and_worker_database_settings_are_disjoint() -> None:
     worker_settings = ArtifactWorkerSettings(
         _env_file=None,
         DATABASE_WORKER_URL="postgresql+asyncpg://worker:secret@database/xagent",
+        POSTGRES_WORKER_PASSWORD="raw-worker-secret",
     )
 
     assert "DATABASE_WORKER_URL" not in api_settings.model_dump()
+    assert "POSTGRES_WORKER_PASSWORD" not in api_settings.model_dump()
     assert worker_settings.model_dump() == {
-        "DATABASE_WORKER_URL": "postgresql+asyncpg://worker:secret@database/xagent"
+        "DATABASE_WORKER_URL": "postgresql+asyncpg://worker:secret@database/xagent",
+        "POSTGRES_WORKER_PASSWORD": "raw-worker-secret",
     }
 
 
@@ -199,6 +226,50 @@ async def test_shipping_worker_once_enters_processor_with_only_worker_configurat
     assert job.lease_token is None and job.lease_expires_at is None
     assert job.next_attempt_at > started_at
     assert version is not None and version.scan_status == "scanning"
+
+
+@pytest.mark.anyio
+async def test_shipping_worker_connects_with_raw_reserved_character_password(
+    seeded_database: AsyncEngine,
+    worker_role: str,
+    alice,
+) -> None:
+    special_password = "p@ss:word/%-worker"
+    original_password = os.environ["POSTGRES_WORKER_PASSWORD"]
+    started_at = datetime.now(UTC)
+    seeded = await _seed_job(seeded_database, actor_id=alice.id, now=started_at)
+
+    async def set_password(password: str) -> None:
+        async with seeded_database.begin() as connection:
+            statement = await connection.scalar(
+                text(
+                    "SELECT format('ALTER ROLE %I PASSWORD %L', "
+                    "CAST(:role AS text), CAST(:password AS text))"
+                ),
+                {"role": worker_role, "password": password},
+            )
+            await connection.execute(text(statement))
+
+    await set_password(special_password)
+    try:
+        completed = _run_shipping_worker_once(
+            worker_role,
+            configured=True,
+            raw_password=special_password,
+        )
+    finally:
+        await set_password(original_password)
+
+    async with AsyncSession(seeded_database) as session:
+        job = await session.get(ArtifactProcessingJob, seeded.id)
+    assert completed.returncode == 0
+    assert completed.stdout == "" and completed.stderr == ""
+    assert job is not None
+    assert (job.status, job.attempts, job.failure_code) == (
+        "ready",
+        1,
+        "inspection-unavailable",
+    )
 
 
 def test_processor_resolves_without_api_only_configuration(worker_role: str) -> None:

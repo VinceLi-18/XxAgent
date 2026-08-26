@@ -4,9 +4,9 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TypeAlias, TypeVar
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.worker_config import ArtifactWorkerSettings
+from app.core.worker_config import ArtifactWorkerSettings, create_worker_database_engine
 from app.services.artifact_cleanup_jobs import (
     ArtifactCleanupLease,
     claim_due_cleanup,
@@ -375,7 +375,7 @@ async def run_worker(*, once: bool = False) -> None:
     """Run the artifact worker with its isolated database engine until stopped."""
 
     settings = ArtifactWorkerSettings()
-    engine = create_async_engine(settings.DATABASE_WORKER_URL, pool_pre_ping=True)
+    engine = create_worker_database_engine(settings)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
