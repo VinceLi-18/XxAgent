@@ -327,6 +327,47 @@ async def test_retry_uses_finite_exponential_backoff(
 
 
 @pytest.mark.anyio
+async def test_automatic_retry_can_be_claimed_again_without_a_second_start_audit(
+    seeded_database: AsyncEngine,
+    worker_engine: AsyncEngine,
+    alice,
+) -> None:
+    claimed_at = datetime(2026, 8, 25, 10, 0, tzinfo=UTC)
+    seeded = await _seed_job(
+        seeded_database,
+        actor_id=alice.id,
+        now=claimed_at,
+    )
+    sessions = _worker_sessions(worker_engine)
+    first = await _claim(sessions, now=claimed_at)
+    assert first is not None
+    failed_at = claimed_at + timedelta(seconds=1)
+    async with sessions() as session:
+        async with session.begin():
+            assert await retry_job(
+                session,
+                first,
+                now=failed_at,
+                failure_code="processor-error",
+            )
+
+    second = await _claim(sessions, now=failed_at + timedelta(seconds=5))
+
+    assert second is not None
+    assert second.job_id == seeded.job_id
+    assert second.attempt == 2
+    async with AsyncSession(seeded_database) as session:
+        start_audits = await session.scalar(
+            text(
+                "SELECT count(*) FROM audit_events "
+                "WHERE resource_id = :version_id AND action = 'artifact.scan.start'"
+            ),
+            {"version_id": seeded.version_id},
+        )
+    assert start_audits == 1
+
+
+@pytest.mark.anyio
 async def test_fifth_failure_closes_job_and_marks_version_failed(
     seeded_database: AsyncEngine,
     worker_engine: AsyncEngine,

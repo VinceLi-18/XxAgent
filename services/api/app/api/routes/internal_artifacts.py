@@ -1,12 +1,18 @@
+from collections.abc import Iterable
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import StreamingResponse
+from starlette.types import Send
 
 from app.api.routes.internal_sessions import SessionContext, get_session_context
+from app.core.db import get_admin_session
 from app.schemas.artifacts import (
     CompleteArtifactUploadRequest,
-    CompleteArtifactUploadResponse,
     CreateArtifactUploadRequest,
     CreateArtifactUploadResponse,
     ArtifactDetailResponse,
@@ -23,6 +29,26 @@ versions_router = APIRouter(
     prefix="/internal/xagent/artifact-versions",
     tags=["internal-artifact-versions"],
 )
+content_router = APIRouter(
+    prefix="/api/v1/xagent/artifact-content",
+    tags=["artifact-content"],
+)
+
+
+class _ArtifactStreamingResponse(StreamingResponse):
+    """Close the storage iterator after completion or client disconnect."""
+
+    def __init__(self, content: Iterable[bytes], **kwargs: Any) -> None:
+        self._source_iterator = iter(content)
+        super().__init__(self._source_iterator, **kwargs)
+
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            close = getattr(self._source_iterator, "close", None)
+            if close is not None:
+                await run_in_threadpool(close)
 
 
 def _error_response(status_code: int, code: str) -> JSONResponse:
@@ -153,18 +179,19 @@ async def _create_upload_response(
 
 @router.post(
     "/uploads/{upload_id}/complete",
-    response_model=CompleteArtifactUploadResponse,
+    response_model=ArtifactDetailResponse,
+    response_model_exclude_none=True,
     status_code=status.HTTP_201_CREATED,
 )
 async def complete_upload_route(
     upload_id: UUID,
     request: CompleteArtifactUploadRequest,
     context: SessionContext = Depends(get_session_context),
-) -> CompleteArtifactUploadResponse | JSONResponse:
+) -> ArtifactDetailResponse | JSONResponse:
     request_id = uuid4()
     try:
         async with context.session.begin_nested():
-            version = await artifacts.complete_upload(
+            detail, version_id = await artifacts.complete_upload(
                 context.session,
                 context.principal,
                 upload_id=upload_id,
@@ -206,7 +233,7 @@ async def complete_upload_route(
         )
         return _error_response(status.HTTP_422_UNPROCESSABLE_CONTENT, code)
     except artifacts.ArtifactStorageError:
-        code = "storage-unavailable"
+        code = "service-unavailable"
         await _audit_account_operation(
             context,
             action="artifact.upload.complete",
@@ -220,14 +247,11 @@ async def complete_upload_route(
         context,
         action="artifact.upload.complete",
         resource_type="artifact_version",
-        resource_id=version.id,
+        resource_id=version_id,
         request_id=request_id,
         result="allowed",
     )
-    return CompleteArtifactUploadResponse(
-        artifact_id=version.artifact_id,
-        version_id=version.id,
-    )
+    return ArtifactDetailResponse.model_validate(detail)
 
 
 @router.post(
@@ -412,3 +436,30 @@ async def download_artifact_version_route(
     context: SessionContext = Depends(get_session_context),
 ) -> ArtifactReadResponse | JSONResponse:
     return await _read_response(version_id, context, preview=False)
+
+
+@content_router.get("/{version_id}")
+async def artifact_content_route(
+    version_id: UUID,
+    expires: int = Query(ge=0),
+    mode: Literal["inline", "attachment"] = Query(),
+    signature: str = Query(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    session: AsyncSession = Depends(get_admin_session),
+):
+    try:
+        object_key, content_type, disposition = await artifacts.resolve_read_content(
+            session,
+            version_id=version_id,
+            expires=expires,
+            mode=mode,
+            signature=signature,
+        )
+    except artifacts.ArtifactForbidden:
+        return _error_response(status.HTTP_403_FORBIDDEN, "forbidden")
+    except artifacts.ArtifactNotFound:
+        return _error_response(status.HTTP_404_NOT_FOUND, "not-found")
+    return _ArtifactStreamingResponse(
+        artifacts.stream_read_content(object_key),
+        media_type=content_type,
+        headers={"Content-Disposition": disposition},
+    )

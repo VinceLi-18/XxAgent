@@ -491,7 +491,7 @@ async def test_same_filename_new_uploads_create_distinct_artifacts(
             key=f"same-name-complete-{ordinal}",
         )
         assert completed.status_code == 201
-        artifact_ids.append(completed.json()["artifact_id"])
+        artifact_ids.append(completed.json()["id"])
 
     assert artifact_ids[0] != artifact_ids[1]
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
@@ -867,10 +867,13 @@ async def test_complete_upload_enqueues_pending_work_without_synchronous_process
         upload = await session.get(StagingUpload, upload_id)
     assert len(versions) == len(jobs) == 1
     version = versions[0]
-    assert completed.json() == {
-        "artifact_id": str(version.artifact_id),
-        "version_id": str(version.id),
-    }
+    detail = completed.json()
+    assert detail["id"] == str(version.artifact_id)
+    assert detail["latest_status"] == "pending"
+    assert detail["latest_version"] == 1
+    assert "latest_clean_version" not in detail
+    assert detail["versions"][0]["id"] == str(version.id)
+    assert detail["versions"][0]["status"] == "pending"
     assert (
         version.version_number,
         version.declared_size,
@@ -1087,6 +1090,19 @@ async def test_complete_upload_replays_same_request_and_rejects_same_key_with_ne
         sha256="b" * 64,
         key="same-complete-key",
     )
+    assert first.status_code == 201
+    assert first.json()["latest_status"] == "pending"
+    assert first.json()["latest_version"] == 1
+    assert first.json()["versions"][0]["status"] == "pending"
+    assert "artifact_id" not in first.json()
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE artifact_versions SET scan_status = 'scanning' "
+                "WHERE id = :version_id"
+            ),
+            {"version_id": UUID(first.json()["versions"][0]["id"])},
+        )
     replayed = await _complete_upload(
         client,
         token,
@@ -1104,7 +1120,6 @@ async def test_complete_upload_replays_same_request_and_rejects_same_key_with_ne
         key="same-complete-key",
     )
 
-    assert first.status_code == 201
     assert replayed.status_code == 201
     assert replayed.json() == first.json()
     assert conflict.status_code == 409
@@ -1119,3 +1134,41 @@ async def test_complete_upload_replays_same_request_and_rejects_same_key_with_ne
             .where(XAgentIdempotencyKey.operation == "artifact.upload.complete")
         )
     assert (version_count, job_count, complete_key_count) == (1, 1, 1)
+
+
+@pytest.mark.anyio
+async def test_complete_upload_maps_storage_failure_to_the_fixed_service_error(
+    client,
+    seeded_database,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+
+    class FailingGateway(UploadUrlGateway):
+        def stat(self, key: str) -> ObjectMetadata:
+            self.stat_calls.append(key)
+            raise RuntimeError("internal storage failure")
+
+    gateway = FailingGateway()
+    monkeypatch.setattr("app.services.artifacts._runtime_gateway", lambda: gateway)
+    created = await _create_upload(
+        client,
+        token,
+        filename="storage-failure.txt",
+        size=1,
+        key="storage-failure-create",
+    )
+
+    response = await _complete_upload(
+        client,
+        token,
+        UUID(created.json()["upload_id"]),
+        actual_size=1,
+        sha256="f" * 64,
+        key="storage-failure-complete",
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"code": "service-unavailable"}}
+    assert "internal storage failure" not in response.text

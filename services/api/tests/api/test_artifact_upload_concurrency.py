@@ -118,7 +118,7 @@ async def test_concurrent_explicit_uploads_allocate_distinct_sequential_version_
         sha256="0" * 64,
         key="initial-complete",
     )
-    artifact_id = UUID(initial.json()["artifact_id"])
+    artifact_id = UUID(initial.json()["id"])
     await _install_version_insert_overlap_trigger(seeded_database)
 
     uploads: list[tuple[str, UUID]] = []

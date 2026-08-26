@@ -1,6 +1,5 @@
 from datetime import timedelta
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import minio
@@ -39,51 +38,6 @@ def test_gateway_refuses_to_sign_non_staging_keys(fake_minio: FakeMinio) -> None
 
     with pytest.raises(ValueError, match="staging"):
         gateway.create_staging_put_url("artifacts/private-object", timedelta(minutes=10))
-
-
-def test_gateway_read_signature_bounds_ttl_and_rfc_encodes_disposition() -> None:
-    client = minio.Minio(
-        "storage.test",
-        access_key="test-access",
-        secret_key="test-secret",
-        secure=True,
-        region="us-east-1",
-    )
-    gateway = MinioGateway(client, bucket="jiaxin-private")
-    artifact_id = UUID("00000000-0000-0000-0000-000000000123")
-    version_id = UUID("00000000-0000-0000-0000-000000000456")
-
-    url = gateway.create_read_url(
-        f"artifacts/{artifact_id}/{version_id}",
-        expires_seconds=60,
-        disposition="attachment",
-        filename="报告 100%.txt",
-    )
-
-    query = parse_qs(urlsplit(url).query)
-    assert query["X-Amz-Expires"] == ["60"]
-    assert query["response-content-disposition"] == [
-        'attachment; filename="__ 100%.txt"; '
-        "filename*=UTF-8''%E6%8A%A5%E5%91%8A%20100%25.txt"
-    ]
-    assert "%2500" not in url
-
-
-@pytest.mark.parametrize("expires_seconds", (0, 61))
-def test_gateway_refuses_unbounded_read_signatures(expires_seconds: int) -> None:
-    gateway = MinioGateway(object(), bucket="jiaxin-private")
-    key = (
-        "artifacts/00000000-0000-0000-0000-000000000123/"
-        "00000000-0000-0000-0000-000000000456"
-    )
-
-    with pytest.raises(ValueError, match="1.*60"):
-        gateway.create_read_url(
-            key,
-            expires_seconds=expires_seconds,
-            disposition="attachment",
-            filename="safe.txt",
-        )
 
 
 @pytest.mark.parametrize(

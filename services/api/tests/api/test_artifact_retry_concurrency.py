@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion
@@ -166,3 +166,35 @@ async def test_concurrent_retry_different_keys_allows_only_one_version_transitio
             .where(XAgentIdempotencyKey.operation == "artifact.version.retry")
         )
     assert stored == 1
+
+
+@pytest.mark.anyio
+async def test_retry_replay_returns_the_original_detail_after_worker_progress(
+    client,
+    seeded_database,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    (version,) = await _seed_failed_versions(seeded_database, alice.id, 1)
+    monkeypatch.setattr(
+        "app.services.artifacts._runtime_gateway",
+        lambda: RetryGateway((version,)),
+    )
+
+    first = await _retry(client, token, version.id, "durable-replay")
+    assert first.status_code == 200
+    assert first.json()["latest_status"] == "pending"
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE artifact_versions SET scan_status = 'scanning' "
+                "WHERE id = :version_id"
+            ),
+            {"version_id": version.id},
+        )
+
+    replay = await _retry(client, token, version.id, "durable-replay")
+
+    assert replay.status_code == 200
+    assert replay.json() == first.json()

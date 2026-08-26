@@ -27,11 +27,6 @@ class CompleteArtifactUploadRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
-class CompleteArtifactUploadResponse(BaseModel):
-    artifact_id: UUID
-    version_id: UUID
-
-
 class EmptyArtifactRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

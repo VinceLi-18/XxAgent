@@ -109,7 +109,6 @@ async def claim_due_job(
     lease_token = uuid4()
     lease_expires_at = now + timedelta(seconds=lease_seconds)
     attempts = job.attempts + 1
-    starts_scanning = job.status == "ready"
     await session.execute(
         update(ArtifactProcessingJob)
         .where(ArtifactProcessingJob.id == job.id)
@@ -130,8 +129,6 @@ async def claim_due_job(
         )
         .values(scan_status="scanning")
     )
-    if starts_scanning and version.rowcount != 1:
-        raise RuntimeError("claimed artifact job must own a pending version")
     if version.rowcount == 1:
         await _audit_scan_transition(
             session,
@@ -139,6 +136,14 @@ async def claim_due_job(
             request_id=job.id,
             action="artifact.scan.start",
         )
+    else:
+        scan_status = await session.scalar(
+            select(ArtifactVersion.scan_status).where(
+                ArtifactVersion.id == job.version_id
+            )
+        )
+        if scan_status != "scanning":
+            raise RuntimeError("claimed artifact job must own an active version")
     return ArtifactJobLease(
         job_id=job.id,
         version_id=job.version_id,

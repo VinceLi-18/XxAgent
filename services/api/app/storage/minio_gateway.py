@@ -1,11 +1,9 @@
 import json
-import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
-from urllib.parse import quote
 
 from minio.versioningconfig import ENABLED, VersioningConfig
 from urllib3 import PoolManager, Timeout
@@ -136,45 +134,6 @@ class MinioGateway:
         ):
             raise ValueError("仅可为单个 staging/{upload_id} 对象签发上传 URL")
         return self._public_client.presigned_put_object(self._bucket, key, expires=expires)
-
-    def create_read_url(
-        self,
-        key: str,
-        *,
-        expires_seconds: int,
-        disposition: str,
-        filename: str,
-    ) -> str:
-        """Sign one canonical final object with a bounded disposition override."""
-
-        if not re.fullmatch(
-            r"artifacts/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/"
-            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
-            key,
-        ):
-            raise ValueError("仅可为规范 Artifact Version 对象签发读取 URL")
-        if expires_seconds < 1 or expires_seconds > 60:
-            raise ValueError("读取 URL 有效期必须为 1 到 60 秒")
-        if disposition not in {"inline", "attachment"}:
-            raise ValueError("读取 URL Content-Disposition 非法")
-        if any(character in filename for character in ("\r", "\n", "/", "\\")):
-            raise ValueError("读取 URL 文件名包含非法字符")
-        ascii_filename = "".join(
-            character
-            if 0x20 <= ord(character) < 0x7F and character not in {'"', "\\"}
-            else "_"
-            for character in filename
-        )
-        header = (
-            f'{disposition}; filename="{ascii_filename}"; '
-            f"filename*=UTF-8''{quote(filename, safe='')}"
-        )
-        return self._public_client.presigned_get_object(
-            self._bucket,
-            key,
-            expires=timedelta(seconds=expires_seconds),
-            response_headers={"response-content-disposition": header},
-        )
 
     def stat(self, key: str) -> ObjectMetadata:
         object_stat = self._client.stat_object(self._bucket, key)

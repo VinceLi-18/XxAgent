@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -50,7 +50,7 @@ async def test_worker_cannot_read_identity_auth_session_or_membership_data(
 
 
 @pytest.mark.anyio
-async def test_application_role_cannot_see_jobs_without_current_edit_scope(
+async def test_application_role_cannot_read_processing_jobs_directly(
     seeded_database: AsyncEngine,
     application_role: str,
 ) -> None:
@@ -60,17 +60,17 @@ async def test_application_role_cannot_see_jobs_without_current_edit_scope(
             {"role": application_role},
         )
 
-    async with seeded_database.begin() as connection:
-        await connection.execute(text(set_role))
-        visible = await connection.scalar(
-            text(
-                "SELECT id FROM artifact_processing_jobs "
-                "WHERE next_attempt_at <= CURRENT_TIMESTAMP "
-                "FOR UPDATE SKIP LOCKED LIMIT 1"
+    with pytest.raises(ProgrammingError) as rejected:
+        async with seeded_database.begin() as connection:
+            await connection.execute(text(set_role))
+            await connection.scalar(
+                text(
+                    "SELECT id FROM artifact_processing_jobs "
+                    "WHERE next_attempt_at <= CURRENT_TIMESTAMP "
+                    "FOR UPDATE SKIP LOCKED LIMIT 1"
+                )
             )
-        )
-
-    assert visible is None
+    assert rejected.value.orig.sqlstate == "42501"
 
 
 @pytest.mark.anyio
@@ -181,14 +181,18 @@ async def test_worker_cleanup_insert_accepts_canonical_final_artifact_key(
 
 
 @pytest.mark.anyio
-async def test_application_role_can_reset_only_an_editable_pending_artifact_job(
+async def test_application_role_can_retry_only_through_the_constrained_function(
     seeded_database: AsyncEngine,
     application_role: str,
     alice,
+    bob,
 ) -> None:
+    now = datetime.now(UTC)
     artifact_id = uuid4()
     version_id = uuid4()
     job_id = uuid4()
+    foreign_artifact_id = uuid4()
+    foreign_version_id = uuid4()
     async with seeded_database.begin() as connection:
         set_role = await connection.scalar(
             text("SELECT format('SET LOCAL ROLE %I', CAST(:role AS text))"),
@@ -197,37 +201,140 @@ async def test_application_role_can_reset_only_an_editable_pending_artifact_job(
         await connection.execute(
             text(
                 "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
-                "VALUES (:id, 'enqueue.txt', :actor_id, :actor_id)"
+                "VALUES (:id, 'retry.txt', :actor_id, :actor_id), "
+                "(:foreign_id, 'foreign.txt', :foreign_actor_id, :foreign_actor_id)"
             ),
-            {"id": artifact_id, "actor_id": alice.id},
-        )
-        await connection.execute(text(set_role))
-        await connection.execute(
-            text("SELECT set_config('app.actor_id', :actor_id, true)"),
-            {"actor_id": str(alice.id)},
+            {
+                "id": artifact_id,
+                "actor_id": alice.id,
+                "foreign_id": foreign_artifact_id,
+                "foreign_actor_id": bob.id,
+            },
         )
         await connection.execute(
             text(
                 "INSERT INTO artifact_versions "
                 "(id, artifact_id, owner_id, version_number, original_filename, "
-                "uploaded_by_id, declared_size, scan_status, object_key, size, sha256) "
-                "VALUES (:id, :artifact_id, :actor_id, 1, 'enqueue.txt', :actor_id, "
-                "7, 'pending', NULL, 7, :sha256)"
+                "uploaded_by_id, declared_size, actual_size, scan_status, staging_key, "
+                "staging_etag, staging_expires_at, object_key, size, sha256) VALUES "
+                "(:id, :artifact_id, :actor_id, 1, 'retry.txt', :actor_id, "
+                "7, 7, 'failed', :staging_key, 'etag', :expires_at, NULL, 7, :sha256), "
+                "(:foreign_id, :foreign_artifact_id, :foreign_actor_id, 1, "
+                "'foreign.txt', :foreign_actor_id, 7, 7, 'failed', "
+                ":foreign_staging_key, 'etag', :expires_at, NULL, 7, :sha256)"
             ),
             {
                 "id": version_id,
                 "artifact_id": artifact_id,
                 "actor_id": alice.id,
+                "staging_key": f"staging/{uuid4()}",
+                "expires_at": now + timedelta(hours=1),
+                "foreign_id": foreign_version_id,
+                "foreign_artifact_id": foreign_artifact_id,
+                "foreign_actor_id": bob.id,
+                "foreign_staging_key": f"staging/{uuid4()}",
                 "sha256": "0" * 64,
             },
         )
         await connection.execute(
             text(
                 "INSERT INTO artifact_processing_jobs "
-                "(id, version_id, status, attempts, next_attempt_at) "
-                "VALUES (:id, :version_id, 'ready', 0, CURRENT_TIMESTAMP)"
+                "(id, version_id, status, attempts, next_attempt_at, failure_code) "
+                "VALUES (:id, :version_id, 'dead', 5, CURRENT_TIMESTAMP, 'terminal')"
             ),
             {"id": job_id, "version_id": version_id},
+        )
+
+    for statement in (
+        "SELECT id FROM artifact_processing_jobs WHERE id = :job_id",
+        "UPDATE artifact_versions SET scan_status = 'pending' WHERE id = :version_id",
+        "UPDATE artifact_processing_jobs SET status = 'ready', attempts = 0, "
+        "failure_code = NULL WHERE id = :job_id",
+    ):
+        with pytest.raises(ProgrammingError) as rejected:
+            async with seeded_database.begin() as connection:
+                await connection.execute(text(set_role))
+                await connection.execute(
+                    text("SELECT set_config('app.actor_id', :actor_id, true)"),
+                    {"actor_id": str(alice.id)},
+                )
+                await connection.execute(
+                    text(statement),
+                    {"job_id": job_id, "version_id": version_id},
+                )
+        assert rejected.value.orig.sqlstate == "42501"
+
+    async with seeded_database.begin() as connection:
+        await connection.execute(text(set_role))
+        await connection.execute(
+            text("SELECT set_config('app.actor_id', :actor_id, true)"),
+            {"actor_id": str(alice.id)},
+        )
+        allowed = await connection.scalar(
+            text("SELECT result FROM public.retry_artifact_version(:version_id)"),
+            {"version_id": version_id},
+        )
+        wrong_scope = await connection.scalar(
+            text("SELECT result FROM public.retry_artifact_version(:version_id)"),
+            {"version_id": foreign_version_id},
+        )
+        wrong_status = await connection.scalar(
+            text("SELECT result FROM public.retry_artifact_version(:version_id)"),
+            {"version_id": version_id},
+        )
+    assert (allowed, wrong_scope, wrong_status) == ("allowed", "not-found", "not-found")
+
+    async with seeded_database.begin() as connection:
+        state = (
+            await connection.execute(
+                text(
+                    "SELECT v.scan_status, j.status, j.attempts, j.failure_code "
+                    "FROM artifact_versions v JOIN artifact_processing_jobs j "
+                    "ON j.version_id = v.id WHERE v.id = :version_id"
+                ),
+                {"version_id": version_id},
+            )
+        ).one()
+    assert state == ("pending", "ready", 0, None)
+
+
+@pytest.mark.anyio
+async def test_constrained_retry_function_rejects_expired_staging(
+    seeded_database: AsyncEngine,
+    application_role: str,
+    alice,
+) -> None:
+    artifact_id = uuid4()
+    version_id = uuid4()
+    async with seeded_database.begin() as connection:
+        set_role = await connection.scalar(
+            text("SELECT format('SET LOCAL ROLE %I', CAST(:role AS text))"),
+            {"role": application_role},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
+                "VALUES (:id, 'expired.txt', :actor_id, :actor_id)"
+            ),
+            {"id": artifact_id, "actor_id": alice.id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_versions "
+                "(id, artifact_id, owner_id, version_number, original_filename, "
+                "uploaded_by_id, declared_size, actual_size, scan_status, staging_key, "
+                "staging_etag, staging_expires_at, size, sha256) VALUES "
+                "(:id, :artifact_id, :actor_id, 1, 'expired.txt', :actor_id, "
+                "1, 1, 'failed', :staging_key, 'etag', :expires_at, 1, :sha256)"
+            ),
+            {
+                "id": version_id,
+                "artifact_id": artifact_id,
+                "actor_id": alice.id,
+                "staging_key": f"staging/{uuid4()}",
+                "expires_at": datetime.now(UTC) - timedelta(seconds=1),
+                "sha256": "0" * 64,
+            },
         )
 
     async with seeded_database.begin() as connection:
@@ -236,30 +343,11 @@ async def test_application_role_can_reset_only_an_editable_pending_artifact_job(
             text("SELECT set_config('app.actor_id', :actor_id, true)"),
             {"actor_id": str(alice.id)},
         )
-        visible = await connection.scalar(
-            text(
-                "SELECT id FROM artifact_processing_jobs "
-                "WHERE id = :job_id FOR UPDATE"
-            ),
-            {"job_id": job_id},
+        result = await connection.scalar(
+            text("SELECT result FROM public.retry_artifact_version(:version_id)"),
+            {"version_id": version_id},
         )
-    assert visible == job_id
-
-    with pytest.raises(ProgrammingError) as rejected:
-        async with seeded_database.begin() as connection:
-            await connection.execute(text(set_role))
-            await connection.execute(
-                text("SELECT set_config('app.actor_id', :actor_id, true)"),
-                {"actor_id": str(alice.id)},
-            )
-            await connection.execute(
-                text(
-                    "UPDATE artifact_processing_jobs SET attempts = 1 "
-                    "WHERE id = :job_id"
-                ),
-                {"job_id": job_id},
-            )
-    assert rejected.value.orig.sqlstate == "42501"
+    assert result == "upload-expired"
 
 
 @pytest.mark.anyio

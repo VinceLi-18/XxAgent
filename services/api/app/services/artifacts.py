@@ -1,9 +1,15 @@
+import hashlib
+import hmac
 import re
+import time
 import unicodedata
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
+from fastapi.encoders import jsonable_encoder
 from minio.error import S3Error
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -239,7 +245,7 @@ async def complete_upload(
     actual_size: int,
     sha256: str,
     idempotency_key: str,
-) -> ArtifactVersion:
+) -> tuple[dict[str, Any], UUID]:
     normalized_sha256 = sha256.lower()
     operation = "artifact.upload.complete"
     digest = request_hash(
@@ -273,7 +279,10 @@ async def complete_upload(
         )
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        return version
+        detail = stored.result.get("detail")
+        if not isinstance(detail, dict):
+            raise ArtifactNotFound
+        return detail, version.id
 
     upload = await session.scalar(
         select(StagingUpload).where(
@@ -393,7 +402,11 @@ async def complete_upload(
     )
     session.add(job)
     await session.flush()
-    result = {"version_id": str(version.id)}
+    detail = jsonable_encoder(
+        await artifact_detail(session, principal, version.artifact_id),
+        exclude_none=True,
+    )
+    result = {"version_id": str(version.id), "detail": detail}
     expires_at = now + timedelta(hours=24)
     if stored is None:
         session.add(
@@ -411,7 +424,7 @@ async def complete_upload(
         stored.result = result
         stored.expires_at = expires_at
     await session.flush()
-    return version
+    return detail, version.id
 
 
 def _version_projection(version: ArtifactVersion) -> dict[str, Any]:
@@ -552,6 +565,30 @@ def _safe_download_filename(filename: str) -> str:
     return sanitized[:255]
 
 
+def _sign_read_request(version_id: UUID, expires: int, mode: str) -> str:
+    message = (
+        f"xagent-artifact-content:v1\0{version_id}\0{expires}\0{mode}"
+    ).encode()
+    return hmac.new(
+        settings.JWT_SECRET_KEY.encode(),
+        message,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _content_disposition(mode: str, filename: str) -> str:
+    ascii_filename = "".join(
+        character
+        if 0x20 <= ord(character) < 0x7F and character not in {'"', "\\"}
+        else "_"
+        for character in filename
+    )
+    return (
+        f'{mode}; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
+
+
 async def create_read_url(
     session: AsyncSession,
     principal: Principal,
@@ -575,16 +612,54 @@ async def create_read_url(
     content_type = version.detected_content_type
     if preview and content_type not in INLINE_TYPES:
         raise ArtifactForbidden
-    filename = _safe_download_filename(version.original_filename)
-    try:
-        return _runtime_gateway().create_read_url(
-            version.object_key,
-            expires_seconds=READ_URL_SECONDS,
-            disposition="inline" if preview else "attachment",
-            filename=filename,
+    mode = "inline" if preview else "attachment"
+    expires = int(time.time()) + READ_URL_SECONDS
+    query = urlencode(
+        {
+            "expires": expires,
+            "mode": mode,
+            "signature": _sign_read_request(version.id, expires, mode),
+        }
+    )
+    return f"{settings.API_V1_STR}/xagent/artifact-content/{version.id}?{query}"
+
+
+async def resolve_read_content(
+    session: AsyncSession,
+    *,
+    version_id: UUID,
+    expires: int,
+    mode: str,
+    signature: str,
+) -> tuple[str, str, str]:
+    now = int(time.time())
+    if (
+        mode not in {"inline", "attachment"}
+        or expires <= now
+        or expires - now > READ_URL_SECONDS
+        or not hmac.compare_digest(
+            signature,
+            _sign_read_request(version_id, expires, mode),
         )
-    except Exception as exc:
-        raise ArtifactStorageError from exc
+    ):
+        raise ArtifactForbidden
+    version = await session.scalar(
+        select(ArtifactVersion).where(
+            ArtifactVersion.id == version_id,
+            ArtifactVersion.scan_status == "clean",
+        )
+    )
+    if version is None or version.object_key is None:
+        raise ArtifactNotFound
+    content_type = version.detected_content_type or "application/octet-stream"
+    if mode == "inline" and content_type not in INLINE_TYPES:
+        raise ArtifactNotFound
+    filename = _safe_download_filename(version.original_filename)
+    return version.object_key, content_type, _content_disposition(mode, filename)
+
+
+def stream_read_content(key: str) -> Iterator[bytes]:
+    return _runtime_gateway().stream(key)
 
 
 async def retry_version(
@@ -608,15 +683,6 @@ async def retry_version(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
         {"lock_name": lock_name},
     )
-    version = await session.scalar(
-        select(ArtifactVersion)
-        .where(ArtifactVersion.id == version_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if version is None:
-        raise ArtifactNotFound
-    await _require_artifact_edit(session, principal, version.artifact_id)
     now = datetime.now(UTC)
     stored = await session.get(
         XAgentIdempotencyKey,
@@ -625,20 +691,23 @@ async def retry_version(
     if stored is not None and stored.expires_at > now:
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        return await artifact_detail(session, principal, version.artifact_id)
+        detail = stored.result.get("detail")
+        if not isinstance(detail, dict):
+            raise ArtifactNotFound
+        return detail
 
-    if version.scan_status != "failed":
+    if visible.scan_status != "failed":
         raise ArtifactNotFound
     if (
-        version.staging_expires_at is None
-        or version.staging_expires_at <= now
-        or version.staging_key is None
-        or version.staging_etag is None
-        or version.actual_size is None
+        visible.staging_expires_at is None
+        or visible.staging_expires_at <= now
+        or visible.staging_key is None
+        or visible.staging_etag is None
+        or visible.actual_size is None
     ):
         raise ArtifactUploadExpired
     try:
-        metadata = _runtime_gateway().stat(version.staging_key)
+        metadata = _runtime_gateway().stat(visible.staging_key)
     except KeyError:
         raise ArtifactUploadExpired from None
     except S3Error as exc:
@@ -647,34 +716,33 @@ async def retry_version(
         raise ArtifactStorageError from exc
     except Exception as exc:
         raise ArtifactStorageError from exc
-    if metadata.size != version.actual_size or metadata.etag != version.staging_etag:
+    if metadata.size != visible.actual_size or metadata.etag != visible.staging_etag:
         raise UploadRejectedError
 
-    version.scan_status = "pending"
-    job = await session.scalar(
-        select(ArtifactProcessingJob)
-        .where(ArtifactProcessingJob.version_id == version.id)
-        .with_for_update()
-    )
-    if job is None:
-        session.add(
-            ArtifactProcessingJob(
-                id=uuid4(),
-                version_id=version.id,
-                status="ready",
-                attempts=0,
-                next_attempt_at=now,
-            )
+    retry_result = (
+        await session.execute(
+            text(
+                "SELECT result, artifact_id, version_id "
+                "FROM public.retry_artifact_version(CAST(:version_id AS uuid))"
+            ),
+            {"version_id": version_id},
         )
-    else:
-        job.status = "ready"
-        job.attempts = 0
-        job.next_attempt_at = now
-        job.lease_token = None
-        job.lease_expires_at = None
-        job.failure_code = None
-        job.updated_at = now
-    result = {"artifact_id": str(version.artifact_id), "version_id": str(version.id)}
+    ).mappings().one()
+    if retry_result["result"] == "upload-expired":
+        raise ArtifactUploadExpired
+    if retry_result["result"] != "allowed":
+        raise ArtifactNotFound
+    await session.refresh(visible)
+
+    detail = jsonable_encoder(
+        await artifact_detail(session, principal, retry_result["artifact_id"]),
+        exclude_none=True,
+    )
+    result = {
+        "artifact_id": str(retry_result["artifact_id"]),
+        "version_id": str(retry_result["version_id"]),
+        "detail": detail,
+    }
     expires_at = now + timedelta(hours=24)
     if stored is None:
         session.add(
@@ -692,4 +760,4 @@ async def retry_version(
         stored.result = result
         stored.expires_at = expires_at
     await session.flush()
-    return await artifact_detail(session, principal, version.artifact_id)
+    return detail

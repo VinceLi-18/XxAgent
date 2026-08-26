@@ -1,13 +1,16 @@
 from datetime import UTC, datetime
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import pytest
 from argon2 import PasswordHasher
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import ClientDisconnect
 
+from app.api.routes.internal_artifacts import artifact_content_route
 from app.models.artifact import Artifact, ArtifactVersion
+from app.services import artifacts as artifact_service
 
 SERVICE_TOKEN = "xagent-test-service-token-00000001"
 PASSWORD = "correct horse battery staple"
@@ -45,6 +48,7 @@ async def _login(client, engine, account, email: str) -> str:
 class ReadGateway:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int, str, str]] = []
+        self.stream_calls: list[str] = []
 
     def create_read_url(
         self,
@@ -55,10 +59,11 @@ class ReadGateway:
         filename: str,
     ) -> str:
         self.calls.append((key, expires_seconds, disposition, filename))
-        return (
-            "https://storage.test/read?"
-            f"ttl={expires_seconds}&disposition={disposition}&filename={filename}"
-        )
+        return f"https://storage.test/private-bucket/{key}"
+
+    def stream(self, key: str):
+        self.stream_calls.append(key)
+        yield b"safe-content"
 
 
 def _clean_version(
@@ -154,9 +159,19 @@ async def test_preview_signs_only_inline_clean_content_for_at_most_sixty_seconds
 
     assert preview.status_code == 200
     assert set(preview.json()) == {"url"}
-    assert gateway.calls == [
-        (text_version.object_key, 60, "inline", "preview.txt")
-    ]
+    preview_url = preview.json()["url"]
+    assert text_version.object_key not in unquote(preview_url)
+    assert "private-bucket" not in unquote(preview_url)
+    content = await client.get(preview_url)
+    assert content.status_code == 200
+    assert content.content == b"safe-content"
+    assert content.headers["content-type"].startswith("text/plain")
+    assert content.headers["content-disposition"].startswith("inline;")
+    ranged = await client.get(preview_url, headers={"Range": "bytes=0-3"})
+    assert ranged.status_code == 200
+    assert ranged.content == b"safe-content"
+    assert "content-range" not in ranged.headers
+    assert gateway.stream_calls == [text_version.object_key, text_version.object_key]
     assert office.status_code == 403
     assert office.json() == {"detail": {"code": "forbidden"}}
     assert pending.status_code == 404
@@ -198,14 +213,15 @@ async def test_download_sanitizes_filename_and_forces_active_content_to_attachme
 
     assert response.status_code == 200
     assert set(response.json()) == {"url"}
-    assert len(gateway.calls) == 1
-    key, ttl, disposition, filename = gateway.calls[0]
-    assert key == version.object_key
-    assert ttl == 60
-    assert disposition == "attachment"
-    assert filename == ".._bad___name__.svg"
-    query = parse_qs(urlsplit(response.json()["url"]).query)
-    assert query["disposition"] == ["attachment"]
+    read_url = response.json()["url"]
+    assert version.object_key not in unquote(read_url)
+    content = await client.get(read_url)
+    assert content.status_code == 200
+    assert content.content == b"safe-content"
+    disposition = content.headers["content-disposition"]
+    assert disposition.startswith('attachment; filename=".._bad___name__.svg"')
+    assert "filename*=UTF-8''.._bad___name__.svg" in disposition
+    assert gateway.stream_calls == [version.object_key]
     assert "\r" not in response.text and "\n" not in response.text and "\x01" not in response.text
 
 
@@ -231,11 +247,22 @@ async def test_invisible_and_missing_reads_are_identical_and_do_not_call_storage
         filename="foreign.txt",
         content_type="text/plain",
     )
+    pending_artifact = Artifact(
+        id=uuid4(), filename="pending.txt", created_by_id=alice.id, owner_id=alice.id
+    )
+    pending_version = _clean_version(
+        pending_artifact,
+        alice.id,
+        filename="pending.txt",
+        content_type="text/plain",
+    )
+    pending_version.scan_status = "pending"
+    pending_version.object_key = None
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
-            session.add(artifact)
+            session.add_all((artifact, pending_artifact))
             await session.flush()
-            session.add(version)
+            session.add_all((version, pending_version))
 
     invisible = await client.post(
         f"/internal/xagent/artifact-versions/{version.id}/download",
@@ -253,3 +280,129 @@ async def test_invisible_and_missing_reads_are_identical_and_do_not_call_storage
         missing.json(),
     ) == (404, {"detail": {"code": "not-found"}})
     assert gateway.calls == []
+
+
+@pytest.mark.anyio
+async def test_opaque_read_url_rejects_tampering_expiry_and_non_clean_state(
+    client,
+    seeded_database,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    gateway = ReadGateway()
+    monkeypatch.setattr("app.services.artifacts._runtime_gateway", lambda: gateway)
+    artifact = Artifact(
+        id=uuid4(), filename="signed.txt", created_by_id=alice.id, owner_id=alice.id
+    )
+    version = _clean_version(
+        artifact,
+        alice.id,
+        filename="signed.txt",
+        content_type="text/plain",
+    )
+    pending_artifact = Artifact(
+        id=uuid4(), filename="pending.txt", created_by_id=alice.id, owner_id=alice.id
+    )
+    pending_version = _clean_version(
+        pending_artifact,
+        alice.id,
+        filename="pending.txt",
+        content_type="text/plain",
+    )
+    pending_version.scan_status = "pending"
+    pending_version.object_key = None
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            session.add_all((artifact, pending_artifact))
+            await session.flush()
+            session.add_all((version, pending_version))
+
+    issued = await client.post(
+        f"/internal/xagent/artifact-versions/{version.id}/preview",
+        headers=_headers(token),
+        json={},
+    )
+    assert issued.status_code == 200
+    parts = urlsplit(issued.json()["url"])
+    query = parse_qs(parts.query)
+    signature = query["signature"][0]
+    query["signature"] = [signature[:-1] + ("0" if signature[-1] != "0" else "1")]
+    tampered_url = urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query, doseq=True), parts.fragment)
+    )
+    tampered = await client.get(tampered_url)
+    assert tampered.status_code == 403
+    assert tampered.json() == {"detail": {"code": "forbidden"}}
+
+    expired_at = int(datetime.now(UTC).timestamp()) - 1
+    expired_signature = artifact_service._sign_read_request(
+        version.id,
+        expired_at,
+        "inline",
+    )
+    expired = await client.get(
+        f"/api/v1/xagent/artifact-content/{version.id}",
+        params={
+            "expires": expired_at,
+            "mode": "inline",
+            "signature": expired_signature,
+        },
+    )
+    assert expired.status_code == 403
+
+    active_expires = int(query["expires"][0])
+    non_clean = await client.get(
+        f"/api/v1/xagent/artifact-content/{pending_version.id}",
+        params={
+            "expires": active_expires,
+            "mode": "inline",
+            "signature": artifact_service._sign_read_request(
+                pending_version.id,
+                active_expires,
+                "inline",
+            ),
+        },
+    )
+    assert non_clean.status_code == 404
+    assert non_clean.json() == {"detail": {"code": "not-found"}}
+
+
+@pytest.mark.anyio
+async def test_content_stream_closes_the_storage_response_after_client_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[bool] = []
+
+    class DisconnectGateway:
+        def stream(self, _key: str):
+            try:
+                yield b"first"
+                yield b"second"
+            finally:
+                closed.append(True)
+
+    async def resolve(*_args, **_kwargs):
+        return "internal-object-key", "text/plain", 'inline; filename="safe.txt"'
+
+    monkeypatch.setattr("app.services.artifacts._runtime_gateway", DisconnectGateway)
+    monkeypatch.setattr("app.services.artifacts.resolve_read_content", resolve)
+    response = await artifact_content_route(
+        uuid4(),
+        expires=1,
+        mode="inline",
+        signature="0" * 64,
+        session=object(),
+    )
+
+    async def disconnected_send(message: dict[str, object]) -> None:
+        if message["type"] == "http.response.body":
+            raise OSError("client disconnected")
+
+    with pytest.raises(ClientDisconnect):
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            lambda: None,
+            disconnected_send,
+        )
+    assert closed == [True]

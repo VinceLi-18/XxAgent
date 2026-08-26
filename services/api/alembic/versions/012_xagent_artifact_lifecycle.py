@@ -353,12 +353,6 @@ def upgrade() -> None:
         f"AND ({artifact_scope}))"
     )
     op.execute(
-        f"CREATE POLICY artifact_versions_retry_update ON artifact_versions "
-        f"FOR UPDATE TO {application_role} "
-        f"USING (({artifact_edit_scope}) AND scan_status IN ('failed', 'pending')) "
-        f"WITH CHECK (({artifact_edit_scope}) AND scan_status = 'pending')"
-    )
-    op.execute(
         f"CREATE POLICY application_job_insert ON artifact_processing_jobs "
         f"FOR INSERT TO {application_role} WITH CHECK ("
         "status = 'ready' AND attempts = 0 "
@@ -370,27 +364,90 @@ def upgrade() -> None:
         f"AND ({artifact_edit_scope})))"
     )
     op.execute(
-        f"CREATE POLICY application_job_retry_read ON artifact_processing_jobs "
-        f"FOR SELECT TO {application_role} USING (EXISTS ("
-        "SELECT 1 FROM artifact_versions "
-        "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
-        "AND artifact_versions.scan_status = 'pending' "
-        f"AND ({artifact_edit_scope})))"
+        """
+        CREATE FUNCTION public.retry_artifact_version(p_version_id uuid)
+        RETURNS TABLE(result text, artifact_id uuid, version_id uuid)
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = pg_catalog, public
+        AS $$
+        DECLARE
+            version_record public.artifact_versions%ROWTYPE;
+            actor_id uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid;
+        BEGIN
+            IF actor_id IS NULL THEN
+                RETURN QUERY SELECT 'not-found'::text, NULL::uuid, NULL::uuid;
+                RETURN;
+            END IF;
+
+            SELECT artifact_versions.*
+            INTO version_record
+            FROM public.artifact_versions
+            WHERE artifact_versions.id = p_version_id
+            FOR UPDATE;
+
+            IF NOT FOUND
+               OR NOT (
+                    version_record.owner_id = actor_id
+                    OR version_record.project_id IN (
+                        SELECT public.xagent_authorized_project_edit_ids()
+                    )
+               )
+               OR version_record.scan_status <> 'failed' THEN
+                RETURN QUERY SELECT 'not-found'::text, NULL::uuid, NULL::uuid;
+                RETURN;
+            END IF;
+
+            IF version_record.staging_key IS NULL
+               OR version_record.staging_etag IS NULL
+               OR version_record.staging_expires_at IS NULL
+               OR version_record.staging_expires_at <= CURRENT_TIMESTAMP
+               OR version_record.actual_size IS NULL THEN
+                RETURN QUERY SELECT 'upload-expired'::text, NULL::uuid, NULL::uuid;
+                RETURN;
+            END IF;
+
+            UPDATE public.artifact_versions
+            SET scan_status = 'pending'
+            WHERE id = version_record.id;
+
+            UPDATE public.artifact_processing_jobs
+            SET status = 'ready',
+                attempts = 0,
+                next_attempt_at = CURRENT_TIMESTAMP,
+                lease_token = NULL,
+                lease_expires_at = NULL,
+                failure_code = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE artifact_processing_jobs.version_id = version_record.id;
+
+            IF NOT FOUND THEN
+                INSERT INTO public.artifact_processing_jobs (
+                    id,
+                    version_id,
+                    status,
+                    attempts,
+                    next_attempt_at
+                ) VALUES (
+                    gen_random_uuid(),
+                    version_record.id,
+                    'ready',
+                    0,
+                    CURRENT_TIMESTAMP
+                );
+            END IF;
+
+            RETURN QUERY SELECT
+                'allowed'::text,
+                version_record.artifact_id,
+                version_record.id;
+        END
+        $$
+        """
     )
+    op.execute("REVOKE ALL ON FUNCTION public.retry_artifact_version(uuid) FROM PUBLIC")
     op.execute(
-        f"CREATE POLICY application_job_retry_update ON artifact_processing_jobs "
-        f"FOR UPDATE TO {application_role} USING (EXISTS ("
-        "SELECT 1 FROM artifact_versions "
-        "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
-        "AND artifact_versions.scan_status = 'pending' "
-        f"AND ({artifact_edit_scope}))) "
-        "WITH CHECK (status = 'ready' AND attempts = 0 "
-        "AND lease_token IS NULL AND lease_expires_at IS NULL "
-        "AND failure_code IS NULL AND EXISTS ("
-        "SELECT 1 FROM artifact_versions "
-        "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
-        "AND artifact_versions.scan_status = 'pending' "
-        f"AND ({artifact_edit_scope})))"
+        f"GRANT EXECUTE ON FUNCTION public.retry_artifact_version(uuid) TO {application_role}"
     )
     op.execute(
         f"CREATE POLICY artifact_worker_job_read ON artifact_processing_jobs "
@@ -448,14 +505,6 @@ def upgrade() -> None:
     op.execute(f"GRANT USAGE ON SCHEMA public TO {worker_role}")
     op.execute(
         f"GRANT INSERT ON artifact_processing_jobs TO {application_role}"
-    )
-    op.execute(
-        f"GRANT UPDATE (scan_status) ON artifact_versions TO {application_role}"
-    )
-    op.execute(f"GRANT SELECT ON artifact_processing_jobs TO {application_role}")
-    op.execute(
-        "GRANT UPDATE (status, attempts, next_attempt_at, lease_token, lease_expires_at, "
-        f"failure_code, updated_at) ON artifact_processing_jobs TO {application_role}"
     )
     op.execute(f"GRANT SELECT ON artifact_processing_jobs TO {worker_role}")
     op.execute(
@@ -517,8 +566,9 @@ def downgrade() -> None:
         f"REVOKE SELECT, INSERT, UPDATE ON artifact_processing_jobs FROM {application_role}"
     )
     op.execute(
-        f"REVOKE UPDATE (scan_status) ON artifact_versions FROM {application_role}"
+        f"REVOKE ALL ON FUNCTION public.retry_artifact_version(uuid) FROM {application_role}"
     )
+    op.execute("DROP FUNCTION public.retry_artifact_version(uuid)")
     op.execute(f"REVOKE ALL PRIVILEGES ON artifact_processing_jobs FROM {worker_role}")
     op.execute(f"REVOKE ALL PRIVILEGES ON artifact_object_cleanup_jobs FROM {worker_role}")
     op.execute(f"REVOKE ALL PRIVILEGES ON artifacts, artifact_versions, staging_uploads, audit_events FROM {worker_role}")
@@ -540,8 +590,6 @@ def downgrade() -> None:
 
     op.execute("DROP POLICY artifact_worker_job_update ON artifact_processing_jobs")
     op.execute("DROP POLICY artifact_worker_job_read ON artifact_processing_jobs")
-    op.execute("DROP POLICY application_job_retry_update ON artifact_processing_jobs")
-    op.execute("DROP POLICY application_job_retry_read ON artifact_processing_jobs")
     op.execute("DROP POLICY application_job_insert ON artifact_processing_jobs")
     op.execute("ALTER TABLE artifact_processing_jobs NO FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE artifact_processing_jobs DISABLE ROW LEVEL SECURITY")
@@ -555,7 +603,6 @@ def downgrade() -> None:
 
     op.execute("DROP TRIGGER artifact_version_scan_status_transition ON artifact_versions")
     op.execute("DROP FUNCTION public.enforce_artifact_scan_status_transition()")
-    op.execute("DROP POLICY artifact_versions_retry_update ON artifact_versions")
 
     op.drop_constraint("ck_audit_events_executor_kind", "audit_events", type_="check")
     op.drop_constraint("ck_artifact_version_clean_object", "artifact_versions", type_="check")

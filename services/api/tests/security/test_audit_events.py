@@ -206,7 +206,7 @@ async def test_upload_create_complete_new_version_and_rejection_write_account_au
         },
     )
     assert completed.status_code == 201
-    artifact_id = UUID(completed.json()["artifact_id"])
+    artifact_id = UUID(completed.json()["id"])
     new_version = await client.post(
         f"/internal/xagent/artifacts/{artifact_id}/uploads",
         headers=_headers(token),
