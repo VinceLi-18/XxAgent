@@ -46,6 +46,6 @@ XAgent 项目客户端挂载生成式 Remote contribution，并发布一个账�
 
 Business Profile 的首次认证工作台 Bootstrap 以及每次上下文切换现在都依赖 FastAPI。服务不可用时，项目界面会失败关闭，而不会显示缓存数据。通用连接与 Typert 载体增加了小型扩展点，但它们在 XAgent 之外保持惰性，并由普通 Profile 组合测试覆盖。
 
-正文响应不能被 Browser 或中间缓存复用，signed query 也不会进入常规诊断。该选择需要一个固定 Host 代理和一个路由专用 API 日志 middleware；插件释放可能等待协作式网络结算，拥有的工作无法停止时会显式失败。
+正文响应不能被 Browser 或中间缓存复用，signed query 也不会进入常规诊断。该选择需要一个固定 Host 代理和一个路由专用 API 日志 middleware；插件释放会在取消后等待每个已跟踪 fetch 与正文流结算，因此忽略取消的上游工作会让释放保持等待。
 
 本记录保持活跃，因为可信身份来源、服务端上下文、禁止浏览器缓存、CSRF 贡献边界和纯 Slot UI 所有权，都是后续项目资料、协作收件箱与跨项目统计必须遵守的约束。

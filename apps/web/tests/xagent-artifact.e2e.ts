@@ -1,5 +1,5 @@
 import type { ChildProcess } from 'node:child_process'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -11,7 +11,9 @@ import { probeFreePort, REPO_ROOT, requireDist, saveFailureShot, ZH_BROWSER_LOCA
 import {
   browserDiagnosticUrl,
   redactBrowserDiagnosticText,
+  spawnOwnedChild,
   stopChildProcess,
+  type OwnedChildProcess,
 } from './xagent-artifact-support.ts'
 
 const SERVICE_TOKEN = 'xagent-e2e-service-token-test-only-0001'
@@ -106,7 +108,7 @@ describe('XAgent Business 真实资料生命周期', () => {
   const root = mkdtempSync(join(tmpdir(), 'xagent-task10-e2e-'))
   const override = join(root, 'compose.override.yml')
   let composeOwned = false
-  let dsh: ChildProcess | undefined
+  let dsh: OwnedChildProcess | undefined
   let browser: Browser | undefined
   let page: Page | undefined
   let baseUrl = ''
@@ -144,7 +146,7 @@ describe('XAgent Business 真实资料生命周期', () => {
         XAGENT_ALLOW_INSECURE_COOKIE: '1',
       }
       expect(Object.keys(dshEnvironment).filter(isInfrastructureCredential)).toEqual([])
-      dsh = spawn(process.execPath, [
+      dsh = spawnOwnedChild(process.execPath, [
         join(REPO_ROOT, 'apps/cli/lib/bin.js'), '--profile', 'xagent-business',
         '--host', '127.0.0.1', '--port', String(dshPort),
       ], {
@@ -152,7 +154,7 @@ describe('XAgent Business 真实资料生命周期', () => {
         env: dshEnvironment,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
-      await waitForLine(dsh, /dsh web: (http:\/\/[^\s]+)/, 'XAgent Business')
+      await waitForLine(dsh.child, /dsh web: (http:\/\/[^\s]+)/, 'XAgent Business')
       browser = await chromium.launch({ headless: true })
       page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: ZH_BROWSER_LOCALE })
       page.on('console', (message) => {

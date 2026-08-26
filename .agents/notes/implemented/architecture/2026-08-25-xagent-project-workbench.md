@@ -46,6 +46,6 @@ Account switching, project visibility, project creation, and Session scope are a
 
 The Business profile now depends on FastAPI for its first authenticated workbench Bootstrap and for every context change. When that service is unavailable, the project surface fails closed instead of showing cached data. The generic connection and Typert carrier gain small extension points, but they are inert outside XAgent and are covered by ordinary-profile composition tests.
 
-Content responses cannot be reused from Browser or intermediary caches, and signed queries stay out of normal diagnostics. This requires one fixed Host proxy and one route-specific API logging middleware; disposal may wait for cooperative network settlement and fails visibly if owned work cannot stop.
+Content responses cannot be reused from Browser or intermediary caches, and signed queries stay out of normal diagnostics. This requires one fixed Host proxy and one route-specific API logging middleware; disposal waits for every tracked fetch and stream to settle after cancellation, so upstream work that ignores cancellation keeps disposal pending.
 
 This note stays active because the trusted identity source, server-owned context, browser-cache prohibition, CSRF contribution boundary, and Slot-only UI ownership are constraints for later project artifacts, collaboration inboxes, and cross-project reporting.

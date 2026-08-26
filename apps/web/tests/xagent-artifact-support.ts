@@ -1,10 +1,21 @@
-import type { ChildProcess } from 'node:child_process'
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
+import { spawn } from 'node:child_process'
+
+/** Task10 E2E 启动并持续跟踪至 close 的子进程。 */
+export interface OwnedChildProcess {
+  /** Node 子进程句柄。 */
+  readonly child: ChildProcess
+  /** stdio 与继承资源都已收敛时完成。 */
+  readonly closed: Promise<void>
+  /** @returns 是否已经收到 close 事件。 */
+  isClosed(): boolean
+}
 
 /** 资料 E2E 子进程停止等待参数。 */
 export interface StopChildOptions {
-  /** 发送 SIGTERM 后等待退出的毫秒数。 */
+  /** 发送 SIGTERM 后等待 close 的毫秒数。 */
   readonly termGraceMs: number
-  /** 发送 SIGKILL 后等待关闭的毫秒数。 */
+  /** 发送 SIGKILL 后等待 close 的毫秒数。 */
   readonly killGraceMs: number
 }
 
@@ -14,22 +25,49 @@ const DEFAULT_STOP_OPTIONS: StopChildOptions = {
 }
 
 /**
+ * 启动并立即跟踪 Task10 E2E 拥有的子进程。
+ * @param command - 可执行文件路径。
+ * @param args - 传给可执行文件的参数。
+ * @param options - Node spawn 选项。
+ * @returns 保存 close 结算状态的子进程所有权记录。
+ */
+export function spawnOwnedChild(
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+): OwnedChildProcess {
+  const child = spawn(command, [...args], options)
+  let closed = false
+  const closeSettlement = new Promise<void>((resolve) => {
+    child.once('close', () => {
+      closed = true
+      resolve()
+    })
+  })
+  return {
+    child,
+    closed: closeSettlement,
+    isClosed: () => closed,
+  }
+}
+
+/**
  * 停止资料 E2E 拥有的子进程。
- * @param child - 测试启动的 DSH 子进程。
+ * @param owned - 测试启动并持续跟踪的 DSH 子进程。
  * @param options - TERM 与 KILL 的有界等待时间。
- * @returns 子进程停止后的 Promise。
+ * @returns 子进程 close 后完成的 Promise。
  */
 export async function stopChildProcess(
-  child: ChildProcess | undefined,
+  owned: OwnedChildProcess | undefined,
   options: StopChildOptions = DEFAULT_STOP_OPTIONS,
 ): Promise<void> {
-  if (child === undefined || child.exitCode !== null || child.signalCode !== null) return
-  const closed = new Promise<void>((resolve) => { child.once('close', () => { resolve() }) })
-  child.kill('SIGTERM')
+  if (owned === undefined || owned.isClosed()) return
+  const { child, closed } = owned
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
   if (await settlesWithin(closed, options.termGraceMs)) return
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
   if (await settlesWithin(closed, options.killGraceMs)) return
-  throw new Error(`DSH 子进程 ${String(child.pid ?? '未知')} 在 SIGKILL 后仍未关闭`)
+  throw new Error(`DSH 子进程 ${String(child.pid ?? '未知')} 的 close 在停止期限内未发生`)
 }
 
 async function settlesWithin(settled: Promise<void>, timeoutMs: number): Promise<boolean> {
