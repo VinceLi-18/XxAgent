@@ -31,6 +31,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const ARTIFACT_CONTENT_ROUTE = '/api/v1/xagent/artifact-content'
 const ARTIFACT_CONTENT_PATH = new RegExp(`^${ARTIFACT_CONTENT_ROUTE}/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$`, 'i')
 const CONTENT_RESPONSE_HEADERS = ['content-type', 'content-disposition', 'content-length'] as const
+const CONTENT_CACHE_CONTROL = 'private, no-store'
 const ARTIFACT_FAILURE_CODES = new Set([
   'unauthenticated',
   'forbidden',
@@ -89,6 +90,7 @@ async function proxyArtifactContent(
   request: IncomingMessage,
   response: ServerResponse,
   backendOrigin: string,
+  controller: AbortController,
 ): Promise<void> {
   if (request.method !== 'GET') {
     response.setHeader('allow', 'GET')
@@ -107,7 +109,6 @@ async function proxyArtifactContent(
     return
   }
 
-  const controller = new AbortController()
   const abort = (): void => { controller.abort() }
   const abortOnClose = (): void => {
     if (!response.writableFinished) controller.abort()
@@ -135,8 +136,16 @@ async function proxyArtifactContent(
       response.end()
       return
     }
-    await pipeline(Readable.fromWeb(upstream.body as unknown as NodeReadableStream), response)
+    await pipeline(
+      Readable.fromWeb(upstream.body as unknown as NodeReadableStream),
+      response,
+      { signal: controller.signal },
+    )
   } catch {
+    if (controller.signal.aborted) {
+      if (!response.destroyed) response.destroy()
+      return
+    }
     if (response.headersSent || response.destroyed) {
       if (!response.destroyed) response.destroy()
       return
@@ -146,6 +155,48 @@ async function proxyArtifactContent(
     request.off('aborted', abort)
     response.off('close', abortOnClose)
     controller.abort()
+  }
+}
+
+class ArtifactContentProxy {
+  private readonly active = new Map<AbortController, Promise<void>>()
+  private disposed = false
+
+  constructor(private readonly backendOrigin: string) {}
+
+  handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    try {
+      response.setHeader('cache-control', CONTENT_CACHE_CONTROL)
+    } catch {
+      if (!response.destroyed) response.destroy()
+      return Promise.resolve()
+    }
+    if (this.disposed) {
+      finish(response, 503)
+      return Promise.resolve()
+    }
+    const controller = new AbortController()
+    const settled = Promise.withResolvers<void>()
+    this.active.set(controller, settled.promise)
+    const operation = proxyArtifactContent(request, response, this.backendOrigin, controller)
+    void operation.then(
+      () => {
+        this.active.delete(controller)
+        settled.resolve()
+      },
+      () => {
+        this.active.delete(controller)
+        settled.resolve()
+      },
+    )
+    return operation
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed = true
+    const active = [...this.active.entries()]
+    for (const [controller] of active) controller.abort()
+    await Promise.allSettled(active.map(([, operation]) => operation))
   }
 }
 
@@ -305,6 +356,7 @@ export class XAgentArtifactService extends TypertRemoteService implements XAgent
 export function apply(ctx: Context, config: Config): void {
   const backend = new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken })
   const backendOrigin = new URL(config.backendOrigin).origin
+  const contentProxy = new ArtifactContentProxy(backendOrigin)
   new XAgentArtifactService(
     ctx,
     backend.artifacts,
@@ -312,7 +364,10 @@ export function apply(ctx: Context, config: Config): void {
   const content: WebRoute = {
     kind: 'prefix',
     path: ARTIFACT_CONTENT_ROUTE,
-    handler: (request, response) => proxyArtifactContent(request, response, backendOrigin),
+    handler: (request, response) => contentProxy.handle(request, response),
   }
-  ctx.effect(() => ctx.webServer.register(content), 'xagent-artifact: content route')
+  ctx.effect(function* () {
+    yield () => contentProxy.dispose()
+    yield ctx.webServer.register(content)
+  }, 'xagent-artifact: content route')
 }

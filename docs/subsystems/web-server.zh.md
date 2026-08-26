@@ -207,7 +207,7 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 @Remote async download(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>
 ```
 
-Source: [`packages/xagent/artifact/src/index.ts:153`](../../packages/xagent/artifact/src/index.ts)
+Source: [`packages/xagent/artifact/src/index.ts:204`](../../packages/xagent/artifact/src/index.ts)
 
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 

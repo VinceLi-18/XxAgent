@@ -84,6 +84,8 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 GET URL 只包含 Version ID、到期时间、读取模式和域分离签名，不包含 MinIO bucket、对象 key 或其可逆编码。API 验证签名并确认 Version 仍为 clean 后，从数据库内部解析对象身份并流式代理 MinIO 正文；客户端断开时关闭并释放 MinIO 连接。
 
+API 只对精确的资料正文路径从 Uvicorn access log 移除 query；FastAPI 仍接收原始 query 并完成到期时间、模式和签名验证。其他路由的访问日志保持不变，应用日志不得记录资料读取 URL、query 或正文。
+
 资料读取暂不支持 Range。携带 `Range` 的请求会忽略该字段并返回完整 `200` 正文，不提供 `Content-Range`；调用方不得依赖断点续传或部分内容语义。
 
 `.dockerignore` 会阻止 `.env`、本地虚拟环境、测试缓存和构建产物进入 Docker 构建上下文。

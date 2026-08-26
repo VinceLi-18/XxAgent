@@ -3037,7 +3037,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/artifact/src/index.ts:50`](../packages/xagent/artifact/src/index.ts)
+Source: [`packages/xagent/artifact/src/index.ts:51`](../packages/xagent/artifact/src/index.ts)
 
 <a id="xagentdsh-authorization"></a>
 

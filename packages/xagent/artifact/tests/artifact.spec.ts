@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
-import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
+import HttpServer, { type WebRoute, type WebServer } from '@deepseek-ai/dsh-host-webserver'
 import { remoteMethods, TypertRemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import {
   XAgentBackendError,
@@ -10,7 +10,7 @@ import {
 } from '@xagent/dsh-backend-client'
 import type { XAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
 import { PassThrough, Readable } from 'node:stream'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
 import { describe, expect, test, vi } from 'vitest'
 import { apply, inject, XAgentArtifactService } from '../src/index.ts'
 
@@ -163,6 +163,17 @@ function capturedResponse(): CapturedResponse {
   return { response, body: () => Buffer.concat(chunks), headers, stream }
 }
 
+async function requestStatus(port: number, path: string): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const request = httpRequest({ host: '127.0.0.1', port, path }, (response) => {
+      response.resume()
+      response.once('end', () => { resolve(response.statusCode ?? 0) })
+    })
+    request.once('error', reject)
+    request.end()
+  })
+}
+
 function artifactRoute(): { readonly ctx: Context; readonly route: WebRoute } {
   const routes = new Map<string, WebRoute>()
   const ctx = new Context()
@@ -176,6 +187,32 @@ function artifactRoute(): { readonly ctx: Context; readonly route: WebRoute } {
   const route = routes.get('/api/v1/xagent/artifact-content')
   if (route === undefined) throw new Error('artifact content route was not registered')
   return { ctx, route }
+}
+
+async function artifactFiberRoute(events: string[]): Promise<{
+  readonly fiber: Context['fiber']
+  readonly route: WebRoute
+  readonly routes: ReadonlyMap<string, WebRoute>
+}> {
+  const routes = new Map<string, WebRoute>()
+  const ctx = new Context()
+  ctx.provide('webServer', {
+    register(route: WebRoute) {
+      routes.set(route.path, route)
+      return () => {
+        events.push('route-unregistered')
+        routes.delete(route.path)
+      }
+    },
+  } as WebServer)
+  const fiber = ctx.plugin({ apply, inject: [...inject] }, {
+    backendOrigin: 'https://api.example.test',
+    serviceToken: 'service-secret',
+  })
+  await fiber
+  const route = routes.get('/api/v1/xagent/artifact-content')
+  if (route === undefined) throw new Error('artifact content route was not registered')
+  return { fiber, route, routes }
 }
 
 describe('XAgent Artifact Remote', () => {
@@ -225,6 +262,7 @@ describe('XAgent Artifact Remote', () => {
       expect(fetchedInit?.signal).toBeInstanceOf(AbortSignal)
       expect(target.response.statusCode).toBe(206)
       expect(Object.fromEntries(target.headers)).toEqual({
+        'cache-control': 'private, no-store',
         'content-disposition': 'inline; filename="safe.txt"',
         'content-length': '12',
         'content-type': 'text/plain; charset=utf-8',
@@ -252,12 +290,16 @@ describe('XAgent Artifact Remote', () => {
         const target = capturedResponse()
         await route.handler(nodeRequest(method, path), target.response)
         expect(target.response.statusCode).toBe(status)
+        expect(target.headers.get('cache-control')).toBe('private, no-store')
       }
       expect(fetcher).not.toHaveBeenCalled()
 
       fetcher.mockResolvedValueOnce(new Response(null, {
         status: 307,
-        headers: { location: 'https://storage.example.test/private' },
+        headers: {
+          'cache-control': 'public, max-age=86400',
+          location: 'https://storage.example.test/private',
+        },
       }))
       const redirected = capturedResponse()
       await route.handler(
@@ -266,6 +308,19 @@ describe('XAgent Artifact Remote', () => {
       )
       expect(redirected.response.statusCode).toBe(502)
       expect(redirected.headers.get('location')).toBeNull()
+      expect(redirected.headers.get('cache-control')).toBe('private, no-store')
+
+      fetcher.mockResolvedValueOnce(new Response('denied', {
+        status: 403,
+        headers: { 'cache-control': 'public, max-age=86400' },
+      }))
+      const denied = capturedResponse()
+      await route.handler(
+        nodeRequest('GET', `/api/v1/xagent/artifact-content/${VERSION_ID}?signature=opaque`),
+        denied.response,
+      )
+      expect(denied.response.statusCode).toBe(403)
+      expect(denied.headers.get('cache-control')).toBe('private, no-store')
 
       fetcher.mockResolvedValueOnce(new Response(null, { status: 204 }))
       const empty = capturedResponse()
@@ -274,6 +329,7 @@ describe('XAgent Artifact Remote', () => {
         empty.response,
       )
       expect(empty.response.statusCode).toBe(204)
+      expect(empty.headers.get('cache-control')).toBe('private, no-store')
 
       fetcher.mockRejectedValueOnce(new Error('backend unavailable'))
       const unavailable = capturedResponse()
@@ -282,6 +338,39 @@ describe('XAgent Artifact Remote', () => {
         unavailable.response,
       )
       expect(unavailable.response.statusCode).toBe(502)
+      expect(unavailable.headers.get('cache-control')).toBe('private, no-store')
+
+      fetcher.mockRejectedValueOnce(new Error('backend unavailable after close'))
+      const alreadyDestroyed = capturedResponse()
+      alreadyDestroyed.stream.destroy()
+      await route.handler(
+        nodeRequest('GET', `/api/v1/xagent/artifact-content/${VERSION_ID}?signature=opaque`),
+        alreadyDestroyed.response,
+      )
+      expect(alreadyDestroyed.response.destroyed).toBe(true)
+
+      for (const destroyed of [false, true]) {
+        const unwritable = capturedResponse()
+        if (destroyed) unwritable.stream.destroy()
+        const destroy = vi.spyOn(unwritable.stream, 'destroy')
+        unwritable.response.setHeader = () => { throw new Error('response headers unavailable') }
+        await route.handler(
+          nodeRequest('GET', `/api/v1/xagent/artifact-content/${VERSION_ID}?signature=opaque`),
+          unwritable.response,
+        )
+        expect(destroy).toHaveBeenCalledTimes(destroyed ? 0 : 1)
+      }
+
+      const rejectedOperation = capturedResponse()
+      const setRejectedHeader = rejectedOperation.response.setHeader.bind(rejectedOperation.response)
+      rejectedOperation.response.setHeader = (name, value) => {
+        if (name.toLowerCase() === 'cache-control') return setRejectedHeader(name, value)
+        throw new Error('allow header unavailable')
+      }
+      await expect(route.handler(
+        nodeRequest('POST', `/api/v1/xagent/artifact-content/${VERSION_ID}?signature=opaque`),
+        rejectedOperation.response,
+      )).rejects.toThrow('allow header unavailable')
 
       let requestAbortSignal: AbortSignal | undefined
       fetcher.mockImplementationOnce(async (_input, init) => {
@@ -305,12 +394,17 @@ describe('XAgent Artifact Remote', () => {
       fetcher.mockResolvedValueOnce(new Response('body', { headers: { 'content-type': 'text/plain' } }))
       const headerFailure = capturedResponse()
       Object.defineProperty(headerFailure.response, 'headersSent', { value: true })
-      headerFailure.response.setHeader = () => { throw new Error('response closed') }
+      const setHeader = headerFailure.response.setHeader.bind(headerFailure.response)
+      headerFailure.response.setHeader = (name, value) => {
+        if (name.toLowerCase() === 'cache-control') return setHeader(name, value)
+        throw new Error('response closed')
+      }
       await route.handler(
         nodeRequest('GET', `/api/v1/xagent/artifact-content/${VERSION_ID}?signature=opaque`),
         headerFailure.response,
       )
       expect(headerFailure.response.destroyed).toBe(true)
+      expect(headerFailure.headers.get('cache-control')).toBe('private, no-store')
 
       let upstreamSignal: AbortSignal | undefined
       let upstreamCancelled = false
@@ -329,6 +423,116 @@ describe('XAgent Artifact Remote', () => {
       )
       expect(upstreamSignal?.aborted).toBe(true)
       expect(upstreamCancelled).toBe(true)
+    } finally {
+      fetcher.mockRestore()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  test('插件 fiber 释放先注销路由，再取消并等待响应头与正文中的请求', async () => {
+    const events: string[] = []
+    const { fiber, route, routes } = await artifactFiberRoute(events)
+    let rejectHeaders: ((reason: unknown) => void) | undefined
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('mode=headers')) {
+        return new Promise<Response>((_resolve, reject) => {
+          rejectHeaders = reject
+          init?.signal?.addEventListener('abort', () => {
+            events.push('headers-aborted')
+            reject(new DOMException('aborted', 'AbortError'))
+          }, { once: true })
+        })
+      }
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller
+          controller.enqueue(Buffer.from('partial'))
+        },
+        cancel() { events.push('body-cancelled') },
+      }))
+    })
+    const headersTarget = capturedResponse()
+    const bodyTarget = capturedResponse()
+    const destroyBody = vi.spyOn(bodyTarget.stream, 'destroy')
+    const headersPending = route.handler(
+      nodeRequest('GET', `/api/v1/xagent/artifact-content/${VERSION_ID}?mode=headers&signature=secret`),
+      headersTarget.response,
+    )
+    const bodyPending = route.handler(
+      nodeRequest('GET', `/api/v1/xagent/artifact-content/${VERSION_ID}?mode=body&signature=secret`),
+      bodyTarget.response,
+    )
+    try {
+      await vi.waitFor(() => {
+        expect(fetcher).toHaveBeenCalledTimes(2)
+        expect(bodyTarget.body().toString()).toBe('partial')
+      })
+      let disposed = false
+      const disposing = fiber.dispose().then(() => { disposed = true })
+      await vi.waitFor(() => { expect(routes.has('/api/v1/xagent/artifact-content')).toBe(false) })
+      expect(events[0]).toBe('route-unregistered')
+      await vi.waitFor(() => {
+        expect(events).toContain('headers-aborted')
+        expect(events).toContain('body-cancelled')
+      })
+      await disposing
+      expect(disposed).toBe(true)
+      await Promise.all([headersPending, bodyPending])
+      expect(destroyBody).toHaveBeenCalledTimes(1)
+      const staleTarget = capturedResponse()
+      await route.handler(
+        nodeRequest('GET', `/api/v1/xagent/artifact-content/${VERSION_ID}?signature=secret`),
+        staleTarget.response,
+      )
+      expect(staleTarget.response.statusCode).toBe(503)
+      expect(staleTarget.headers.get('cache-control')).toBe('private, no-store')
+    } finally {
+      rejectHeaders?.(new DOMException('test cleanup', 'AbortError'))
+      try {
+        bodyController?.error(new DOMException('test cleanup', 'AbortError'))
+      } catch {
+        // 已取消的测试流拒绝后续控制器操作。
+      }
+      fetcher.mockRestore()
+      await fiber.dispose()
+      await Promise.allSettled([headersPending, bodyPending])
+    }
+  })
+
+  test('真实 Host WebServer 的成功与失败正文请求都不记录 signed bearer', { timeout: 10_000 }, async () => {
+    const ctx = new Context()
+    const logs: unknown[] = []
+    ctx.logger.warn = ((message: unknown) => { logs.push(message) }) as typeof ctx.logger.warn
+    ctx.logger.error = ((message: unknown) => { logs.push(message) }) as typeof ctx.logger.error
+    const fetcher = vi.spyOn(globalThis, 'fetch')
+    try {
+      await ctx.plugin(HttpServer, { host: '127.0.0.1', port: 0 })
+      await ctx.plugin({ apply, inject: [...inject] }, {
+        backendOrigin: 'https://api.example.test',
+        serviceToken: 'service-secret',
+      })
+      ctx.webServer.register({
+        kind: 'exact',
+        path: '/logger-probe',
+        handler: () => { throw new Error('logger-probe') },
+      })
+      expect(await requestStatus(ctx.webServer.port, '/logger-probe')).toBe(400)
+      expect(logs.map(String).join('\n')).toContain('logger-probe')
+      logs.length = 0
+
+      fetcher.mockResolvedValueOnce(new Response('content', { status: 200 }))
+      expect(await requestStatus(
+        ctx.webServer.port,
+        `/api/v1/xagent/artifact-content/${VERSION_ID}?expires=2000000000&mode=inline&signature=${'a'.repeat(64)}`,
+      )).toBe(200)
+      fetcher.mockRejectedValueOnce(new Error('backend unavailable'))
+      expect(await requestStatus(
+        ctx.webServer.port,
+        `/api/v1/xagent/artifact-content/${VERSION_ID}?expires=2000000001&mode=inline&signature=${'b'.repeat(64)}`,
+      )).toBe(502)
+      expect(logs).toEqual([])
     } finally {
       fetcher.mockRestore()
       await ctx.fiber.dispose()

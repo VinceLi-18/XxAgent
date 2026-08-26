@@ -8,6 +8,11 @@ import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { probeFreePort, REPO_ROOT, requireDist, saveFailureShot, ZH_BROWSER_LOCALE } from './support.ts'
+import {
+  browserDiagnosticUrl,
+  redactBrowserDiagnosticText,
+  stopChildProcess,
+} from './xagent-artifact-support.ts'
 
 const SERVICE_TOKEN = 'xagent-e2e-service-token-test-only-0001'
 const API_IMAGE = process.env.XAGENT_TASK10_API_IMAGE ?? 'xagent-api:test'
@@ -51,20 +56,6 @@ function waitForLine(child: ChildProcess, pattern: RegExp, label: string): Promi
       reject(new Error(`${label} 提前退出（${code ?? 'signal'}）：\n${output}`))
     })
   })
-}
-
-async function stop(child: ChildProcess | undefined): Promise<void> {
-  if (child === undefined || child.exitCode !== null || child.signalCode !== null) return
-  child.kill('SIGTERM')
-  await Promise.race([
-    new Promise<void>((resolve) => { child.once('exit', () => { resolve() }) }),
-    new Promise<void>((resolve) => {
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-        resolve()
-      }, 5_000).unref()
-    }),
-  ])
 }
 
 async function login(page: Page, email: string): Promise<void> {
@@ -164,13 +155,23 @@ describe('XAgent Business 真实资料生命周期', () => {
       await waitForLine(dsh, /dsh web: (http:\/\/[^\s]+)/, 'XAgent Business')
       browser = await chromium.launch({ headless: true })
       page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: ZH_BROWSER_LOCALE })
-      page.on('console', (message) => { browserDiagnostics.push(`console:${message.type()}:${message.text()}`) })
-      page.on('pageerror', (error) => { browserDiagnostics.push(`pageerror:${error.message}`) })
+      page.on('console', (message) => {
+        browserDiagnostics.push(`console:${message.type()}:${redactBrowserDiagnosticText(message.text())}`)
+      })
+      page.on('pageerror', (error) => {
+        browserDiagnostics.push(`pageerror:${redactBrowserDiagnosticText(error.message)}`)
+      })
       page.on('requestfailed', (request) => {
-        browserDiagnostics.push(`requestfailed:${request.url()}:${request.failure()?.errorText ?? '未知错误'}`)
+        browserDiagnostics.push(
+          `requestfailed:${browserDiagnosticUrl(request.url())}:${redactBrowserDiagnosticText(
+            request.failure()?.errorText ?? '未知错误',
+          )}`,
+        )
       })
       page.on('response', (response) => {
-        if (response.status() >= 400) browserDiagnostics.push(`response:${String(response.status())}:${response.url()}`)
+        if (response.status() >= 400) {
+          browserDiagnostics.push(`response:${String(response.status())}:${browserDiagnosticUrl(response.url())}`)
+        }
       })
       await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
       await page.getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
@@ -183,7 +184,7 @@ describe('XAgent Business 真实资料生命周期', () => {
   afterAll(async () => {
     const cleanupErrors: string[] = []
     await browser?.close().catch((error: unknown) => { cleanupErrors.push(`browser: ${String(error)}`) })
-    await stop(dsh).catch((error: unknown) => { cleanupErrors.push(`dsh: ${String(error)}`) })
+    await stopChildProcess(dsh).catch((error: unknown) => { cleanupErrors.push(`dsh: ${String(error)}`) })
     if (composeOwned) {
       try {
         compose(project, override, ['down', '--volumes', '--remove-orphans'])
@@ -236,7 +237,9 @@ describe('XAgent Business 真实资料生命周期', () => {
       previewError.waitFor({ timeout: 30_000 }),
     ])
     if (await previewError.isVisible()) {
-      throw new Error(`真实文本预览失败：${await previewError.textContent()}。${browserDiagnostics.join(' | ')}`)
+      throw new Error(
+        `真实文本预览失败：${redactBrowserDiagnosticText(await previewError.textContent() ?? '')}。${browserDiagnostics.join(' | ')}`,
+      )
     }
     await preview.getByRole('button', { name: '关闭预览' }).click()
     await preview.waitFor({ state: 'hidden' })

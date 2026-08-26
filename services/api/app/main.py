@@ -14,10 +14,12 @@ from app.api.routes.internal_workbench import (
     session_project_refs_router as internal_session_project_refs_router,
 )
 from app.api.routes.projects import router as projects_router
+from app.core.access_log import ArtifactContentAccessLogRedaction
 from app.core.config import settings
 from app.core.security import Actor, get_current_actor
 
 app = FastAPI(title=settings.PROJECT_NAME)
+app.add_middleware(ArtifactContentAccessLogRedaction)
 app.include_router(projects_router, prefix=settings.API_V1_STR)
 app.include_router(auth_router, prefix=settings.API_V1_STR)
 app.include_router(artifact_content_router)
