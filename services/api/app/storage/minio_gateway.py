@@ -170,5 +170,7 @@ class MinioGateway:
         try:
             yield from response.stream(32 * 1024)
         finally:
-            response.close()
-            response.release_conn()
+            try:
+                response.close()
+            finally:
+                response.release_conn()

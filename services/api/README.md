@@ -76,6 +76,14 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 在同一事务继承引用。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。
 
+### 资料读取 URL
+
+资料 preview 和 download 内部 POST 接口完成 service token 与当前账号授权后，返回最长 60 秒的 opaque signed-bearer GET URL。该 GET 不要求账号 Bearer token；调用方必须把 URL 作为短期秘密，不得持久化、记录或转发。
+
+GET URL 只包含 Version ID、到期时间、读取模式和域分离签名，不包含 MinIO bucket、对象 key 或其可逆编码。API 验证签名并确认 Version 仍为 clean 后，从数据库内部解析对象身份并流式代理 MinIO 正文；客户端断开时关闭并释放 MinIO 连接。
+
+资料读取暂不支持 Range。携带 `Range` 的请求会忽略该字段并返回完整 `200` 正文，不提供 `Content-Range`；调用方不得依赖断点续传或部分内容语义。
+
 `.dockerignore` 会阻止 `.env`、本地虚拟环境、测试缓存和构建产物进入 Docker 构建上下文。
 
 ClamAV 官方 `1.4.3_base` 镜像只提供 `linux/amd64`。Apple Silicon 本地环境需要 Docker 已启用 amd64 模拟；PostgreSQL、Redis、MinIO 和 XAgent API 仍使用宿主原生架构。

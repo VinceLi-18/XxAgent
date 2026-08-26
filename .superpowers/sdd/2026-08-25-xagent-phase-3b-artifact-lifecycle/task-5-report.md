@@ -62,3 +62,17 @@ retry 在每次请求开始时重新验证 Version 可见性和当前 edit 权�
 - opaque URL 是最长 60 秒的签名 bearer。签发时完成账号授权，使用时重新确认 clean 状态，但不为每条 URL 建立持久化撤销记录；URL 在到期前可由持有者使用。
 - 代理读取会占用 API 到 MinIO 的流式连接。Range 暂不支持，携带 Range 的请求返回完整 `200` 正文；调用方不能依赖续传或部分内容语义。
 - HMAC 复用 API JWT secret，并使用独立域前缀；它不引入 worker/API 共享密钥，也不把对象 Key 纳入 URL。密钥轮换会立即使未到期读取 URL 失效。
+
+## 修复轮 2
+
+Artifact 流式响应只在源迭代器关闭期间进入 AnyIO `CancelScope(shield=True)`。ASGI 2.0–2.3 收到 `http.disconnect` 并取消正文发送任务后，线程池关闭操作仍会完成；离开该有界清理区后保留外层取消语义。ASGI 2.4 的 `send()` OSError 断开行为保持不变，非断开的正文读取异常继续传播。
+
+MinIO 正文迭代器以嵌套 `try/finally` 执行 `close()` 和 `release_conn()`。即使 `close()` 抛出异常，连接释放仍精确尝试一次；已开始的 HTTP 响应不会写入资源关闭错误或内部对象身份。
+
+API README 记录资料读取的维护者契约：内部 preview/download POST 完成双认证后签发最长 60 秒的 opaque signed-bearer GET；GET 不要求账号 token，URL 不含内部 bucket 或对象 key，正文由 API 流式代理；Range 暂不支持且稳定返回完整 `200`，客户端断开会释放 MinIO 连接。该 README 是仓库清单中的中文单语例外。
+
+### 验证证据
+
+- ASGI 2.3 参数化 RED 覆盖正常关闭和 `close()` 抛错，两项均只观察到 `['get_object']`，没有执行 `close` 或 `release_conn`。最小修复后两项观察到 `['get_object', 'close', 'release_conn']`；保留的 ASGI 2.4 OSError 用例同时通过。
+- `tests/api/test_artifact_reads.py` 新旧读取用例共 8 项通过。复审的 90 项最小相关集合加入 3 个新收集分支后共 93 项，全部通过，用时 39.47 秒。
+- `pnpm run api:build` 成功生成 sdist 和 wheel。`pnpm run verify-translation-pairing --list` 报告 948 项同步；`services/api/README.md` 保持清单中的单语排除。README 限定 `git diff --check` 通过。

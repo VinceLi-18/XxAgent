@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+from anyio import CancelScope
 from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +49,12 @@ class _ArtifactStreamingResponse(StreamingResponse):
         finally:
             close = getattr(self._source_iterator, "close", None)
             if close is not None:
-                await run_in_threadpool(close)
+                with CancelScope(shield=True):
+                    try:
+                        await run_in_threadpool(close)
+                    except Exception:
+                        # Cleanup failures cannot replace delivery errors or reveal storage identities.
+                        pass
 
 
 def _error_response(status_code: int, code: str) -> JSONResponse:

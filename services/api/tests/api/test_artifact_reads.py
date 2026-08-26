@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
+import anyio
 import pytest
 from argon2 import PasswordHasher
 from sqlalchemy import text
@@ -11,6 +12,7 @@ from starlette.requests import ClientDisconnect
 from app.api.routes.internal_artifacts import artifact_content_route
 from app.models.artifact import Artifact, ArtifactVersion
 from app.services import artifacts as artifact_service
+from app.storage.minio_gateway import MinioGateway
 
 SERVICE_TOKEN = "xagent-test-service-token-00000001"
 PASSWORD = "correct horse battery staple"
@@ -406,3 +408,116 @@ async def test_content_stream_closes_the_storage_response_after_client_disconnec
             disconnected_send,
         )
     assert closed == [True]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("close_raises", (False, True))
+async def test_asgi_23_disconnect_releases_the_minio_connection_before_returning(
+    close_raises: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    sent: list[dict[str, object]] = []
+    first_chunk_sent = anyio.Event()
+
+    class StorageResponse:
+        def stream(self, _chunk_size: int):
+            yield b"first"
+            yield b"second"
+
+        def close(self) -> None:
+            events.append("close")
+            if close_raises:
+                raise RuntimeError("close failed for internal-object-key")
+
+        def release_conn(self) -> None:
+            events.append("release_conn")
+
+    class StorageClient:
+        def get_object(self, _bucket: str, _key: str) -> StorageResponse:
+            events.append("get_object")
+            return StorageResponse()
+
+    gateway = MinioGateway(StorageClient(), bucket="private-bucket")
+
+    async def resolve(*_args, **_kwargs):
+        return "internal-object-key", "text/plain", 'inline; filename="safe.txt"'
+
+    monkeypatch.setattr("app.services.artifacts._runtime_gateway", lambda: gateway)
+    monkeypatch.setattr("app.services.artifacts.resolve_read_content", resolve)
+    response = await artifact_content_route(
+        uuid4(),
+        expires=1,
+        mode="inline",
+        signature="0" * 64,
+        session=object(),
+    )
+
+    async def receive() -> dict[str, object]:
+        await first_chunk_sent.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+        if message["type"] == "http.response.body":
+            first_chunk_sent.set()
+            await anyio.sleep_forever()
+
+    await response(
+        {"type": "http", "asgi": {"spec_version": "2.3"}},
+        receive,
+        send,
+    )
+
+    assert events == ["get_object", "close", "release_conn"]
+    assert "internal-object-key" not in repr(sent)
+    assert "close failed" not in repr(sent)
+
+
+@pytest.mark.anyio
+async def test_content_stream_does_not_swallow_non_disconnect_read_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class FailingStorageResponse:
+        def stream(self, _chunk_size: int):
+            yield b"first"
+            raise RuntimeError("upstream read failed")
+
+        def close(self) -> None:
+            events.append("close")
+
+        def release_conn(self) -> None:
+            events.append("release_conn")
+
+    class StorageClient:
+        def get_object(self, _bucket: str, _key: str) -> FailingStorageResponse:
+            events.append("get_object")
+            return FailingStorageResponse()
+
+    gateway = MinioGateway(StorageClient(), bucket="private-bucket")
+
+    async def resolve(*_args, **_kwargs):
+        return "internal-object-key", "text/plain", 'inline; filename="safe.txt"'
+
+    monkeypatch.setattr("app.services.artifacts._runtime_gateway", lambda: gateway)
+    monkeypatch.setattr("app.services.artifacts.resolve_read_content", resolve)
+    response = await artifact_content_route(
+        uuid4(),
+        expires=1,
+        mode="inline",
+        signature="0" * 64,
+        session=object(),
+    )
+
+    async def send(_message: dict[str, object]) -> None:
+        return None
+
+    with pytest.raises(RuntimeError, match="upstream read failed"):
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            lambda: None,
+            send,
+        )
+    assert events == ["get_object", "close", "release_conn"]
