@@ -48,12 +48,18 @@ export class XAgentArtifactStore implements HostObservable<XAgentArtifactState> 
   }
 
   /**
-   * 发布一次完整状态替换。
+   * 发布一次完整状态替换；观察者异常会被诊断且不会阻断后续观察者。
    * @param state 新的资料状态。
    */
   replace(state: XAgentArtifactState): void {
     this.state = state
-    this.listeners.forEach((listener) => { listener() })
+    for (const listener of this.listeners) {
+      try {
+        listener()
+      } catch (error) {
+        console.error('[xagent-ui-artifact] subscriber threw:', error)
+      }
+    }
   }
 
   /**

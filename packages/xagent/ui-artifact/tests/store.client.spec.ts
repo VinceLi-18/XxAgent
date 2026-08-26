@@ -330,6 +330,23 @@ describe('XAgent 资料控制器', () => {
     expect(indexed).not.toHaveBeenCalled()
   })
 
+  it('隔离异常观察者并让后续观察者收到完整控制器状态', async () => {
+    const { client } = remote([])
+    const controller = new XAgentArtifactController(client)
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const seen: string[] = []
+    controller.snapshot.subscribe(() => { throw new Error('subscriber exploded') })
+    controller.snapshot.subscribe(() => { seen.push(controller.snapshot.getSnapshot().phase) })
+
+    try {
+      await expect(controller.setScope(ACCOUNT_A, { kind: 'workbench' })).resolves.toBeUndefined()
+      expect(seen).toEqual(['loading', 'ready'])
+      expect(diagnostic).toHaveBeenCalledTimes(2)
+    } finally {
+      diagnostic.mockRestore()
+    }
+  })
+
   it('dispose 同步清空已打开预览与详情', async () => {
     const { client } = remote([cleanSummary])
     const controller = new XAgentArtifactController(client)
@@ -348,6 +365,36 @@ describe('XAgent 资料控制器', () => {
       contextKey: undefined,
     })
     await disposed
+  })
+
+  it('loading 通知内 dispose 后不会启动未登记的列表请求', async () => {
+    const pendingList = Promise.withResolvers<RemoteResult<readonly XAgentArtifactSummary[]>>()
+    const { client, list } = remote([])
+    let listSignal: AbortSignal | undefined
+    list.mockImplementationOnce((_signal) => {
+      listSignal = _signal
+      return pendingList.promise
+    })
+    const controller = new XAgentArtifactController(client)
+    let disposing: Promise<void> | undefined
+    controller.snapshot.subscribe(() => {
+      if (controller.snapshot.getSnapshot().phase === 'loading') disposing = controller.dispose()
+    })
+
+    const loading = controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await vi.waitFor(() => { expect(disposing).toBeDefined() })
+    await disposing
+    const requestStartedAfterDispose = list.mock.calls.length > 0
+    pendingList.resolve({ ok: true, value: [] })
+    await loading
+
+    expect(requestStartedAfterDispose).toBe(false)
+    expect(listSignal).toBeUndefined()
+    expect(controller.snapshot.getSnapshot()).toEqual({
+      phase: 'empty',
+      accountId: undefined,
+      contextKey: undefined,
+    })
   })
 
   it('dispose 后的范围入口不能重新发布状态或发起请求', async () => {

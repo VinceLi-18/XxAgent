@@ -189,7 +189,7 @@ export class XAgentArtifactController {
    * @param context 服务端当前工作台或项目上下文。
    */
   setScope(accountId: string, context: ArtifactContext): Promise<void> {
-    return this.track(this.loadScope(accountId, context))
+    return this.trackOperation(() => this.loadScope(accountId, context))
   }
 
   private async loadScope(accountId: string, context: ArtifactContext): Promise<void> {
@@ -200,6 +200,7 @@ export class XAgentArtifactController {
     this.invalidate()
     const epoch = ++this.epoch
     this.snapshot.replace({ phase: 'loading', accountId, contextKey: key })
+    if (this.stale(epoch, accountId, key)) return
     const controller = new AbortController()
     this.listOperation = controller
     try {
@@ -234,7 +235,7 @@ export class XAgentArtifactController {
    * @param artifactId 当前范围内的资料 ID。
    */
   selectArtifact(artifactId: string): Promise<void> {
-    return this.track(this.loadDetail(artifactId))
+    return this.trackOperation(() => this.loadDetail(artifactId))
   }
 
   private async loadDetail(artifactId: string): Promise<void> {
@@ -244,6 +245,7 @@ export class XAgentArtifactController {
     this.snapshot.replaceReady({
       selectedId: artifactId, detail: undefined, detailLoading: true, detailError: undefined, preview: undefined,
     })
+    if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, artifactId)) return
     try {
       const result = await this.remote.detail(artifactId, operation.controller.signal)
       if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, artifactId)) return
@@ -274,7 +276,7 @@ export class XAgentArtifactController {
    * @param file 用户明确选择的正文。
    */
   upload(file: File): Promise<void> {
-    return this.track(this.performUpload(file, undefined))
+    return this.trackOperation(() => this.performUpload(file, undefined))
   }
 
   /**
@@ -282,9 +284,11 @@ export class XAgentArtifactController {
    * @param file 用户明确选择的新版本正文。
    */
   uploadNewVersion(file: File): Promise<void> {
-    const state = this.snapshot.getSnapshot()
-    if (state.phase !== 'ready' || state.selectedId === undefined) return Promise.resolve()
-    return this.track(this.performUpload(file, state.selectedId))
+    return this.trackOperation(() => {
+      const state = this.snapshot.getSnapshot()
+      if (state.phase !== 'ready' || state.selectedId === undefined) return Promise.resolve()
+      return this.performUpload(file, state.selectedId)
+    })
   }
 
   /**
@@ -292,7 +296,7 @@ export class XAgentArtifactController {
    * @param versionId 当前详情中的失败版本 ID。
    */
   retry(versionId: string): Promise<void> {
-    return this.track(this.performRetry(versionId))
+    return this.trackOperation(() => this.performRetry(versionId))
   }
 
   private async performRetry(versionId: string): Promise<void> {
@@ -303,6 +307,7 @@ export class XAgentArtifactController {
     const operation = this.begin('detail')
     if (operation === undefined) return
     this.snapshot.replaceReady({ detailError: undefined })
+    if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
     try {
       const result = await this.remote.retry(versionId, this.idempotencyKey(), operation.controller.signal)
       if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
@@ -333,7 +338,7 @@ export class XAgentArtifactController {
    * @param versionId 当前详情的版本 ID。
    */
   openPreview(versionId: string): Promise<void> {
-    return this.track(this.loadPreview(versionId))
+    return this.trackOperation(() => this.loadPreview(versionId))
   }
 
   private async loadPreview(versionId: string): Promise<void> {
@@ -345,6 +350,7 @@ export class XAgentArtifactController {
     const operation = this.begin('read')
     if (operation === undefined) return
     this.snapshot.replaceReady({ detailError: undefined })
+    if (this.isStale(operation)) return
     try {
       const result = await this.remote.preview(versionId, operation.controller.signal)
       if (this.isStale(operation)) return
@@ -378,7 +384,7 @@ export class XAgentArtifactController {
    * @param versionId 当前详情中的版本 ID。
    */
   download(versionId: string): Promise<void> {
-    return this.track(this.performDownload(versionId))
+    return this.trackOperation(() => this.performDownload(versionId))
   }
 
   private async performDownload(versionId: string): Promise<void> {
@@ -387,6 +393,7 @@ export class XAgentArtifactController {
     const operation = this.begin('read')
     if (operation === undefined) return
     this.snapshot.replaceReady({ detailError: undefined })
+    if (this.isStale(operation)) return
     try {
       const result = await this.remote.download(versionId, operation.controller.signal)
       if (this.isStale(operation)) return
@@ -429,6 +436,7 @@ export class XAgentArtifactController {
     const idempotencyKey = this.idempotencyKey()
     const input = { filename: file.name, size: file.size, idempotencyKey }
     this.snapshot.replaceReady({ upload: { filename: file.name, progress: 0, phase: 'authorizing' }, uploadError: undefined })
+    if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
     try {
       const authorization = artifactId === undefined
         ? await this.remote['create-upload'](input, operation.controller.signal)
@@ -440,14 +448,17 @@ export class XAgentArtifactController {
         return
       }
       this.snapshot.replaceReady({ upload: { filename: file.name, progress: 0, phase: 'putting' } })
+      if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       await this.transport.put(authorization.value.putUrl, file, operation.controller.signal, (loaded, total) => {
         if (!this.isStale(operation) && artifactOperationGeneration === this.artifactOperationGeneration) {
           this.snapshot.replaceReady({ upload: { filename: file.name, progress: total === 0 ? 0 : loaded / total, phase: 'putting' } })
         }
       })
+      if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       const sha256 = await this.transport.digest(file)
       if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       this.snapshot.replaceReady({ upload: { filename: file.name, progress: 1, phase: 'completing' } })
+      if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       const completed = await this.remote['complete-upload'](authorization.value.id, {
         size: file.size, sha256, idempotencyKey,
       }, operation.controller.signal)
@@ -493,7 +504,7 @@ export class XAgentArtifactController {
     if (this.pollHandle !== undefined || this.disposed) return
     this.pollHandle = this.schedule(() => {
       this.pollHandle = undefined
-      void this.track(this.poll())
+      void this.trackOperation(() => this.poll())
     })
   }
 
@@ -506,9 +517,14 @@ export class XAgentArtifactController {
     const selectionGeneration = this.selectionGeneration
     const artifactOperationGeneration = this.artifactOperationGeneration
     try {
+      const listPromise = this.remote.list(operation.controller.signal)
+      const detailPromise = selectedId === undefined || this.isStale(operation)
+        || !this.isCurrentPoll(selectionGeneration, artifactOperationGeneration, selectedId)
+        ? Promise.resolve(undefined)
+        : this.remote.detail(selectedId, operation.controller.signal)
       const [listResult, detailResult] = await Promise.allSettled([
-        this.remote.list(operation.controller.signal),
-        selectedId === undefined ? Promise.resolve(undefined) : this.remote.detail(selectedId, operation.controller.signal),
+        listPromise,
+        detailPromise,
       ])
       if (this.isStale(operation)
         || !this.isCurrentPoll(selectionGeneration, artifactOperationGeneration, selectedId)) return
@@ -597,6 +613,18 @@ export class XAgentArtifactController {
   private track(task: Promise<void>): Promise<void> {
     const tracked = task.finally(() => { this.activeTasks.delete(tracked) })
     this.activeTasks.add(tracked)
+    return tracked
+  }
+
+  private trackOperation(operation: () => Promise<void>): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    const settlement = Promise.withResolvers<void>()
+    const tracked = this.track(settlement.promise)
+    try {
+      void operation().then(settlement.resolve, settlement.reject)
+    } catch (error) {
+      settlement.reject(error)
+    }
     return tracked
   }
 
