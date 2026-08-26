@@ -183,6 +183,7 @@ describe('XAgent 项目工作台真实双账号流程', () => {
   const suffix = randomUUID().replaceAll('-', '').slice(0, 10)
   const database = `xagent_phase3a_${suffix}_test`
   const applicationRole = `xagent_phase3a_${suffix}_app`
+  const workerRole = `xagent_phase3a_${suffix}_worker`
   const root = mkdtempSync(join(tmpdir(), 'xagent-phase3a-e2e-'))
   const adminUrl = `postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@127.0.0.1:55432/${database}`
   const applicationUrl = `postgresql+asyncpg://${applicationRole}:${APP_PASSWORD}@127.0.0.1:55432/${database}`
@@ -191,6 +192,7 @@ describe('XAgent 项目工作台真实双账号流程', () => {
     DATABASE_URL: applicationUrl,
     DATABASE_ADMIN_URL: adminUrl,
     POSTGRES_APP_USER: applicationRole,
+    POSTGRES_WORKER_USER: workerRole,
     JWT_SECRET_KEY: 'phase3a-e2e-jwt-secret-not-for-production',
     JWT_ISSUER: 'xagent-phase3a-e2e',
     JWT_AUDIENCE: 'xagent-phase3a-browser',
@@ -210,12 +212,15 @@ describe('XAgent 项目工作台真实双账号流程', () => {
   let baseUrl = ''
   let databaseCreated = false
   let roleCreated = false
+  let workerRoleCreated = false
   const browserDiagnostics: string[] = []
 
   beforeAll(async () => {
     requireDist()
     dockerPsql(`CREATE ROLE ${applicationRole} LOGIN PASSWORD '${APP_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`)
     roleCreated = true
+    dockerPsql(`CREATE ROLE ${workerRole} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`)
+    workerRoleCreated = true
     dockerPsql(`CREATE DATABASE ${database}`)
     databaseCreated = true
     runApiCommand(apiEnvironment, ['alembic', '-c', join(REPO_ROOT, 'services/api/alembic.ini'), 'upgrade', 'head'])
@@ -281,6 +286,7 @@ describe('XAgent 项目工作台真实双账号流程', () => {
     await stop(dsh)
     await stop(api)
     if (databaseCreated) dockerPsql(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`)
+    if (workerRoleCreated) dockerPsql(`DROP ROLE IF EXISTS ${workerRole}`)
     if (roleCreated) dockerPsql(`DROP ROLE IF EXISTS ${applicationRole}`)
     rmSync(root, { recursive: true, force: true })
   })

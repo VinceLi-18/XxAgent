@@ -9,3 +9,5 @@
 上传先执行 50 MiB 预检，再向 Host 请求单对象 PUT 授权。Browser 通过 `XMLHttpRequest.upload` 发布真实字节进度，PUT 成功后计算 SHA-256 并提交完成请求。完成响应的扫描状态是可见权威；`pending` 和 `scanning` 触发范围内轮询。普通上传调用 `create-upload`，详情内的新版本入口调用 `create-version-upload`，文件名不参与版本归并。
 
 预览许可同时要求版本状态为 `clean`，且详情中的服务端识别 MIME 属于 PDF、纯文本类、PNG、JPEG 或 WebP 白名单。控制器在许可成立后才调用 `preview`。PDF、图片和纯文本分别使用固定渲染分支；Office、HTML、SVG 和未知二进制只有下载路径，因此不能借助伪造扩展名进入 iframe。
+
+控制器不解释权限或推导扫描状态。FastAPI 返回的私人／项目范围、`canEdit`、五态 Version 与 latest clean Version 是界面唯一权威；Host Remote 只转发固定操作。该浏览器链不注册模型工具，不写 Session 事件，也不触发模型请求。

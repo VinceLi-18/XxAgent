@@ -3,6 +3,11 @@
   "description": "XAgent Host 到 FastAPI 的失败关闭客户端",
   "version": "0.1.0-rc.7",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VinceLi-18/XxAgent.git",
+    "directory": "packages/xagent/backend-client"
+  },
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

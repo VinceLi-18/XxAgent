@@ -16,6 +16,8 @@ Each profile resolves settings, credentials, attachments, and JSON storage below
 
 The XAgent Web shell supplies the XAgent name, icon, theme, and welcome text. One Web service process starts one profile; the browser does not switch profiles. Profile directories organize local runtime state only. They are not an authentication, authorization, tenant, or project-data security boundary.
 
+The XAgent runtime packages are private workspaces shipped from this fork rather than npm release members. Their manifests point to the exact package directory in the XxAgent repository, and the workspace-constraints gate lists each package explicitly. Adding a package below `packages/xagent/` therefore requires a deliberate registry entry; directory wildcards do not expand the private-package policy.
+
 ## Alternatives considered
 
 **Rename the command and every internal DSH identifier.** Rejected because the Phase 1 product shell needs a stable entry point while a global protocol and package rename would widen the change beyond the Profile behavior.
@@ -30,6 +32,6 @@ The XAgent Web shell supplies the XAgent name, icon, theme, and welcome text. On
 
 ## Consequences
 
-Business users receive a constrained rosterless Web composition and Developer users receive an isolated local development composition without changing dsh tooling. Business gives up per-session preset selection and locally authored presets. The remaining costs are independently persisted Profile-local settings and supporting state, a remote Session-service dependency for Business, and a visible unavailable error for Business subagent API calls. Rosterless composition remains a capability closure; Business multi-user security comes from principal-aware authentication, authorization, Session checks, protected storage, and PostgreSQL RLS.
+Business users receive a constrained rosterless Web composition and Developer users receive an isolated local development composition without changing dsh tooling. Business gives up per-session preset selection and locally authored presets. Each new fork-owned XAgent package must also be registered explicitly before the package gate accepts it. The remaining costs are independently persisted Profile-local settings and supporting state, a remote Session-service dependency for Business, and a visible unavailable error for Business subagent API calls. Rosterless composition remains a capability closure; Business multi-user security comes from principal-aware authentication, authorization, Session checks, protected storage, and PostgreSQL RLS.
 
 `packages/boot/app-boot/tests/profile.spec.ts` verifies the XAgent templates and Profile data paths; `apps/cli/tests/profile-boot.spec.ts` verifies distinct launch-time paths; and both XAgent bundle tests verify the state-row expressions and the Business capability closure. `apps/cli/tests/xagent-business-rosterless.e2e.ts` creates a Business session through the real API proxy and verifies an empty preset roster, tool catalog, and file-skill catalog. The built CLI configuration checks load both Profile compositions.

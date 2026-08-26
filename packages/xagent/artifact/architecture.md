@@ -9,3 +9,5 @@ Artifact Service 使用独立 `AsyncLocalStorage`。同一进程中的 Project �
 FastAPI 签发的读取 URL 使用 `/api/v1/xagent/artifact-content/{version_id}` 固定路径和短期 signed-bearer query。Host 在该路径注册更长的 WebServer prefix，只接受 UUID 路径与 GET，并以服务端 `backendOrigin` 组合上游地址；请求不能选择 origin、重定向、bucket 或对象 Key。代理不发送浏览器 Cookie 或服务令牌，query 由 FastAPI 原协议验证。非重定向响应的状态、`Content-Type`、`Content-Disposition` 和 `Content-Length` 原样转发，所有响应固定携带 `Cache-Control: private, no-store`，正文用绑定取消信号的 Node stream pipeline 逐块回传。浏览器断开会中止 fetch 并取消上游流；插件释放先注销路由，再取消并等待 active registry 中的 fetch 与正文流全部结算。代理不记录 URL、签名或正文。
 
 只有 `unauthenticated`、`forbidden`、`not-found`、`upload-expired`、`upload-rejected`、`idempotency-conflict` 和 `service-unavailable` 可以作为资料业务错误穿过 Typert。Remote failure 的 details 固定为空；FastAPI detail、用户令牌、对象 Key 和内部失败信息不会进入 payload 或日志。
+
+FastAPI 与 PostgreSQL 拥有资料权限、版本、五态扫描、审计和持久处理 Job；独立 worker 与版本化 MinIO bucket 的所有权规则由 [XAgent 资料异步处理决策](../../../.agents/notes/implemented/architecture/2026-08-25-xagent-artifact-processing.zh.md)记录。Host 不复制该状态机，也不为 Browser 或模型提供第二个真源。

@@ -16,6 +16,8 @@ XAgent 需要具备不同本地状态和面向产品的 Web 身份的业务、�
 
 XAgent Web 产品壳提供 XAgent 名称、图标、主题和欢迎文案。一个 Web 服务进程只启动一个 Profile；浏览器不切换 Profile。Profile 目录仅组织本地运行时状态，不是认证、授权、租户或项目数据的安全边界。
 
+XAgent 运行时包是随本 fork 交付的私有 workspace，不属于 npm 发布成员。各包 manifest 指向 XxAgent 仓库中的精确包目录，workspace constraints 门禁逐一显式登记这些包。因此，在 `packages/xagent/` 下添加包时必须有意增加登记项；私有包政策不使用目录通配自动扩展。
+
 ## 考虑过的替代方案
 
 **重命名命令以及全部内部 DSH 标识。** 否决，因为 Phase 1 产品壳需要稳定入口，而全局协议和包重命名会把改动范围扩展到 Profile 行为之外。
@@ -30,6 +32,6 @@ XAgent Web 产品壳提供 XAgent 名称、图标、主题和欢迎文案。一�
 
 ## 后果
 
-业务用户获得受限的 rosterless Web 组合，开发用户获得隔离的本地开发组合，同时不改变 dsh 工具链。业务 Profile 放弃按会话选择 Preset 和使用本地自定义 Preset。其余代价是分别持久化的 Profile 本地设置与辅助状态、Business 对远端 Session 服务的依赖，以及业务 subagent API 调用可见的不可用错误。Rosterless 组合仍是能力闭包；Business 多用户安全来自识别主体的认证、授权、Session 检查、受保护存储和 PostgreSQL RLS。
+业务用户获得受限的 rosterless Web 组合，开发用户获得隔离的本地开发组合，同时不改变 dsh 工具链。业务 Profile 放弃按会话选择 Preset 和使用本地自定义 Preset。每个新增的 fork 自有 XAgent 包还必须显式登记，包门禁才会接受它。其余代价是分别持久化的 Profile 本地设置与辅助状态、Business 对远端 Session 服务的依赖，以及业务 subagent API 调用可见的不可用错误。Rosterless 组合仍是能力闭包；Business 多用户安全来自识别主体的认证、授权、Session 检查、受保护存储和 PostgreSQL RLS。
 
 `packages/boot/app-boot/tests/profile.spec.ts` 验证 XAgent 模板与 Profile 数据路径；`apps/cli/tests/profile-boot.spec.ts` 验证不同的启动时路径；两个 XAgent 组合包测试验证状态配置项表达式和业务能力闭包。`apps/cli/tests/xagent-business-rosterless.e2e.ts` 通过真实 API proxy 创建业务会话，并验证 Preset 清单、工具目录和文件型 Skill 目录均为空。构建后的 CLI 配置检查装载两个 Profile 组合。

@@ -50,10 +50,20 @@ const publishedRepositoryUrl = 'git+https://github.com/deepseek-ai/deepseek-harn
 /** Directories whose packages this repository publishes: one release member each. */
 const releaseMemberDirectory = /^(?:packages\/[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
 /** Fork-owned runtime bundles that ship inside XAgent rather than through npm. */
-const privateXagentPackages: Readonly<Record<string, string>> = {
+export const privateXagentPackages: Readonly<Record<string, string>> = {
   'packages/bundle/xagent-business': '@xagent/dsh-business',
   'packages/bundle/xagent-developer': '@xagent/dsh-developer',
+  'packages/xagent/artifact': '@xagent/dsh-artifact',
+  'packages/xagent/authorization': '@xagent/dsh-authorization',
+  'packages/xagent/backend-client': '@xagent/dsh-backend-client',
+  'packages/xagent/connection-auth': '@xagent/dsh-connection-auth',
+  'packages/xagent/delegation-token': '@xagent/dsh-delegation-token',
+  'packages/xagent/principal': '@xagent/dsh-principal',
+  'packages/xagent/project': '@xagent/dsh-project',
+  'packages/xagent/session-persistence-api': '@xagent/dsh-session-persistence-api',
+  'packages/xagent/ui-account': '@xagent/dsh-ui-account',
   'packages/xagent/ui-artifact': '@xagent/dsh-ui-artifact',
+  'packages/xagent/ui-project': '@xagent/dsh-ui-project',
 }
 const xagentRepositoryUrl = 'git+https://github.com/VinceLi-18/XxAgent.git'
 

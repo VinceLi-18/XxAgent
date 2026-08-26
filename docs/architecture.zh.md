@@ -50,6 +50,8 @@ FastAPI 拥有密码、可撤销登录记录、权限版本、账号状态、会
 
 Business 项目工作台把账号能力、可见项目、所选工作台或项目上下文，以及 Session 作用域保存在 FastAPI/PostgreSQL 中。`@xagent/dsh-project` 公开四个请求作用域 Remote 方法，其用户令牌只来自已认证连接。`@xagent/dsh-ui-project` 通过可逆 Slot 消费 Bootstrap，分别提供项目浏览器、中央上下文标识、操作遮罩和第三栏详情。它不在浏览器存储中保留项目缓存，并会在账号变化后丢弃迟到响应。
 
+Business 资料管理复用同一认证作用域，且不增加模型工具。FastAPI 与 PostgreSQL 拥有私人和项目资料权限、不可变版本、五种扫描状态、审计与持久 PostgreSQL 处理队列；使用独立凭据的 worker 通过 ClamAV 扫描暂存正文，并把干净对象晋级到启用版本化的私有 MinIO bucket。`@xagent/dsh-artifact` 只公开固定的人工界面 Remote 与同源正文代理，`@xagent/dsh-ui-artifact` 则占用项目详情 Slot，提供上传、历史、重试、预览与下载。浏览器只在内存中保留资料状态，账号或项目变化时会清空该状态，并且绝不把资料正文或 signed 读取写入 Session 事件或模型请求。
+
 `@xagent/dsh-ui-account` 向浏览器连接的生成式 Remote 与既有 Web API 传输贡献 CSRF Cookie 请求头。没有贡献者时，该请求头服务保持惰性。只有 `xagent-business` 挂载这些 XAgent 配置项；通用布局、Developer Profile 和上游 Profile 保持原有 UI 与传输行为。
 
 ## 核心包
