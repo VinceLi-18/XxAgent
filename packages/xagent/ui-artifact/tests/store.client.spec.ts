@@ -74,6 +74,21 @@ function secondDetail(): XAgentArtifactDetail {
   }
 }
 
+function versionedDetail(
+  status: 'pending' | 'scanning' | 'clean' | 'quarantined' | 'failed',
+  version: number,
+): XAgentArtifactDetail {
+  const value = detail(status)
+  return {
+    ...value,
+    latestVersion: version,
+    ...(status === 'clean'
+      ? { latestCleanVersion: version }
+      : value.latestCleanVersion === undefined ? {} : { latestCleanVersion: value.latestCleanVersion }),
+    versions: value.versions.map((item, index) => index === 0 ? { ...item, version } : item),
+  }
+}
+
 const ok = <T>(value: T): Promise<RemoteResult<T>> => Promise.resolve({ ok: true, value })
 
 function remote(initial: readonly XAgentArtifactSummary[] = [cleanSummary]) {
@@ -168,6 +183,114 @@ describe('XAgent 资料控制器', () => {
         detail: { id: ARTIFACT_B, displayName: '项目章程.pdf' },
       })
     })
+  })
+
+  it('重试成功后拒绝同资料旧轮询，并由新轮询继续推进状态', async () => {
+    const stalePoll = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    let scheduled: (() => void) | undefined
+    const pendingSummary = { ...cleanSummary, latestVersion: 2, latestStatus: 'pending' as const }
+    const { client, artifactDetail } = remote([pendingSummary])
+    artifactDetail
+      .mockImplementationOnce(() => ok(detail('pending')))
+      .mockImplementationOnce(() => stalePoll.promise)
+      .mockImplementationOnce(() => ok(versionedDetail('clean', 2)))
+    const controller = new XAgentArtifactController(client, undefined, {
+      schedule: (callback) => { scheduled = callback; return 1 },
+      cancelSchedule: vi.fn(),
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    scheduled?.()
+    await vi.waitFor(() => { expect(artifactDetail).toHaveBeenCalledTimes(2) })
+    const pollSignal = (artifactDetail.mock.calls as unknown as readonly [string, AbortSignal][])[1]![1]
+    controller.snapshot.replaceReady({ detail: detail('failed') })
+
+    await controller.retry(VERSION_FAILED)
+    expect(pollSignal.aborted).toBe(true)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { latestStatus: 'pending' } })
+    stalePoll.resolve({ ok: true, value: detail('failed') })
+    await stalePoll.promise
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { latestStatus: 'pending' } })
+
+    scheduled?.()
+    await vi.waitFor(() => {
+      expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { latestStatus: 'clean', latestVersion: 2 } })
+    })
+  })
+
+  it('上传完成后拒绝同资料旧轮询，并由新轮询继续推进状态', async () => {
+    const stalePoll = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    let scheduled: (() => void) | undefined
+    const pendingSummary = { ...cleanSummary, latestVersion: 2, latestStatus: 'pending' as const }
+    const completed = versionedDetail('pending', 3)
+    const { client, artifactDetail } = remote([pendingSummary])
+    artifactDetail
+      .mockImplementationOnce(() => ok(detail('pending')))
+      .mockImplementationOnce(() => stalePoll.promise)
+      .mockImplementationOnce(() => ok(versionedDetail('clean', 3)))
+    client['complete-upload'] = vi.fn(() => ok(completed))
+    const controller = new XAgentArtifactController(client, {
+      put: vi.fn(async () => {}),
+      digest: vi.fn(async () => 'c'.repeat(64)),
+    }, {
+      schedule: (callback) => { scheduled = callback; return 1 },
+      cancelSchedule: vi.fn(),
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    scheduled?.()
+    await vi.waitFor(() => { expect(artifactDetail).toHaveBeenCalledTimes(2) })
+    const pollSignal = (artifactDetail.mock.calls as unknown as readonly [string, AbortSignal][])[1]![1]
+
+    await controller.uploadNewVersion(file())
+    expect(pollSignal.aborted).toBe(true)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { latestStatus: 'pending', latestVersion: 3 } })
+    stalePoll.resolve({ ok: true, value: detail('failed') })
+    await stalePoll.promise
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { latestStatus: 'pending', latestVersion: 3 } })
+
+    scheduled?.()
+    await vi.waitFor(() => {
+      expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { latestStatus: 'clean', latestVersion: 3 } })
+    })
+  })
+
+  it('轮询列表发布触发同资料新操作时也拒绝同轮询详情', async () => {
+    const retryResult = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    let scheduled: (() => void) | undefined
+    let retrying: Promise<void> | undefined
+    const pendingSummary = { ...cleanSummary, latestVersion: 2, latestStatus: 'pending' as const }
+    const { client, list, artifactDetail, retry } = remote([pendingSummary])
+    list.mockImplementationOnce(() => ok([pendingSummary])).mockImplementationOnce(() => ok([cleanSummary]))
+    artifactDetail.mockImplementationOnce(() => ok(detail('pending'))).mockImplementationOnce(() => ok(detail('clean')))
+    retry.mockImplementationOnce(() => retryResult.promise)
+    const controller = new XAgentArtifactController(client, undefined, {
+      schedule: (callback) => { scheduled = callback; return 1 },
+      cancelSchedule: vi.fn(),
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    controller.snapshot.replaceReady({ detail: detail('failed') })
+    let started = false
+    const unsubscribe = controller.snapshot.subscribe(() => {
+      const state = controller.snapshot.getSnapshot()
+      if (!started && state.phase === 'ready' && state.items[0]?.latestStatus === 'clean') {
+        started = true
+        retrying = controller.retry(VERSION_FAILED)
+      }
+    })
+
+    scheduled?.()
+    await vi.waitFor(() => { expect(retry).toHaveBeenCalledOnce() })
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { latestStatus: 'failed' } })
+
+    retryResult.resolve({ ok: true, value: detail('pending') })
+    await retrying
+    unsubscribe()
   })
 
   it('账号切换取消进行中的 PUT，且旧上传不能发布完成状态', async () => {
@@ -303,6 +426,44 @@ describe('XAgent 资料控制器', () => {
     pollList.resolve({ ok: true, value: [cleanSummary] })
     pollDetail.resolve({ ok: true, value: detail('clean') })
     await Promise.all([disposing, uploading, previewing])
+    expect(controller.snapshot.getSnapshot()).toEqual({
+      phase: 'empty',
+      accountId: undefined,
+      contextKey: undefined,
+    })
+  })
+
+  it('轮询列表先失败时 dispose 仍等待迟到详情请求收敛', async () => {
+    const pollList = Promise.withResolvers<RemoteResult<readonly XAgentArtifactSummary[]>>()
+    const pollDetail = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    let scheduled: (() => void) | undefined
+    const pendingSummary = { ...cleanSummary, latestVersion: 2, latestStatus: 'pending' as const }
+    const { client, list, artifactDetail } = remote([pendingSummary])
+    list.mockImplementationOnce(() => ok([pendingSummary])).mockImplementationOnce(() => pollList.promise)
+    artifactDetail.mockImplementationOnce(() => ok(detail('pending'))).mockImplementationOnce(() => pollDetail.promise)
+    const controller = new XAgentArtifactController(client, undefined, {
+      schedule: (callback) => { scheduled = callback; return 1 },
+      cancelSchedule: vi.fn(),
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    scheduled?.()
+    await vi.waitFor(() => {
+      expect(list).toHaveBeenCalledTimes(2)
+      expect(artifactDetail).toHaveBeenCalledTimes(2)
+    })
+    const pollSignal = (artifactDetail.mock.calls as unknown as readonly [string, AbortSignal][])[1]![1]
+
+    pollList.reject(new Error('list offline'))
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
+    let settled = false
+    const disposing = controller.dispose().then(() => { settled = true })
+    expect(pollSignal.aborted).toBe(true)
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    pollDetail.resolve({ ok: true, value: detail('clean') })
+    await disposing
     expect(controller.snapshot.getSnapshot()).toEqual({
       phase: 'empty',
       accountId: undefined,

@@ -155,6 +155,7 @@ export class XAgentArtifactController {
   private pollOperation: AbortController | undefined
   private pollHandle: number | undefined
   private selectionGeneration = 0
+  private artifactOperationGeneration = 0
   private readonly activeTasks = new Set<Promise<void>>()
   private disposal: Promise<void> | undefined
   private disposed = false
@@ -297,21 +298,32 @@ export class XAgentArtifactController {
   private async performRetry(versionId: string): Promise<void> {
     const state = this.snapshot.getSnapshot()
     if (state.phase !== 'ready' || state.detail?.versions.some(version => version.id === versionId && version.status === 'failed') !== true) return
+    const artifactId = state.detail.id
+    const artifactOperationGeneration = this.invalidateArtifactOperation()
     const operation = this.begin('detail')
     if (operation === undefined) return
     this.snapshot.replaceReady({ detailError: undefined })
     try {
       const result = await this.remote.retry(versionId, this.idempotencyKey(), operation.controller.signal)
-      if (this.isStale(operation)) return
+      if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       if (!result.ok) {
         this.snapshot.replaceReady({ detailError: errorText(result.error.code) })
+        this.armPollIfNeeded()
         return
       }
-      this.publishDetail(result.value)
-      this.armPoll()
-    } catch {
-      if (!operation.controller.signal.aborted && !this.isStale(operation)) {
+      if (result.value.id !== artifactId) {
         this.snapshot.replaceReady({ detailError: errorText(undefined) })
+        this.armPollIfNeeded()
+        return
+      }
+      this.invalidateArtifactOperation()
+      this.publishDetail(result.value)
+      this.armPollIfNeeded()
+    } catch {
+      if (!operation.controller.signal.aborted && !this.isStale(operation)
+        && artifactOperationGeneration === this.artifactOperationGeneration) {
+        this.snapshot.replaceReady({ detailError: errorText(undefined) })
+        this.armPollIfNeeded()
       }
     }
   }
@@ -411,6 +423,7 @@ export class XAgentArtifactController {
       this.snapshot.replaceReady({ uploadError: '单个文件不能超过 50 MiB' })
       return
     }
+    const artifactOperationGeneration = this.invalidateArtifactOperation()
     const operation = this.begin('upload')
     if (operation === undefined) return
     const idempotencyKey = this.idempotencyKey()
@@ -420,34 +433,44 @@ export class XAgentArtifactController {
       const authorization = artifactId === undefined
         ? await this.remote['create-upload'](input, operation.controller.signal)
         : await this.remote['create-version-upload'](artifactId, input, operation.controller.signal)
-      if (this.isStale(operation)) return
+      if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       if (!authorization.ok) {
         this.snapshot.replaceReady({ upload: undefined, uploadError: errorText(authorization.error.code) })
+        this.armPollIfNeeded()
         return
       }
       this.snapshot.replaceReady({ upload: { filename: file.name, progress: 0, phase: 'putting' } })
       await this.transport.put(authorization.value.putUrl, file, operation.controller.signal, (loaded, total) => {
-        if (!this.isStale(operation)) {
+        if (!this.isStale(operation) && artifactOperationGeneration === this.artifactOperationGeneration) {
           this.snapshot.replaceReady({ upload: { filename: file.name, progress: total === 0 ? 0 : loaded / total, phase: 'putting' } })
         }
       })
       const sha256 = await this.transport.digest(file)
-      if (this.isStale(operation)) return
+      if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       this.snapshot.replaceReady({ upload: { filename: file.name, progress: 1, phase: 'completing' } })
       const completed = await this.remote['complete-upload'](authorization.value.id, {
         size: file.size, sha256, idempotencyKey,
       }, operation.controller.signal)
-      if (this.isStale(operation)) return
+      if (this.isStale(operation) || artifactOperationGeneration !== this.artifactOperationGeneration) return
       if (!completed.ok) {
         this.snapshot.replaceReady({ upload: undefined, uploadError: errorText(completed.error.code) })
+        this.armPollIfNeeded()
         return
       }
+      if (artifactId !== undefined && completed.value.id !== artifactId) {
+        this.snapshot.replaceReady({ upload: undefined, uploadError: errorText(undefined) })
+        this.armPollIfNeeded()
+        return
+      }
+      this.invalidateArtifactOperation()
       this.publishDetail(completed.value)
       this.snapshot.replaceReady({ upload: { filename: file.name, progress: 1, phase: 'complete' } })
-      if (completed.value.latestStatus === 'pending' || completed.value.latestStatus === 'scanning') this.armPoll()
+      this.armPollIfNeeded()
     } catch {
-      if (!operation.controller.signal.aborted && !this.isStale(operation)) {
+      if (!operation.controller.signal.aborted && !this.isStale(operation)
+        && artifactOperationGeneration === this.artifactOperationGeneration) {
         this.snapshot.replaceReady({ upload: undefined, uploadError: '上传未完成，请重新选择文件' })
+        this.armPollIfNeeded()
       }
     }
   }
@@ -481,15 +504,24 @@ export class XAgentArtifactController {
     if (operation === undefined) return
     const selectedId = state.selectedId
     const selectionGeneration = this.selectionGeneration
+    const artifactOperationGeneration = this.artifactOperationGeneration
     try {
-      const [list, detail] = await Promise.all([
+      const [listResult, detailResult] = await Promise.allSettled([
         this.remote.list(operation.controller.signal),
         selectedId === undefined ? Promise.resolve(undefined) : this.remote.detail(selectedId, operation.controller.signal),
       ])
-      if (this.isStale(operation)) return
+      if (this.isStale(operation)
+        || !this.isCurrentPoll(selectionGeneration, artifactOperationGeneration, selectedId)) return
+      if (listResult.status === 'rejected' || detailResult.status === 'rejected') {
+        this.armPoll()
+        return
+      }
+      const list = listResult.value
+      const detail = detailResult.value
       if (list.ok) this.snapshot.replaceReady({ items: list.value })
       if (detail?.ok === true && selectedId !== undefined
-        && detail.value.id === selectedId && this.isCurrentSelection(selectionGeneration, selectedId)) {
+        && detail.value.id === selectedId && this.isCurrentSelection(selectionGeneration, selectedId)
+        && this.isCurrentPoll(selectionGeneration, artifactOperationGeneration, selectedId)) {
         this.snapshot.replaceReady({ detail: detail.value })
       }
       this.armPollIfNeeded()
@@ -523,18 +555,36 @@ export class XAgentArtifactController {
     return generation === this.selectionGeneration && state.phase === 'ready' && state.selectedId === artifactId
   }
 
-  private invalidateSelection(): number {
-    ++this.selectionGeneration
-    this.detailOperation?.abort()
-    this.readOperation?.abort()
+  private isCurrentPoll(
+    selectionGeneration: number,
+    artifactOperationGeneration: number,
+    selectedId: string | undefined,
+  ): boolean {
+    const state = this.snapshot.getSnapshot()
+    return selectionGeneration === this.selectionGeneration
+      && artifactOperationGeneration === this.artifactOperationGeneration
+      && state.phase === 'ready'
+      && state.selectedId === selectedId
+  }
+
+  private invalidateArtifactOperation(): number {
+    ++this.artifactOperationGeneration
     this.pollOperation?.abort()
-    this.detailOperation = undefined
-    this.readOperation = undefined
     this.pollOperation = undefined
     if (this.pollHandle !== undefined) {
       this.cancelSchedule(this.pollHandle)
       this.pollHandle = undefined
     }
+    return this.artifactOperationGeneration
+  }
+
+  private invalidateSelection(): number {
+    ++this.selectionGeneration
+    this.detailOperation?.abort()
+    this.readOperation?.abort()
+    this.detailOperation = undefined
+    this.readOperation = undefined
+    this.invalidateArtifactOperation()
     return this.selectionGeneration
   }
 

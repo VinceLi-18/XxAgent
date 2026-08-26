@@ -11,18 +11,18 @@ import { IconCloseOutline16 } from './icons/index.tsx'
 import css from './Modal.module.css'
 
 /**
- * 渲染全屏遮罩上的受控模态框，并在打开期间封闭背景与键盘焦点。
- * @param props.open 是否显示对话框。
- * @param props.onClose Escape、遮罩或关闭按钮触发的关闭动作。
- * @param props.title 对话框的可访问名称。
- * @param props.closeLabel 关闭按钮的可访问名称。
- * @param props.description 标题下方的可选说明。
- * @param props.children 对话框正文。
- * @param props.footer 对话框操作区。
- * @param props.className 对话框容器的可选类名。
- * @param props.contentClassName 可滚动正文区域的可选类名。
- * @param props.headless 是否由调用方完整提供标题、关闭按钮和正文结构。
- * @returns 关闭时返回 null；打开时返回挂载到 body 的遮罩与对话框。
+ * Renders a controlled modal that makes the background inert and traps focus while open.
+ * @param props.open Whether the dialog is visible.
+ * @param props.onClose Handles Escape, mask, and close-button dismissal.
+ * @param props.title Accessible dialog name.
+ * @param props.closeLabel Accessible close-button name.
+ * @param props.description Optional description below the title.
+ * @param props.children Dialog body.
+ * @param props.footer Dialog action area.
+ * @param props.className Optional dialog container class.
+ * @param props.contentClassName Optional scrollable content class.
+ * @param props.headless Whether the caller supplies the complete header, close control, and body structure.
+ * @returns Nothing while closed, otherwise a body-portaled mask and dialog.
  */
 export function Modal({
   open, onClose, title, closeLabel = 'Close', description, children, footer, className, contentClassName, headless = false,
@@ -48,7 +48,8 @@ export function Modal({
     const previousInert = appRoot?.inert
     if (appRoot !== null) appRoot.inert = true
     const focusable = () => [...(dialog.current?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), '
+      + 'iframe:not([hidden]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])',
     ) ?? [])]
     if (!dialog.current?.contains(document.activeElement)) {
       const first = focusable()[0]
