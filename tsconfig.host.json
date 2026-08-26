@@ -162,6 +162,7 @@
     { "path": "./packages/identity/anonymous-user-id" },
     { "path": "./packages/xagent/principal" },
     { "path": "./packages/xagent/backend-client" },
+    { "path": "./packages/xagent/artifact" },
     { "path": "./packages/xagent/delegation-token" },
     { "path": "./packages/xagent/connection-auth" },
     { "path": "./packages/xagent/authorization" },

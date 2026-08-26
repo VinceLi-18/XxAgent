@@ -3023,6 +3023,22 @@ export interface Config {
 
 来源：[`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="xagentdsh-artifact"></a>
+
+## `@xagent/dsh-artifact`
+
+```ts config-catalog
+/** XAgent Artifact Host plugin configuration. */
+export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
+  backendOrigin: string
+  /** Host 调用内部资料接口时使用的服务身份。 */
+  serviceToken: string
+}
+```
+
+来源：[`packages/xagent/artifact/src/index.ts:42`](../packages/xagent/artifact/src/index.ts)
+
 <a id="xagentdsh-authorization"></a>
 
 ## `@xagent/dsh-authorization`
@@ -3039,7 +3055,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/authorization/src/index.ts:45`](../packages/xagent/authorization/src/index.ts)
+来源：[`packages/xagent/authorization/src/index.ts:46`](../packages/xagent/authorization/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 

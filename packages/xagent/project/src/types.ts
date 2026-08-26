@@ -3,17 +3,7 @@ import type {
   XAgentWorkbenchBootstrap as BackendWorkbenchBootstrap,
   XAgentWorkbenchContext as BackendWorkbenchContext,
 } from '@xagent/dsh-backend-client'
-
-/** Host 从物理连接认证上下文建立的单请求身份作用域。 */
-export interface XAgentProjectRequestScope {
-  readonly principal: {
-    readonly actorId: string
-    readonly role: 'manager' | 'specialist'
-    readonly permissionRevision: number
-  }
-  readonly userToken: string
-  readonly connectionId: string
-}
+import type { XAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
 
 /** XAgent 项目 Remote 使用的工作台上下文。 */
 export type XAgentWorkbenchContext = BackendWorkbenchContext
@@ -26,7 +16,7 @@ export type XAgentProjectDetail = BackendProjectDetail
 
 /** Authorizer 使用的非 Remote 请求作用域入口。 */
 export interface XAgentProjectScopeRunner {
-  withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<T>): Promise<T>
+  withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T>
 }
 
 /** 浏览器可见的 XAgent 项目 Remote。 */

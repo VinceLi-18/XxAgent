@@ -77,6 +77,8 @@ Generated English references and graphs participate in pairing when a reviewed C
   - `docs/upstream/jiaxin-api-baseline.md`
   - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
+  - `packages/xagent/artifact/README.md`
+  - `packages/xagent/artifact/architecture.md`
   - `packages/xagent/project/README.md`
   - `packages/xagent/project/architecture.md`
   - `packages/xagent/ui-account/README.md`

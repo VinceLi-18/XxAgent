@@ -12,13 +12,13 @@ XAgent Business Profile 会由同一个 Host 进程服务多个账号。因此�
 
 FastAPI 与 PostgreSQL 拥有账号能力、可见项目、已选择的工作台或项目上下文，以及 Session 作用域索引。Manager 按角色默认获得 `project.create`；Specialist 只有获得服务端授权后才拥有该能力。权限版本变化会撤销既有登录，浏览器必须重新认证后才能取得新的能力集合。
 
-Host 授权器从已认证连接生成不可变 Principal，并在四个 `xagentProject` Remote 方法外建立 `AsyncLocalStorage` 请求作用域。这些方法只从该作用域读取用户令牌。后端业务拒绝通过显式 `TypertRemoteFailure` 穿过 Typert；共享 RPC schema 识别稳定的 XAgent 错误码，未知异常仍映射为 `internal`。系统不信任任何类似身份的请求字段。
+Host 授权器从已认证连接生成不可变 Principal，并在每个 `xagentProject` 或 `xagentArtifact` Remote 操作外建立由 Principal 包拥有的请求作用域。两个服务分别拥有独立的 `AsyncLocalStorage`，且都只从共享不可变作用域读取用户令牌。八个 Artifact 方法始终转发到 FastAPI，不缓存列表、详情或 URL。后端业务拒绝通过显式 `TypertRemoteFailure` 穿过 Typert；共享 RPC schema 识别稳定的 XAgent 错误码，未知异常仍映射为 `internal`。系统不信任任何类似身份的请求字段。
 
 创建 Session 时使用账号在服务端选择的上下文：工作台上下文创建 private Session，项目上下文创建 project Session。项目引用登记及引用项目失权后的失败关闭继续以现有的[XAgent 认证与会话隔离决策](2026-08-25-xagent-auth-session-runtime.md)为权威。
 
 浏览器连接公开一个惰性的请求头贡献服务。XAgent 账号插件是唯一贡献者：它读取 `xagent_csrf` Cookie，并为生成式 Remote 调用和既有 Web API Client 添加匹配请求头。没有该插件时，连接传输保持原有行为。
 
-XAgent 项目客户端挂载生成式 Remote contribution，并发布一个账号作用域的工作台控制器。控制器把每次服务端 Bootstrap 作为项目状态的唯一来源，不把项目数据写入浏览器存储，并通过账号 epoch 与取消信号丢弃迟到响应。它使用可逆 Slot 注册项目浏览器、中央上下文标识、详情栏和操作遮罩。账号插件会在暴露另一个账号前重置工作台。宽屏把详情栏显示为第三栏，窄屏使用布局拥有的 drawer。
+XAgent 项目客户端挂载生成式 Remote contribution，并发布一个账号作用域的工作台控制器。控制器把每次服务端 Bootstrap 作为项目状态的唯一来源，不把项目数据写入浏览器存储，并通过账号 epoch 与取消信号丢弃迟到响应。它使用可逆 Slot 注册项目浏览器、中央上下文标识、详情栏和操作遮罩。账号插件会在暴露另一个账号前重置工作台。宽屏把详情栏显示为第三栏，窄屏使用布局拥有的 drawer。Artifact Remote 调用只负责传输，不注册模型工具，也不增加模型可见输入。
 
 只有 `xagent-business` 挂载项目 Host、账号 UI 与项目 UI 配置项。`xagent-developer`、普通 Web Profile 以及独立的 JiaxinAgent 仓库保留既有组合与行为。
 

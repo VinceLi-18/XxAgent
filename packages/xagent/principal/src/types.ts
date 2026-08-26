@@ -14,3 +14,10 @@ export interface XAgentPrincipal {
 export interface XAgentPrincipalResolver {
   resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 }
+
+/** Host 从同一已认证物理连接建立的不可变单请求身份。 */
+export interface XAgentAuthenticatedRequestScope {
+  readonly principal: XAgentPrincipal
+  readonly userToken: string
+  readonly connectionId: string
+}

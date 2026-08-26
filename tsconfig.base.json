@@ -32,6 +32,8 @@
       "@xagent/dsh-principal/types": ["./packages/xagent/principal/src/types.ts"],
       "@xagent/dsh-backend-client": ["./packages/xagent/backend-client/src/index.ts"],
       "@xagent/dsh-backend-client/types": ["./packages/xagent/backend-client/src/types.ts"],
+      "@xagent/dsh-artifact": ["./packages/xagent/artifact/src/index.ts"],
+      "@xagent/dsh-artifact/types": ["./packages/xagent/artifact/src/types.ts"],
       "@xagent/dsh-delegation-token": ["./packages/xagent/delegation-token/src/index.ts"],
       "@xagent/dsh-delegation-token/types": ["./packages/xagent/delegation-token/src/types.ts"],
       "@xagent/dsh-connection-auth": ["./packages/xagent/connection-auth/src/index.ts"],

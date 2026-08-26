@@ -3,7 +3,9 @@ import { Context } from '@deepseek-ai/cordis'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { XAgentBackend, XAgentSessionBackend } from '@xagent/dsh-backend-client'
 import { XAgentBackendError } from '@xagent/dsh-backend-client'
-import type { XAgentProjectRequestScope, XAgentProjectScopeRunner } from '../../project/src/index.ts'
+import type { XAgentArtifactScopeRunner } from '../../artifact/src/index.ts'
+import type { XAgentAuthenticatedRequestScope } from '../../principal/src/index.ts'
+import type { XAgentProjectScopeRunner } from '../../project/src/index.ts'
 import { describe, expect, test, vi } from 'vitest'
 import * as authorizationModule from '../src/index.ts'
 import {
@@ -46,14 +48,33 @@ function persistence(onToken?: (token: string) => void): TokenScopedPersistence 
 
 const success = async (): Promise<RpcResult<string>> => ({ ok: true, value: 'ok' })
 
-function projectScope(onScope?: (scope: XAgentProjectRequestScope) => void): XAgentProjectScopeRunner & {
-  readonly active: () => XAgentProjectRequestScope | undefined
+function projectScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => void): XAgentProjectScopeRunner & {
+  readonly active: () => XAgentAuthenticatedRequestScope | undefined
 } {
-  let active: XAgentProjectRequestScope | undefined
+  let active: XAgentAuthenticatedRequestScope | undefined
   return {
     active: () => active,
-    async withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<T>): Promise<T> {
+    async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
       if (active !== undefined) throw new Error('nested project request scope')
+      active = scope
+      onScope?.(scope)
+      try {
+        return await operation()
+      } finally {
+        active = undefined
+      }
+    },
+  }
+}
+
+function artifactScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => void): XAgentArtifactScopeRunner & {
+  readonly active: () => XAgentAuthenticatedRequestScope | undefined
+} {
+  let active: XAgentAuthenticatedRequestScope | undefined
+  return {
+    active: () => active,
+    async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
+      if (active !== undefined) throw new Error('nested artifact request scope')
       active = scope
       onScope?.(scope)
       try {
@@ -336,15 +357,11 @@ describe('XAgent Session 授权', () => {
     'xagentProject/create-project',
     'xagentProject/project',
   ])('%s 在认证账号请求 scope 内执行完整 Remote operation', async (endpoint) => {
-    const scopes: XAgentProjectRequestScope[] = []
+    const scopes: XAgentAuthenticatedRequestScope[] = []
     const scope = projectScope(value => scopes.push(value))
     const operation = vi.fn(async (): Promise<RpcResult<string>> => {
       expect(scope.active()).toEqual({
-        principal: {
-          actorId: '00000000-0000-0000-0000-000000000001',
-          role: 'specialist',
-          permissionRevision: 3,
-        },
+        principal: context.principal,
         userToken: 'alice-token',
         connectionId: 'connection-1',
       })
@@ -400,6 +417,92 @@ describe('XAgent Session 授权', () => {
       'host/describe', {}, context, new AbortController().signal, operation,
     )).resolves.toEqual({ ok: true, value: 'ok' })
     expect(operation).toHaveBeenCalledTimes(2)
+  })
+
+  test('项目授权也接受生命周期已由调用方持有的直接 scope runner', async () => {
+    const scope = projectScope()
+    const auth = new XAgentAuthorization(backend(), persistence(), scope)
+    await expect(auth.run(
+      'xagentProject/bootstrap', {}, context, new AbortController().signal, success,
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+  })
+
+  test.each([
+    'xagentArtifact/list',
+    'xagentArtifact/detail',
+    'xagentArtifact/create-upload',
+    'xagentArtifact/create-version-upload',
+    'xagentArtifact/complete-upload',
+    'xagentArtifact/retry',
+    'xagentArtifact/preview',
+    'xagentArtifact/download',
+  ])('%s 用物理连接 Principal 包围完整 operation', async (endpoint) => {
+    const scope = artifactScope()
+    const remote = backend()
+    const operation = vi.fn(async (): Promise<RpcResult<string>> => {
+      expect(scope.active()).toEqual({
+        principal: context.principal,
+        userToken: 'alice-token',
+        connectionId: 'connection-1',
+      })
+      await Promise.resolve()
+      expect(scope.active()).toBeDefined()
+      return { ok: true, value: 'ok' }
+    })
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, scope)
+
+    await expect(auth.run(endpoint, { args: {} }, context, new AbortController().signal, operation))
+      .resolves.toEqual({ ok: true, value: 'ok' })
+    expect(operation).toHaveBeenCalledOnce()
+    expect(scope.active()).toBeUndefined()
+  })
+
+  test('Artifact 未装配、未知方法、未认证连接和 FastAPI 账号串号都失败关闭', async () => {
+    const operation = vi.fn(success)
+    const missing = new XAgentAuthorization(backend(), persistence())
+    await expect(missing.run('xagentArtifact/list', {}, context, new AbortController().signal, operation))
+      .resolves.toEqual({
+        ok: false,
+        error: { code: 'internal', message: 'artifact service unavailable', details: {} },
+      })
+
+    const scope = artifactScope()
+    const auth = new XAgentAuthorization(backend(), persistence(), undefined, scope)
+    await expect(auth.run('xagentArtifact/unknown', {}, context, new AbortController().signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentArtifact/list', {}, { connectionId: 'anonymous' }, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+
+    await expect(auth.run(
+      'xagentArtifact/list', {}, {
+        ...context,
+        principal: { ...(context.principal as Record<string, unknown>), connectionId: 'other-connection' },
+      }, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test('Artifact operation 抛错或取消后释放 scope，resolver 不保留已 dispose 的 service', async () => {
+    const first = artifactScope()
+    let current: XAgentArtifactScopeRunner | undefined = first
+    const remote = backend()
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, () => current)
+    for (const failure of [new Error('failed'), new DOMException('cancelled', 'AbortError')]) {
+      await expect(auth.run(
+        'xagentArtifact/list', {}, context, new AbortController().signal, async () => { throw failure },
+      )).resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+      expect(first.active()).toBeUndefined()
+    }
+
+    current = undefined
+    await expect(auth.run('xagentArtifact/list', {}, context, new AbortController().signal, success))
+      .resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+    const replacement = artifactScope()
+    current = replacement
+    await expect(auth.run('xagentArtifact/list', {}, context, new AbortController().signal, success))
+      .resolves.toEqual({ ok: true, value: 'ok' })
+    expect(first.active()).toBeUndefined()
   })
 
   test.each([
@@ -537,7 +640,14 @@ describe('XAgent Session 授权', () => {
     const mounted = new Context()
     mounted.provide('sessionPersistence', persistence() as never)
     authorizationModule.apply(mounted, { backendOrigin: 'https://api.example.test', serviceToken: 'service' })
-    expect(mounted.get('connectionRequestAuthorizer')).toBeDefined()
+    const mountedAuthorizer = mounted.get('connectionRequestAuthorizer')
+    expect(mountedAuthorizer).toBeDefined()
+    await expect(mountedAuthorizer?.run(
+      'xagentProject/bootstrap', {}, context, new AbortController().signal, success,
+    )).resolves.toMatchObject({ ok: false, error: { message: 'project service unavailable' } })
+    await expect(mountedAuthorizer?.run(
+      'xagentArtifact/list', {}, context, new AbortController().signal, success,
+    )).resolves.toMatchObject({ ok: false, error: { message: 'artifact service unavailable' } })
     await mounted.fiber.dispose()
   })
 })

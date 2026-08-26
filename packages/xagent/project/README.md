@@ -2,7 +2,7 @@
 
 `@xagent/dsh-project` 是 XAgent Business Profile 的 Host 工作台 Remote。浏览器只能调用 `bootstrap`、`select-context`、`create-project` 和 `project` 四个固定方法；actor、role、权限修订、用户令牌和连接标识都不属于 Remote 参数。
 
-Authorizer 从物理连接建立一次 `AsyncLocalStorage` 请求作用域，服务只从该作用域读取用户令牌并调用 FastAPI。并发账号拥有独立作用域，嵌套 scope、无 scope、失效服务和响应账号不一致全部失败关闭。
+Authorizer 从物理连接建立 `@xagent/dsh-principal` 声明的完整认证请求 scope，Project Service 用自己的 `AsyncLocalStorage` 包围调用并只从该作用域读取用户令牌。并发账号拥有独立作用域，嵌套 scope、无 scope、Principal 与连接标识不一致、失效服务和响应账号不一致全部失败关闭。
 
 ## Model Experience
 

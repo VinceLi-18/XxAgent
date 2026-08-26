@@ -21,7 +21,9 @@
     "@deepseek-ai/dsh-host-apiproxy": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-session-persistence": "workspace:^",
+    "@xagent/dsh-artifact": "workspace:^",
     "@xagent/dsh-backend-client": "workspace:^",
+    "@xagent/dsh-principal": "workspace:^",
     "@xagent/dsh-project": "workspace:^"
   },
   "devDependencies": {
@@ -30,7 +32,9 @@
     "@deepseek-ai/dsh-host-apiproxy": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-session-persistence": "workspace:^",
+    "@xagent/dsh-artifact": "workspace:^",
     "@xagent/dsh-backend-client": "workspace:^",
+    "@xagent/dsh-principal": "workspace:^",
     "@xagent/dsh-project": "workspace:^"
   }
 }

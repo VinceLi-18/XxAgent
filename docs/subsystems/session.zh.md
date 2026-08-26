@@ -643,7 +643,7 @@ run<T>( endpoint: string, payload: unknown, request: ConnectionRequestContext, s
 filterEvent( endpoint: 'events.mux' | 'events.host', frame: unknown, request: ConnectionRequestContext, signal: AbortSignal, ): Promise<unknown>
 ```
 
-Source: [`packages/xagent/authorization/src/index.ts:292`](../../packages/xagent/authorization/src/index.ts)
+Source: [`packages/xagent/authorization/src/index.ts:329`](../../packages/xagent/authorization/src/index.ts)
 
 <a id="ctxsessions--sessionstore"></a>
 

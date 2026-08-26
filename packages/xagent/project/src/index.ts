@@ -9,10 +9,10 @@ import {
   XAgentBackendError,
   type XAgentWorkbenchBackend,
 } from '@xagent/dsh-backend-client'
+import type { XAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
 import type {
   XAgentProjectDetail,
   XAgentProjectRemote,
-  XAgentProjectRequestScope,
   XAgentProjectScopeRunner,
   XAgentWorkbenchBootstrap,
   XAgentWorkbenchContext,
@@ -26,7 +26,7 @@ const PROJECT_FAILURE_CODES = new Set([
 ])
 
 interface RequestScopeState {
-  readonly scope: XAgentProjectRequestScope
+  readonly scope: XAgentAuthenticatedRequestScope
   active: boolean
 }
 
@@ -51,12 +51,14 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-function validScope(scope: XAgentProjectRequestScope): boolean {
+function validScope(scope: XAgentAuthenticatedRequestScope): boolean {
   const role: unknown = scope.principal.role
   return UUID_PATTERN.test(scope.principal.actorId)
     && (role === 'manager' || role === 'specialist')
     && Number.isSafeInteger(scope.principal.permissionRevision)
     && scope.principal.permissionRevision >= 1
+    && UUID_PATTERN.test(scope.principal.authSessionId)
+    && scope.principal.connectionId === scope.connectionId
     && scope.userToken.length > 0
     && scope.connectionId.length > 0
 }
@@ -77,7 +79,7 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
    * @param operation - 下游完整 Remote 操作。
    * @returns 下游结果；退出时自动清除请求身份。
    */
-  async withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<T>): Promise<T> {
+  async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
     if (this.disposed) throw new Error('xagent project service is disposed')
     if (!validScope(scope)) throw new Error('invalid xagent project request scope')
     const current = this.requestScope.getStore()
@@ -156,7 +158,7 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
     }
   }
 
-  private requireScope(): XAgentProjectRequestScope {
+  private requireScope(): XAgentAuthenticatedRequestScope {
     if (this.disposed) throw new Error('xagent project service is disposed')
     const state = this.requestScope.getStore()
     if (state?.active !== true) throw new Error('xagent project request scope is required')
@@ -165,7 +167,7 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
 
   private assertBootstrapAccount(
     result: XAgentWorkbenchBootstrap,
-    scope: XAgentProjectRequestScope,
+    scope: XAgentAuthenticatedRequestScope,
   ): XAgentWorkbenchBootstrap {
     if (result.account.id !== scope.principal.actorId) throw new XAgentBackendError('service-unavailable')
     return result

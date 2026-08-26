@@ -7,25 +7,30 @@ import {
 } from '@xagent/dsh-backend-client'
 import { describe, expect, test, vi } from 'vitest'
 import {
+  apply,
   XAgentProjectService,
-  type XAgentProjectRequestScope,
 } from '../src/index.ts'
+import type { XAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
 
-const alice: XAgentProjectRequestScope = {
+const alice: XAgentAuthenticatedRequestScope = {
   principal: {
     actorId: '00000000-0000-0000-0000-000000000001',
     role: 'specialist',
     permissionRevision: 3,
+    authSessionId: '00000000-0000-0000-0000-000000000101',
+    connectionId: 'connection-alice',
   },
   userToken: 'alice-token',
   connectionId: 'connection-alice',
 }
 
-const bob: XAgentProjectRequestScope = {
+const bob: XAgentAuthenticatedRequestScope = {
   principal: {
     actorId: '00000000-0000-0000-0000-000000000002',
     role: 'manager',
     permissionRevision: 4,
+    authSessionId: '00000000-0000-0000-0000-000000000102',
+    connectionId: 'connection-bob',
   },
   userToken: 'bob-token',
   connectionId: 'connection-bob',
@@ -102,6 +107,12 @@ describe('XAgent Project Remote', () => {
     ])
   })
 
+  test('插件入口使用固定配置安装 Project Service', () => {
+    const ctx = new Context()
+    apply(ctx, { backendOrigin: 'https://api.example.test', serviceToken: 'service-token' })
+    expect(ctx.get('xagentProject')).toBeInstanceOf(XAgentProjectService)
+  })
+
   test('四个 Remote 都只从请求 scope 读取令牌并传递取消信号', async () => {
     const remote = backend()
     const service = new XAgentProjectService(new Context(), remote)
@@ -134,12 +145,15 @@ describe('XAgent Project Remote', () => {
       .rejects.toThrow('nested')
     await ctx.fiber.dispose()
     await expect(service.withRequest(alice, () => service.bootstrap())).rejects.toThrow('disposed')
+    await expect(service.bootstrap()).rejects.toThrow('disposed')
   })
 
   test.each([
     { principal: { ...alice.principal, actorId: 'bad' } },
     { principal: { ...alice.principal, role: 'admin' as 'specialist' } },
     { principal: { ...alice.principal, permissionRevision: 0 } },
+    { principal: { ...alice.principal, authSessionId: 'bad' } },
+    { principal: { ...alice.principal, connectionId: 'other-connection' } },
     { userToken: '' },
     { connectionId: '' },
   ])('拒绝畸形 Host 请求 scope %#', async (override) => {
@@ -213,5 +227,14 @@ describe('XAgent Project Remote', () => {
       .rejects.toEqual(new TypertRemoteFailure({
         code: 'forbidden', message: 'XAgent project request failed', details: {},
       }))
+
+    remote.createProject = vi.fn(async () => { throw new XAgentBackendError('sequence-conflict') })
+    await expect(service.withRequest(alice, () => service.createProject('Alpha', 'create-2')))
+      .rejects.toMatchObject({ failure: { code: 'service-unavailable', details: {} } })
+
+    const unexpected = new Error('unexpected backend failure')
+    remote.createProject = vi.fn(async () => { throw unexpected })
+    await expect(service.withRequest(alice, () => service.createProject('Alpha', 'create-3')))
+      .rejects.toBe(unexpected)
   })
 })

@@ -2203,6 +2203,67 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'xagentArtifact',
+    summary: '将账号绑定请求逐次转发给 FastAPI 的资料服务。',
+    description: '将账号绑定请求逐次转发给 FastAPI 的资料服务。',
+    methods: [
+      {
+        signature: 'async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: '在 Host 认证所得的单请求身份内执行完整 Remote 调用。',
+        parameters: [{ name: 'scope', description: '物理连接绑定的可信 Principal 与用户令牌。' }, { name: 'operation', description: '下游完整 Remote 操作。' }],
+        returns: '下游结果；退出时自动清除请求身份。',
+      },
+      {
+        signature: '@Remote async list(signal?: AbortSignal): Promise<readonly XAgentArtifactSummary[]>',
+        description: '列出当前 FastAPI 工作台范围内可见的资料。',
+        parameters: [{ name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '当前请求重新读取的资料摘要。',
+      },
+      {
+        signature: '@Remote async detail(artifactId: string, signal?: AbortSignal): Promise<XAgentArtifactDetail>',
+        description: '读取当前账号可见的一份资料与版本历史。',
+        parameters: [{ name: 'artifactId', description: '资料 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 当前资料详情。',
+      },
+      {
+        signature: '@Remote(\'create-upload\') async createUpload(input: XAgentArtifactUploadInput, signal?: AbortSignal): Promise<XAgentArtifactUpload>',
+        description: '创建当前 FastAPI 工作台范围内的新资料暂存上传。',
+        parameters: [{ name: 'input', description: '文件名、声明大小和幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '单个暂存对象的短期 PUT 授权。',
+      },
+      {
+        signature: '@Remote(\'create-version-upload\') async createVersionUpload( artifactId: string, input: XAgentArtifactUploadInput, signal?: AbortSignal, ): Promise<XAgentArtifactUpload>',
+        description: '为一份现有资料创建不可变新版本的暂存上传。',
+        parameters: [{ name: 'artifactId', description: '资料 UUID。' }, { name: 'input', description: '文件名、声明大小和幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '单个暂存对象的短期 PUT 授权。',
+      },
+      {
+        signature: '@Remote(\'complete-upload\') async completeUpload( uploadId: string, input: XAgentArtifactCompleteInput, signal?: AbortSignal, ): Promise<XAgentArtifactDetail>',
+        description: '完成暂存上传并把新版本提交到异步安全处理队列。',
+        parameters: [{ name: 'uploadId', description: '暂存上传 UUID。' }, { name: 'input', description: '实际大小、SHA-256 和幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '新版本进入处理队列后的资料详情。',
+      },
+      {
+        signature: '@Remote async retry(versionId: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentArtifactDetail>',
+        description: '重试一份仍有有效暂存正文的失败版本。',
+        parameters: [{ name: 'versionId', description: '资料版本 UUID。' }, { name: 'idempotencyKey', description: '当前重试意图的幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '重试入队后的资料详情。',
+      },
+      {
+        signature: '@Remote async preview(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>',
+        description: '为 clean 版本创建一次新的安全预览地址。',
+        parameters: [{ name: 'versionId', description: '资料版本 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 授权的短期 opaque 地址。',
+      },
+      {
+        signature: '@Remote async download(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>',
+        description: '为 clean 版本创建一次新的安全下载地址。',
+        parameters: [{ name: 'versionId', description: '资料版本 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 授权的短期 opaque 地址。',
+      },
+    ],
+  },
+  {
     key: 'xagentPrincipal',
     summary: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
     description: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
@@ -2221,7 +2282,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: '将账号绑定请求转发给 FastAPI 的项目工作台服务。',
     methods: [
       {
-        signature: 'async withRequest<T>(scope: XAgentProjectRequestScope, operation: () => Promise<T>): Promise<T>',
+        signature: 'async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T>',
         description: '在 Host 认证所得的单请求身份内执行完整 Remote 调用。',
         parameters: [{ name: 'scope', description: '物理连接绑定的可信 Principal 与用户令牌。' }, { name: 'operation', description: '下游完整 Remote 操作。' }],
         returns: '下游结果；退出时自动清除请求身份。',
@@ -4749,12 +4810,12 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type WorkflowStopReason = \'completed\' | \'cancelled\' | \'error\';',
   },
   {
-    name: 'XAgentPrincipal',
-    declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
+    name: 'XAgentAuthenticatedRequestScope',
+    declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n}',
   },
   {
-    name: 'XAgentProjectRequestScope',
-    declaration: 'export interface XAgentProjectRequestScope {\n    readonly principal: {\n        readonly actorId: string;\n        readonly role: \'manager\' | \'specialist\';\n        readonly permissionRevision: number;\n    };\n    readonly userToken: string;\n    readonly connectionId: string;\n}',
+    name: 'XAgentPrincipal',
+    declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
   },
   {
     name: 'XAgentRole',

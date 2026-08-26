@@ -109,6 +109,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   workflowEngine: 'workflow.md',
   workspaceRegistry: 'workspace.md',
   xagentProject: 'web-server.md',
+  xagentArtifact: 'web-server.md',
   xagentPrincipal: 'web-server.md',
 }
 
@@ -528,8 +529,13 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   ConnectionRequestContext: 'XAgent connection authorization context is owned by packages/xagent/authorization/architecture.md',
   ResolvedConnectionRequestContext: 'XAgent authenticated connection context is owned by packages/xagent/connection-auth/architecture.md',
   RpcResult: 'wire result contract is owned by packages/host/apiproxy/src/api/rpc.ts',
+  XAgentArtifactCompleteInput: 'XAgent Artifact Remote input is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactDetail: 'XAgent Artifact response contract is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactSummary: 'XAgent Artifact response contract is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactUpload: 'XAgent Artifact upload response is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactUploadInput: 'XAgent Artifact Remote input is owned by packages/xagent/artifact/architecture.md',
+  XAgentAuthenticatedRequestScope: 'XAgent authenticated request identity is owned by packages/xagent/principal/architecture.md',
   XAgentProjectDetail: 'XAgent project response contract is owned by packages/xagent/project/architecture.md',
-  XAgentProjectRequestScope: 'XAgent project request identity is owned by packages/xagent/project/architecture.md',
   XAgentWorkbenchBootstrap: 'XAgent workbench response contract is owned by packages/xagent/project/architecture.md',
   XAgentWorkbenchContext: 'XAgent workbench selection contract is owned by packages/xagent/project/architecture.md',
   XAgentPrincipal: 'XAgent principal contract is owned by packages/xagent/principal/architecture.md',

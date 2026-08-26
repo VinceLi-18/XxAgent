@@ -6,7 +6,12 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { XAgentPrincipal, XAgentPrincipalResolver } from './types.ts'
 
-export type { XAgentPrincipal, XAgentPrincipalResolver, XAgentRole } from './types.ts'
+export type {
+  XAgentAuthenticatedRequestScope,
+  XAgentPrincipal,
+  XAgentPrincipalResolver,
+  XAgentRole,
+} from './types.ts'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

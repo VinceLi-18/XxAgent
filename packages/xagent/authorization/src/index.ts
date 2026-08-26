@@ -9,8 +9,9 @@ import type {
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
+import type { XAgentArtifactScopeRunner } from '@xagent/dsh-artifact'
+import type { XAgentAuthenticatedRequestScope, XAgentPrincipal } from '@xagent/dsh-principal'
 import type {
-  XAgentProjectRequestScope,
   XAgentProjectScopeRunner,
 } from '@xagent/dsh-project'
 
@@ -70,6 +71,16 @@ function sessionMethod(endpoint: string): string | undefined {
 }
 
 const PROJECT_METHODS = new Set(['bootstrap', 'select-context', 'create-project', 'project'])
+const ARTIFACT_METHODS = new Set([
+  'list',
+  'detail',
+  'create-upload',
+  'create-version-upload',
+  'complete-upload',
+  'retry',
+  'preview',
+  'download',
+])
 
 function projectNamespace(endpoint: string): boolean {
   return endpoint.startsWith('xagentProject/') || endpoint.startsWith('xagentProject.')
@@ -78,6 +89,15 @@ function projectNamespace(endpoint: string): boolean {
 function projectMethod(endpoint: string): string | undefined {
   const method = endpoint.slice('xagentProject'.length + 1)
   return PROJECT_METHODS.has(method) ? method : undefined
+}
+
+function artifactNamespace(endpoint: string): boolean {
+  return endpoint.startsWith('xagentArtifact/') || endpoint.startsWith('xagentArtifact.')
+}
+
+function artifactMethod(endpoint: string): string | undefined {
+  const method = endpoint.slice('xagentArtifact'.length + 1)
+  return ARTIFACT_METHODS.has(method) ? method : undefined
 }
 
 function sessionPermission(
@@ -104,7 +124,7 @@ function args(payload: unknown): Record<string, unknown> | undefined {
 
 function authenticated(request: ConnectionRequestContext): request is ConnectionRequestContext & {
   userToken: string
-  principal: { actorId: string; role: 'manager' | 'specialist'; permissionRevision: number; authSessionId: string; connectionId: string }
+  principal: XAgentPrincipal
 } {
   const principal = request.principal
   if (typeof request.userToken !== 'string' || request.userToken.length === 0 || typeof principal !== 'object' || principal === null) {
@@ -164,6 +184,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     private readonly backend: XAgentBackend,
     private readonly persistence: TokenScopedPersistence,
     private readonly project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
+    private readonly artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
   ) {}
 
   async run<T>(
@@ -173,6 +194,20 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     signal: AbortSignal,
     operation: () => Promise<RpcResult<T>>,
   ): Promise<RpcResult<T>> {
+    if (artifactNamespace(endpoint)) {
+      if (!authenticated(request)) return unauthenticated()
+      if (artifactMethod(endpoint) === undefined) return unauthenticated()
+      const artifact = typeof this.artifact === 'function' ? this.artifact() : this.artifact
+      if (artifact === undefined) {
+        return { ok: false, error: { code: 'internal', message: 'artifact service unavailable', details: {} } }
+      }
+      const scope = authenticatedScope(request)
+      try {
+        return await artifact.withRequest(scope, operation)
+      } catch {
+        return { ok: false, error: { code: 'internal', message: 'artifact operation unavailable', details: {} } }
+      }
+    }
     if (projectNamespace(endpoint)) {
       if (!authenticated(request)) return unauthenticated()
       if (projectMethod(endpoint) === undefined) return unauthenticated()
@@ -180,15 +215,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
       if (project === undefined) {
         return { ok: false, error: { code: 'internal', message: 'project service unavailable', details: {} } }
       }
-      const scope: XAgentProjectRequestScope = {
-        principal: {
-          actorId: request.principal.actorId,
-          role: request.principal.role,
-          permissionRevision: request.principal.permissionRevision,
-        },
-        userToken: request.userToken,
-        connectionId: request.connectionId,
-      }
+      const scope = authenticatedScope(request)
       try {
         return await project.withRequest(scope, operation)
       } catch {
@@ -282,6 +309,16 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
   }
 }
 
+function authenticatedScope(
+  request: ConnectionRequestContext & { readonly principal: XAgentPrincipal; readonly userToken: string },
+): XAgentAuthenticatedRequestScope {
+  return Object.freeze({
+    principal: request.principal,
+    userToken: request.userToken,
+    connectionId: request.connectionId,
+  })
+}
+
 function objectFrame(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -297,9 +334,10 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     backend: XAgentBackend,
     persistence: TokenScopedPersistence,
     project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
+    artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
   ) {
     super(ctx, 'connectionRequestAuthorizer')
-    this.implementation = new XAgentAuthorization(backend, persistence, project)
+    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact)
   }
 
   /**
@@ -350,5 +388,6 @@ export function apply(ctx: Context, config: Config): void {
     new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken }),
     persistence,
     () => ctx.get('xagentProject'),
+    () => ctx.get('xagentArtifact'),
   )
 }

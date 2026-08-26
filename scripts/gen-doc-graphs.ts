@@ -176,7 +176,7 @@ const SERVICE_ROLES: ServiceRole[] = [
     title: 'Connection-bound XAgent authorization',
     mode: 'core',
     consumers: ['apiproxy'],
-    note: 'Validates a Host-created Principal against closed Session and project method tables, then runs admitted operations inside their explicit request scopes.',
+    note: 'Validates a Host-created Principal against closed Session, project, and Artifact method tables, then runs admitted operations inside their explicit request scopes.',
   },
   {
     key: 'connectionRequestContextResolver',
@@ -192,6 +192,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     title: 'XAgent Principal seam',
     mode: 'seam',
     note: 'Defines the immutable validated actor contract; browser payloads and identity-like headers cannot construct a Principal.',
+  },
+  {
+    key: 'xagentArtifact',
+    pkg: 'xagent-artifact',
+    title: 'XAgent Artifact Remote',
+    mode: 'core',
+    consumers: ['xagent-authorization', 'api-gateway'],
+    note: 'Reads the user token only from its own active authenticated request scope and forwards eight fixed Artifact operations to FastAPI without caching data or URLs.',
   },
   {
     key: 'xagentProject',
