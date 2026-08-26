@@ -3027,6 +3027,8 @@ export interface Config {
 
 ## `@xagent/dsh-artifact`
 
+需要：`webServer`
+
 ```ts config-catalog
 /** XAgent Artifact Host plugin configuration. */
 export interface Config {
@@ -3037,7 +3039,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/artifact/src/index.ts:42`](../packages/xagent/artifact/src/index.ts)
+来源：[`packages/xagent/artifact/src/index.ts:50`](../packages/xagent/artifact/src/index.ts)
 
 <a id="xagentdsh-authorization"></a>
 

@@ -1,8 +1,13 @@
 /** 请求绑定的 XAgent 资料 Remote。 @module @xagent/dsh-artifact */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import { Remote, TypertRemoteFailure, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
   XAgentBackendClient,
@@ -23,6 +28,9 @@ import type {
 export type * from './types.ts'
 
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
+const ARTIFACT_CONTENT_ROUTE = '/api/v1/xagent/artifact-content'
+const ARTIFACT_CONTENT_PATH = new RegExp(`^${ARTIFACT_CONTENT_ROUTE}/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$`, 'i')
+const CONTENT_RESPONSE_HEADERS = ['content-type', 'content-disposition', 'content-length'] as const
 const ARTIFACT_FAILURE_CODES = new Set([
   'unauthenticated',
   'forbidden',
@@ -52,6 +60,7 @@ export const Config: z<Config> = z.object({
 })
 
 export const name = 'xagent-artifact'
+export const inject = ['webServer']
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -69,6 +78,75 @@ function validScope(scope: XAgentAuthenticatedRequestScope): boolean {
     && scope.principal.connectionId === scope.connectionId
     && scope.userToken.length > 0
     && scope.connectionId.length > 0
+}
+
+function finish(response: ServerResponse, status: number): void {
+  response.statusCode = status
+  response.end()
+}
+
+async function proxyArtifactContent(
+  request: IncomingMessage,
+  response: ServerResponse,
+  backendOrigin: string,
+): Promise<void> {
+  if (request.method !== 'GET') {
+    response.setHeader('allow', 'GET')
+    finish(response, 405)
+    return
+  }
+  let source: URL
+  try {
+    source = new URL(request.url ?? '/', 'http://xagent.internal')
+  } catch {
+    finish(response, 404)
+    return
+  }
+  if (!ARTIFACT_CONTENT_PATH.test(source.pathname)) {
+    finish(response, 404)
+    return
+  }
+
+  const controller = new AbortController()
+  const abort = (): void => { controller.abort() }
+  const abortOnClose = (): void => {
+    if (!response.writableFinished) controller.abort()
+  }
+  request.once('aborted', abort)
+  response.once('close', abortOnClose)
+  try {
+    const target = new URL(`${source.pathname}${source.search}`, backendOrigin)
+    const upstream = await fetch(target, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: controller.signal,
+    })
+    if (upstream.status >= 300 && upstream.status < 400) {
+      finish(response, 502)
+      await upstream.body?.cancel()
+      return
+    }
+    response.statusCode = upstream.status
+    for (const header of CONTENT_RESPONSE_HEADERS) {
+      const value = upstream.headers.get(header)
+      if (value !== null) response.setHeader(header, value)
+    }
+    if (upstream.body === null) {
+      response.end()
+      return
+    }
+    await pipeline(Readable.fromWeb(upstream.body as unknown as NodeReadableStream), response)
+  } catch {
+    if (response.headersSent || response.destroyed) {
+      if (!response.destroyed) response.destroy()
+      return
+    }
+    finish(response, 502)
+  } finally {
+    request.off('aborted', abort)
+    response.off('close', abortOnClose)
+    controller.abort()
+  }
 }
 
 /** 将账号绑定请求逐次转发给 FastAPI 的资料服务。 */
@@ -225,8 +303,16 @@ export class XAgentArtifactService extends TypertRemoteService implements XAgent
 
 /** 安装 XAgent 资料 Host 服务。 */
 export function apply(ctx: Context, config: Config): void {
+  const backend = new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken })
+  const backendOrigin = new URL(config.backendOrigin).origin
   new XAgentArtifactService(
     ctx,
-    new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken }).artifacts,
+    backend.artifacts,
   )
+  const content: WebRoute = {
+    kind: 'prefix',
+    path: ARTIFACT_CONTENT_ROUTE,
+    handler: (request, response) => proxyArtifactContent(request, response, backendOrigin),
+  }
+  ctx.effect(() => ctx.webServer.register(content), 'xagent-artifact: content route')
 }

@@ -5,6 +5,7 @@
   "references": [
     { "path": "../../../vendor/cordis" },
     { "path": "../../../vendor/schemastery" },
+    { "path": "../../host/webserver" },
     { "path": "../../runtime-diagnostics/invariants" },
     { "path": "../../typert/protocol" },
     { "path": "../backend-client" },

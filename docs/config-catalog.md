@@ -3025,6 +3025,8 @@ Source: [`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages
 
 ## `@xagent/dsh-artifact`
 
+Requires: `webServer`
+
 ```ts config-catalog
 /** XAgent Artifact Host plugin configuration. */
 export interface Config {
@@ -3035,7 +3037,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/artifact/src/index.ts:42`](../packages/xagent/artifact/src/index.ts)
+Source: [`packages/xagent/artifact/src/index.ts:50`](../packages/xagent/artifact/src/index.ts)
 
 <a id="xagentdsh-authorization"></a>
 

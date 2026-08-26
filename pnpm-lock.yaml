@@ -300,6 +300,9 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:^
         version: link:../../packages/workflow/workflow-worker-thread
+      '@xagent/dsh-artifact':
+        specifier: workspace:^
+        version: link:../../packages/xagent/artifact
       '@xagent/dsh-business':
         specifier: workspace:^
         version: link:../../packages/bundle/xagent-business
@@ -312,6 +315,9 @@ importers:
       '@xagent/dsh-ui-account':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-account
+      '@xagent/dsh-ui-artifact':
+        specifier: workspace:^
+        version: link:../../packages/xagent/ui-artifact
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-project
@@ -1478,6 +1484,9 @@ importers:
 
   packages/bundle/xagent-business:
     dependencies:
+      '@xagent/dsh-artifact':
+        specifier: workspace:^
+        version: link:../../xagent/artifact
       '@xagent/dsh-authorization':
         specifier: workspace:^
         version: link:../../xagent/authorization
@@ -1499,6 +1508,9 @@ importers:
       '@xagent/dsh-ui-account':
         specifier: workspace:^
         version: link:../../xagent/ui-account
+      '@xagent/dsh-ui-artifact':
+        specifier: workspace:^
+        version: link:../../xagent/ui-artifact
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../../xagent/ui-project
@@ -8390,6 +8402,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: workspace:^
+        version: link:../../host/webserver
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants

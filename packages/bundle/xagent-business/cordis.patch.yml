@@ -101,3 +101,12 @@
       config:
         backendOrigin: !!js process.env.XAGENT_API_ORIGIN
         serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+
+    - id: xagent-artifact
+      name: '@xagent/dsh-artifact'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+
+    - id: xagent-ui-artifact
+      name: '@xagent/dsh-ui-artifact'
