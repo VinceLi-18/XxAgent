@@ -45,6 +45,8 @@
       "@xagent/dsh-ui-account/client": ["./packages/xagent/ui-account/src/client/index.ts"],
       "@xagent/dsh-ui-project": ["./packages/xagent/ui-project/src/index.ts"],
       "@xagent/dsh-ui-project/client": ["./packages/xagent/ui-project/src/client/index.ts"],
+      "@xagent/dsh-ui-artifact": ["./packages/xagent/ui-artifact/src/index.ts"],
+      "@xagent/dsh-ui-artifact/client": ["./packages/xagent/ui-artifact/src/client/index.ts"],
       "@deepseek-ai/cordis": ["./vendor/cordis/src"],
       "@deepseek-ai/cosmokit": ["./vendor/cosmokit/src"],
       "@deepseek-ai/schemastery": ["./vendor/schemastery/src"],

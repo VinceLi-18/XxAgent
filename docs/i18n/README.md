@@ -83,6 +83,8 @@ Generated English references and graphs participate in pairing when a reviewed C
   - `packages/xagent/project/architecture.md`
   - `packages/xagent/ui-account/README.md`
   - `packages/xagent/ui-account/architecture.md`
+  - `packages/xagent/ui-artifact/README.md`
+  - `packages/xagent/ui-artifact/architecture.md`
   - `packages/xagent/ui-project/README.md`
   - `packages/xagent/ui-project/architecture.md`
   - `services/api/README.md`

@@ -14,6 +14,13 @@ export type {
 } from './service.ts'
 export type { XAgentWorkbenchState } from './store.ts'
 
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** 当前 XAgent 工作范围的资料管理入口。 */
+    'xagent.workbench.artifacts': { kind: 'single'; scope: 'root' }
+  }
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** 当前认证账号的服务器授权项目工作台。 */
@@ -59,6 +66,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     }, ContextMarker))
     scope.slots.inject('shell.details', () => scope.slots.register({
       name: 'shell.details', registrant: 'xagent-workbench-details', inject: detailsInjected,
+      children: { 'xagent.workbench.artifacts': { kind: 'single', scope: 'root' } },
     }, WorkbenchDetails))
     scope.slots.inject('shell.overlay', () => scope.slots.register({
       name: 'shell.overlay', id: 'xagent-workbench-operation-shield', order: -90,

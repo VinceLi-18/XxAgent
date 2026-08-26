@@ -1,0 +1,264 @@
+.panel {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: 12px;
+}
+
+.panel h3,
+.panel h4,
+.panel p,
+.previewHeader strong {
+  margin: 0;
+}
+
+.panelHeading,
+.detailHeading,
+.previewHeader,
+.versionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.eyebrow {
+  color: var(--dsw-alias-fg-muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.panel button,
+.fileInput + button,
+.versionActions button,
+.previewHeader button {
+  min-height: 34px;
+  color: inherit;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  cursor: pointer;
+}
+
+.panel button:focus-visible,
+.previewDialog button:focus-visible,
+.detailHeading h3:focus-visible {
+  outline: 2px solid var(--dsw-state-business-primary);
+  outline-offset: 2px;
+}
+
+.primaryAction {
+  padding: 0 10px;
+  border-color: var(--dsw-state-business-primary) !important;
+}
+
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.artifactList,
+.versionList {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.artifactList button {
+  display: grid;
+  width: 100%;
+  gap: 4px;
+  padding: 10px;
+  text-align: left;
+}
+
+.fileName {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemMeta,
+.safeVersion,
+.status,
+.emptyState p,
+.versionList p {
+  color: var(--dsw-alias-fg-muted);
+  font-size: 12px;
+}
+
+.safeVersion {
+  justify-self: start;
+  padding-left: 8px;
+  border-left: 2px solid var(--dsw-state-business-primary);
+}
+
+.emptyState,
+.safeCard,
+.currentStatus,
+.versionList li,
+.uploadState {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.uploadState progress {
+  width: 100%;
+}
+
+.error {
+  color: var(--dsw-state-danger-fg, var(--dsw-alias-fg-muted));
+}
+
+.back {
+  justify-self: start;
+  padding: 0 9px;
+}
+
+.currentStatus {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.currentStatus span,
+.versionHeader span {
+  color: var(--dsw-alias-fg-muted);
+}
+
+.safeCard dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.safeCard dl div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.safeCard dt {
+  color: var(--dsw-alias-fg-muted);
+}
+
+.safeCard dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.versionSection {
+  display: grid;
+  gap: 8px;
+}
+
+.versionList {
+  counter-reset: version;
+}
+
+.versionList li {
+  position: relative;
+  margin-left: 8px;
+  border-left: 2px solid var(--dsw-alias-border-l2);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.versionList li[data-status='clean'] {
+  border-left-color: var(--dsw-state-business-primary);
+}
+
+.versionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.versionActions button {
+  padding: 0 8px;
+}
+
+.previewBackdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  padding: 20px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-base) 78%, transparent);
+}
+
+.previewDialog {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.previewHeader {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.previewHeader strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previewHeader button {
+  padding: 0 10px;
+}
+
+.previewBody {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.previewBody iframe,
+.previewBody img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  object-fit: contain;
+}
+
+.previewBody pre {
+  margin: 0;
+  padding: 16px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 640px) {
+  .previewBackdrop {
+    padding: 0;
+  }
+
+  .previewDialog {
+    border-radius: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel *,
+  .previewDialog * {
+    scroll-behavior: auto;
+  }
+}

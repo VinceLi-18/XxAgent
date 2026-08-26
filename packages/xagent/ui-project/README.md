@@ -1,6 +1,8 @@
 # @xagent/dsh-ui-project
 
-`@xagent/dsh-ui-project` 为 XAgent Business Profile 提供项目工作台界面。左栏展示“我的工作台”、当前账号可访问的项目和当前范围会话；中央区域显示服务器选择的工作上下文；第三栏展示工作台或项目概览，以及明确为空的协作收件箱。
+`@xagent/dsh-ui-project` 为 XAgent Business Profile 提供项目工作台界面。左栏展示“我的工作台”、当前账号可访问的项目和当前范围会话；中央区域显示服务器选择的工作上下文；第三栏提供“概览／资料／协作收件箱”页签。
+
+“资料”页签声明 root-scope 单 occupant Slot `xagent.workbench.artifacts`。没有资料插件时只显示稳定空态；资料列表、详情、上传和预览由独立 occupant 拥有，不替换中央 Agent 对话。
 
 项目、能力、上下文和会话范围全部来自 `xagentProject` Remote 的服务器 Bootstrap。浏览器不使用本地存储推断账号数据；账号退出或切换时，工作台会取消在途请求并清空项目、上下文和当前 Session 选择。
 
@@ -25,3 +27,4 @@
 - 协作收件箱当前只显示明确空状态，不展示未读数字、演示数据或虚构任务。
 - 项目创建只对服务器 Bootstrap 返回 `project.create` 能力的账号开放；客户端隐藏入口不是授权边界。
 - 项目和 Session 范围不写入 `localStorage`、`sessionStorage` 或 IndexedDB，页面刷新后从服务器重新装载。
+- “资料”页签只声明组合入口；本包不读取资料 Remote，也不拥有资料状态。

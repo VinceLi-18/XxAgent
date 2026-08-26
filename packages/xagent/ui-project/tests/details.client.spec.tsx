@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useSyncExternalStore } from 'react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { XAgentWorkbenchBootstrap } from '@xagent/dsh-project/types'
 import { ContextMarker } from '../src/client/ContextMarker.tsx'
@@ -28,7 +28,15 @@ function hook(store: XAgentWorkbenchStore) {
   }
 }
 
-const standard = { useSessions: vi.fn() as never, useWorkspaces: vi.fn() as never }
+function renderArtifacts() {
+  return <p>资料插件内容</p>
+}
+
+const standard = {
+  useSessions: vi.fn() as never,
+  useWorkspaces: vi.fn() as never,
+  renderSlot: vi.fn((name: string) => name === 'xagent.workbench.artifacts' ? renderArtifacts() : null) as never,
+}
 
 afterEach(cleanup)
 
@@ -56,8 +64,63 @@ describe('XAgent 工作台上下文与详情', () => {
     expect(screen.getByText('私有会话')).toBeTruthy()
     expect(screen.getByText('3')).toBeTruthy()
     expect(screen.getByText('协作收件箱')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: '协作收件箱' }))
     expect(screen.getByText('暂无待处理协作')).toBeTruthy()
     expect(screen.queryByText(/未读|\d+ 条待办/)).toBeNull()
+  })
+
+  it('默认显示概览，并只在资料页签渲染资料子 Slot', () => {
+    const store = new XAgentWorkbenchStore()
+    store.replace(ready({ kind: 'workbench' }))
+    render(<WorkbenchDetails {...standard} useWorkbench={hook(store)} loadProject={vi.fn(async () => {})} />)
+
+    expect(screen.getByRole('tab', { name: '概览' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.queryByText('资料插件内容')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: '资料' }))
+    expect(screen.getByRole('tab', { name: '资料' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText('资料插件内容')).toBeTruthy()
+    expect(standard.renderSlot).toHaveBeenCalledWith('xagent.workbench.artifacts', {})
+  })
+
+  it('页签支持方向键、Home 和 End 切换并跟随焦点', () => {
+    const store = new XAgentWorkbenchStore()
+    store.replace(ready({ kind: 'workbench' }))
+    render(<WorkbenchDetails {...standard} useWorkbench={hook(store)} loadProject={vi.fn(async () => {})} />)
+    const overview = screen.getByRole('tab', { name: '概览' })
+    const artifacts = screen.getByRole('tab', { name: '资料' })
+    const inbox = screen.getByRole('tab', { name: '协作收件箱' })
+
+    overview.focus()
+    fireEvent.keyDown(overview, { key: 'ArrowRight' })
+    expect(artifacts).toBe(document.activeElement)
+    expect(artifacts.getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(artifacts, { key: 'End' })
+    expect(inbox).toBe(document.activeElement)
+    fireEvent.keyDown(inbox, { key: 'ArrowRight' })
+    expect(overview).toBe(document.activeElement)
+    fireEvent.keyDown(overview, { key: 'End' })
+    fireEvent.keyDown(inbox, { key: 'Home' })
+    expect(overview).toBe(document.activeElement)
+    fireEvent.keyDown(overview, { key: 'ArrowLeft' })
+    expect(inbox).toBe(document.activeElement)
+  })
+
+  it('没有资料 occupant 时显示稳定中文空态，协作收件箱保持独立页签', () => {
+    const store = new XAgentWorkbenchStore()
+    store.replace(ready({ kind: 'workbench' }))
+    const renderSlot = vi.fn(() => null)
+    render(<WorkbenchDetails
+      {...standard}
+      renderSlot={renderSlot as never}
+      useWorkbench={hook(store)}
+      loadProject={vi.fn(async () => {})}
+    />)
+
+    fireEvent.click(screen.getByRole('tab', { name: '资料' }))
+    expect(screen.getByText('当前范围暂无资料功能')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: '协作收件箱' }))
+    expect(screen.getByText('暂无待处理协作')).toBeTruthy()
+    expect(renderSlot).toHaveBeenCalledTimes(1)
   })
 
   it('项目上下文显示名称、创建时间、权限和 Session 数，并按账号加载详情', async () => {

@@ -1759,5 +1759,29 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'tool.view.cordis\', () => ctx.slots.register(\n      { name: \'tool.view.cordis\', key: \'<one key the owner dispatches>\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
     source: 'packages/extensions/ui-cordis/src/client/slots.ts:31',
   },
+  {
+    key: 'xagent.workbench.artifacts',
+    kind: 'single',
+    scope: 'root',
+    summary: '当前 XAgent 工作范围的资料管理入口。',
+    doc: '当前 XAgent 工作范围的资料管理入口。',
+    registerOptions: [],
+    ownerProps: [],
+    ownerPropsReferences: [],
+    standardProps: [
+      'useSessions: SnapshotSelectorHook<SessionListState>',
+      'useWorkspaces: SnapshotSelectorHook<import(\'./workspaces/service.ts\').WorkspaceListState>',
+    ],
+    keyDomain: '',
+    hookContext: '',
+    slotInject: '',
+    declaredBy: 'an entry in \'shell.details\' (@xagent/dsh-ui-project), so it exists while that entry is mounted',
+    occupants: [
+      '@xagent/dsh-ui-artifact ArtifactPanel',
+    ],
+    replaceRisk: 'shadows-shipped-ui',
+    example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'xagent.workbench.artifacts\', () => ctx.slots.register(\n      { name: \'xagent.workbench.artifacts\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+    source: 'packages/xagent/ui-project/src/client/index.ts:20',
+  },
 ]
 /* jscpd:ignore-end */
