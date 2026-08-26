@@ -2,11 +2,11 @@
 
 `@xagent/dsh-ui-artifact` 为 XAgent Business Profile 提供右栏资料列表、逐级详情、不可变版本历史、直接 PUT 上传进度和安全预览。它占用 `xagent.workbench.artifacts` Slot；普通 `ui-project` 没有 occupant 时继续显示稳定空态。
 
-控制器只把 `xagentArtifact` Remote 的列表、详情和扫描状态保存在内存。账号或项目变化会先清空列表、详情、上传和短期读取地址，取消旧范围请求，再从服务器加载当前范围；浏览器持久存储不参与恢复或授权。
+控制器只把 `xagentArtifact` Remote 的列表、详情和扫描状态保存在内存。账号或项目变化会先清空列表、详情、上传和短期读取地址，取消旧范围请求，再从服务器加载当前范围；浏览器持久存储不参与恢复或授权。插件卸载会同步封闭后续发布并清空内存，再等待已取消的上传、读取和轮询任务完全停稳。
 
 单文件在签发上传前限制为 50 MiB。普通“上传资料”始终创建新 Artifact，包括同名文件；只有资料详情内的“上传新版本”会追加不可变版本。PUT 完成后界面采用服务端返回的 `pending`、`scanning`、`clean`、`quarantined` 或 `failed`，并在处理中轮询服务器状态。
 
-只有 `clean` 且 worker 识别 MIME 为 PDF、纯文本类、PNG、JPEG 或 WebP 的版本会请求预览地址。PDF 使用内联框架，图片使用图片元素，文本读取后作为纯文本渲染；Office、HTML、SVG 和未知二进制不请求预览，也不会进入 iframe。短期读取地址、文本正文和上传授权不会写入 Session、日志或持久缓存。
+只有 `clean` 且 worker 识别 MIME 为 PDF、纯文本类、PNG、JPEG 或 WebP 的版本会请求预览地址。PDF 使用内联框架，图片使用图片元素，文本读取后作为纯文本渲染；Office、HTML、SVG 和未知二进制不请求预览，也不会进入 iframe。全屏预览会使应用背景不可达，把 Tab 顺序封闭在对话框内，并在关闭后恢复到实际触发按钮；父文档支持 Escape，始终显示的关闭按钮覆盖 PDF 内联框架可能自行消费按键的情况。关闭、范围切换或面板卸载都会丢弃短期读取地址与文本正文；它们和上传授权不会写入 Session、日志或持久缓存。
 
 ## Model Experience
 

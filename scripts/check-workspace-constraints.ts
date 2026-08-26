@@ -53,6 +53,7 @@ const releaseMemberDirectory = /^(?:packages\/[^/]+\/[^/]+|apps\/[^/]+|vendor\/[
 const privateXagentPackages: Readonly<Record<string, string>> = {
   'packages/bundle/xagent-business': '@xagent/dsh-business',
   'packages/bundle/xagent-developer': '@xagent/dsh-developer',
+  'packages/xagent/ui-artifact': '@xagent/dsh-ui-artifact',
 }
 const xagentRepositoryUrl = 'git+https://github.com/VinceLi-18/XxAgent.git'
 

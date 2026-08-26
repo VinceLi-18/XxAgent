@@ -57,7 +57,21 @@ describe('XAgent Artifact UI 插件', () => {
     listeners.forEach((listener) => { listener() })
     await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(2) })
 
-    await fiber.dispose()
+    const pendingList = Promise.withResolvers<{ ok: true; value: never[] }>()
+    list.mockImplementationOnce(() => pendingList.promise)
+    workbenchState = {
+      phase: 'ready', accountId: 'bob', switching: false,
+      context: { kind: 'workbench' },
+    }
+    listeners.forEach((listener) => { listener() })
+    await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(3) })
+    const pendingSignal = (list.mock.calls as unknown as readonly [AbortSignal][])[2]![0]
+    let disposed = false
+    const disposing = fiber.dispose().then(() => { disposed = true })
+    await vi.waitFor(() => { expect(pendingSignal.aborted).toBe(true) })
+    expect(disposed).toBe(false)
+    pendingList.resolve({ ok: true, value: [] })
+    await disposing
     expect(slots.entries('xagent.workbench.artifacts')).toHaveLength(0)
     expect(listeners).toHaveLength(0)
     declareDetails()

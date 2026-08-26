@@ -58,7 +58,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         download: versionId => controller.download(versionId),
       }),
     }, ArtifactPanel))
-    return () => { controller.dispose() }
+    return () => controller.dispose()
   })
   try {
     await feature.await()

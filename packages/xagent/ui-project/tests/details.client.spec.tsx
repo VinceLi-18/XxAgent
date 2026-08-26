@@ -2,6 +2,8 @@
 import { useSyncExternalStore } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AppFrame } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
+import { createLayoutStore } from '@deepseek-ai/dsh-client-ui-layout/src/client/stores.ts'
 import type { XAgentWorkbenchBootstrap } from '@xagent/dsh-project/types'
 import { ContextMarker } from '../src/client/ContextMarker.tsx'
 import { WorkbenchDetails } from '../src/client/WorkbenchDetails.tsx'
@@ -28,6 +30,15 @@ function hook(store: XAgentWorkbenchStore) {
   }
 }
 
+function layoutHook(store: ReturnType<ReturnType<typeof createLayoutStore>['create']>) {
+  return function useLayout<S>(selector: (value: ReturnType<typeof store.getSnapshot>) => S): S {
+    return selector(useSyncExternalStore(
+      listener => store.subscribe(listener),
+      () => store.getSnapshot(),
+    ))
+  }
+}
+
 function renderArtifacts() {
   return <p>资料插件内容</p>
 }
@@ -38,7 +49,10 @@ const standard = {
   renderSlot: vi.fn((name: string) => name === 'xagent.workbench.artifacts' ? renderArtifacts() : null) as never,
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 describe('XAgent 工作台上下文与详情', () => {
   it('未就绪时详情显示加载状态，上下文标识不发布猜测值', () => {
@@ -121,6 +135,49 @@ describe('XAgent 工作台上下文与详情', () => {
     fireEvent.click(screen.getByRole('tab', { name: '协作收件箱' }))
     expect(screen.getByText('暂无待处理协作')).toBeTruthy()
     expect(renderSlot).toHaveBeenCalledTimes(1)
+  })
+
+  it('窄屏保留 Agent 对话中栏，并以抽屉承载真实资料详情', () => {
+    window.innerWidth = 980
+    vi.stubGlobal('ResizeObserver', class {
+      observe(): void {}
+      disconnect(): void {}
+    })
+    const layout = createLayoutStore().create()
+    layout.actions.openDetails()
+    const workbench = new XAgentWorkbenchStore()
+    workbench.replace(ready({ kind: 'workbench' }))
+    const renderSlot = vi.fn((name: string) => {
+      if (name === 'conversation') return <main>Agent 对话</main>
+      if (name === 'shell.details') return <WorkbenchDetails
+        {...standard}
+        useWorkbench={hook(workbench)}
+        loadProject={vi.fn(async () => {})}
+      />
+      return null
+    })
+
+    render(<AppFrame
+      useStore={layoutHook(layout)}
+      actions={layout.actions}
+      renderSlot={renderSlot as never}
+      useSessions={((selector: (state: object) => unknown) => selector({ current: undefined, byId: {} })) as never}
+      useWorkspaces={vi.fn() as never}
+      SessionProvider={vi.fn() as never}
+      useShellDetails={selector => selector(true)}
+    />)
+
+    expect(screen.getByText('Agent 对话')).toBeTruthy()
+    expect(screen.queryByText('资料插件内容')).toBeNull()
+    const trigger = screen.getByRole('button', { name: '打开上下文栏' })
+    fireEvent.click(trigger)
+    expect(screen.getByRole('dialog', { name: '上下文栏' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: '资料' }))
+    expect(screen.getByText('资料插件内容')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '关闭上下文栏' }))
+    expect(screen.queryByRole('dialog', { name: '上下文栏' })).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(screen.getByText('Agent 对话')).toBeTruthy()
   })
 
   it('项目上下文显示名称、创建时间、权限和 Session 数，并按账号加载详情', async () => {

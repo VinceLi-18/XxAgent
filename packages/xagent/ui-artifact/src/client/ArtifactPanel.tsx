@@ -68,11 +68,13 @@ function VersionActions({
   version,
   retry,
   openPreview,
+  rememberPreviewTrigger,
   download,
 }: {
   version: XAgentArtifactVersionSummary
   retry: (versionId: string) => Promise<void>
   openPreview: (versionId: string) => Promise<void>
+  rememberPreviewTrigger: (trigger: HTMLButtonElement) => void
   download: (versionId: string) => Promise<void>
 }) {
   if (version.status === 'failed') {
@@ -82,7 +84,10 @@ function VersionActions({
   return <div className={css.versionActions}>
     {previewKind(version.contentType) !== undefined && <button
       type="button"
-      onClick={() => { void openPreview(version.id) }}
+      onClick={(event) => {
+        rememberPreviewTrigger(event.currentTarget)
+        void openPreview(version.id)
+      }}
     >预览安全版本 v{version.version}</button>}
     <button type="button" onClick={() => { void download(version.id) }}>下载 v{version.version}</button>
   </div>
@@ -98,6 +103,10 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
   const previousSelected = useRef<string | undefined>(undefined)
   const previousPreview = useRef(false)
   const previousUpload = useRef<string | undefined>(undefined)
+  const closePreview = useRef(props.closePreview)
+  closePreview.current = props.closePreview
+
+  useEffect(() => () => { closePreview.current() }, [])
 
   useEffect(() => {
     if (previousSelected.current !== undefined && state.phase === 'ready' && state.selectedId === undefined) {
@@ -108,7 +117,7 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
   }, [state])
   useEffect(() => {
     const open = state.phase === 'ready' && state.preview !== undefined
-    if (previousPreview.current && !open) previewTrigger.current?.focus()
+    if (previousPreview.current && !open && previewTrigger.current?.isConnected === true) previewTrigger.current.focus()
     previousPreview.current = open
   }, [state])
   useEffect(() => {
@@ -174,6 +183,7 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
       {state.detail.canEdit && <FileInput label={text.uploadVersion} onFile={props.uploadNewVersion} />}
     </div>
     <UploadProgress state={state} />
+    {state.detailError !== undefined && <p className={css.error} role="alert">{state.detailError}</p>}
     <div className={css.currentStatus} data-status={state.detail.latestStatus}>
       <span>{artifactStatusText(state.detail.latestStatus)}</span>
       <strong>{latestClean === undefined ? '暂无安全版本' : `安全版本 v${latestClean.version}`}</strong>
@@ -186,11 +196,13 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
         <div><dt>上传者</dt><dd>{latestClean.uploadedBy}</dd></div>
         <div><dt>时间</dt><dd>{latestClean.createdAt.slice(0, 16).replace('T', ' ')}</dd></div>
       </dl>
-      <div ref={(node) => {
-        previewTrigger.current = node?.querySelector('button') ?? null
-      }}>
-        <VersionActions version={latestClean} retry={props.retry} openPreview={props.openPreview} download={props.download} />
-      </div>
+      <VersionActions
+        version={latestClean}
+        retry={props.retry}
+        openPreview={props.openPreview}
+        rememberPreviewTrigger={(trigger) => { previewTrigger.current = trigger }}
+        download={props.download}
+      />
       {previewKind(latestClean.contentType) === undefined && <p className={css.status}>{text.previewUnavailable}</p>}
     </section>}
     <section className={css.versionSection}>
@@ -203,7 +215,13 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
           </div>
           <p>{version.originalFilename} · {formatBytes(version.size)}</p>
           {version.status !== 'clean' || version.id !== latestClean?.id
-            ? <VersionActions version={version} retry={props.retry} openPreview={props.openPreview} download={props.download} />
+            ? <VersionActions
+              version={version}
+              retry={props.retry}
+              openPreview={props.openPreview}
+              rememberPreviewTrigger={(trigger) => { previewTrigger.current = trigger }}
+              download={props.download}
+            />
             : null}
         </li>)}
       </ol>

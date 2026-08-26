@@ -23,7 +23,7 @@
 }
 
 .eyebrow {
-  color: var(--dsw-alias-fg-muted);
+  color: var(--dsw-alias-label-secondary);
   font-size: 11px;
   letter-spacing: 0.08em;
 }
@@ -43,13 +43,13 @@
 .panel button:focus-visible,
 .previewDialog button:focus-visible,
 .detailHeading h3:focus-visible {
-  outline: 2px solid var(--dsw-state-business-primary);
+  outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
 }
 
 .primaryAction {
   padding: 0 10px;
-  border-color: var(--dsw-state-business-primary) !important;
+  border-color: var(--dsw-alias-state-business-primary) !important;
 }
 
 .fileInput {
@@ -91,14 +91,14 @@
 .status,
 .emptyState p,
 .versionList p {
-  color: var(--dsw-alias-fg-muted);
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
 }
 
 .safeVersion {
   justify-self: start;
   padding-left: 8px;
-  border-left: 2px solid var(--dsw-state-business-primary);
+  border-left: 2px solid var(--dsw-alias-state-business-primary);
 }
 
 .emptyState,
@@ -119,7 +119,7 @@
 }
 
 .error {
-  color: var(--dsw-state-danger-fg, var(--dsw-alias-fg-muted));
+  color: var(--dsw-alias-state-error-primary);
 }
 
 .back {
@@ -134,7 +134,7 @@
 
 .currentStatus span,
 .versionHeader span {
-  color: var(--dsw-alias-fg-muted);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .safeCard dl {
@@ -150,7 +150,7 @@
 }
 
 .safeCard dt {
-  color: var(--dsw-alias-fg-muted);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .safeCard dd {
@@ -177,7 +177,7 @@
 }
 
 .versionList li[data-status='clean'] {
-  border-left-color: var(--dsw-state-business-primary);
+  border-left-color: var(--dsw-alias-state-business-primary);
 }
 
 .versionActions {
@@ -190,20 +190,15 @@
   padding: 0 8px;
 }
 
-.previewBackdrop {
-  position: fixed;
-  z-index: 80;
-  inset: 0;
-  display: grid;
-  padding: 20px;
-  background: color-mix(in srgb, var(--dsw-alias-bg-base) 78%, transparent);
-}
-
 .previewDialog {
   display: grid;
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
   background: var(--dsw-alias-bg-base);
@@ -247,10 +242,6 @@
 }
 
 @media (max-width: 640px) {
-  .previewBackdrop {
-    padding: 0;
-  }
-
   .previewDialog {
     border-radius: 0;
   }

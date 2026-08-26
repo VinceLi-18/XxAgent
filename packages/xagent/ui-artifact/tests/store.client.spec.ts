@@ -17,6 +17,7 @@ const ACCOUNT_A = '00000000-0000-0000-0000-000000000101'
 const ACCOUNT_B = '00000000-0000-0000-0000-000000000102'
 const PROJECT_A = '00000000-0000-0000-0000-000000000201'
 const ARTIFACT_A = '00000000-0000-0000-0000-000000000301'
+const ARTIFACT_B = '00000000-0000-0000-0000-000000000302'
 const VERSION_CLEAN = '00000000-0000-0000-0000-000000000401'
 const VERSION_PENDING = '00000000-0000-0000-0000-000000000402'
 const VERSION_FAILED = '00000000-0000-0000-0000-000000000403'
@@ -62,6 +63,14 @@ function detail(status: 'pending' | 'scanning' | 'clean' | 'quarantined' | 'fail
         createdAt: '2026-08-25T08:00:00Z',
       }]),
     ],
+  }
+}
+
+function secondDetail(): XAgentArtifactDetail {
+  return {
+    ...detail('clean'),
+    id: ARTIFACT_B,
+    displayName: '项目章程.pdf',
   }
 }
 
@@ -131,6 +140,36 @@ describe('XAgent 资料控制器', () => {
     expect(controller.snapshot.getSnapshot()).toMatchObject({ contextKey: `project:${PROJECT_A}`, selectedId: undefined })
   })
 
+  it('选择 B 会取消 A 的轮询，且 A 的迟到详情不能覆盖 B', async () => {
+    const polledA = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    let scheduled: (() => void) | undefined
+    const pendingSummary = { ...cleanSummary, latestVersion: 2, latestStatus: 'pending' as const }
+    const { client, artifactDetail } = remote([pendingSummary])
+    artifactDetail
+      .mockImplementationOnce(() => ok(detail('pending')))
+      .mockImplementationOnce(() => polledA.promise)
+      .mockImplementationOnce(() => ok(secondDetail()))
+    const controller = new XAgentArtifactController(client, undefined, {
+      schedule: (callback) => { scheduled = callback; return 1 },
+      cancelSchedule: vi.fn(),
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    scheduled?.()
+    await vi.waitFor(() => { expect(artifactDetail).toHaveBeenCalledTimes(2) })
+    const pollSignal = (artifactDetail.mock.calls as unknown as readonly [string, AbortSignal][])[1]![1]
+
+    await controller.selectArtifact(ARTIFACT_B)
+    expect(pollSignal.aborted).toBe(true)
+    polledA.resolve({ ok: true, value: detail('clean') })
+    await vi.waitFor(() => {
+      expect(controller.snapshot.getSnapshot()).toMatchObject({
+        selectedId: ARTIFACT_B,
+        detail: { id: ARTIFACT_B, displayName: '项目章程.pdf' },
+      })
+    })
+  })
+
   it('账号切换取消进行中的 PUT，且旧上传不能发布完成状态', async () => {
     const { client } = remote([])
     let putSignal: AbortSignal | undefined
@@ -166,6 +205,109 @@ describe('XAgent 资料控制器', () => {
     expect(local).not.toHaveBeenCalled()
     expect(session).not.toHaveBeenCalled()
     expect(indexed).not.toHaveBeenCalled()
+  })
+
+  it('dispose 同步清空已打开预览与详情', async () => {
+    const { client } = remote([cleanSummary])
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    await controller.openPreview(VERSION_CLEAN)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      preview: { url: '/preview/opaque' },
+      detail: { id: ARTIFACT_A },
+    })
+
+    const disposed = Promise.resolve(controller.dispose())
+    expect(controller.snapshot.getSnapshot()).toEqual({
+      phase: 'empty',
+      accountId: undefined,
+      contextKey: undefined,
+    })
+    await disposed
+  })
+
+  it('dispose 后的范围入口不能重新发布状态或发起请求', async () => {
+    const { client, list } = remote([cleanSummary])
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.dispose()
+
+    await controller.setScope(ACCOUNT_B, { kind: 'project', projectId: PROJECT_A })
+    controller.clear(ACCOUNT_B)
+
+    expect(list).toHaveBeenCalledOnce()
+    expect(controller.snapshot.getSnapshot()).toEqual({
+      phase: 'empty',
+      accountId: undefined,
+      contextKey: undefined,
+    })
+  })
+
+  it('dispose 取消 PUT、正文读取和轮询，并等待三个在途任务静默收敛', async () => {
+    const put = Promise.withResolvers<undefined>()
+    const read = Promise.withResolvers<string>()
+    const pollList = Promise.withResolvers<RemoteResult<readonly XAgentArtifactSummary[]>>()
+    const pollDetail = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    let putSignal: AbortSignal | undefined
+    let readSignal: AbortSignal | undefined
+    let scheduled: (() => void) | undefined
+    const pendingSummary = { ...cleanSummary, latestVersion: 2, latestStatus: 'pending' as const }
+    const pendingWithTextPreview = {
+      ...detail('pending'),
+      versions: detail('pending').versions.map(version => version.id === VERSION_CLEAN
+        ? { ...version, contentType: 'text/plain' }
+        : version),
+    }
+    const { client, list, artifactDetail, preview } = remote([pendingSummary])
+    list.mockImplementationOnce(() => ok([pendingSummary])).mockImplementationOnce(() => pollList.promise)
+    artifactDetail.mockImplementationOnce(() => ok(pendingWithTextPreview)).mockImplementationOnce(() => pollDetail.promise)
+    const controller = new XAgentArtifactController(client, {
+      put: vi.fn((_url: string, _file: File, signal: AbortSignal) => { putSignal = signal; return put.promise }),
+      digest: vi.fn(async () => 'f'.repeat(64)),
+    }, {
+      schedule: (callback) => { scheduled = callback; return 1 },
+      cancelSchedule: vi.fn(),
+      readText: (_url, signal) => { readSignal = signal; return read.promise },
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    const selected = controller.snapshot.getSnapshot()
+    expect(selected.phase).toBe('ready')
+    if (selected.phase !== 'ready') throw new Error('资料范围未就绪')
+    expect(selected.selectedId).toBe(ARTIFACT_A)
+    expect(selected.detail?.versions).toContainEqual(expect.objectContaining({ id: VERSION_CLEAN, status: 'clean' }))
+    const previewing = controller.openPreview(VERSION_CLEAN)
+    await vi.waitFor(() => { expect(preview).toHaveBeenCalledWith(VERSION_CLEAN, expect.any(AbortSignal)) })
+    await vi.waitFor(() => { expect(readSignal).toBeDefined() })
+    const uploading = controller.upload(file())
+    await vi.waitFor(() => { expect(putSignal).toBeDefined() })
+    scheduled?.()
+    await vi.waitFor(() => {
+      expect(list).toHaveBeenCalledTimes(2)
+      expect(artifactDetail).toHaveBeenCalledTimes(2)
+    })
+    const pollSignal = (list.mock.calls as unknown as readonly [AbortSignal][])[1]![0]
+
+    let settled = false
+    const disposing = Promise.resolve(controller.dispose()).then(() => { settled = true })
+    expect(controller.snapshot.getSnapshot().phase).toBe('empty')
+    expect(putSignal?.aborted).toBe(true)
+    expect(readSignal?.aborted).toBe(true)
+    expect(pollSignal.aborted).toBe(true)
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    put.resolve(undefined)
+    read.resolve('迟到正文')
+    pollList.resolve({ ok: true, value: [cleanSummary] })
+    pollDetail.resolve({ ok: true, value: detail('clean') })
+    await Promise.all([disposing, uploading, previewing])
+    expect(controller.snapshot.getSnapshot()).toEqual({
+      phase: 'empty',
+      accountId: undefined,
+      contextKey: undefined,
+    })
   })
 
   it('在签发上传前拒绝超过 50 MiB 的文件', async () => {
@@ -255,6 +397,52 @@ describe('XAgent 资料控制器', () => {
     download.mockRejectedValueOnce(new Error('offline'))
     await expect(controller.download(VERSION_CLEAN)).resolves.toBeUndefined()
     expect(controller.snapshot.getSnapshot()).toMatchObject({ detailError: '下载暂时不可用' })
+  })
+
+  it('重试开始时清除旧详情错误', async () => {
+    const pending = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    const { client, artifactDetail, retry } = remote([cleanSummary])
+    artifactDetail.mockImplementationOnce(() => ok(detail('failed')))
+    retry.mockImplementationOnce(() => pending.promise)
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    controller.snapshot.replaceReady({ detailError: '旧错误' })
+
+    const retrying = controller.retry(VERSION_FAILED)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detailError: undefined })
+    pending.resolve({ ok: true, value: detail('pending') })
+    await retrying
+  })
+
+  it('预览开始时清除旧详情错误', async () => {
+    const pending = Promise.withResolvers<RemoteResult<{ readonly url: string }>>()
+    const { client, preview } = remote([cleanSummary])
+    preview.mockImplementationOnce(() => pending.promise)
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    controller.snapshot.replaceReady({ detailError: '旧错误' })
+
+    const previewing = controller.openPreview(VERSION_CLEAN)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detailError: undefined })
+    pending.resolve({ ok: true, value: { url: '/preview/next' } })
+    await previewing
+  })
+
+  it('下载开始时清除旧详情错误', async () => {
+    const pending = Promise.withResolvers<RemoteResult<{ readonly url: string }>>()
+    const { client, download } = remote([cleanSummary])
+    download.mockImplementationOnce(() => pending.promise)
+    const controller = new XAgentArtifactController(client, undefined, { openUrl: vi.fn() })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    controller.snapshot.replaceReady({ detailError: '旧错误' })
+
+    const downloading = controller.download(VERSION_CLEAN)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detailError: undefined })
+    pending.resolve({ ok: true, value: { url: '/download/next' } })
+    await downloading
   })
 
   it.each([

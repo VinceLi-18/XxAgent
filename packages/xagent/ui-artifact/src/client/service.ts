@@ -154,6 +154,9 @@ export class XAgentArtifactController {
   private readOperation: AbortController | undefined
   private pollOperation: AbortController | undefined
   private pollHandle: number | undefined
+  private selectionGeneration = 0
+  private readonly activeTasks = new Set<Promise<void>>()
+  private disposal: Promise<void> | undefined
   private disposed = false
   private readonly transport: XAgentArtifactTransport
   private readonly schedule: (callback: () => void) => number
@@ -184,7 +187,12 @@ export class XAgentArtifactController {
    * @param accountId 当前认证账号。
    * @param context 服务端当前工作台或项目上下文。
    */
-  async setScope(accountId: string, context: ArtifactContext): Promise<void> {
+  setScope(accountId: string, context: ArtifactContext): Promise<void> {
+    return this.track(this.loadScope(accountId, context))
+  }
+
+  private async loadScope(accountId: string, context: ArtifactContext): Promise<void> {
+    if (this.disposed) return
     const key = contextKey(context)
     const current = this.snapshot.getSnapshot()
     if (current.accountId === accountId && current.contextKey === key && current.phase !== 'empty' && current.phase !== 'unavailable') return
@@ -214,6 +222,7 @@ export class XAgentArtifactController {
    * @param accountId 正在进入的账号；未认证时省略。
    */
   clear(accountId?: string): void {
+    if (this.disposed) return
     this.invalidate()
     ++this.epoch
     this.snapshot.replace({ phase: 'empty', accountId, contextKey: undefined })
@@ -223,7 +232,12 @@ export class XAgentArtifactController {
    * 进入资料详情层并读取版本历史。
    * @param artifactId 当前范围内的资料 ID。
    */
-  async selectArtifact(artifactId: string): Promise<void> {
+  selectArtifact(artifactId: string): Promise<void> {
+    return this.track(this.loadDetail(artifactId))
+  }
+
+  private async loadDetail(artifactId: string): Promise<void> {
+    const selectionGeneration = this.invalidateSelection()
     const operation = this.begin('detail')
     if (operation === undefined) return
     this.snapshot.replaceReady({
@@ -231,7 +245,7 @@ export class XAgentArtifactController {
     })
     try {
       const result = await this.remote.detail(artifactId, operation.controller.signal)
-      if (this.isStale(operation)) return
+      if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, artifactId)) return
       if (!result.ok || result.value.id !== artifactId) {
         this.snapshot.replaceReady({ detailLoading: false, detailError: errorText(failed(result)) })
         return
@@ -247,11 +261,11 @@ export class XAgentArtifactController {
 
   /** 返回资料列表并撤销详情和预览读取。 */
   backToList(): void {
-    this.detailOperation?.abort()
-    this.readOperation?.abort()
+    this.invalidateSelection()
     this.snapshot.replaceReady({
       selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined, preview: undefined,
     })
+    this.armPollIfNeeded()
   }
 
   /**
@@ -259,7 +273,7 @@ export class XAgentArtifactController {
    * @param file 用户明确选择的正文。
    */
   upload(file: File): Promise<void> {
-    return this.performUpload(file, undefined)
+    return this.track(this.performUpload(file, undefined))
   }
 
   /**
@@ -269,18 +283,23 @@ export class XAgentArtifactController {
   uploadNewVersion(file: File): Promise<void> {
     const state = this.snapshot.getSnapshot()
     if (state.phase !== 'ready' || state.selectedId === undefined) return Promise.resolve()
-    return this.performUpload(file, state.selectedId)
+    return this.track(this.performUpload(file, state.selectedId))
   }
 
   /**
    * 为失败版本请求服务端重新扫描。
    * @param versionId 当前详情中的失败版本 ID。
    */
-  async retry(versionId: string): Promise<void> {
+  retry(versionId: string): Promise<void> {
+    return this.track(this.performRetry(versionId))
+  }
+
+  private async performRetry(versionId: string): Promise<void> {
     const state = this.snapshot.getSnapshot()
     if (state.phase !== 'ready' || state.detail?.versions.some(version => version.id === versionId && version.status === 'failed') !== true) return
     const operation = this.begin('detail')
     if (operation === undefined) return
+    this.snapshot.replaceReady({ detailError: undefined })
     try {
       const result = await this.remote.retry(versionId, this.idempotencyKey(), operation.controller.signal)
       if (this.isStale(operation)) return
@@ -301,7 +320,11 @@ export class XAgentArtifactController {
    * 只为 clean 且 MIME 白名单内的版本请求短期预览地址。
    * @param versionId 当前详情的版本 ID。
    */
-  async openPreview(versionId: string): Promise<void> {
+  openPreview(versionId: string): Promise<void> {
+    return this.track(this.loadPreview(versionId))
+  }
+
+  private async loadPreview(versionId: string): Promise<void> {
     const state = this.snapshot.getSnapshot()
     if (state.phase !== 'ready') return
     const version = state.detail?.versions.find(item => item.id === versionId)
@@ -309,9 +332,14 @@ export class XAgentArtifactController {
     if (version === undefined || kind === undefined) return
     const operation = this.begin('read')
     if (operation === undefined) return
+    this.snapshot.replaceReady({ detailError: undefined })
     try {
       const result = await this.remote.preview(versionId, operation.controller.signal)
-      if (this.isStale(operation) || !result.ok) return
+      if (this.isStale(operation)) return
+      if (!result.ok) {
+        this.snapshot.replaceReady({ detailError: '预览暂时不可用' })
+        return
+      }
       if (kind === 'text') {
         const text = await this.readText(result.value.url, operation.controller.signal)
         if (this.isStale(operation)) return
@@ -337,14 +365,24 @@ export class XAgentArtifactController {
    * 为 clean 版本请求一次下载地址并交给浏览器导航。
    * @param versionId 当前详情中的版本 ID。
    */
-  async download(versionId: string): Promise<void> {
+  download(versionId: string): Promise<void> {
+    return this.track(this.performDownload(versionId))
+  }
+
+  private async performDownload(versionId: string): Promise<void> {
     const state = this.snapshot.getSnapshot()
     if (state.phase !== 'ready' || state.detail?.versions.some(version => version.id === versionId && version.status === 'clean') !== true) return
     const operation = this.begin('read')
     if (operation === undefined) return
+    this.snapshot.replaceReady({ detailError: undefined })
     try {
       const result = await this.remote.download(versionId, operation.controller.signal)
-      if (!this.isStale(operation) && result.ok) this.openUrl(result.value.url)
+      if (this.isStale(operation)) return
+      if (!result.ok) {
+        this.snapshot.replaceReady({ detailError: '下载暂时不可用' })
+        return
+      }
+      this.openUrl(result.value.url)
     } catch {
       if (!operation.controller.signal.aborted && !this.isStale(operation)) {
         this.snapshot.replaceReady({ detailError: '下载暂时不可用' })
@@ -352,11 +390,18 @@ export class XAgentArtifactController {
     }
   }
 
-  /** 取消全部请求、轮询与后续状态发布。 */
-  dispose(): void {
-    this.disposed = true
-    this.invalidate()
-    ++this.epoch
+  /**
+   * 先封闭发布并清空内存，再等待已取消任务收敛。
+   * @returns 所有在途控制器任务静默结束后的 Promise。
+   */
+  dispose(): Promise<void> {
+    if (!this.disposed) {
+      this.disposed = true
+      this.invalidate()
+      ++this.epoch
+      this.snapshot.replace({ phase: 'empty', accountId: undefined, contextKey: undefined })
+    }
+    return this.disposal ??= this.waitForQuiescence()
   }
 
   private async performUpload(file: File, artifactId: string | undefined): Promise<void> {
@@ -425,7 +470,7 @@ export class XAgentArtifactController {
     if (this.pollHandle !== undefined || this.disposed) return
     this.pollHandle = this.schedule(() => {
       this.pollHandle = undefined
-      void this.poll()
+      void this.track(this.poll())
     })
   }
 
@@ -435,6 +480,7 @@ export class XAgentArtifactController {
     const operation = this.begin('poll')
     if (operation === undefined) return
     const selectedId = state.selectedId
+    const selectionGeneration = this.selectionGeneration
     try {
       const [list, detail] = await Promise.all([
         this.remote.list(operation.controller.signal),
@@ -442,10 +488,11 @@ export class XAgentArtifactController {
       ])
       if (this.isStale(operation)) return
       if (list.ok) this.snapshot.replaceReady({ items: list.value })
-      if (detail?.ok === true) this.snapshot.replaceReady({ detail: detail.value })
-      const next = this.snapshot.getSnapshot()
-      if (next.phase === 'ready' && (next.items.some(item => item.latestStatus === 'pending' || item.latestStatus === 'scanning')
-        || next.detail?.latestStatus === 'pending' || next.detail?.latestStatus === 'scanning')) this.armPoll()
+      if (detail?.ok === true && selectedId !== undefined
+        && detail.value.id === selectedId && this.isCurrentSelection(selectionGeneration, selectedId)) {
+        this.snapshot.replaceReady({ detail: detail.value })
+      }
+      this.armPollIfNeeded()
     } catch {
       if (!operation.controller.signal.aborted && !this.isStale(operation)) this.armPoll()
     }
@@ -471,20 +518,49 @@ export class XAgentArtifactController {
     return operation.controller.signal.aborted || this.stale(operation.epoch, operation.accountId, operation.contextKey)
   }
 
-  private invalidate(): void {
-    this.listOperation?.abort()
+  private isCurrentSelection(generation: number, artifactId: string): boolean {
+    const state = this.snapshot.getSnapshot()
+    return generation === this.selectionGeneration && state.phase === 'ready' && state.selectedId === artifactId
+  }
+
+  private invalidateSelection(): number {
+    ++this.selectionGeneration
     this.detailOperation?.abort()
-    this.uploadOperation?.abort()
     this.readOperation?.abort()
     this.pollOperation?.abort()
-    this.listOperation = undefined
     this.detailOperation = undefined
-    this.uploadOperation = undefined
     this.readOperation = undefined
     this.pollOperation = undefined
     if (this.pollHandle !== undefined) {
       this.cancelSchedule(this.pollHandle)
       this.pollHandle = undefined
     }
+    return this.selectionGeneration
+  }
+
+  private armPollIfNeeded(): void {
+    const state = this.snapshot.getSnapshot()
+    if (state.phase === 'ready' && (state.items.some(item => item.latestStatus === 'pending' || item.latestStatus === 'scanning')
+      || state.detail?.latestStatus === 'pending' || state.detail?.latestStatus === 'scanning')) this.armPoll()
+  }
+
+  private track(task: Promise<void>): Promise<void> {
+    const tracked = task.finally(() => { this.activeTasks.delete(tracked) })
+    this.activeTasks.add(tracked)
+    return tracked
+  }
+
+  private async waitForQuiescence(): Promise<void> {
+    while (this.activeTasks.size > 0) {
+      await Promise.allSettled([...this.activeTasks])
+    }
+  }
+
+  private invalidate(): void {
+    this.listOperation?.abort()
+    this.uploadOperation?.abort()
+    this.listOperation = undefined
+    this.uploadOperation = undefined
+    this.invalidateSelection()
   }
 }
