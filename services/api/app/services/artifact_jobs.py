@@ -6,6 +6,7 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.artifact import ArtifactProcessingJob, ArtifactVersion
+from app.services.audit import write_audit_event
 
 MAX_ATTEMPTS = 5
 _INITIAL_RETRY_SECONDS = 5
@@ -19,6 +20,30 @@ class ArtifactJobLease:
     version_id: UUID
     lease_token: UUID
     attempt: int
+
+
+async def _audit_scan_transition(
+    session: AsyncSession,
+    *,
+    version_id: UUID,
+    request_id: UUID,
+    action: str,
+) -> None:
+    actor_id = await session.scalar(
+        select(ArtifactVersion.uploaded_by_id).where(ArtifactVersion.id == version_id)
+    )
+    if actor_id is None:
+        raise RuntimeError("artifact version uploader is required for worker audit")
+    await write_audit_event(
+        session,
+        actor_id,
+        action,
+        "artifact_version",
+        version_id,
+        request_id,
+        "allowed",
+        executor_kind="artifact_worker",
+    )
 
 
 async def claim_due_job(
@@ -64,7 +89,7 @@ async def claim_due_job(
                 updated_at=now,
             )
         )
-        await session.execute(
+        version = await session.execute(
             update(ArtifactVersion)
             .where(
                 ArtifactVersion.id == job.version_id,
@@ -72,10 +97,19 @@ async def claim_due_job(
             )
             .values(scan_status="failed")
         )
+        if version.rowcount != 1:
+            raise RuntimeError("dead artifact job must own a scanning version")
+        await _audit_scan_transition(
+            session,
+            version_id=job.version_id,
+            request_id=job.id,
+            action="artifact.scan.failed",
+        )
 
     lease_token = uuid4()
     lease_expires_at = now + timedelta(seconds=lease_seconds)
     attempts = job.attempts + 1
+    starts_scanning = job.status == "ready"
     await session.execute(
         update(ArtifactProcessingJob)
         .where(ArtifactProcessingJob.id == job.id)
@@ -88,7 +122,7 @@ async def claim_due_job(
             updated_at=now,
         )
     )
-    await session.execute(
+    version = await session.execute(
         update(ArtifactVersion)
         .where(
             ArtifactVersion.id == job.version_id,
@@ -96,6 +130,15 @@ async def claim_due_job(
         )
         .values(scan_status="scanning")
     )
+    if starts_scanning and version.rowcount != 1:
+        raise RuntimeError("claimed artifact job must own a pending version")
+    if version.rowcount == 1:
+        await _audit_scan_transition(
+            session,
+            version_id=job.version_id,
+            request_id=job.id,
+            action="artifact.scan.start",
+        )
     return ArtifactJobLease(
         job_id=job.id,
         version_id=job.version_id,
@@ -167,13 +210,21 @@ async def retry_job(
     if result.rowcount != 1:
         return False
     if terminal:
-        await session.execute(
+        version = await session.execute(
             update(ArtifactVersion)
             .where(
                 ArtifactVersion.id == lease.version_id,
                 ArtifactVersion.scan_status == "scanning",
             )
             .values(scan_status="failed")
+        )
+        if version.rowcount != 1:
+            raise RuntimeError("terminal artifact job must own a scanning version")
+        await _audit_scan_transition(
+            session,
+            version_id=lease.version_id,
+            request_id=lease.job_id,
+            action="artifact.scan.failed",
         )
     return True
 
@@ -232,6 +283,12 @@ async def fail_job(
     )
     if version.rowcount != 1:
         raise RuntimeError("leased artifact version cannot enter failed state")
+    await _audit_scan_transition(
+        session,
+        version_id=lease.version_id,
+        request_id=lease.job_id,
+        action="artifact.scan.failed",
+    )
     return True
 
 
@@ -274,6 +331,12 @@ async def quarantine_job(
     )
     if version.rowcount != 1:
         raise RuntimeError("leased artifact version cannot enter quarantine")
+    await _audit_scan_transition(
+        session,
+        version_id=lease.version_id,
+        request_id=lease.job_id,
+        action="artifact.scan.quarantined",
+    )
     return True
 
 
@@ -318,4 +381,10 @@ async def publish_clean_job(
     )
     if version.rowcount != 1:
         raise RuntimeError("leased artifact version cannot enter clean state")
+    await _audit_scan_transition(
+        session,
+        version_id=lease.version_id,
+        request_id=lease.job_id,
+        action="artifact.scan.clean",
+    )
     return True

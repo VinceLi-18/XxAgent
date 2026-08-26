@@ -1,6 +1,7 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
+from fastapi.responses import JSONResponse
 
 from app.api.routes.internal_sessions import SessionContext, get_session_context
 from app.schemas.artifacts import (
@@ -8,10 +9,45 @@ from app.schemas.artifacts import (
     CompleteArtifactUploadResponse,
     CreateArtifactUploadRequest,
     CreateArtifactUploadResponse,
+    ArtifactDetailResponse,
+    ArtifactReadResponse,
+    ArtifactSummaryResponse,
+    EmptyArtifactRequest,
+    RetryArtifactVersionRequest,
 )
 from app.services import artifacts
+from app.services.audit import write_audit_event
 
 router = APIRouter(prefix="/internal/xagent/artifacts", tags=["internal-artifacts"])
+versions_router = APIRouter(
+    prefix="/internal/xagent/artifact-versions",
+    tags=["internal-artifact-versions"],
+)
+
+
+def _error_response(status_code: int, code: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"detail": {"code": code}})
+
+
+async def _audit_account_operation(
+    context: SessionContext,
+    *,
+    action: str,
+    resource_type: str,
+    resource_id: UUID,
+    request_id: UUID,
+    result: str,
+) -> None:
+    await write_audit_event(
+        context.session,
+        context.principal.actor_id,
+        action,
+        resource_type,
+        resource_id,
+        request_id,
+        result,
+        executor_kind="account",
+    )
 
 
 @router.post(
@@ -22,7 +58,7 @@ router = APIRouter(prefix="/internal/xagent/artifacts", tags=["internal-artifact
 async def create_upload_route(
     request: CreateArtifactUploadRequest,
     context: SessionContext = Depends(get_session_context),
-) -> CreateArtifactUploadResponse:
+) -> CreateArtifactUploadResponse | JSONResponse:
     return await _create_upload_response(request, context, artifact_id=None)
 
 
@@ -35,7 +71,7 @@ async def create_artifact_version_upload_route(
     artifact_id: UUID,
     request: CreateArtifactUploadRequest,
     context: SessionContext = Depends(get_session_context),
-) -> CreateArtifactUploadResponse:
+) -> CreateArtifactUploadResponse | JSONResponse:
     return await _create_upload_response(request, context, artifact_id=artifact_id)
 
 
@@ -44,31 +80,69 @@ async def _create_upload_response(
     context: SessionContext,
     *,
     artifact_id: UUID | None,
-) -> CreateArtifactUploadResponse:
+) -> CreateArtifactUploadResponse | JSONResponse:
+    action = (
+        "artifact.upload.create"
+        if artifact_id is None
+        else "artifact.version.upload.create"
+    )
+    request_id = uuid4()
     try:
-        upload = await artifacts.create_upload(
-            context.session,
-            context.principal,
-            filename=request.filename,
-            expected_size=request.size,
-            artifact_id=artifact_id,
-            idempotency_key=request.idempotency_key,
-        )
+        async with context.session.begin_nested():
+            upload = await artifacts.create_upload(
+                context.session,
+                context.principal,
+                filename=request.filename,
+                expected_size=request.size,
+                artifact_id=artifact_id,
+                idempotency_key=request.idempotency_key,
+            )
+            put_url = await artifacts.get_or_create_upload_put_url(
+                context.session,
+                context.principal,
+                upload=upload,
+                idempotency_key=request.idempotency_key,
+            )
     except artifacts.ArtifactIdempotencyConflict:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "idempotency-conflict"},
-        ) from None
+        code = "idempotency-conflict"
+        await _audit_account_operation(
+            context,
+            action=action,
+            resource_type="artifact" if artifact_id is not None else "staging_upload",
+            resource_id=artifact_id or request_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_409_CONFLICT, code)
     except artifacts.ArtifactNotFound:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not-found"},
-        ) from None
-    put_url = await artifacts.get_or_create_upload_put_url(
-        context.session,
-        context.principal,
-        upload=upload,
-        idempotency_key=request.idempotency_key,
+        code = "not-found"
+        await _audit_account_operation(
+            context,
+            action=action,
+            resource_type="artifact" if artifact_id is not None else "staging_upload",
+            resource_id=artifact_id or request_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_404_NOT_FOUND, code)
+    except artifacts.ArtifactStorageError:
+        code = "service-unavailable"
+        await _audit_account_operation(
+            context,
+            action=action,
+            resource_type="artifact" if artifact_id is not None else "staging_upload",
+            resource_id=artifact_id or request_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_503_SERVICE_UNAVAILABLE, code)
+    await _audit_account_operation(
+        context,
+        action=action,
+        resource_type="staging_upload",
+        resource_id=upload.id,
+        request_id=request_id,
+        result="allowed",
     )
     return CreateArtifactUploadResponse(
         upload_id=upload.id,
@@ -86,37 +160,255 @@ async def complete_upload_route(
     upload_id: UUID,
     request: CompleteArtifactUploadRequest,
     context: SessionContext = Depends(get_session_context),
-) -> CompleteArtifactUploadResponse:
+) -> CompleteArtifactUploadResponse | JSONResponse:
+    request_id = uuid4()
     try:
-        version = await artifacts.complete_upload(
-            context.session,
-            context.principal,
-            upload_id=upload_id,
-            actual_size=request.actual_size,
-            sha256=request.sha256,
-            idempotency_key=request.idempotency_key,
-        )
+        async with context.session.begin_nested():
+            version = await artifacts.complete_upload(
+                context.session,
+                context.principal,
+                upload_id=upload_id,
+                actual_size=request.actual_size,
+                sha256=request.sha256,
+                idempotency_key=request.idempotency_key,
+            )
     except artifacts.ArtifactIdempotencyConflict:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "idempotency-conflict"},
-        ) from None
+        code = "idempotency-conflict"
+        await _audit_account_operation(
+            context,
+            action="artifact.upload.complete",
+            resource_type="staging_upload",
+            resource_id=upload_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_409_CONFLICT, code)
     except artifacts.ArtifactNotFound:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "not-found"},
-        ) from None
+        code = "not-found"
+        await _audit_account_operation(
+            context,
+            action="artifact.upload.complete",
+            resource_type="staging_upload",
+            resource_id=upload_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_404_NOT_FOUND, code)
     except artifacts.UploadRejectedError:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "upload-rejected"},
-        ) from None
+        code = "upload-rejected"
+        await _audit_account_operation(
+            context,
+            action="artifact.upload.complete",
+            resource_type="staging_upload",
+            resource_id=upload_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_422_UNPROCESSABLE_CONTENT, code)
     except artifacts.ArtifactStorageError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "storage-unavailable"},
-        ) from None
+        code = "storage-unavailable"
+        await _audit_account_operation(
+            context,
+            action="artifact.upload.complete",
+            resource_type="staging_upload",
+            resource_id=upload_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_503_SERVICE_UNAVAILABLE, code)
+    await _audit_account_operation(
+        context,
+        action="artifact.upload.complete",
+        resource_type="artifact_version",
+        resource_id=version.id,
+        request_id=request_id,
+        result="allowed",
+    )
     return CompleteArtifactUploadResponse(
         artifact_id=version.artifact_id,
         version_id=version.id,
     )
+
+
+@router.post(
+    "/list",
+    response_model=list[ArtifactSummaryResponse],
+    response_model_exclude_none=True,
+)
+async def list_artifacts_route(
+    _request: EmptyArtifactRequest,
+    context: SessionContext = Depends(get_session_context),
+) -> list[ArtifactSummaryResponse]:
+    request_id = uuid4()
+    response = [
+        ArtifactSummaryResponse.model_validate(item)
+        for item in await artifacts.list_artifacts(context.session, context.principal)
+    ]
+    await _audit_account_operation(
+        context,
+        action="artifact.list",
+        resource_type="account",
+        resource_id=context.principal.actor_id,
+        request_id=request_id,
+        result="allowed",
+    )
+    return response
+
+
+@router.post(
+    "/{artifact_id}",
+    response_model=ArtifactDetailResponse,
+    response_model_exclude_none=True,
+)
+async def artifact_detail_route(
+    artifact_id: UUID,
+    _request: EmptyArtifactRequest,
+    context: SessionContext = Depends(get_session_context),
+) -> ArtifactDetailResponse | JSONResponse:
+    request_id = uuid4()
+    try:
+        async with context.session.begin_nested():
+            detail = await artifacts.artifact_detail(
+                context.session,
+                context.principal,
+                artifact_id,
+            )
+    except artifacts.ArtifactNotFound:
+        code = "not-found"
+        await _audit_account_operation(
+            context,
+            action="artifact.detail",
+            resource_type="artifact",
+            resource_id=artifact_id,
+            request_id=request_id,
+            result=code,
+        )
+        return _error_response(status.HTTP_404_NOT_FOUND, code)
+    await _audit_account_operation(
+        context,
+        action="artifact.detail",
+        resource_type="artifact",
+        resource_id=artifact_id,
+        request_id=request_id,
+        result="allowed",
+    )
+    return ArtifactDetailResponse.model_validate(detail)
+
+
+@versions_router.post(
+    "/{version_id}/retry",
+    response_model=ArtifactDetailResponse,
+    response_model_exclude_none=True,
+)
+async def retry_artifact_version_route(
+    version_id: UUID,
+    request: RetryArtifactVersionRequest,
+    context: SessionContext = Depends(get_session_context),
+) -> ArtifactDetailResponse | JSONResponse:
+    request_id = uuid4()
+    try:
+        async with context.session.begin_nested():
+            detail = await artifacts.retry_version(
+                context.session,
+                context.principal,
+                version_id=version_id,
+                idempotency_key=request.idempotency_key,
+            )
+    except artifacts.ArtifactIdempotencyConflict:
+        code = "idempotency-conflict"
+        status_code = status.HTTP_409_CONFLICT
+    except artifacts.ArtifactUploadExpired:
+        code = "upload-expired"
+        status_code = status.HTTP_410_GONE
+    except artifacts.UploadRejectedError:
+        code = "upload-rejected"
+        status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    except artifacts.ArtifactStorageError:
+        code = "service-unavailable"
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    except artifacts.ArtifactNotFound:
+        code = "not-found"
+        status_code = status.HTTP_404_NOT_FOUND
+    else:
+        await _audit_account_operation(
+            context,
+            action="artifact.scan.retry",
+            resource_type="artifact_version",
+            resource_id=version_id,
+            request_id=request_id,
+            result="allowed",
+        )
+        return ArtifactDetailResponse.model_validate(detail)
+    await _audit_account_operation(
+        context,
+        action="artifact.scan.retry",
+        resource_type="artifact_version",
+        resource_id=version_id,
+        request_id=request_id,
+        result=code,
+    )
+    return _error_response(status_code, code)
+
+
+async def _read_response(
+    version_id: UUID,
+    context: SessionContext,
+    *,
+    preview: bool,
+) -> ArtifactReadResponse | JSONResponse:
+    request_id = uuid4()
+    action = "artifact.preview" if preview else "artifact.download"
+    try:
+        async with context.session.begin_nested():
+            url = await artifacts.create_read_url(
+                context.session,
+                context.principal,
+                version_id=version_id,
+                preview=preview,
+            )
+    except artifacts.ArtifactForbidden:
+        code = "forbidden"
+        status_code = status.HTTP_403_FORBIDDEN
+    except artifacts.ArtifactStorageError:
+        code = "service-unavailable"
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    except artifacts.ArtifactNotFound:
+        code = "not-found"
+        status_code = status.HTTP_404_NOT_FOUND
+    else:
+        await _audit_account_operation(
+            context,
+            action=action,
+            resource_type="artifact_version",
+            resource_id=version_id,
+            request_id=request_id,
+            result="allowed",
+        )
+        return ArtifactReadResponse(url=url)
+    await _audit_account_operation(
+        context,
+        action=action,
+        resource_type="artifact_version",
+        resource_id=version_id,
+        request_id=request_id,
+        result=code,
+    )
+    return _error_response(status_code, code)
+
+
+@versions_router.post("/{version_id}/preview", response_model=ArtifactReadResponse)
+async def preview_artifact_version_route(
+    version_id: UUID,
+    _request: EmptyArtifactRequest,
+    context: SessionContext = Depends(get_session_context),
+) -> ArtifactReadResponse | JSONResponse:
+    return await _read_response(version_id, context, preview=True)
+
+
+@versions_router.post("/{version_id}/download", response_model=ArtifactReadResponse)
+async def download_artifact_version_route(
+    version_id: UUID,
+    _request: EmptyArtifactRequest,
+    context: SessionContext = Depends(get_session_context),
+) -> ArtifactReadResponse | JSONResponse:
+    return await _read_response(version_id, context, preview=False)

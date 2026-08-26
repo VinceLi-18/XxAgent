@@ -1,5 +1,7 @@
 import re
+import unicodedata
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 from minio.error import S3Error
@@ -36,6 +38,29 @@ class ArtifactIdempotencyConflict(Exception):
 
 class ArtifactNotFound(Exception):
     pass
+
+
+class ArtifactUploadExpired(Exception):
+    pass
+
+
+class ArtifactForbidden(Exception):
+    pass
+
+
+INLINE_TYPES = frozenset(
+    {
+        "application/pdf",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "application/json",
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+    }
+)
+READ_URL_SECONDS = 60
 
 
 def _runtime_gateway() -> MinioGateway:
@@ -194,10 +219,13 @@ async def get_or_create_upload_put_url(
     remaining = upload.expires_at - datetime.now(UTC)
     if remaining <= timedelta(0):
         raise ArtifactNotFound
-    put_url = _runtime_gateway().create_staging_put_url(
-        upload.staging_key,
-        remaining,
-    )
+    try:
+        put_url = _runtime_gateway().create_staging_put_url(
+            upload.staging_key,
+            remaining,
+        )
+    except Exception as exc:
+        raise ArtifactStorageError from exc
     stored.result = {**stored.result, "put_url": put_url}
     await session.flush()
     return put_url
@@ -384,3 +412,284 @@ async def complete_upload(
         stored.expires_at = expires_at
     await session.flush()
     return version
+
+
+def _version_projection(version: ArtifactVersion) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "id": version.id,
+        "version": version.version_number,
+        "original_filename": version.original_filename,
+        "uploaded_by": version.uploaded_by_id,
+        "size": version.actual_size,
+        "content_type": version.detected_content_type,
+        "status": version.scan_status,
+        "created_at": version.created_at,
+    }
+    if version.scan_status in {"clean", "quarantined"}:
+        result["sha256"] = version.sha256
+    return result
+
+
+def _summary_projection(
+    artifact: Artifact,
+    versions: list[ArtifactVersion],
+) -> dict[str, Any]:
+    latest = versions[0]
+    latest_clean = next(
+        (version for version in versions if version.scan_status == "clean"),
+        None,
+    )
+    scope: dict[str, Any]
+    if artifact.owner_id is not None:
+        scope = {"kind": "private"}
+    else:
+        scope = {"kind": "project", "project_id": artifact.project_id}
+    return {
+        "id": artifact.id,
+        "display_name": artifact.filename,
+        "scope": scope,
+        "latest_version": latest.version_number,
+        "latest_status": latest.scan_status,
+        "latest_clean_version": (
+            latest_clean.version_number if latest_clean is not None else None
+        ),
+    }
+
+
+async def _ordered_versions(
+    session: AsyncSession,
+    artifact_id: UUID,
+) -> list[ArtifactVersion]:
+    return list(
+        (
+            await session.scalars(
+                select(ArtifactVersion)
+                .where(ArtifactVersion.artifact_id == artifact_id)
+                .order_by(
+                    ArtifactVersion.version_number.desc(),
+                    ArtifactVersion.id.desc(),
+                )
+            )
+        ).all()
+    )
+
+
+async def list_artifacts(
+    session: AsyncSession,
+    principal: Principal,
+) -> list[dict[str, Any]]:
+    context = await normalize_context(session, principal, None)
+    scope_filter = (
+        Artifact.owner_id == principal.actor_id
+        if context.kind == "workbench"
+        else Artifact.project_id == context.project_id
+    )
+    items = list(
+        (
+            await session.scalars(
+                select(Artifact)
+                .where(scope_filter)
+                .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+            )
+        ).all()
+    )
+    result: list[dict[str, Any]] = []
+    for artifact in items:
+        versions = await _ordered_versions(session, artifact.id)
+        if versions:
+            result.append(_summary_projection(artifact, versions))
+    return result
+
+
+async def _can_edit_artifact(
+    session: AsyncSession,
+    principal: Principal,
+    artifact: Artifact,
+) -> bool:
+    if artifact.owner_id is not None:
+        return artifact.owner_id == principal.actor_id
+    if artifact.project_id is None:
+        return False
+    try:
+        await authorize_project(
+            session,
+            principal.actor_id,
+            artifact.project_id,
+            ProjectAction.EDIT,
+        )
+    except ForbiddenError:
+        return False
+    return True
+
+
+async def artifact_detail(
+    session: AsyncSession,
+    principal: Principal,
+    artifact_id: UUID,
+) -> dict[str, Any]:
+    artifact = await session.scalar(select(Artifact).where(Artifact.id == artifact_id))
+    if artifact is None:
+        raise ArtifactNotFound
+    versions = await _ordered_versions(session, artifact.id)
+    if not versions:
+        raise ArtifactNotFound
+    return {
+        **_summary_projection(artifact, versions),
+        "can_edit": await _can_edit_artifact(session, principal, artifact),
+        "versions": [_version_projection(version) for version in versions],
+    }
+
+
+def _safe_download_filename(filename: str) -> str:
+    sanitized = "".join(
+        "_"
+        if character in {"/", "\\", '"'} or unicodedata.category(character) == "Cc"
+        else character
+        for character in filename
+    ).strip()
+    if not sanitized or sanitized in {".", ".."}:
+        return "download"
+    return sanitized[:255]
+
+
+async def create_read_url(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    version_id: UUID,
+    preview: bool,
+) -> str:
+    version = await session.scalar(
+        select(ArtifactVersion).where(
+            ArtifactVersion.id == version_id,
+            ArtifactVersion.scan_status == "clean",
+        )
+    )
+    if version is None or version.object_key is None:
+        raise ArtifactNotFound
+    artifact = await session.scalar(
+        select(Artifact).where(Artifact.id == version.artifact_id)
+    )
+    if artifact is None:
+        raise ArtifactNotFound
+    content_type = version.detected_content_type
+    if preview and content_type not in INLINE_TYPES:
+        raise ArtifactForbidden
+    filename = _safe_download_filename(version.original_filename)
+    try:
+        return _runtime_gateway().create_read_url(
+            version.object_key,
+            expires_seconds=READ_URL_SECONDS,
+            disposition="inline" if preview else "attachment",
+            filename=filename,
+        )
+    except Exception as exc:
+        raise ArtifactStorageError from exc
+
+
+async def retry_version(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    version_id: UUID,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    visible = await session.scalar(
+        select(ArtifactVersion).where(ArtifactVersion.id == version_id)
+    )
+    if visible is None:
+        raise ArtifactNotFound
+    await _require_artifact_edit(session, principal, visible.artifact_id)
+
+    operation = "artifact.version.retry"
+    digest = request_hash({"version_id": str(version_id)})
+    lock_name = f"{principal.actor_id}:{operation}:{idempotency_key}"
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
+        {"lock_name": lock_name},
+    )
+    version = await session.scalar(
+        select(ArtifactVersion)
+        .where(ArtifactVersion.id == version_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if version is None:
+        raise ArtifactNotFound
+    await _require_artifact_edit(session, principal, version.artifact_id)
+    now = datetime.now(UTC)
+    stored = await session.get(
+        XAgentIdempotencyKey,
+        (principal.actor_id, operation, idempotency_key),
+    )
+    if stored is not None and stored.expires_at > now:
+        if stored.request_hash != digest:
+            raise ArtifactIdempotencyConflict
+        return await artifact_detail(session, principal, version.artifact_id)
+
+    if version.scan_status != "failed":
+        raise ArtifactNotFound
+    if (
+        version.staging_expires_at is None
+        or version.staging_expires_at <= now
+        or version.staging_key is None
+        or version.staging_etag is None
+        or version.actual_size is None
+    ):
+        raise ArtifactUploadExpired
+    try:
+        metadata = _runtime_gateway().stat(version.staging_key)
+    except KeyError:
+        raise ArtifactUploadExpired from None
+    except S3Error as exc:
+        if exc.code in {"NoSuchKey", "NoSuchObject"}:
+            raise ArtifactUploadExpired from None
+        raise ArtifactStorageError from exc
+    except Exception as exc:
+        raise ArtifactStorageError from exc
+    if metadata.size != version.actual_size or metadata.etag != version.staging_etag:
+        raise UploadRejectedError
+
+    version.scan_status = "pending"
+    job = await session.scalar(
+        select(ArtifactProcessingJob)
+        .where(ArtifactProcessingJob.version_id == version.id)
+        .with_for_update()
+    )
+    if job is None:
+        session.add(
+            ArtifactProcessingJob(
+                id=uuid4(),
+                version_id=version.id,
+                status="ready",
+                attempts=0,
+                next_attempt_at=now,
+            )
+        )
+    else:
+        job.status = "ready"
+        job.attempts = 0
+        job.next_attempt_at = now
+        job.lease_token = None
+        job.lease_expires_at = None
+        job.failure_code = None
+        job.updated_at = now
+    result = {"artifact_id": str(version.artifact_id), "version_id": str(version.id)}
+    expires_at = now + timedelta(hours=24)
+    if stored is None:
+        session.add(
+            XAgentIdempotencyKey(
+                actor_id=principal.actor_id,
+                operation=operation,
+                idempotency_key=idempotency_key,
+                request_hash=digest,
+                result=result,
+                expires_at=expires_at,
+            )
+        )
+    else:
+        stored.request_hash = digest
+        stored.result = result
+        stored.expires_at = expires_at
+    await session.flush()
+    return await artifact_detail(session, principal, version.artifact_id)

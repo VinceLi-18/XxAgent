@@ -50,7 +50,7 @@ async def test_worker_cannot_read_identity_auth_session_or_membership_data(
 
 
 @pytest.mark.anyio
-async def test_application_role_cannot_claim_artifact_jobs(
+async def test_application_role_cannot_see_jobs_without_current_edit_scope(
     seeded_database: AsyncEngine,
     application_role: str,
 ) -> None:
@@ -60,18 +60,17 @@ async def test_application_role_cannot_claim_artifact_jobs(
             {"role": application_role},
         )
 
-    with pytest.raises(ProgrammingError) as rejected:
-        async with seeded_database.begin() as connection:
-            await connection.execute(text(set_role))
-            await connection.execute(
-                text(
-                    "SELECT id FROM artifact_processing_jobs "
-                    "WHERE next_attempt_at <= CURRENT_TIMESTAMP "
-                    "FOR UPDATE SKIP LOCKED LIMIT 1"
-                )
+    async with seeded_database.begin() as connection:
+        await connection.execute(text(set_role))
+        visible = await connection.scalar(
+            text(
+                "SELECT id FROM artifact_processing_jobs "
+                "WHERE next_attempt_at <= CURRENT_TIMESTAMP "
+                "FOR UPDATE SKIP LOCKED LIMIT 1"
             )
+        )
 
-    assert rejected.value.orig.sqlstate == "42501"
+    assert visible is None
 
 
 @pytest.mark.anyio
@@ -182,7 +181,7 @@ async def test_worker_cleanup_insert_accepts_canonical_final_artifact_key(
 
 
 @pytest.mark.anyio
-async def test_application_role_can_enqueue_but_cannot_read_or_update_artifact_jobs(
+async def test_application_role_can_reset_only_an_editable_pending_artifact_job(
     seeded_database: AsyncEngine,
     application_role: str,
     alice,
@@ -231,19 +230,36 @@ async def test_application_role_can_enqueue_but_cannot_read_or_update_artifact_j
             {"id": job_id, "version_id": version_id},
         )
 
-    for statement in (
-        "SELECT id FROM artifact_processing_jobs WHERE id = :job_id FOR UPDATE",
-        "UPDATE artifact_processing_jobs SET status = 'running' WHERE id = :job_id",
-    ):
-        with pytest.raises(ProgrammingError) as rejected:
-            async with seeded_database.begin() as connection:
-                await connection.execute(text(set_role))
-                await connection.execute(
-                    text("SELECT set_config('app.actor_id', :actor_id, true)"),
-                    {"actor_id": str(alice.id)},
-                )
-                await connection.execute(text(statement), {"job_id": job_id})
-        assert rejected.value.orig.sqlstate == "42501"
+    async with seeded_database.begin() as connection:
+        await connection.execute(text(set_role))
+        await connection.execute(
+            text("SELECT set_config('app.actor_id', :actor_id, true)"),
+            {"actor_id": str(alice.id)},
+        )
+        visible = await connection.scalar(
+            text(
+                "SELECT id FROM artifact_processing_jobs "
+                "WHERE id = :job_id FOR UPDATE"
+            ),
+            {"job_id": job_id},
+        )
+    assert visible == job_id
+
+    with pytest.raises(ProgrammingError) as rejected:
+        async with seeded_database.begin() as connection:
+            await connection.execute(text(set_role))
+            await connection.execute(
+                text("SELECT set_config('app.actor_id', :actor_id, true)"),
+                {"actor_id": str(alice.id)},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE artifact_processing_jobs SET attempts = 1 "
+                    "WHERE id = :job_id"
+                ),
+                {"job_id": job_id},
+            )
+    assert rejected.value.orig.sqlstate == "42501"
 
 
 @pytest.mark.anyio

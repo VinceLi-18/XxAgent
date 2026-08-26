@@ -221,6 +221,9 @@ def upgrade() -> None:
             IF OLD.scan_status = 'pending' AND NEW.scan_status = 'scanning' THEN
                 RETURN NEW;
             END IF;
+            IF OLD.scan_status = 'failed' AND NEW.scan_status = 'pending' THEN
+                RETURN NEW;
+            END IF;
             IF OLD.scan_status = 'scanning'
                AND NEW.scan_status IN ('clean', 'quarantined', 'failed') THEN
                 RETURN NEW;
@@ -330,6 +333,10 @@ def upgrade() -> None:
         "owner_id = NULLIF(current_setting('app.actor_id', true), '')::uuid "
         "OR project_id IN (SELECT public.authorized_project_ids())"
     )
+    artifact_edit_scope = (
+        "owner_id = NULLIF(current_setting('app.actor_id', true), '')::uuid "
+        "OR project_id IN (SELECT public.xagent_authorized_project_edit_ids())"
+    )
     op.execute("DROP POLICY artifacts_insert ON artifacts")
     op.execute(
         f"CREATE POLICY artifacts_insert ON artifacts FOR INSERT TO {application_role} "
@@ -346,6 +353,12 @@ def upgrade() -> None:
         f"AND ({artifact_scope}))"
     )
     op.execute(
+        f"CREATE POLICY artifact_versions_retry_update ON artifact_versions "
+        f"FOR UPDATE TO {application_role} "
+        f"USING (({artifact_edit_scope}) AND scan_status IN ('failed', 'pending')) "
+        f"WITH CHECK (({artifact_edit_scope}) AND scan_status = 'pending')"
+    )
+    op.execute(
         f"CREATE POLICY application_job_insert ON artifact_processing_jobs "
         f"FOR INSERT TO {application_role} WITH CHECK ("
         "status = 'ready' AND attempts = 0 "
@@ -353,8 +366,31 @@ def upgrade() -> None:
         "AND failure_code IS NULL AND EXISTS ("
         "SELECT 1 FROM artifact_versions "
         "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
-        "AND artifact_versions.uploaded_by_id = "
-        "NULLIF(current_setting('app.actor_id', true), '')::uuid))"
+        "AND artifact_versions.scan_status = 'pending' "
+        f"AND ({artifact_edit_scope})))"
+    )
+    op.execute(
+        f"CREATE POLICY application_job_retry_read ON artifact_processing_jobs "
+        f"FOR SELECT TO {application_role} USING (EXISTS ("
+        "SELECT 1 FROM artifact_versions "
+        "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
+        "AND artifact_versions.scan_status = 'pending' "
+        f"AND ({artifact_edit_scope})))"
+    )
+    op.execute(
+        f"CREATE POLICY application_job_retry_update ON artifact_processing_jobs "
+        f"FOR UPDATE TO {application_role} USING (EXISTS ("
+        "SELECT 1 FROM artifact_versions "
+        "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
+        "AND artifact_versions.scan_status = 'pending' "
+        f"AND ({artifact_edit_scope}))) "
+        "WITH CHECK (status = 'ready' AND attempts = 0 "
+        "AND lease_token IS NULL AND lease_expires_at IS NULL "
+        "AND failure_code IS NULL AND EXISTS ("
+        "SELECT 1 FROM artifact_versions "
+        "WHERE artifact_versions.id = artifact_processing_jobs.version_id "
+        "AND artifact_versions.scan_status = 'pending' "
+        f"AND ({artifact_edit_scope})))"
     )
     op.execute(
         f"CREATE POLICY artifact_worker_job_read ON artifact_processing_jobs "
@@ -413,6 +449,14 @@ def upgrade() -> None:
     op.execute(
         f"GRANT INSERT ON artifact_processing_jobs TO {application_role}"
     )
+    op.execute(
+        f"GRANT UPDATE (scan_status) ON artifact_versions TO {application_role}"
+    )
+    op.execute(f"GRANT SELECT ON artifact_processing_jobs TO {application_role}")
+    op.execute(
+        "GRANT UPDATE (status, attempts, next_attempt_at, lease_token, lease_expires_at, "
+        f"failure_code, updated_at) ON artifact_processing_jobs TO {application_role}"
+    )
     op.execute(f"GRANT SELECT ON artifact_processing_jobs TO {worker_role}")
     op.execute(
         "GRANT UPDATE (status, attempts, next_attempt_at, lease_token, lease_expires_at, "
@@ -470,7 +514,10 @@ def downgrade() -> None:
     )
 
     op.execute(
-        f"REVOKE INSERT ON artifact_processing_jobs FROM {application_role}"
+        f"REVOKE SELECT, INSERT, UPDATE ON artifact_processing_jobs FROM {application_role}"
+    )
+    op.execute(
+        f"REVOKE UPDATE (scan_status) ON artifact_versions FROM {application_role}"
     )
     op.execute(f"REVOKE ALL PRIVILEGES ON artifact_processing_jobs FROM {worker_role}")
     op.execute(f"REVOKE ALL PRIVILEGES ON artifact_object_cleanup_jobs FROM {worker_role}")
@@ -493,6 +540,8 @@ def downgrade() -> None:
 
     op.execute("DROP POLICY artifact_worker_job_update ON artifact_processing_jobs")
     op.execute("DROP POLICY artifact_worker_job_read ON artifact_processing_jobs")
+    op.execute("DROP POLICY application_job_retry_update ON artifact_processing_jobs")
+    op.execute("DROP POLICY application_job_retry_read ON artifact_processing_jobs")
     op.execute("DROP POLICY application_job_insert ON artifact_processing_jobs")
     op.execute("ALTER TABLE artifact_processing_jobs NO FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE artifact_processing_jobs DISABLE ROW LEVEL SECURITY")
@@ -506,6 +555,7 @@ def downgrade() -> None:
 
     op.execute("DROP TRIGGER artifact_version_scan_status_transition ON artifact_versions")
     op.execute("DROP FUNCTION public.enforce_artifact_scan_status_transition()")
+    op.execute("DROP POLICY artifact_versions_retry_update ON artifact_versions")
 
     op.drop_constraint("ck_audit_events_executor_kind", "audit_events", type_="check")
     op.drop_constraint("ck_artifact_version_clean_object", "artifact_versions", type_="check")
