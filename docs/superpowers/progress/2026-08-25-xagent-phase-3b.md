@@ -20,7 +20,7 @@
 | TypeScript 类型检查 | 通过 |
 | Host、Client 与 Web production build | 通过：Web 转换 414 个模块 |
 | 全仓 lint | 通过 |
-| 全仓 hygiene | 通过：rescope 扫描 4,614 个 tracked 文件且无残留；publint 与源码／构建版 invariant 各检查 232 个包；Cordis 配置 124 个；NodeNext 声明 241 个；runtime closure 109 个；vendored links 9 个 |
+| 全仓 hygiene | 通过：rescope 扫描 4,616 个 tracked 文件且无残留；publint 与源码／构建版 invariant 各检查 232 个包；Cordis 配置 124 个；NodeNext 声明 241 个；runtime closure 109 个；vendored links 9 个 |
 | 文档同步门禁 | 通过：28/28 |
 | 构建版完整 Web lane | 通过：77 个文件、255 个测试；另有 1 个文件、15 个测试按条件跳过，耗时 371.59 秒 |
 
