@@ -768,6 +768,9 @@ describe('XAgent 后端客户端', () => {
     [{ ...privateArtifactSummary, latest_version: 1.5 }],
     [{ ...privateArtifactSummary, latest_status: 'ready' }],
     [{ ...privateArtifactSummary, latest_clean_version: 3 }],
+    [(({ latest_clean_version: _removed, ...value }) => ({ ...value, latest_status: 'clean' }))(privateArtifactSummary)],
+    [{ ...privateArtifactSummary, latest_status: 'clean', latest_clean_version: 1 }],
+    [{ ...privateArtifactSummary, latest_clean_version: 2 }],
     [{ ...privateArtifactSummary, scope: { kind: 'private', project_id: projectResponse.project.id } }],
     [{ ...privateArtifactSummary, scope: { kind: 'project' } }],
     [{ ...privateArtifactSummary, scope: { kind: 'project', project_id: 'bad' } }],
@@ -778,6 +781,35 @@ describe('XAgent 后端客户端', () => {
       fetch: async () => Response.json([value]),
     })
     await expect(client.artifacts.list('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    ['list', 201, [privateArtifactSummary], (client: XAgentBackendClient) => client.artifacts.list('token')],
+    ['detail', 201, artifactDetailResponse, (client: XAgentBackendClient) =>
+      client.artifacts.detail('token', artifactIds.private)],
+    ['createUpload', 200, artifactUploadResponse, (client: XAgentBackendClient) =>
+      client.artifacts.createUpload('token', { filename: 'file.txt', size: 1, idempotencyKey: 'create' })],
+    ['createVersionUpload', 200, artifactUploadResponse, (client: XAgentBackendClient) =>
+      client.artifacts.createVersionUpload(
+        'token', artifactIds.private, { filename: 'file.txt', size: 1, idempotencyKey: 'version' },
+      )],
+    ['completeUpload', 200, artifactDetailResponse, (client: XAgentBackendClient) =>
+      client.artifacts.completeUpload('token', artifactIds.upload, {
+        size: 1, sha256: 'a'.repeat(64), idempotencyKey: 'complete',
+      })],
+    ['retry', 201, artifactDetailResponse, (client: XAgentBackendClient) =>
+      client.artifacts.retry('token', artifactIds.failedVersion, 'retry')],
+    ['preview', 201, { url: '/api/v1/xagent/artifact-content/opaque?signature=preview' },
+      (client: XAgentBackendClient) => client.artifacts.preview('token', artifactIds.cleanVersion)],
+    ['download', 206, { url: '/api/v1/xagent/artifact-content/opaque?signature=download' },
+      (client: XAgentBackendClient) => client.artifacts.download('token', artifactIds.cleanVersion)],
+  ] as const)('Artifact %s 拒绝错误的 2xx 成功状态', async (_method, status, body, invoke) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(body, { status }),
+    })
+    await expect(invoke(client)).rejects.toMatchObject({ code: 'service-unavailable' })
   })
 
   test('拒绝非数组、重复资料和超限 Artifact 列表', async () => {
@@ -812,7 +844,7 @@ describe('XAgent 后端客户端', () => {
     const client = new XAgentBackendClient({
       origin: 'https://api.example.test',
       serviceToken: 'service-secret',
-      fetch: async () => Response.json(value),
+      fetch: async () => Response.json(value, { status: 201 }),
     })
     await expect(client.artifacts.createUpload('token', {
       filename: 'file.txt', size: 1, idempotencyKey: 'create',
@@ -906,7 +938,7 @@ describe('XAgent 后端客户端', () => {
       const client = new XAgentBackendClient({
         origin: 'https://api.example.test',
         serviceToken: 'service-secret',
-        fetch: async () => Response.json(body),
+        fetch: async () => Response.json(body, { status: method === 'complete' ? 201 : 200 }),
       })
       const operation = method === 'complete'
         ? client.artifacts.completeUpload('token', artifactIds.upload, {
@@ -920,6 +952,7 @@ describe('XAgent 后端客户端', () => {
   test.each([
     ['/api/v1/xagent/artifact-content/opaque?expires=1&signature=abc'],
     ['https://api.example.test/api/v1/xagent/artifact-content/opaque?expires=1&signature=abc'],
+    ['/api/v1/xagent/artifact-content/合同?name=合同&signature=a%2Bb%2Fc%3D'],
   ])('接受相对或绝对 opaque 读取 URL 且不读取其正文 %#', async (url) => {
     const fetcher = vi.fn(async () => Response.json({ url }))
     const client = new XAgentBackendClient({
@@ -938,6 +971,16 @@ describe('XAgent 后端客户端', () => {
     [{ url: 'https://user:pass@api.example.test/content' }],
     [{ url: 'https://api.example.test/artifacts/00000000-0000-0000-0000-000000000401/00000000-0000-0000-0000-000000000412' }],
     [{ url: '/%61rtifacts%2F00000000-0000-0000-0000-000000000401%2F00000000-0000-0000-0000-000000000412' }],
+    [{ url: '/artifacts%25252F00000000-0000-0000-0000-000000000401%25252F00000000-0000-0000-0000-000000000412' }],
+    [{ url: '/%61rtifacts%2525252f00000000-0000-0000-0000-000000000401%2525252F00000000-0000-0000-0000-000000000412' }],
+    [{ url: `/artifacts%${'25'.repeat(16)}2F00000000-0000-0000-0000-000000000401/opaque` }],
+    [{ url: '/api/%0a/content' }],
+    [{ url: '/api/%00/content' }],
+    [{ url: '/api/%5C/content' }],
+    [{ url: '/api/%20/content' }],
+    [{ url: '/api/%E2%80%87/content' }],
+    [{ url: '/%252F%252Fevil.example.test/content' }],
+    [{ url: '/xagent-private/opaque' }],
     [{ url: '/content#secret' }],
   ])('拒绝畸形或泄漏对象 Key 的读取 URL %#', async (value) => {
     const client = new XAgentBackendClient({
@@ -999,10 +1042,21 @@ describe('XAgent 后端客户端', () => {
   })
 
   test.each([
+    [400, { detail: { code: 'unsupported-version' } }, 'unsupported-version'],
+    [401, { detail: { code: 'unauthenticated' } }, 'unauthenticated'],
     [403, { detail: { code: 'forbidden' } }, 'forbidden'],
     [404, { detail: { code: 'not-found' } }, 'not-found'],
+    [409, { detail: { code: 'idempotency-conflict' } }, 'idempotency-conflict'],
     [410, { detail: { code: 'upload-expired' } }, 'upload-expired'],
     [422, { detail: { code: 'upload-rejected' } }, 'upload-rejected'],
+    [503, { detail: { code: 'service-unavailable' } }, 'service-unavailable'],
+    [401, {}, 'service-unavailable'],
+    [401, { detail: { code: 'unknown-code' } }, 'service-unavailable'],
+    [401, { detail: { code: 'unauthenticated', internal: 'secret' } }, 'service-unavailable'],
+    [403, { detail: { code: 'forbidden' }, internal: 'secret' }, 'service-unavailable'],
+    [404, { detail: { code: 'session-not-found' } }, 'service-unavailable'],
+    [409, { detail: { code: 'sequence-conflict' } }, 'service-unavailable'],
+    [403, { detail: { code: 'not-found' } }, 'service-unavailable'],
     [500, { detail: { code: 'upload-rejected' } }, 'service-unavailable'],
     [410, { detail: { code: 'unknown-code' } }, 'service-unavailable'],
     [410, { detail: 'internal detail' }, 'service-unavailable'],

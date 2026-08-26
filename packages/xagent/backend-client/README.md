@@ -6,9 +6,9 @@
 
 资料接口覆盖列表、详情、新资料上传、新版本上传、上传完成、失败重试、预览和下载。上传创建只返回短期 PUT 授权；完成和重试返回包含不可变版本历史的完整详情。预览与下载只返回服务端授权后的 opaque URL，客户端不跟随该 URL，也不读取资料正文。
 
-请求和响应都受字节上限约束。工作台与资料响应按固定 snake_case 字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、日期、状态、计数、大小或 URL 全部失败关闭。资料范围只接受 private 或带 UUID 的 project，详情版本号唯一且严格降序，latest 字段必须与版本历史一致，latest clean 必须指向最高 clean 版本。列表和版本历史各最多接受 1,000 项，单版本大小不超过 50 MiB。
+请求和响应都受字节上限约束。工作台与资料响应按固定 snake_case 字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、日期、状态、计数、大小或 URL 全部失败关闭。资料范围只接受 private 或带 UUID 的 project；列表摘要的 clean latest 必须同时是 latest clean，非 clean latest 只能引用更早的 clean 版本。详情版本号唯一且严格降序，latest 字段必须与版本历史一致，latest clean 必须指向最高 clean 版本。列表和版本历史各最多接受 1,000 项，单版本大小不超过 50 MiB。
 
-非成功响应按实际 HTTP 状态只映射固定错误码，包括 `upload-expired` 和 `upload-rejected`；未知 code、畸形 detail、非 JSON、重定向和超限正文统一为 `service-unavailable`。FastAPI detail、JWT、服务身份、对象 Key、暂存 Key、租约和内部扫描失败信息不会进入返回对象或异常消息。
+资料上传创建、版本上传和完成只接受 `201`，列表、详情、重试、预览和下载只接受 `200`。资料错误只接受 exact `detail.code` 和固定状态配对：400 `unsupported-version`、401 `unauthenticated`、403 `forbidden`、404 `not-found`、409 `idempotency-conflict`、410 `upload-expired`、422 `upload-rejected`、503 `service-unavailable`。其他成功状态、未知 code、额外错误字段、畸形 detail、非 JSON、重定向和超限正文统一为 `service-unavailable`。FastAPI detail、JWT、服务身份、对象 Key、暂存 Key、租约和内部扫描失败信息不会进入返回对象或异常消息。
 
 ## Model Experience
 

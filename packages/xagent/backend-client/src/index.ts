@@ -280,9 +280,13 @@ const ARTIFACT_STATUSES = new Set<XAgentArtifactStatus>([
 ])
 const MAX_ARTIFACT_SIZE = 50 * 1024 * 1024
 const MAX_ARTIFACT_ITEMS = 1_000
+const MAX_URL_DECODE_ROUNDS = 16
 const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const OBJECT_KEY_PATTERN = /artifacts\/[0-9a-f-]{36}\/[0-9a-f-]{36}(?:[/?#]|$)/i
+const STAGING_KEY_PATTERN = /staging\/[0-9a-f-]{36}(?:[/?#]|$)/i
+const STORAGE_BUCKET_PATTERN = /(?:^|\/)xagent-private(?:[/?#]|$)/i
+const PERCENT_ESCAPE_PATTERN = /%[0-9a-f]{2}/i
 
 function artifactStatus(value: unknown): XAgentArtifactStatus {
   if (typeof value !== 'string' || !ARTIFACT_STATUSES.has(value as XAgentArtifactStatus)) failSchema()
@@ -342,13 +346,18 @@ function parseArtifactSummary(value: unknown): XAgentArtifactSummary {
   const latestCleanVersion = Object.hasOwn(row, 'latest_clean_version')
     ? positiveInteger(row.latest_clean_version)
     : undefined
-  if (latestCleanVersion !== undefined && latestCleanVersion > latestVersion) failSchema()
+  const latestStatus = artifactStatus(row.latest_status)
+  if (
+    latestStatus === 'clean'
+      ? latestCleanVersion !== latestVersion
+      : latestCleanVersion !== undefined && latestCleanVersion >= latestVersion
+  ) failSchema()
   return {
     id: requiredUuid(row.id),
     displayName: boundedString(row.display_name, 255),
     scope: parseArtifactScope(row.scope),
     latestVersion,
-    latestStatus: artifactStatus(row.latest_status),
+    latestStatus,
     ...(latestCleanVersion === undefined ? {} : { latestCleanVersion }),
   }
 }
@@ -408,19 +417,17 @@ function parseArtifactDetail(value: unknown): XAgentArtifactDetail {
   return { ...summary, canEdit: row.can_edit, versions }
 }
 
-function safeHttpUrl(value: unknown, allowRelative: boolean): string {
-  const result = requiredString(value)
+function validateHttpUrl(value: string, allowRelative: boolean): void {
   if (
-    result.length > 16_384
-    || /\s/.test(result)
-    || result.includes('\\')
-    || /[\u0000-\u001f\u007f]/.test(result)
+    /\p{White_Space}/u.test(value)
+    || value.includes('\\')
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(value)
   ) failSchema()
-  const relative = result.startsWith('/') && !result.startsWith('//')
-  if ((!allowRelative && relative) || (allowRelative && !relative && !/^https?:\/\//i.test(result))) failSchema()
+  const relative = value.startsWith('/') && !value.startsWith('//')
+  if ((!allowRelative && relative) || (allowRelative && !relative && !/^https?:\/\//i.test(value))) failSchema()
   let parsed: URL
   try {
-    parsed = new URL(result, relative ? 'https://xagent.invalid' : undefined)
+    parsed = new URL(value, relative ? 'https://xagent.invalid' : undefined)
   } catch {
     return failSchema()
   }
@@ -430,33 +437,50 @@ function safeHttpUrl(value: unknown, allowRelative: boolean): string {
     || parsed.password !== ''
     || parsed.hash !== ''
   ) failSchema()
+}
+
+function decodedHttpUrl(value: string, allowRelative: boolean): string {
+  let result = value
+  for (let round = 0; round < MAX_URL_DECODE_ROUNDS; round += 1) {
+    validateHttpUrl(result, allowRelative)
+    let decoded: string
+    try {
+      decoded = decodeURIComponent(result)
+    } catch {
+      return failSchema()
+    }
+    if (decoded === result) return result
+    result = decoded
+  }
+  validateHttpUrl(result, allowRelative)
+  if (PERCENT_ESCAPE_PATTERN.test(result)) failSchema()
   return result
+}
+
+function safeHttpUrl(value: unknown, allowRelative: boolean): { readonly original: string; readonly decoded: string } {
+  const result = requiredString(value)
+  if (result.length > 16_384) failSchema()
+  return { original: result, decoded: decodedHttpUrl(result, allowRelative) }
 }
 
 function parseArtifactUpload(value: unknown): XAgentArtifactUpload {
   const row = exactRecord(value, ['upload_id', 'put_url', 'expires_at'])
   return {
     id: requiredUuid(row.upload_id),
-    putUrl: safeHttpUrl(row.put_url, false),
+    putUrl: safeHttpUrl(row.put_url, false).original,
     expiresAt: instant(row.expires_at),
-  }
-}
-
-function decodedUrl(value: string): string {
-  let result = value
-  try {
-    result = decodeURIComponent(result)
-    return decodeURIComponent(result)
-  } catch {
-    return failSchema()
   }
 }
 
 function parseArtifactRead(value: unknown): { readonly url: string } {
   const row = exactRecord(value, ['url'])
   const url = safeHttpUrl(row.url, true)
-  if (OBJECT_KEY_PATTERN.test(decodedUrl(url))) failSchema()
-  return { url }
+  if (
+    OBJECT_KEY_PATTERN.test(url.decoded)
+    || STAGING_KEY_PATTERN.test(url.decoded)
+    || STORAGE_BUCKET_PATTERN.test(url.decoded)
+  ) failSchema()
+  return { url: url.original }
 }
 
 function parseArtifactList(value: unknown): readonly XAgentArtifactSummary[] {
@@ -514,6 +538,29 @@ function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
     || status === 422 && code === 'upload-rejected'
     || status === 503 && code === 'service-unavailable'
   return accepted ? code : 'service-unavailable'
+}
+
+const ARTIFACT_ERROR_CODES = new Map<number, XAgentBackendErrorCode>([
+  [400, 'unsupported-version'],
+  [401, 'unauthenticated'],
+  [403, 'forbidden'],
+  [404, 'not-found'],
+  [409, 'idempotency-conflict'],
+  [410, 'upload-expired'],
+  [422, 'upload-rejected'],
+  [503, 'service-unavailable'],
+])
+
+function artifactErrorCode(status: number, value: unknown): XAgentBackendErrorCode {
+  let code: unknown
+  try {
+    const response = exactRecord(value, ['detail'])
+    code = exactRecord(response.detail, ['code']).code
+  } catch {
+    return 'service-unavailable'
+  }
+  const expected = ARTIFACT_ERROR_CODES.get(status)
+  return expected !== undefined && code === expected ? expected : 'service-unavailable'
 }
 
 /** Bounded Host client for XAgent authentication, Session, workbench, and Artifact APIs. */
@@ -626,41 +673,45 @@ export class XAgentBackendClient implements XAgentBackend {
     }
     this.workbench = Object.freeze(workbench)
     const artifacts: XAgentArtifactBackend = {
-      list: async (token, signal) => parseArtifactList(await this.request(
-        token, '/internal/xagent/artifacts/list', {}, signal,
+      list: async (token, signal) => parseArtifactList(await this.artifactRequest(
+        token, '/internal/xagent/artifacts/list', {}, 200, signal,
       )),
-      detail: async (token, artifactId, signal) => parseArtifactDetail(await this.request(
-        token, `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}`, {}, signal,
+      detail: async (token, artifactId, signal) => parseArtifactDetail(await this.artifactRequest(
+        token, `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}`, {}, 200, signal,
       )),
-      createUpload: async (token, input, signal) => parseArtifactUpload(await this.request(
+      createUpload: async (token, input, signal) => parseArtifactUpload(await this.artifactRequest(
         token,
         '/internal/xagent/artifacts/uploads',
         { filename: input.filename, size: input.size, idempotency_key: input.idempotencyKey },
+        201,
         signal,
       )),
-      createVersionUpload: async (token, artifactId, input, signal) => parseArtifactUpload(await this.request(
+      createVersionUpload: async (token, artifactId, input, signal) => parseArtifactUpload(await this.artifactRequest(
         token,
         `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}/uploads`,
         { filename: input.filename, size: input.size, idempotency_key: input.idempotencyKey },
+        201,
         signal,
       )),
-      completeUpload: async (token, uploadId, input, signal) => parseArtifactDetail(await this.request(
+      completeUpload: async (token, uploadId, input, signal) => parseArtifactDetail(await this.artifactRequest(
         token,
         `/internal/xagent/artifacts/uploads/${encodeURIComponent(uploadId)}/complete`,
         { actual_size: input.size, sha256: input.sha256, idempotency_key: input.idempotencyKey },
+        201,
         signal,
       )),
-      retry: async (token, versionId, idempotencyKey, signal) => parseArtifactDetail(await this.request(
+      retry: async (token, versionId, idempotencyKey, signal) => parseArtifactDetail(await this.artifactRequest(
         token,
         `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/retry`,
         { idempotency_key: idempotencyKey },
+        200,
         signal,
       )),
-      preview: async (token, versionId, signal) => parseArtifactRead(await this.request(
-        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/preview`, {}, signal,
+      preview: async (token, versionId, signal) => parseArtifactRead(await this.artifactRequest(
+        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/preview`, {}, 200, signal,
       )),
-      download: async (token, versionId, signal) => parseArtifactRead(await this.request(
-        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/download`, {}, signal,
+      download: async (token, versionId, signal) => parseArtifactRead(await this.artifactRequest(
+        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/download`, {}, 200, signal,
       )),
     }
     this.artifacts = Object.freeze(artifacts)
@@ -710,6 +761,16 @@ export class XAgentBackendClient implements XAgentBackend {
     await this.request(userToken, '/internal/xagent/auth/revoke', undefined, signal, true)
   }
 
+  private artifactRequest(
+    userToken: string,
+    path: string,
+    body: unknown,
+    expectedStatus: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return this.request(userToken, path, body, signal, false, true, expectedStatus, artifactErrorCode)
+  }
+
   private async request(
     userToken: string | undefined,
     path: string,
@@ -717,6 +778,8 @@ export class XAgentBackendClient implements XAgentBackend {
     signal?: AbortSignal,
     allowEmpty = false,
     internal = true,
+    expectedStatus?: number,
+    mapError = errorCode,
   ): Promise<unknown> {
     const timeout = AbortSignal.timeout(this.timeoutMs)
     const requestSignal = signal === undefined ? timeout : AbortSignal.any([timeout, signal])
@@ -743,13 +806,16 @@ export class XAgentBackendClient implements XAgentBackend {
       }
       response = await this.fetcher(new URL(path, this.origin), init)
       const raw = await readBounded(response, this.maxResponseBytes)
+      if (response.ok && expectedStatus !== undefined && response.status !== expectedStatus) {
+        throw new XAgentBackendError('service-unavailable')
+      }
       let value: unknown
       try {
         value = raw === '' && allowEmpty ? undefined : JSON.parse(raw)
       } catch {
         throw new XAgentBackendError('service-unavailable')
       }
-      if (!response.ok) throw new XAgentBackendError(errorCode(response.status, value))
+      if (!response.ok) throw new XAgentBackendError(mapError(response.status, value))
       return value
     } catch (error) {
       if (error instanceof XAgentBackendError) throw error
