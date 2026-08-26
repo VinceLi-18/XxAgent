@@ -288,6 +288,7 @@ const STAGING_KEY_PATTERN = /staging\/[0-9a-f-]{36}(?:[/?#]|$)/i
 const STORAGE_BUCKET = 'xagent-private'
 const STORAGE_BUCKET_TOKEN_PATTERN = /(?:^|[^a-z0-9])xagent-private(?:$|[^a-z0-9])/i
 const PERCENT_ESCAPE_PATTERN = /%[0-9a-f]{2}/i
+const LITERAL_PERCENT_PATTERN = /%(?![0-9a-f]{2})/gi
 
 function artifactStatus(value: unknown): XAgentArtifactStatus {
   if (typeof value !== 'string' || !ARTIFACT_STATUSES.has(value as XAgentArtifactStatus)) failSchema()
@@ -448,7 +449,7 @@ function decodedHttpUrl(value: string, allowRelative: boolean): string {
     if (!PERCENT_ESCAPE_PATTERN.test(result)) return result
     let decoded: string
     try {
-      decoded = decodeURIComponent(result)
+      decoded = decodeURIComponent(result.replace(LITERAL_PERCENT_PATTERN, '%25'))
     } catch {
       return failSchema()
     }

@@ -985,6 +985,8 @@ describe('XAgent 后端客户端', () => {
     ['/api/v1/xagent/artifact-content/合同?name=合同&signature=a%2Bb%2Fc%3D'],
     ['/content?ratio=100%25'],
     ['/content?signature=合同%25'],
+    ['/content?signature=100%25valid&name=%25E5%2590%2588'],
+    ['/content?name=%25E5%2590%2588&signature=100%25valid'],
     ['https://notxagent-private.storage.example.test/opaque'],
     ['/prefixxagent-private/content?name=notxagent-privatevalue'],
   ])('接受相对或绝对 opaque 读取 URL 且不读取其正文 %#', async (url) => {
@@ -1021,8 +1023,13 @@ describe('XAgent 后端客户端', () => {
     [{ url: '/content?bucket=xagent-private' }],
     [{ url: '/content?bucket=XAGENT-PRIVATE' }],
     [{ url: '/content?bucket=xagent%252Dprivate' }],
+    [{ url: '/content?signature=100%25valid&bucket=xagent%252Dprivate' }],
     [{ url: '/content#XAGENT-PRIVATE' }],
     [{ url: '/content?key=artifacts%252F00000000-0000-0000-0000-000000000401%252F00000000-0000-0000-0000-000000000412' }],
+    [{ url: '/content?signature=100%25valid&key=artifacts%252F00000000-0000-0000-0000-000000000401%252F00000000-0000-0000-0000-000000000412' }],
+    [{ url: '/content?signature=100%25valid&name=%E5%90' }],
+    [{ url: '/content?signature=100%25valid&name=%FF' }],
+    [{ url: '/content?signature=100%25valid#opaque' }],
     [{ url: '/content#secret' }],
   ])('拒绝畸形或泄漏对象 Key 的读取 URL %#', async (value) => {
     const client = new XAgentBackendClient({

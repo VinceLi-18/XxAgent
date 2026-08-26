@@ -8,7 +8,7 @@
 
 Artifact 方法与认证、Session 和工作台方法共用同一个请求管线。每个响应先执行完整正文上限，再由对应闭合解析器拒绝未知或缺失字段。列表摘要校验 private/project 归属；clean latest 必须同时是 latest clean，非 clean latest 引用的 latest clean 必须更早。详情额外要求版本 ID 与版本号唯一、版本号严格降序、首项与 latest version/status 一致，并要求 latest clean 指向历史中最高的 clean 版本。版本公开字段只允许文件名、上传者、大小、MIME、SHA-256、状态和创建时间，任何对象 Key、暂存 Key、租约、内部失败码或扫描原文都会因未知字段而失败关闭。
 
-上传授权只接受无凭据、无 fragment 的绝对 HTTP(S) PUT URL。预览和下载接受同样受限的绝对 HTTP(S) URL 或以单个 `/` 开头的相对 URL。URL 最多递归 percent-decode 16 轮；每轮只在存在完整 `%XX` 时解码，并拒绝控制符、Unicode 空白、反斜杠、协议相对形式、凭据、fragment 和非 HTTP(S) scheme。解码产生的孤立 `%` 是稳定值，达到上限后仍含完整 escape 才失败关闭。稳定 URL 通过安全 base 解析；hostname label、路径 segment、query key/value 和 fragment 均按 token 边界拒绝存储 bucket，完整值还不得包含暂存 Key 或最终对象 Key。客户端把原始读取 URL 作为 opaque 字符串返回，不请求、重写或解析其正文。
+上传授权只接受无凭据、无 fragment 的绝对 HTTP(S) PUT URL。预览和下载接受同样受限的绝对 HTTP(S) URL 或以单个 `/` 开头的相对 URL。URL 最多递归 percent-decode 16 轮；每轮保护不构成 `%XX` 的字面 `%`，其余 triplet 严格按 UTF-8 解码，并拒绝非法或不完整的字节序列、控制符、Unicode 空白、反斜杠、协议相对形式、凭据、fragment 和非 HTTP(S) scheme。解码产生的孤立 `%` 是稳定值，达到上限后仍含完整 escape 才失败关闭。稳定 URL 通过安全 base 解析；hostname label、路径 segment、query key/value 和 fragment 均按 token 边界拒绝存储 bucket，完整值还不得包含暂存 Key 或最终对象 Key。客户端把原始读取 URL 作为 opaque 字符串返回，不请求、重写或解析其正文。
 
 资料上传创建、版本上传和完成只接受 `201`，其余五个资料方法只接受 `200`；其他 2xx 在 JSON 成功解析前收敛为 `service-unavailable`。每个方法持有独立的 exact 错误表，共同只接受 401 `unauthenticated` 与 503 `service-unavailable`；详情增加 404，新资料上传增加 409，新版本上传增加 404/409，完成增加 404/409/422，重试增加 404/409/410/422，预览和下载增加 403/404。Artifact 没有版本化 request，因此不接受 400 `unsupported-version`。全局其他 endpoint 的错误 code、状态错配、未知字段、畸形或不可解析响应统一为 `service-unavailable`，detail 不进入异常消息。
 
