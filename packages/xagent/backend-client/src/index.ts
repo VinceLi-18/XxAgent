@@ -285,7 +285,8 @@ const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:
 const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const OBJECT_KEY_PATTERN = /artifacts\/[0-9a-f-]{36}\/[0-9a-f-]{36}(?:[/?#]|$)/i
 const STAGING_KEY_PATTERN = /staging\/[0-9a-f-]{36}(?:[/?#]|$)/i
-const STORAGE_BUCKET_PATTERN = /(?:^|\/)xagent-private(?:[/?#]|$)/i
+const STORAGE_BUCKET = 'xagent-private'
+const STORAGE_BUCKET_TOKEN_PATTERN = /(?:^|[^a-z0-9])xagent-private(?:$|[^a-z0-9])/i
 const PERCENT_ESCAPE_PATTERN = /%[0-9a-f]{2}/i
 
 function artifactStatus(value: unknown): XAgentArtifactStatus {
@@ -417,7 +418,7 @@ function parseArtifactDetail(value: unknown): XAgentArtifactDetail {
   return { ...summary, canEdit: row.can_edit, versions }
 }
 
-function validateHttpUrl(value: string, allowRelative: boolean): void {
+function validateHttpUrl(value: string, allowRelative: boolean): URL {
   if (
     /\p{White_Space}/u.test(value)
     || value.includes('\\')
@@ -437,19 +438,20 @@ function validateHttpUrl(value: string, allowRelative: boolean): void {
     || parsed.password !== ''
     || parsed.hash !== ''
   ) failSchema()
+  return parsed
 }
 
 function decodedHttpUrl(value: string, allowRelative: boolean): string {
   let result = value
   for (let round = 0; round < MAX_URL_DECODE_ROUNDS; round += 1) {
     validateHttpUrl(result, allowRelative)
+    if (!PERCENT_ESCAPE_PATTERN.test(result)) return result
     let decoded: string
     try {
       decoded = decodeURIComponent(result)
     } catch {
       return failSchema()
     }
-    if (decoded === result) return result
     result = decoded
   }
   validateHttpUrl(result, allowRelative)
@@ -461,6 +463,16 @@ function safeHttpUrl(value: unknown, allowRelative: boolean): { readonly origina
   const result = requiredString(value)
   if (result.length > 16_384) failSchema()
   return { original: result, decoded: decodedHttpUrl(result, allowRelative) }
+}
+
+function containsStorageBucket(parsed: URL): boolean {
+  if (parsed.hostname.split('.').some(label => label.toLowerCase() === STORAGE_BUCKET)) return true
+  const values = [
+    ...parsed.pathname.split('/'),
+    ...Array.from(parsed.searchParams.entries()).flat(),
+    parsed.hash.slice(1),
+  ]
+  return values.some(value => STORAGE_BUCKET_TOKEN_PATTERN.test(value))
 }
 
 function parseArtifactUpload(value: unknown): XAgentArtifactUpload {
@@ -475,10 +487,11 @@ function parseArtifactUpload(value: unknown): XAgentArtifactUpload {
 function parseArtifactRead(value: unknown): { readonly url: string } {
   const row = exactRecord(value, ['url'])
   const url = safeHttpUrl(row.url, true)
+  const parsed = validateHttpUrl(url.decoded, true)
   if (
     OBJECT_KEY_PATTERN.test(url.decoded)
     || STAGING_KEY_PATTERN.test(url.decoded)
-    || STORAGE_BUCKET_PATTERN.test(url.decoded)
+    || containsStorageBucket(parsed)
   ) failSchema()
   return { url: url.original }
 }
@@ -540,18 +553,45 @@ function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
   return accepted ? code : 'service-unavailable'
 }
 
-const ARTIFACT_ERROR_CODES = new Map<number, XAgentBackendErrorCode>([
-  [400, 'unsupported-version'],
+const COMMON_ARTIFACT_ERROR_CODES: readonly (readonly [number, XAgentBackendErrorCode])[] = [
   [401, 'unauthenticated'],
-  [403, 'forbidden'],
+  [503, 'service-unavailable'],
+]
+
+function artifactErrorCodes(
+  ...domain: readonly (readonly [number, XAgentBackendErrorCode])[]
+): ReadonlyMap<number, XAgentBackendErrorCode> {
+  return new Map([...COMMON_ARTIFACT_ERROR_CODES, ...domain])
+}
+
+const ARTIFACT_LIST_ERROR_CODES = artifactErrorCodes()
+const ARTIFACT_DETAIL_ERROR_CODES = artifactErrorCodes([404, 'not-found'])
+const ARTIFACT_CREATE_ERROR_CODES = artifactErrorCodes([409, 'idempotency-conflict'])
+const ARTIFACT_CREATE_VERSION_ERROR_CODES = artifactErrorCodes(
+  [404, 'not-found'],
+  [409, 'idempotency-conflict'],
+)
+const ARTIFACT_COMPLETE_ERROR_CODES = artifactErrorCodes(
+  [404, 'not-found'],
+  [409, 'idempotency-conflict'],
+  [422, 'upload-rejected'],
+)
+const ARTIFACT_RETRY_ERROR_CODES = artifactErrorCodes(
   [404, 'not-found'],
   [409, 'idempotency-conflict'],
   [410, 'upload-expired'],
   [422, 'upload-rejected'],
-  [503, 'service-unavailable'],
-])
+)
+const ARTIFACT_READ_ERROR_CODES = artifactErrorCodes(
+  [403, 'forbidden'],
+  [404, 'not-found'],
+)
 
-function artifactErrorCode(status: number, value: unknown): XAgentBackendErrorCode {
+function artifactErrorCode(
+  status: number,
+  value: unknown,
+  allowed: ReadonlyMap<number, XAgentBackendErrorCode>,
+): XAgentBackendErrorCode {
   let code: unknown
   try {
     const response = exactRecord(value, ['detail'])
@@ -559,7 +599,7 @@ function artifactErrorCode(status: number, value: unknown): XAgentBackendErrorCo
   } catch {
     return 'service-unavailable'
   }
-  const expected = ARTIFACT_ERROR_CODES.get(status)
+  const expected = allowed.get(status)
   return expected !== undefined && code === expected ? expected : 'service-unavailable'
 }
 
@@ -674,16 +714,22 @@ export class XAgentBackendClient implements XAgentBackend {
     this.workbench = Object.freeze(workbench)
     const artifacts: XAgentArtifactBackend = {
       list: async (token, signal) => parseArtifactList(await this.artifactRequest(
-        token, '/internal/xagent/artifacts/list', {}, 200, signal,
+        token, '/internal/xagent/artifacts/list', {}, 200, ARTIFACT_LIST_ERROR_CODES, signal,
       )),
       detail: async (token, artifactId, signal) => parseArtifactDetail(await this.artifactRequest(
-        token, `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}`, {}, 200, signal,
+        token,
+        `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}`,
+        {},
+        200,
+        ARTIFACT_DETAIL_ERROR_CODES,
+        signal,
       )),
       createUpload: async (token, input, signal) => parseArtifactUpload(await this.artifactRequest(
         token,
         '/internal/xagent/artifacts/uploads',
         { filename: input.filename, size: input.size, idempotency_key: input.idempotencyKey },
         201,
+        ARTIFACT_CREATE_ERROR_CODES,
         signal,
       )),
       createVersionUpload: async (token, artifactId, input, signal) => parseArtifactUpload(await this.artifactRequest(
@@ -691,6 +737,7 @@ export class XAgentBackendClient implements XAgentBackend {
         `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}/uploads`,
         { filename: input.filename, size: input.size, idempotency_key: input.idempotencyKey },
         201,
+        ARTIFACT_CREATE_VERSION_ERROR_CODES,
         signal,
       )),
       completeUpload: async (token, uploadId, input, signal) => parseArtifactDetail(await this.artifactRequest(
@@ -698,6 +745,7 @@ export class XAgentBackendClient implements XAgentBackend {
         `/internal/xagent/artifacts/uploads/${encodeURIComponent(uploadId)}/complete`,
         { actual_size: input.size, sha256: input.sha256, idempotency_key: input.idempotencyKey },
         201,
+        ARTIFACT_COMPLETE_ERROR_CODES,
         signal,
       )),
       retry: async (token, versionId, idempotencyKey, signal) => parseArtifactDetail(await this.artifactRequest(
@@ -705,13 +753,24 @@ export class XAgentBackendClient implements XAgentBackend {
         `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/retry`,
         { idempotency_key: idempotencyKey },
         200,
+        ARTIFACT_RETRY_ERROR_CODES,
         signal,
       )),
       preview: async (token, versionId, signal) => parseArtifactRead(await this.artifactRequest(
-        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/preview`, {}, 200, signal,
+        token,
+        `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/preview`,
+        {},
+        200,
+        ARTIFACT_READ_ERROR_CODES,
+        signal,
       )),
       download: async (token, versionId, signal) => parseArtifactRead(await this.artifactRequest(
-        token, `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/download`, {}, 200, signal,
+        token,
+        `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/download`,
+        {},
+        200,
+        ARTIFACT_READ_ERROR_CODES,
+        signal,
       )),
     }
     this.artifacts = Object.freeze(artifacts)
@@ -766,9 +825,19 @@ export class XAgentBackendClient implements XAgentBackend {
     path: string,
     body: unknown,
     expectedStatus: number,
+    allowedErrors: ReadonlyMap<number, XAgentBackendErrorCode>,
     signal?: AbortSignal,
   ): Promise<unknown> {
-    return this.request(userToken, path, body, signal, false, true, expectedStatus, artifactErrorCode)
+    return this.request(
+      userToken,
+      path,
+      body,
+      signal,
+      false,
+      true,
+      expectedStatus,
+      (status, value) => artifactErrorCode(status, value, allowedErrors),
+    )
   }
 
   private async request(
