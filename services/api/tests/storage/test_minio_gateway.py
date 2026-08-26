@@ -88,6 +88,7 @@ def test_gateway_uses_configured_http_transport_for_local_minio(monkeypatch: pyt
             MINIO_SECRET_KEY="local-secret-key",
             MINIO_SECURE=False,
             MINIO_PUBLIC_SECURE=False,
+            MINIO_REGION="us-east-1",
             MINIO_BUCKET="jiaxin-private",
             STAGING_EXPIRY_DAYS=1,
         )
@@ -98,6 +99,13 @@ def test_gateway_uses_configured_http_transport_for_local_minio(monkeypatch: pyt
         "access_key": "local-access-key",
         "secret_key": "local-secret-key",
         "secure": False,
+    }
+    assert captured[1] == {
+        "endpoint": "localhost:9000",
+        "access_key": "local-access-key",
+        "secret_key": "local-secret-key",
+        "secure": False,
+        "region": "us-east-1",
     }
 
 
@@ -133,6 +141,7 @@ def test_gateway_uses_browser_endpoint_only_for_staging_put(monkeypatch: pytest.
             MINIO_SECRET_KEY="local-secret-key",
             MINIO_SECURE=False,
             MINIO_PUBLIC_SECURE=False,
+            MINIO_REGION="us-east-1",
             MINIO_BUCKET="jiaxin-private",
             MINIO_BUCKET_QUOTA_BYTES=1024,
             STAGING_EXPIRY_DAYS=1,

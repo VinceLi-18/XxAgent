@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str
     MINIO_SECURE: bool
     MINIO_PUBLIC_SECURE: bool = False
-    MINIO_BUCKET: str = "jiaxin-private"
+    MINIO_REGION: str = "us-east-1"
+    MINIO_BUCKET: str = "xagent-private"
     MAX_ARTIFACT_SIZE_BYTES: int = Field(default=50 * 1024 * 1024, gt=0)
     STAGING_EXPIRY_DAYS: int = Field(default=1, ge=1)
     CLAMAV_HOST: str = "clamav"

@@ -41,6 +41,7 @@ class MinioGateway:
             access_key=configured_settings.MINIO_ACCESS_KEY,
             secret_key=configured_settings.MINIO_SECRET_KEY,
             secure=configured_settings.MINIO_PUBLIC_SECURE,
+            region=configured_settings.MINIO_REGION,
         )
         gateway = cls(internal_client, configured_settings.MINIO_BUCKET, public_client)
         gateway.ensure_bucket()

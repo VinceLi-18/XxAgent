@@ -1,21 +1,133 @@
 name: xagent-api-test
 
 services:
+  api:
+    build:
+      context: .
+    image: xagent-api:test
+    environment:
+      DATABASE_URL: postgresql+asyncpg://xagent_e2e_app:xagent-e2e-app-password@postgres:5432/xagent_api_test
+      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres:xagent-api-test@postgres:5432/xagent_api_test
+      POSTGRES_APP_USER: xagent_e2e_app
+      JWT_SECRET_KEY: xagent-e2e-signing-key-test-only
+      JWT_ISSUER: xagent-e2e
+      JWT_AUDIENCE: xagent-e2e-api
+      XAGENT_SERVICE_TOKEN: xagent-e2e-service-token-test-only-0001
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: 127.0.0.1:59000
+      MINIO_REGION: us-east-1
+      MINIO_ACCESS_KEY: xagent-e2e-minio
+      MINIO_SECRET_KEY: xagent-e2e-minio-secret
+      MINIO_SECURE: "false"
+      MINIO_PUBLIC_SECURE: "false"
+      MINIO_BUCKET: xagent-private
+      MAX_ARTIFACT_SIZE_BYTES: "52428800"
+      STAGING_EXPIRY_DAYS: "1"
+      CLAMAV_TIMEOUT: "10"
+    ports:
+      - "127.0.0.1:58000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/api/v1/health').read() == b'{\"status\":\"ok\"}'",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  worker:
+    image: xagent-api:test
+    environment:
+      DATABASE_WORKER_URL: postgresql+asyncpg://xagent_e2e_worker:xagent-e2e-worker-password@postgres:5432/xagent_api_test
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: xagent-e2e-minio
+      MINIO_SECRET_KEY: xagent-e2e-minio-secret
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: xagent-private
+      MINIO_TIMEOUT: "10"
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+      CLAMAV_TIMEOUT: "10"
+    command: ["xagent-api", "worker"]
+    stop_grace_period: 2m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: xagent_api_test
       POSTGRES_PASSWORD: xagent-api-test
       POSTGRES_USER: postgres
+      POSTGRES_APP_USER: xagent_e2e_app
+      POSTGRES_APP_PASSWORD: xagent-e2e-app-password
+      POSTGRES_WORKER_USER: xagent_e2e_worker
+      POSTGRES_WORKER_PASSWORD: xagent-e2e-worker-password
     ports:
       - "127.0.0.1:55432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d xagent_api_test"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} && test -f $${PGDATA}/.xagent-roles-ready",
+        ]
       interval: 2s
       timeout: 5s
       retries: 20
     volumes:
       - xagent-api-test-postgres:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+  migrate:
+    image: xagent-api:test
+    environment:
+      DATABASE_ADMIN_URL: postgresql+asyncpg://postgres:xagent-api-test@postgres:5432/xagent_api_test
+      POSTGRES_APP_USER: xagent_e2e_app
+      POSTGRES_WORKER_USER: xagent_e2e_worker
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: xagent-e2e-minio
+      MINIO_ROOT_PASSWORD: xagent-e2e-minio-secret
+    ports:
+      - "127.0.0.1:59000:9000"
+    volumes:
+      - xagent-api-test-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  clamav:
+    image: clamav/clamav-debian:1.4
+    volumes:
+      - xagent-api-test-clamav:/var/lib/clamav
 
 volumes:
+  xagent-api-test-clamav:
+  xagent-api-test-minio:
   xagent-api-test-postgres:

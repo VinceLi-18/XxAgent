@@ -20,3 +20,5 @@ SELECT format(
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'worker_user')
 \gexec
 SQL
+
+touch "$PGDATA/.xagent-roles-ready"

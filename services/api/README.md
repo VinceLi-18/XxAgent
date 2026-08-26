@@ -36,11 +36,11 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-`.env` 包含秘密，已被 Git 忽略，不得提交。`migrate` 使用管理员数据库连接完成迁移后，API 和 worker 只使用各自最低权限数据库角色。API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
+`.env` 包含秘密，已被 Git 忽略，不得提交。PostgreSQL 初始化先安全创建应用与 worker 登录角色并写入完成标志；`migrate` 只在该标志和数据库健康检查通过后运行。迁移完成后，API 只接收 `DATABASE_URL`，worker 只接收 `DATABASE_WORKER_URL`；worker 用户名供迁移授予最小权限，worker 密码和连接不得进入 API。API 健康检查地址为 `http://127.0.0.1:8000/api/v1/health`。
 
 `xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 
-MinIO 最终 bucket 必须启用版本化；API 只为自己新建的 bucket 启用版本化，既有 Off 或 Suspended bucket 会失败关闭。固定最终 key 的补偿清理只能删除本次复制返回的非空目标版本 ID，禁止无条件删除该 key。即时删除失败时，独立 `artifact_object_cleanup_jobs` 队列持久保存严格匹配小写 UUID 形式 `artifacts/{artifact_id}/{version_id}` 的 object key 与非空 MinIO 版本 ID；正式 worker 以自己的租约有限重试，达到第五次后保留身份并进入 `dead`，供运维处置。`worker --once` 按每轮正文和 cleanup 最多各一项的顺序处理，直到首次没有到期任务；停止信号会阻止领取下一项任务，并等待已经开始的处理收敛。
+MinIO 最终 bucket 默认为 `xagent-private` 且必须启用版本化；API 只为自己新建的 bucket 启用版本化，既有 Off 或 Suspended bucket 会失败关闭。固定最终 key 的补偿清理只能删除本次复制返回的非空目标版本 ID，禁止无条件删除该 key。即时删除失败时，独立 `artifact_object_cleanup_jobs` 队列持久保存严格匹配小写 UUID 形式 `artifacts/{artifact_id}/{version_id}` 的 object key 与非空 MinIO 版本 ID；正式 worker 以自己的租约有限重试，达到第五次后保留身份并进入 `dead`，供运维处置。`worker --once` 按每轮正文和 cleanup 最多各一项的顺序处理，直到首次没有到期任务；停止信号会阻止领取下一项任务，并等待已经开始的处理收敛。Compose 为 worker 提供两分钟停止宽限期。
 
 ## 账号管理
 
@@ -86,7 +86,7 @@ GET URL 只包含 Version ID、到期时间、读取模式和域分离签名，�
 
 `.dockerignore` 会阻止 `.env`、本地虚拟环境、测试缓存和构建产物进入 Docker 构建上下文。
 
-ClamAV 官方 `1.4.3_base` 镜像只提供 `linux/amd64`。Apple Silicon 本地环境需要 Docker 已启用 amd64 模拟；PostgreSQL、Redis、MinIO 和 XAgent API 仍使用宿主原生架构。
+Compose 使用官方 Debian `clamav/clamav-debian:1.4` 多架构镜像，并等待镜像自带的 `clamdcheck.sh` 健康检查；MinIO 使用镜像已有的 `mc ready local`。PostgreSQL、MinIO、ClamAV 和 XAgent API 可在 Apple Silicon Docker 的原生 arm64 环境运行。
 
 也可以在仓库根目录使用顶层命令：
 
