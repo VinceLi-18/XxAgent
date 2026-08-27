@@ -1272,6 +1272,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "clamd" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "minio" },
     { name = "pgvector" },
     { name = "pydantic-settings" },
@@ -1284,7 +1285,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
 ]
 
@@ -1295,7 +1295,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.29,<1.0" },
     { name = "clamd", specifier = ">=1.0,<2.0" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<1.0" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "minio", specifier = ">=7.2,<8.0" },
     { name = "pgvector", specifier = ">=0.4,<1.0" },
     { name = "pydantic-settings", specifier = ">=2.6,<3.0" },

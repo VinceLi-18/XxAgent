@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     CLAMAV_HOST: str = "clamav"
     CLAMAV_PORT: int = 3310
     CLAMAV_TIMEOUT: float = Field(gt=0)
+    EMBEDDING_URL: str = "http://embedding:8000"
+    EMBEDDING_TIMEOUT: float = Field(default=10, gt=0)
 
 
 settings = Settings()

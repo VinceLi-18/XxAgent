@@ -36,6 +36,8 @@ os.environ.update(
         "MINIO_SECURE": "false",
         "MINIO_PUBLIC_SECURE": "false",
         "CLAMAV_TIMEOUT": "1",
+        "EMBEDDING_URL": "http://embedding.test:8000",
+        "EMBEDDING_TIMEOUT": "1",
     }
 )
 
