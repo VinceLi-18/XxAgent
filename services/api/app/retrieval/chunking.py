@@ -68,9 +68,10 @@ def chunk_text(payload: bytes, content_type: str, tokenizer: Tokenizer) -> list[
     token_ends = tuple(span.end for span in spans)
     chunks: list[TextChunk] = []
     start_token = 0
+    minimum_end: int | None = None
     while start_token < len(spans):
         start = spans[start_token].start
-        end, end_token = _chunk_end(text, spans, token_ends, start_token)
+        end, end_token = _chunk_end(text, spans, token_ends, start_token, minimum_end=minimum_end)
         chunks.append(
             TextChunk(
                 ordinal=len(chunks),
@@ -83,6 +84,7 @@ def chunk_text(payload: bytes, content_type: str, tokenizer: Tokenizer) -> list[
         if end_token == len(spans):
             break
         start_token = _next_start_token(text, spans, token_ends, start_token, end, end_token)
+        minimum_end = end
     return chunks
 
 
@@ -116,6 +118,7 @@ def _chunk_end(
     spans: tuple[_TokenSpan, ...],
     token_ends: tuple[int, ...],
     start_token: int,
+    minimum_end: int | None = None,
 ) -> tuple[int, int]:
     maximum_token = min(start_token + MAX_CHUNK_TOKENS, len(spans))
     token_end = spans[maximum_token - 1].end
@@ -127,7 +130,7 @@ def _chunk_end(
     if end_token == len(spans) and upper_end == len(text):
         return len(text), end_token
     preferred_end = _preferred_boundary(text, spans[start_token].start, upper_end)
-    if preferred_end is not None:
+    if preferred_end is not None and (minimum_end is None or preferred_end > minimum_end):
         preferred_tokens = bisect_right(token_ends, preferred_end, lo=start_token, hi=end_token)
         if preferred_tokens > start_token:
             return preferred_end, preferred_tokens
@@ -165,7 +168,7 @@ def _next_start_token(
 ) -> int:
     candidate = max(start_token, end_token - CHUNK_OVERLAP_TOKENS)
     while candidate < end_token:
-        next_end, _ = _chunk_end(text, spans, token_ends, candidate)
+        next_end, _ = _chunk_end(text, spans, token_ends, candidate, minimum_end=previous_end)
         if next_end > previous_end:
             return candidate
         candidate += 1

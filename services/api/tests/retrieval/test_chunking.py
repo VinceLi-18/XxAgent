@@ -88,3 +88,14 @@ def test_chunk_text_keeps_a_64_token_overlap_when_long_tokens_fit() -> None:
     chunks = chunk_text(" ".join(words).encode(), "text/plain", tokenizer)
 
     assert chunks[1].text.split()[:64] == chunks[0].text.split()[-64:]
+
+
+def test_chunk_text_keeps_overlap_after_a_paragraph_boundary_before_a_long_paragraph() -> None:
+    tokenizer = WhitespaceTokenizer()
+    prefix = [f"prefix{index}" for index in range(450)]
+    following = [f"following{index}" for index in range(600)]
+    chunks = chunk_text((" ".join(prefix) + "\n\n" + " ".join(following)).encode(), "text/plain", tokenizer)
+
+    assert chunks[0].text.split() == prefix
+    assert chunks[1].text.split()[:64] == prefix[-64:]
+    assert chunks == chunk_text((" ".join(prefix) + "\n\n" + " ".join(following)).encode(), "text/plain", tokenizer)
