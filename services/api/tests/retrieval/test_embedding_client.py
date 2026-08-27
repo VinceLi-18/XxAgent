@@ -39,6 +39,7 @@ async def test_embedding_client_returns_only_valid_pinned_vectors() -> None:
         {"model": "other", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dimension": 1024, "vectors": [[0.0] * 1024]},
         {"model": "BAAI/bge-m3", "revision": "other", "dimension": 1024, "vectors": [[0.0] * 1024]},
         {"model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dimension": 768, "vectors": [[0.0] * 1024]},
+        {"model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dimension": 1024.0, "vectors": [[0.0] * 1024]},
         {"model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dimension": 1024, "vectors": [[0.0] * 1023]},
         {"model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dimension": 1024, "vectors": [[nan] + [0.0] * 1023]},
         {"model": "BAAI/bge-m3", "revision": "5617a9f61b028005a4858fdac845db406aefb181", "dimension": 1024, "vectors": []},
@@ -65,6 +66,22 @@ async def test_embedding_client_translates_timeout_without_logging_text(caplog: 
             await client.embed(["do not log this secret"])
 
     assert "do not log this secret" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_embedding_client_maps_huge_vector_integer_to_retrieval_unavailable() -> None:
+    huge = 10**4_000
+    payload = {
+        "model": "BAAI/bge-m3",
+        "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+        "dimension": 1024,
+        "vectors": [[huge] + [0.0] * 1023],
+    }
+    async with httpx.AsyncClient(transport=_response(payload), base_url="http://embedding") as http_client:
+        client = EmbeddingClient(http_client)
+
+        with pytest.raises(RetrievalUnavailableError, match="retrieval-unavailable"):
+            await client.embed(["large numeric response"])
 
 
 @pytest.mark.anyio

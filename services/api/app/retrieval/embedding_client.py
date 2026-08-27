@@ -4,10 +4,22 @@ from math import isfinite
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, ConfigDict, StrictFloat, StrictInt, StrictStr
 
 MODEL_ID = "BAAI/bge-m3"
 MODEL_REVISION = "5617a9f61b028005a4858fdac845db406aefb181"
 EMBEDDING_DIMENSION = 1024
+
+
+class _EmbeddingResponse(BaseModel):
+    """Strict JSON fields accepted from the internal embedding service."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    model: StrictStr
+    revision: StrictStr
+    dimension: StrictInt
+    vectors: list[list[StrictFloat]]
 
 
 class RetrievalUnavailableError(RuntimeError):
@@ -37,27 +49,21 @@ class EmbeddingClient:
             response.raise_for_status()
             payload = response.json()
             return _validated_vectors(payload, len(texts))
-        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        except (httpx.HTTPError, OverflowError, ValueError, TypeError, KeyError):
             raise RetrievalUnavailableError() from None
 
 
 def _validated_vectors(payload: Any, expected_count: int) -> list[list[float]]:
-    if not isinstance(payload, dict):
-        raise ValueError("embedding response must be an object")
+    response = _EmbeddingResponse.model_validate(payload)
     if (
-        payload.get("model") != MODEL_ID
-        or payload.get("revision") != MODEL_REVISION
-        or payload.get("dimension") != EMBEDDING_DIMENSION
+        response.model != MODEL_ID
+        or response.revision != MODEL_REVISION
+        or response.dimension != EMBEDDING_DIMENSION
     ):
         raise ValueError("embedding model metadata differs")
-    vectors = payload.get("vectors")
-    if not isinstance(vectors, list) or len(vectors) != expected_count:
+    if len(response.vectors) != expected_count:
         raise ValueError("embedding vector count differs")
-    if any(
-        not isinstance(vector, list)
-        or len(vector) != EMBEDDING_DIMENSION
-        or any(not isinstance(value, (int, float)) or isinstance(value, bool) or not isfinite(value) for value in vector)
-        for vector in vectors
-    ):
+    vectors = [[float(value) for value in vector] for vector in response.vectors]
+    if any(len(vector) != EMBEDDING_DIMENSION or any(not isfinite(value) for value in vector) for vector in vectors):
         raise ValueError("embedding vector is invalid")
-    return [[float(value) for value in vector] for vector in vectors]
+    return vectors

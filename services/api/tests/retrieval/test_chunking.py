@@ -6,8 +6,17 @@ from app.retrieval.chunking import RetrievalInputError, chunk_text
 
 
 class WhitespaceTokenizer:
+    def __init__(self) -> None:
+        self.encode_calls = 0
+        self.offset_calls = 0
+
     def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+        self.encode_calls += 1
         return list(range(len(re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE))))
+
+    def encode_with_offsets(self, text: str) -> list[tuple[int, int]]:
+        self.offset_calls += 1
+        return [(match.start(), match.end()) for match in re.finditer(r"\w+|[^\w\s]", text, flags=re.UNICODE)]
 
 
 TOKENIZER = WhitespaceTokenizer()
@@ -62,3 +71,20 @@ def test_chunk_text_splits_a_giant_multibyte_line_at_the_eight_kib_cap() -> None
     assert all(len(chunk.text.encode()) <= 8 * 1024 for chunk in chunks)
     assert all(chunk.line_start == chunk.line_end == 1 for chunk in chunks)
     assert chunks == chunk_text(("é" * 5_000).encode(), "text/plain", TOKENIZER)
+
+
+def test_chunk_text_uses_one_token_offset_scan_for_many_short_paragraphs() -> None:
+    tokenizer = WhitespaceTokenizer()
+    chunks = chunk_text(("paragraph\n\n" * 6_000).encode(), "text/plain", tokenizer)
+
+    assert chunks
+    assert tokenizer.offset_calls == 1
+    assert tokenizer.encode_calls == 0
+
+
+def test_chunk_text_keeps_a_64_token_overlap_when_long_tokens_fit() -> None:
+    tokenizer = WhitespaceTokenizer()
+    words = [f"token{index:04d}" + "x" * 10 for index in range(600)]
+    chunks = chunk_text(" ".join(words).encode(), "text/plain", tokenizer)
+
+    assert chunks[1].text.split()[:64] == chunks[0].text.split()[-64:]

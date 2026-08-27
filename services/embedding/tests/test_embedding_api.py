@@ -1,5 +1,7 @@
 import logging
 from math import isfinite, sqrt
+from threading import Lock
+from time import sleep
 
 import httpx
 import pytest
@@ -19,6 +21,24 @@ class DeterministicBackend:
             vector[sum(map(ord, text)) % EMBEDDING_DIMENSION] = 1.0
             vectors.append(vector)
         return vectors
+
+
+class ColdStartBackend(DeterministicBackend):
+    def __init__(self) -> None:
+        self.active_encodes = 0
+        self.max_active_encodes = 0
+        self._lock = Lock()
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        with self._lock:
+            self.active_encodes += 1
+            self.max_active_encodes = max(self.max_active_encodes, self.active_encodes)
+        sleep(0.02)
+        try:
+            return super().encode(texts)
+        finally:
+            with self._lock:
+                self.active_encodes -= 1
 
 
 @pytest.mark.anyio
@@ -68,3 +88,27 @@ async def test_health_identifies_the_pinned_model_without_loading_it() -> None:
         "revision": MODEL_REVISION,
         "dimension": EMBEDDING_DIMENSION,
     }
+
+
+@pytest.mark.anyio
+async def test_concurrent_cold_requests_load_once_and_serialize_inference() -> None:
+    backend = ColdStartBackend()
+    factory_calls = 0
+
+    def factory() -> ColdStartBackend:
+        nonlocal factory_calls
+        factory_calls += 1
+        sleep(0.02)
+        return backend
+
+    app = create_app(EmbeddingModel(backend_factory=factory))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
+        first, second = await __import__("asyncio").gather(
+            client.post("/embed", json={"texts": ["first"]}),
+            client.post("/embed", json={"texts": ["second"]}),
+        )
+
+    assert first.status_code == second.status_code == 200
+    assert factory_calls == 1
+    assert backend.max_active_encodes == 1

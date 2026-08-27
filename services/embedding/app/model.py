@@ -1,7 +1,8 @@
 """Pinned CPU model adapter and embedding response validation."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from math import isfinite, sqrt
+from threading import Lock
 from typing import Protocol
 
 MODEL_ID = "BAAI/bge-m3"
@@ -55,8 +56,14 @@ class SentenceTransformerBackend:
 class EmbeddingModel:
     """Validate requests and normalize vectors from a pinned model backend."""
 
-    def __init__(self, backend: EmbeddingBackend | None = None) -> None:
+    def __init__(
+        self,
+        backend: EmbeddingBackend | None = None,
+        backend_factory: Callable[[], EmbeddingBackend] = SentenceTransformerBackend,
+    ) -> None:
         self._backend = backend
+        self._backend_factory = backend_factory
+        self._inference_lock = Lock()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Return fixed-size, finite unit vectors for bounded UTF-8 texts.
@@ -69,18 +76,19 @@ class EmbeddingModel:
         for text in texts:
             if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
                 raise EmbeddingInputError("text exceeds the 8 KiB limit")
-        backend = self._backend_or_load()
-        for text in texts:
-            if backend.token_count(text) > MAX_TOKENS:
-                raise EmbeddingInputError("text exceeds the 512 token limit")
-        vectors = backend.encode(texts)
-        if len(vectors) != len(texts):
-            raise EmbeddingProtocolError("backend returned an incomplete vector response")
-        return [_normalize_vector(vector) for vector in vectors]
+        with self._inference_lock:
+            backend = self._backend_or_load()
+            for text in texts:
+                if backend.token_count(text) > MAX_TOKENS:
+                    raise EmbeddingInputError("text exceeds the 512 token limit")
+            vectors = backend.encode(texts)
+            if len(vectors) != len(texts):
+                raise EmbeddingProtocolError("backend returned an incomplete vector response")
+            return [_normalize_vector(vector) for vector in vectors]
 
     def _backend_or_load(self) -> EmbeddingBackend:
         if self._backend is None:
-            self._backend = SentenceTransformerBackend()
+            self._backend = self._backend_factory()
         return self._backend
 
 
