@@ -11,11 +11,60 @@ export interface ConnectionRpcHandlerOptions {
   readonly authority: ConnectionRpcAuthority
 }
 
+/** Host 为一个物理 HTTP 请求或 WebSocket 连接生成的显式上下文。 */
+export interface ConnectionRequestContext {
+  readonly principal?: unknown
+  readonly userToken?: string
+  readonly connectionId: string
+  /** Host-decoded RPC correlation id; absent on event-stream connections. */
+  readonly requestId?: string
+}
+
+/** 可选认证服务返回的字段；Host 独占 connectionId。 */
+export interface ResolvedConnectionRequestContext {
+  readonly principal?: unknown
+  readonly userToken?: string
+  /** 认证失效时终止该物理长连接；普通 HTTP 请求无需提供。 */
+  readonly lifetime?: AbortSignal
+}
+
+/** 可选的部署认证扩展点；通用 Connection 不依赖具体产品身份包。 */
+export interface ConnectionRequestContextResolver {
+  resolve(
+    request: Request,
+    connectionId: string,
+    signal: AbortSignal,
+  ): Promise<ResolvedConnectionRequestContext>
+}
+
+/** 可选的部署授权扩展点；实现包围一次已认证 RPC，且不得信任 payload 中的身份字段。 */
+export interface ConnectionRequestAuthorizer {
+  run<T>(
+    endpoint: string,
+    payload: unknown,
+    request: ConnectionRequestContext,
+    signal: AbortSignal,
+    operation: () => Promise<RpcResult<T>>,
+  ): Promise<RpcResult<T>>
+
+  /**
+   * Filter or project one server-push frame for the authenticated physical
+   * connection. Returning undefined suppresses the frame.
+   */
+  filterEvent?(
+    endpoint: 'events.mux' | 'events.host',
+    frame: unknown,
+    request: ConnectionRequestContext,
+    signal: AbortSignal,
+  ): Promise<unknown>
+}
+
 /** Handler invoked after Connection has decoded the transport envelope. */
 export type ConnectionRpcHandler = (
   endpoint: string,
   payload: unknown,
   signal: AbortSignal,
+  request: ConnectionRequestContext,
 ) => Promise<RpcResult<unknown>>
 
 /** Synchronous ownership test for one endpoint on a shared RPC channel. */

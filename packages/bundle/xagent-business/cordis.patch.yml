@@ -7,8 +7,7 @@
   config:
     dshHome: !!js dshProfileDataPath()
 - id: session-persistence-jsonl
-  config:
-    root: !!js dshProfileDataPath('sessions')
+  disabled: true
 - id: attachment-local
   config:
     dshHome: !!js dshProfileDataPath()
@@ -67,3 +66,47 @@
   disabled: true
 - id: ui-agent-preset
   disabled: true
+- id: ui-workspace
+  disabled: true
+- id: xagent-ui-account
+  name: '@xagent/dsh-ui-account'
+  disabled: false
+- id: xagent-ui-project
+  name: '@xagent/dsh-ui-project'
+  disabled: false
+
+- insert:
+    - id: xagent-session-persistence-api
+      name: '@xagent/dsh-session-persistence-api'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+
+    - id: xagent-connection-auth
+      name: '@xagent/dsh-connection-auth'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+        allowedOrigins: !!js process.env.XAGENT_ALLOWED_ORIGINS?.split(',').map(value => value.trim()).filter(Boolean)
+        secureCookie: !!js process.env.XAGENT_ALLOW_INSECURE_COOKIE !== '1'
+
+    - id: xagent-authorization
+      name: '@xagent/dsh-authorization'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+
+    - id: xagent-project
+      name: '@xagent/dsh-project'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+
+    - id: xagent-artifact
+      name: '@xagent/dsh-artifact'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+
+    - id: xagent-ui-artifact
+      name: '@xagent/dsh-ui-artifact'

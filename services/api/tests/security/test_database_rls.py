@@ -12,26 +12,32 @@ from app.core.db_context import set_actor_context
 from app.core.config import Settings
 from app.core.security import Actor
 from app.models.audit import AuditEvent
-from app.models.conversation import ConversationThread
 from app.models.identity import Role
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
+from app.models.xagent_session import XAgentSession
 
 
 def _api_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def test_compose_uses_dedicated_non_superuser_application_credentials():
+def test_compose_uses_passwordless_urls_and_dedicated_runtime_secrets():
     environment_example = (_api_root() / ".env.example").read_text()
     compose_configuration = (_api_root() / "compose.yml").read_text()
 
-    assert "POSTGRES_APP_USER=jiaxin_app" in environment_example
+    assert "POSTGRES_APP_USER=xagent_app" in environment_example
     assert "POSTGRES_APP_PASSWORD=" in environment_example
     assert (
-        "DATABASE_URL=postgresql+asyncpg://${POSTGRES_APP_USER}:${POSTGRES_APP_PASSWORD}"
+        "DATABASE_URL=postgresql+asyncpg://${POSTGRES_APP_USER}"
         "@postgres:5432/${POSTGRES_DB}"
     ) in environment_example
-    assert "./postgres/init:/docker-entrypoint-initdb.d:ro" in compose_configuration
+    assert (
+        "DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}"
+        "@postgres:5432/${POSTGRES_DB}"
+    ) in environment_example
+    assert "POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}" in compose_configuration
+    assert "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}" in compose_configuration
+    assert "./postgres/init:/docker-entrypoint-initdb.d:ro" not in compose_configuration
     assert "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env to a high-entropy value}" in compose_configuration
     assert "${JWT_ISSUER:?Set JWT_ISSUER in .env}" in compose_configuration
     assert "${JWT_AUDIENCE:?Set JWT_AUDIENCE in .env}" in compose_configuration
@@ -60,8 +66,9 @@ def test_alembic_uses_a_separate_admin_database_url():
     alembic_environment = (_api_root() / "alembic/env.py").read_text()
     compose_configuration = (_api_root() / "compose.yml").read_text()
 
-    assert "DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}" in environment_example
-    assert "settings.DATABASE_ADMIN_URL" in alembic_environment
+    assert "DATABASE_ADMIN_URL=postgresql+asyncpg://${POSTGRES_USER}@postgres" in environment_example
+    assert "migration_settings.DATABASE_ADMIN_URL" in alembic_environment
+    assert "password=migration_settings.POSTGRES_PASSWORD" in alembic_environment
     assert "DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}" in compose_configuration
 
 
@@ -119,44 +126,6 @@ async def actor_session(seeded_database: AsyncEngine, application_role: str):
 
 
 @pytest.fixture
-async def bob_thread(seeded_database: AsyncEngine) -> ConversationThread:
-    thread = ConversationThread(
-        id=UUID("00000000-0000-0000-0000-000000000101"),
-        title="Bob private thread",
-        owner_id=UUID("00000000-0000-0000-0000-000000000002"),
-    )
-    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
-        async with session.begin():
-            session.add(thread)
-    return thread
-
-
-@pytest.fixture
-async def shared_thread(seeded_database: AsyncEngine) -> ConversationThread:
-    project = Project(
-        id=UUID("00000000-0000-0000-0000-000000000201"),
-        name="Shared project",
-        owner_id=UUID("00000000-0000-0000-0000-000000000002"),
-    )
-    thread = ConversationThread(
-        id=UUID("00000000-0000-0000-0000-000000000202"),
-        title="Shared project thread",
-        project_id=project.id,
-    )
-    membership = ProjectMembership(
-        id=UUID("00000000-0000-0000-0000-000000000203"),
-        project_id=project.id,
-        account_id=UUID("00000000-0000-0000-0000-000000000001"),
-    )
-    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
-        async with session.begin():
-            session.add(project)
-            await session.flush()
-            session.add_all((thread, membership))
-    return thread
-
-
-@pytest.fixture
 async def unrelated_project_rows(seeded_database: AsyncEngine):
     project = Project(
         id=UUID("00000000-0000-0000-0000-000000000301"),
@@ -180,7 +149,7 @@ async def unrelated_project_rows(seeded_database: AsyncEngine):
         id=UUID("00000000-0000-0000-0000-000000000304"),
         actor_id=UUID("00000000-0000-0000-0000-000000000002"),
         action="read",
-        resource_type="conversation_thread",
+        resource_type="xagent_session",
         resource_id=UUID("00000000-0000-0000-0000-000000000101"),
         request_id=UUID("00000000-0000-0000-0000-000000000305"),
         result="allowed",
@@ -192,9 +161,17 @@ async def unrelated_project_rows(seeded_database: AsyncEngine):
 
 
 @pytest.mark.anyio
-async def test_rls_hides_another_specialists_private_thread(actor_session, alice, bob_thread):
+async def test_rls_hides_another_specialists_private_session(
+    actor_session,
+    alice,
+    bob_private_xagent_session,
+):
     await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == bob_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(
+            XAgentSession.id == bob_private_xagent_session.id
+        )
+    )
     assert row is None
 
 
@@ -255,29 +232,47 @@ async def test_rls_allows_project_creation_for_the_current_actor(actor_session, 
 
 
 @pytest.mark.anyio
-async def test_rls_allows_a_project_member_to_read_shared_thread(actor_session, alice, shared_thread):
+async def test_rls_allows_a_project_member_to_read_shared_session(
+    actor_session,
+    alice,
+    shared_xagent_session,
+):
     await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == shared_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(XAgentSession.id == shared_xagent_session.id)
+    )
     assert row is not None
 
 
 @pytest.mark.anyio
-async def test_rls_allows_manager_to_read_a_project_shared_thread(actor_session, shared_thread):
+async def test_rls_allows_manager_to_read_a_project_shared_session(
+    actor_session,
+    shared_xagent_session,
+):
     await set_actor_context(
         actor_session,
         Actor(id=UUID("00000000-0000-0000-0000-000000000003"), role=Role.MANAGER),
     )
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == shared_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(XAgentSession.id == shared_xagent_session.id)
+    )
     assert row is not None
 
 
 @pytest.mark.anyio
-async def test_rls_hides_another_specialists_private_thread_from_manager(actor_session, bob_thread):
+async def test_rls_hides_another_specialists_private_session_from_manager(
+    actor_session,
+    bob_private_xagent_session,
+):
     await set_actor_context(
         actor_session,
         Actor(id=UUID("00000000-0000-0000-0000-000000000003"), role=Role.MANAGER),
     )
-    row = await actor_session.scalar(select(ConversationThread).where(ConversationThread.id == bob_thread.id))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(
+            XAgentSession.id == bob_private_xagent_session.id
+        )
+    )
     assert row is None
 
 

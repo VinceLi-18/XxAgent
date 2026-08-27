@@ -5,13 +5,16 @@
  * runtime's bind-dependent LAN snapshot.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
+import * as yaml from 'js-yaml'
 import { apply, Config, internals } from '../src/index.ts'
 
 vi.mock('node:os', async importOriginal => ({
@@ -70,6 +73,32 @@ interface BashContribution {
 }
 
 describe('web-app runtime glue', () => {
+  it('declares disabled XAgent browser seats without enabling product semantics', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+    }
+    const patch = yaml.load(readFileSync(resolve(root, 'cordis.patch.yml'), 'utf8'), {
+      schema: entryListSchema,
+    }) as Array<{ insert?: Array<{ id?: string; name?: string; disabled?: boolean }> }>
+    const rows = new Map(patch.flatMap(row => row.insert ?? []).map(row => [row.id, row]))
+
+    expect(rows.get('xagent-ui-account')).toEqual({
+      id: 'xagent-ui-account',
+      name: '@xagent/dsh-ui-account',
+      disabled: true,
+    })
+    expect(rows.get('xagent-ui-project')).toEqual({
+      id: 'xagent-ui-project',
+      name: '@xagent/dsh-ui-project',
+      disabled: true,
+    })
+    expect(manifest.dependencies).toMatchObject({
+      '@xagent/dsh-ui-account': 'workspace:^',
+      '@xagent/dsh-ui-project': 'workspace:^',
+    })
+  })
+
   it('mounts dist serving, prompt section, bash variables, and prints the URL with the LAN snapshot', async () => {
     stageDist()
     const ctx = new Context()

@@ -219,6 +219,16 @@
     - id: ui-workspace
       name: '@deepseek-ai/dsh-client-ui-workspace'
 
+    # XAgent 产品面只在 Business 的后置 patch 中启用。普通 Web 与
+    # Developer 保留默认关闭状态，不获得账号或项目语义。
+    - id: xagent-ui-account
+      name: '@xagent/dsh-ui-account'
+      disabled: true
+
+    - id: xagent-ui-project
+      name: '@xagent/dsh-ui-project'
+      disabled: true
+
     # Input triggers: the '/' | '@' pipeline (ui-input-trigger), the command surface over
     # it (ui-commands), and the two reference sources (ui-skill / ui-subagent).
     - id: ui-input-trigger

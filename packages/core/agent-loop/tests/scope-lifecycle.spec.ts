@@ -882,6 +882,30 @@ describe('agent scope lifecycle', () => {
     expect(ctx.sessions.get(SessionId('partial-session'))).toBeUndefined()
   })
 
+  it('persists a fresh session before publishing either registry identity', async () => {
+    const ctx = await harness()
+    const observed: string[] = []
+    ctx.provide('sessionPersistence', {
+      preparePublication: () => {
+        observed.push('persist')
+        expect(ctx.agents.get(SessionId('remote-publication'))).toBeUndefined()
+        expect(ctx.sessions.get(SessionId('remote-publication'))).toBeUndefined()
+        return Promise.reject(new Error('remote unavailable'))
+      },
+    } as never)
+    ctx.on('session/created', () => { observed.push('session') })
+    ctx.on('agent/created', () => { observed.push('agent') })
+
+    await expect(ctx.agents.create({
+      sessionId: SessionId('remote-publication'),
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })).rejects.toThrow('remote unavailable')
+
+    expect(observed).toEqual(['persist'])
+    expect(ctx.agents.get(SessionId('remote-publication'))).toBeUndefined()
+    expect(ctx.sessions.get(SessionId('remote-publication'))).toBeUndefined()
+  })
+
   it('the synchronous config helper rolls back when publication throws', async () => {
     const ctx = await harness()
     const sessionsBefore = ctx.sessions.list().length

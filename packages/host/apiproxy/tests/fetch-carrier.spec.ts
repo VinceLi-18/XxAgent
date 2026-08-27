@@ -630,6 +630,39 @@ describe('handler carrier-layer statuses', () => {
     expect(await response.text()).toContain('impl crashed')
   })
 
+  it('lets an authorizer replace a unary result while preserving the client rpcId', async () => {
+    const run = vi.fn(async () => ({ ok: true as const, value: { items: [] } }))
+    const authorized = toFetchHandler(fakeApi(), {
+      requestContext: { connectionId: 'connection-1' },
+      authorizer: { run: run as never },
+    })
+    const body = JSON.stringify({ type: 'client-request', rpcId: 'authorized-id', method: 'session.list', payload: {} })
+    const response = await authorized.fetch(new Request('http://x/api/session.list', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    }))
+    expect(await response.json()).toMatchObject({ rpcId: 'authorized-id', result: { ok: true } })
+    expect(run).toHaveBeenCalledOnce()
+
+    const withoutContext = toFetchHandler(fakeApi(), { authorizer: { run: run as never } })
+    await withoutContext.fetch(new Request('http://x/api/session.list', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    }))
+    expect(run).toHaveBeenCalledOnce()
+  })
+
+  it('contains an authorizer crash as a carrier 500', async () => {
+    const authorized = toFetchHandler(fakeApi(), {
+      requestContext: { connectionId: 'connection-1' },
+      authorizer: { run: async () => { throw new Error('authorization failed') } },
+    })
+    const body = JSON.stringify({ type: 'client-request', rpcId: 'authorized-id', method: 'session.list', payload: {} })
+    const response = await authorized.fetch(new Request('http://x/api/session.list', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    }))
+    expect(response.status).toBe(500)
+    expect(await response.text()).toContain('authorization failed')
+  })
+
   it('routes /api/respond, rejecting malformed client-responses as a receipt', async () => {
     const good = JSON.stringify({ type: 'client-response', rpcId: 'known', result: { ok: true, value: null } })
     const goodReceipt: unknown = await (await handler.fetch(new Request('http://x/api/respond', { method: 'POST', headers: { 'content-type': 'application/json' }, body: good }))).json()
@@ -659,6 +692,56 @@ describe('SSE streams through the carrier', () => {
     const ac = new AbortController()
     const frames = await collect(client().events.host({}, ac.signal))
     expect(frames[0]?.payload).toMatchObject({ type: 'host/session-removed' })
+  })
+
+  it('filters SSE frames with the authenticated request context', async () => {
+    const api = fakeApi({ muxFrames: [
+      { type: 'session/subscribed', sessionId: 'denied' as never, lastSeq: 0 },
+      { type: 'session/subscribed', sessionId: 'allowed' as never, lastSeq: 0 },
+    ] })
+    const filterEvent = vi.fn(async (_endpoint: string, frame: unknown) => (
+      (frame as { sessionId?: string }).sessionId === 'denied' ? undefined : frame
+    ))
+    const handler = toFetchHandler(api, {
+      requestContext: { connectionId: 'connection-1', userToken: 'token' },
+      authorizer: {
+        run: async (_endpoint, _payload, _request, _signal, operation) => operation(),
+        filterEvent,
+      },
+    })
+    const filtered = new InProcessApiClient({ fetch: handler.fetch })
+
+    const frames = await collect(filtered.events.mux({}, new AbortController().signal))
+
+    expect(frames.map(frame => frame.payload)).toEqual([
+      { type: 'session/subscribed', sessionId: 'allowed', lastSeq: 0 },
+    ])
+    expect(filterEvent).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not filter SSE when an authorizer has no physical request context', async () => {
+    const filterEvent = vi.fn(async (_endpoint: string, frame: unknown) => frame)
+    const raw = toFetchHandler(fakeApi(), {
+      authorizer: {
+        run: async (_endpoint, _payload, _request, _signal, operation) => operation(),
+        filterEvent,
+      },
+    })
+    const frames = await collect(new InProcessApiClient({ fetch: raw.fetch }).events.mux({}, new AbortController().signal))
+    expect(frames).toHaveLength(1)
+    expect(filterEvent).not.toHaveBeenCalled()
+  })
+
+  it('suppresses an SSE stream when every frame is denied', async () => {
+    const raw = toFetchHandler(fakeApi(), {
+      requestContext: { connectionId: 'connection-1' },
+      authorizer: {
+        run: async (_endpoint, _payload, _request, _signal, operation) => operation(),
+        filterEvent: async () => undefined,
+      },
+    })
+    const frames = await collect(new InProcessApiClient({ fetch: raw.fetch }).events.mux({}, new AbortController().signal))
+    expect(frames).toEqual([])
   })
 
   it('drops frames after the consumer aborts mid-stream', async () => {

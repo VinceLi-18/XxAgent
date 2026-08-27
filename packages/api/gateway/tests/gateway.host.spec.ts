@@ -1,15 +1,17 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context, Service, symbols } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { apply as applyConnection, inject as connectionInject } from '@deepseek-ai/dsh-client-connection'
+import type { ConnectionRequestContext } from '@deepseek-ai/dsh-client-connection'
 import type { WebServer, WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import {
   bindTypertRemote,
   Remote,
   RemoteScope,
   TypertLookupFailure,
+  TypertRemoteFailure,
   type InvocationDescriptor,
   type TypertContext,
   type TypertLookup,
@@ -100,7 +102,12 @@ type FakeRpcResult =
   | { readonly ok: true; readonly value: unknown }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string; readonly details: object } }
 
-type FakeRpcHandler = (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<FakeRpcResult>
+type FakeRpcHandler = (
+  endpoint: string,
+  payload: unknown,
+  signal: AbortSignal,
+  request?: ConnectionRequestContext,
+) => Promise<FakeRpcResult>
 
 class FakeConnectionService extends Service {
   channel: string | undefined
@@ -1046,6 +1053,36 @@ describe('TypertGatewayService', () => {
     expect(connection.handler).toBeUndefined()
   })
 
+  it('passes the authenticated Connection context through an optional request authorizer', async () => {
+    const ctx = new Context().extend({ fixtureScope: 'authorized-caller' })
+    await ctx.plugin(TypertRegistry)
+    await ctx.plugin(FakeConnectionService)
+    const run = vi.fn(async (
+      _endpoint: string,
+      _payload: unknown,
+      _request: ConnectionRequestContext,
+      _signal: AbortSignal,
+      operation: () => Promise<FakeRpcResult>,
+    ) => operation())
+    ctx.provide('connectionRequestAuthorizer', { run })
+    await ctx.plugin(TypertGatewayService)
+    await ctx.plugin(GoalService)
+    registerStrict(ctx, [maybeDescriptor()])
+    const handler = rawConnection(ctx).handler
+    if (handler === undefined) throw new Error('fixture Connection did not retain the /api interceptor')
+    const request = { connectionId: 'connection-1', principal: { actorId: 'alice' }, userToken: 'token' }
+
+    await expect(handler('goals/maybe', { args: { value: 'ok' } }, new AbortController().signal, request))
+      .resolves.toEqual({ ok: true, value: 'ok' })
+    expect(run).toHaveBeenCalledWith(
+      'goals/maybe',
+      { args: { value: 'ok' } },
+      request,
+      expect.any(AbortSignal),
+      expect.any(Function),
+    )
+  })
+
   it('preserves a lookup policy rejection through the Connection RPC result', async () => {
     const ctx = new Context()
     await ctx.plugin(TypertRegistry)
@@ -1068,6 +1105,22 @@ describe('TypertGatewayService', () => {
     await expect(handler('goals/create', {
       args: { agentId: 'agent-1', request: { title: 'ship' } },
     }, new AbortController().signal)).resolves.toEqual({ ok: false, error: failure })
+  })
+
+  it('preserves a Remote business rejection through the Connection RPC result', async () => {
+    const ctx = new Context()
+    await ctx.plugin(TypertRegistry)
+    await ctx.plugin(FakeConnectionService)
+    await ctx.plugin(TypertGatewayService)
+    await ctx.plugin(GoalService)
+    const failure = { code: 'forbidden', message: 'operation forbidden', details: {} }
+    const service = ctx.get('goals') as unknown as GoalService
+    service.businessError = new TypertRemoteFailure(failure)
+    const handler = rawConnection(ctx).handler
+    if (handler === undefined) throw new Error('fixture Connection did not retain the /api interceptor')
+
+    await expect(handler('goals/fail', { args: { request: {} } }, new AbortController().signal))
+      .resolves.toEqual({ ok: false, error: failure })
   })
 
   it('caches SRC ownership until the Cordis Service set changes', async () => {

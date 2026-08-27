@@ -3,8 +3,14 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
-from app.core.config import Settings, settings
+from minio.versioningconfig import ENABLED, VersioningConfig
+from urllib3 import PoolManager, Timeout
+
+
+class ObjectVersioningUnavailable(RuntimeError):
+    """The target bucket cannot provide an owned version for safe cleanup."""
 
 
 @dataclass(frozen=True)
@@ -21,29 +27,59 @@ class MinioGateway:
         self._bucket = bucket
 
     @classmethod
-    def from_settings(cls, configured_settings: Settings = settings) -> "MinioGateway":
+    def from_settings(cls, configured_settings: Any) -> "MinioGateway":
         from minio import Minio
 
         internal_client = Minio(
-                configured_settings.MINIO_ENDPOINT,
-                access_key=configured_settings.MINIO_ACCESS_KEY,
-                secret_key=configured_settings.MINIO_SECRET_KEY,
-                secure=configured_settings.MINIO_SECURE,
-            )
+            configured_settings.MINIO_ENDPOINT,
+            access_key=configured_settings.MINIO_ACCESS_KEY,
+            secret_key=configured_settings.MINIO_SECRET_KEY,
+            secure=configured_settings.MINIO_SECURE,
+        )
         public_client = Minio(
             configured_settings.MINIO_PUBLIC_ENDPOINT,
             access_key=configured_settings.MINIO_ACCESS_KEY,
             secret_key=configured_settings.MINIO_SECRET_KEY,
             secure=configured_settings.MINIO_PUBLIC_SECURE,
+            region=configured_settings.MINIO_REGION,
         )
         gateway = cls(internal_client, configured_settings.MINIO_BUCKET, public_client)
         gateway.ensure_bucket()
         gateway.configure_staging_lifecycle(configured_settings.STAGING_EXPIRY_DAYS)
         return gateway
 
+    @classmethod
+    def from_worker_settings(cls, configured_settings: Any) -> "MinioGateway":
+        """Create the worker's private object client without browser signing setup."""
+
+        from minio import Minio
+
+        return cls(
+            Minio(
+                configured_settings.MINIO_ENDPOINT,
+                access_key=configured_settings.MINIO_ACCESS_KEY,
+                secret_key=configured_settings.MINIO_SECRET_KEY,
+                secure=configured_settings.MINIO_SECURE,
+                http_client=PoolManager(
+                    timeout=Timeout(
+                        connect=configured_settings.MINIO_TIMEOUT,
+                        read=configured_settings.MINIO_TIMEOUT,
+                    ),
+                    retries=False,
+                ),
+            ),
+            configured_settings.MINIO_BUCKET,
+        )
+
     def ensure_bucket(self) -> None:
-        if not self._client.bucket_exists(self._bucket):
+        created = not self._client.bucket_exists(self._bucket)
+        if created:
             self._client.make_bucket(self._bucket)
+            self._client.set_bucket_versioning(
+                self._bucket,
+                VersioningConfig(status=ENABLED),
+            )
+        self.require_versioning()
         try:
             policy = self._client.get_bucket_policy(self._bucket)
         except Exception as exc:
@@ -59,6 +95,13 @@ class MinioGateway:
             for statement in statements
         ):
             raise RuntimeError("Bucket permits anonymous access")
+
+    def require_versioning(self) -> None:
+        """Require enabled bucket versioning before fixed-key promotion."""
+
+        configuration = self._client.get_bucket_versioning(self._bucket)
+        if configuration.status != ENABLED:
+            raise ObjectVersioningUnavailable("Bucket versioning must be Enabled")
 
     def configure_staging_lifecycle(self, expiry_days: int) -> None:
         from minio.commonconfig import Filter
@@ -79,8 +122,18 @@ class MinioGateway:
         )
 
     def create_staging_put_url(self, key: str, expires: timedelta) -> str:
-        if not key.startswith("staging/"):
-            raise ValueError("Only staging keys can receive upload URLs")
+        prefix, separator, upload_id = key.partition("/")
+        try:
+            canonical_upload_id = str(UUID(upload_id))
+        except ValueError:
+            canonical_upload_id = ""
+        if (
+            prefix != "staging"
+            or separator != "/"
+            or not upload_id
+            or upload_id != canonical_upload_id
+        ):
+            raise ValueError("仅可为单个 staging/{upload_id} 对象签发上传 URL")
         return self._public_client.presigned_put_object(self._bucket, key, expires=expires)
 
     def stat(self, key: str) -> ObjectMetadata:
@@ -91,22 +144,34 @@ class MinioGateway:
             etag=getattr(object_stat, "etag", None),
         )
 
-    def copy(self, source: str, target: str, etag: str | None = None) -> None:
+    def copy(
+        self,
+        source: str,
+        target: str,
+        etag: str | None = None,
+    ) -> str:
         from minio.commonconfig import CopySource
 
-        self._client.copy_object(
+        self.require_versioning()
+        result = self._client.copy_object(
             self._bucket,
             target,
             CopySource(self._bucket, source, match_etag=etag),
         )
+        version_id = getattr(result, "version_id", None)
+        if not isinstance(version_id, str) or not version_id:
+            raise ObjectVersioningUnavailable("Copy returned no target version")
+        return version_id
 
-    def remove(self, key: str) -> None:
-        self._client.remove_object(self._bucket, key)
+    def remove(self, key: str, version_id: str | None = None) -> None:
+        self._client.remove_object(self._bucket, key, version_id=version_id)
 
     def stream(self, key: str) -> Iterator[bytes]:
         response = self._client.get_object(self._bucket, key)
         try:
             yield from response.stream(32 * 1024)
         finally:
-            response.close()
-            response.release_conn()
+            try:
+                response.close()
+            finally:
+                response.release_conn()

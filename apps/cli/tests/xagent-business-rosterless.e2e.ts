@@ -43,6 +43,9 @@ async function bootBusiness(home: string): Promise<Context> {
     { id: 'connection', disabled: true },
     { id: 'client-hmr', disabled: true },
     { id: 'directory-picker', disabled: true },
+    { id: 'xagent-session-persistence-api', disabled: true },
+    { id: 'xagent-connection-auth', disabled: true },
+    { id: 'xagent-authorization', disabled: true },
     { insert: [
       { id: 'directory-picker-browse', name: '@deepseek-ai/dsh-host-directory-picker-browse' },
       { id: 'ui-directory-picker-browse', name: '@deepseek-ai/dsh-client-ui-directory-picker-browse' },

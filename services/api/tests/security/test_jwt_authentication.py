@@ -55,7 +55,7 @@ async def test_verified_token_uses_database_role_not_role_header(client, alice, 
 
 @pytest.mark.anyio
 async def test_same_origin_session_bootstrap_accepts_a_signed_session_cookie(client, alice, alice_token) -> None:
-    client.cookies.set("jiaxin_agent_session", alice_token)
+    client.cookies.set("xagent_session", alice_token)
 
     response = await client.get("/api/v1/session")
 

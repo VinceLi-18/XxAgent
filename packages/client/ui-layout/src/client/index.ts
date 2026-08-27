@@ -9,6 +9,7 @@
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
+import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PanelActions } from './service.ts'
 import { AppFrame } from './AppFrame.tsx'
 import { createLayoutStore } from './stores.ts'
@@ -70,6 +71,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * `session` scope, and `ctx.layout` owns whether the column is open.
      */
     'details': { kind: 'single'; scope: 'session'; owner: DetailsOwnerProps }
+    /** Optional root-scoped product context panel; when occupied it replaces the Session details column. */
+    'shell.details': { kind: 'single'; scope: 'root' }
     /**
      * Frame-wide floating layer, above every column and outside their scroll
      * containers. Deliberately generic and unowned by any feature: a badge, a
@@ -115,6 +118,10 @@ export const inject = ['slots', 'theme']
  */
 export function apply(ctx: ClientContext): void {
   const layout = new LayoutController()
+  const shellDetails: HostObservable<boolean> = {
+    getSnapshot: () => ctx.slots.entries('shell.details').length > 0,
+    subscribe: listener => ctx.slots.subscribe('shell.details', listener),
+  }
   ctx.effect(() => {
     const disposeService = ctx.reflect.provide('layout', layout)
     const disposeRegistration = ctx.slots.register({
@@ -123,6 +130,7 @@ export function apply(ctx: ClientContext): void {
         'sidebar': { kind: 'single', scope: 'root' },
         'conversation': { kind: 'single', scope: 'session-maybe' },
         'details': { kind: 'single', scope: 'session' },
+        'shell.details': { kind: 'single', scope: 'root' },
         'shell.overlay': { kind: 'list', scope: 'root' },
       },
       // Exclusive store: the factory itself — the framework instantiates per
@@ -132,7 +140,7 @@ export function apply(ctx: ClientContext): void {
       // conversation business actions belong to their registrants.
       inject: (actions: PanelActions) => {
         layout.attachPanels(actions)
-        return {}
+        return { hooks: { shellDetails } }
       },
     }, AppFrame)
     return () => {

@@ -21,11 +21,14 @@ os.environ.update(
     {
         "DATABASE_URL": _test_database_url,
         "DATABASE_ADMIN_URL": _test_database_url,
-        "POSTGRES_APP_USER": "jiaxin_task2_test_app",
+        "POSTGRES_APP_USER": "xagent_api_test_app",
         "POSTGRES_APP_PASSWORD": "jiaxin-task2-test-app-password",
+        "POSTGRES_WORKER_USER": "xagent_api_test_worker",
+        "POSTGRES_WORKER_PASSWORD": "xagent-artifact-worker-test-password",
         "JWT_SECRET_KEY": "test-signing-key-not-for-production",
-        "JWT_ISSUER": "jiaxin-agent-tests",
+        "JWT_ISSUER": "xagent-tests",
         "JWT_AUDIENCE": "jiaxin-agent-api-tests",
+        "XAGENT_SERVICE_TOKEN": "xagent-test-service-token-00000001",
         "MINIO_ENDPOINT": "minio.test:9000",
         "MINIO_PUBLIC_ENDPOINT": "storage.test:9000",
         "MINIO_ACCESS_KEY": "test-minio-access-key",
@@ -36,7 +39,7 @@ os.environ.update(
     }
 )
 
-from app.core.db import SessionLocal, engine as app_engine
+from app.core.db import SessionLocal, admin_engine, engine as app_engine
 from app.main import app
 
 
@@ -108,13 +111,52 @@ async def _drop_temporary_application_role(engine: AsyncEngine) -> None:
         await connection.execute(text(drop_role))
 
 
+async def _create_temporary_worker_role(engine: AsyncEngine) -> bool:
+    worker_role = os.environ["POSTGRES_WORKER_USER"]
+    worker_password = os.environ["POSTGRES_WORKER_PASSWORD"]
+    async with engine.begin() as connection:
+        role_exists = await connection.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :role)"),
+            {"role": worker_role},
+        )
+        if role_exists:
+            return False
+        create_role = await connection.scalar(
+            text(
+                "SELECT format("
+                "'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS', "
+                "CAST(:role AS text), CAST(:password AS text))"
+            ),
+            {"role": worker_role, "password": worker_password},
+        )
+        await connection.execute(text(create_role))
+    return True
+
+
+async def _drop_temporary_worker_role(engine: AsyncEngine) -> None:
+    worker_role = os.environ["POSTGRES_WORKER_USER"]
+    async with engine.begin() as connection:
+        drop_owned = await connection.scalar(
+            text("SELECT format('DROP OWNED BY %I', CAST(:role AS text))"),
+            {"role": worker_role},
+        )
+        drop_role = await connection.scalar(
+            text("SELECT format('DROP ROLE %I', CAST(:role AS text))"),
+            {"role": worker_role},
+        )
+        await connection.execute(text(drop_owned))
+        await connection.execute(text(drop_role))
+
+
 @asynccontextmanager
 async def _seeded_test_database() -> AsyncIterator[AsyncEngine]:
     _require_disposable_database()
     engine = create_async_engine(_test_database_url)
     created_application_role = False
+    created_worker_role = False
     try:
         created_application_role = await _create_temporary_application_role(engine)
+        created_worker_role = await _create_temporary_worker_role(engine)
         async with engine.begin() as connection:
             await connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             await connection.execute(text("CREATE SCHEMA public"))
@@ -137,6 +179,8 @@ async def _seeded_test_database() -> AsyncIterator[AsyncEngine]:
 
         yield engine
     finally:
+        if created_worker_role:
+            await _drop_temporary_worker_role(engine)
         if created_application_role:
             await _drop_temporary_application_role(engine)
         await engine.dispose()
@@ -156,6 +200,7 @@ async def client(seeded_database: AsyncEngine) -> AsyncClient:
             yield test_client
     finally:
         await app_engine.dispose()
+        await admin_engine.dispose()
 
 
 @pytest.fixture
@@ -192,8 +237,31 @@ def bob() -> SeededAccount:
 
 
 @pytest.fixture
+def manager() -> SeededAccount:
+    return MANAGER
+
+
+@pytest.fixture
 def application_role() -> str:
     return os.environ["POSTGRES_APP_USER"]
+
+
+@pytest.fixture
+def worker_role() -> str:
+    return os.environ["POSTGRES_WORKER_USER"]
+
+
+@pytest.fixture
+async def worker_engine(seeded_database: AsyncEngine, worker_role: str) -> AsyncIterator[AsyncEngine]:
+    runtime_url = make_url(_test_database_url).set(
+        username=worker_role,
+        password=os.environ["POSTGRES_WORKER_PASSWORD"],
+    )
+    engine = create_async_engine(runtime_url, pool_pre_ping=True)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture
@@ -228,18 +296,20 @@ def application():
 
 
 @pytest.fixture
-async def alice_private_thread(seeded_database: AsyncEngine):
-    from app.models.conversation import ConversationThread
+async def alice_private_xagent_session(seeded_database: AsyncEngine):
+    from app.models.xagent_session import XAgentSession
 
-    thread = ConversationThread(
+    xagent_session = XAgentSession(
         id=UUID("00000000-0000-0000-0000-000000000110"),
-        title="Alice API private thread",
+        title="Alice private XAgent session",
         owner_id=ALICE.id,
+        visibility="private",
+        permission_revision_created=1,
     )
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
-            session.add(thread)
-    return thread
+            session.add(xagent_session)
+    return xagent_session
 
 
 @pytest.fixture
@@ -273,34 +343,39 @@ async def bob_project(seeded_database: AsyncEngine):
 
 
 @pytest.fixture
-async def bob_private_thread(seeded_database: AsyncEngine):
-    from app.models.conversation import ConversationThread
+async def bob_private_xagent_session(seeded_database: AsyncEngine):
+    from app.models.xagent_session import XAgentSession
 
-    thread = ConversationThread(
+    xagent_session = XAgentSession(
         id=UUID("00000000-0000-0000-0000-000000000111"),
-        title="Bob API private thread",
+        title="Bob private XAgent session",
         owner_id=BOB.id,
+        visibility="private",
+        permission_revision_created=1,
     )
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
-            session.add(thread)
-    return thread
+            session.add(xagent_session)
+    return xagent_session
 
 
 @pytest.fixture
-async def shared_thread(seeded_database: AsyncEngine):
-    from app.models.conversation import ConversationThread
+async def shared_xagent_session(seeded_database: AsyncEngine):
     from app.models.project import Project, ProjectMembership
+    from app.models.xagent_session import XAgentSession
 
     project = Project(
         id=UUID("00000000-0000-0000-0000-000000000201"),
         name="Shared project",
         owner_id=BOB.id,
     )
-    thread = ConversationThread(
+    xagent_session = XAgentSession(
         id=UUID("00000000-0000-0000-0000-000000000202"),
-        title="Shared project thread",
+        title="Shared project XAgent session",
+        owner_id=BOB.id,
         project_id=project.id,
+        visibility="project",
+        permission_revision_created=1,
     )
     membership = ProjectMembership(
         id=UUID("00000000-0000-0000-0000-000000000203"),
@@ -311,8 +386,8 @@ async def shared_thread(seeded_database: AsyncEngine):
         async with session.begin():
             session.add(project)
             await session.flush()
-            session.add_all((thread, membership))
-    return thread
+            session.add_all((xagent_session, membership))
+    return xagent_session
 
 
 @pytest.fixture

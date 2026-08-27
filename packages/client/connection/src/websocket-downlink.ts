@@ -8,6 +8,12 @@ import type {
   ApiProxy, HostFrame, MuxFrame, RpcRequest, ServerRequest,
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type {
+  ConnectionRequestAuthorizer,
+  ConnectionRequestContext,
+  ConnectionRequestContextResolver,
+  ResolvedConnectionRequestContext,
+} from './rpc.ts'
 
 type Frame = MuxFrame | HostFrame
 
@@ -53,7 +59,11 @@ export class WebSocketDownlinks {
   private readonly pumps = new Set<Promise<void>>()
 
   /** @param api - host API supplying the typed event streams. */
-  constructor(private readonly api: ApiProxy) {}
+  constructor(
+    private readonly api: ApiProxy,
+    private readonly resolver: () => ConnectionRequestContextResolver | undefined = () => undefined,
+    private readonly authorizer: () => ConnectionRequestAuthorizer | undefined = () => undefined,
+  ) {}
 
   /**
    * Upgrade one socket and pump the mux stream until either side closes.
@@ -61,8 +71,8 @@ export class WebSocketDownlinks {
    * @param socket - Raw socket transferred by the HTTP server.
    * @param head - Bytes already read after the upgrade headers.
    */
-  handleMux(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    this.upgrade(req, socket, head, signal => this.api.events.mux({
+  handleMux(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    return this.upgrade(req, socket, head, 'events.mux', signal => this.api.events.mux({
       rpcId: RpcId(randomUUID()),
       payload: {},
     }, signal))
@@ -74,8 +84,8 @@ export class WebSocketDownlinks {
    * @param socket - Raw socket transferred by the HTTP server.
    * @param head - Bytes already read after the upgrade headers.
    */
-  handleHost(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-    this.upgrade(req, socket, head, signal => this.api.events.host({
+  handleHost(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    return this.upgrade(req, socket, head, 'events.host', signal => this.api.events.host({
       rpcId: RpcId(randomUUID()),
       payload: {},
     }, signal))
@@ -96,20 +106,60 @@ export class WebSocketDownlinks {
     await Promise.all(this.pumps)
   }
 
-  private upgrade<F extends Frame>(
+  private async upgrade<F extends Frame>(
     req: IncomingMessage,
     socket: Duplex,
     head: Buffer,
+    endpoint: 'events.mux' | 'events.host',
     open: (signal: AbortSignal) => AsyncIterable<RpcRequest<F>>,
-  ): void {
+  ): Promise<void> {
+    const activeResolver = this.resolver()
+    const connectionId = randomUUID()
+    const connectionAbort = new AbortController()
+    let resolved: ResolvedConnectionRequestContext | undefined
+    if (activeResolver !== undefined) {
+      const headers = new Headers()
+      for (const [name, value] of Object.entries(req.headers)) {
+        if (typeof value === 'string') headers.set(name, value)
+        else if (Array.isArray(value)) headers.set(name, value.join(', '))
+      }
+      const abort = (): void => { connectionAbort.abort() }
+      socket.once('close', abort)
+      socket.once('error', abort)
+      try {
+        resolved = await activeResolver.resolve(new Request(
+          new URL(req.url ?? '/', 'http://dsh.internal'),
+          { headers, signal: connectionAbort.signal },
+        ), connectionId, connectionAbort.signal)
+      } catch {
+        connectionAbort.abort()
+        rejectWebSocketAuthentication(socket)
+        return
+      } finally {
+        socket.off('close', abort)
+        socket.off('error', abort)
+      }
+    }
     this.server.handleUpgrade(req, socket, head, (websocket) => {
       const abort = new AbortController()
-      websocket.once('close', () => { abort.abort() })
-      websocket.once('error', () => { abort.abort() })
+      const close = (): void => {
+        abort.abort()
+        connectionAbort.abort()
+      }
+      websocket.once('close', close)
+      websocket.once('error', close)
+      const expire = (): void => { websocket.close(1008, 'authentication expired') }
+      resolved?.lifetime?.addEventListener('abort', expire, { once: true })
+      if (resolved?.lifetime?.aborted === true) expire()
       websocket.once('message', () => {
         websocket.close(1008, 'downlink only')
       })
-      const pump = this.pump(websocket, open(abort.signal), abort)
+      const requestContext: ConnectionRequestContext = {
+        connectionId,
+        ...resolved?.principal === undefined ? {} : { principal: resolved.principal },
+        ...resolved?.userToken === undefined ? {} : { userToken: resolved.userToken },
+      }
+      const pump = this.pump(websocket, open(abort.signal), abort, endpoint, requestContext)
       this.pumps.add(pump)
       void pump.then(() => { this.pumps.delete(pump) })
     })
@@ -119,9 +169,19 @@ export class WebSocketDownlinks {
     socket: WebSocket,
     frames: AsyncIterable<RpcRequest<F>>,
     abort: AbortController,
+    endpoint: 'events.mux' | 'events.host',
+    request: ConnectionRequestContext,
   ): Promise<void> {
     try {
-      for await (const frame of frames) await send(socket, frame)
+      for await (const frame of frames) {
+        const activeAuthorizer = this.authorizer()
+        if (activeAuthorizer?.filterEvent === undefined) {
+          await send(socket, frame)
+          continue
+        }
+        const payload = await activeAuthorizer.filterEvent(endpoint, frame.payload, request, abort.signal)
+        if (payload !== undefined) await send(socket, { ...frame, payload: payload as F })
+      }
     } catch (error) {
       if (!abort.signal.aborted) {
         try {
@@ -149,5 +209,16 @@ export function rejectWebSocketUpgrade(socket: Duplex): void {
     'Content-Length: 9',
     '',
     'forbidden',
+  ].join('\r\n'))
+}
+
+function rejectWebSocketAuthentication(socket: Duplex): void {
+  socket.end([
+    'HTTP/1.1 401 Unauthorized',
+    'Connection: close',
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Length: 15',
+    '',
+    'unauthenticated',
   ].join('\r\n'))
 }

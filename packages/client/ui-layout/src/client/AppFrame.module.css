@@ -42,6 +42,55 @@
   border-left: 1px solid var(--dsw-alias-border-l2);
 }
 
+.detailsCol[data-drawer] {
+  position: fixed;
+  z-index: 42;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(360px, calc(100vw - 56px));
+  background: var(--dsw-alias-bg-base);
+  box-shadow: -18px 0 48px rgb(20 33 61 / 18%);
+}
+
+.drawerBackdrop {
+  position: fixed;
+  z-index: 41;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: rgb(20 33 61 / 28%);
+}
+
+.detailsTrigger {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  right: 12px;
+  width: 32px;
+  height: 48px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  color: inherit;
+  background: var(--dsw-alias-button-floating-fill);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.drawerClose {
+  position: absolute;
+  z-index: 1;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 50%;
+  color: inherit;
+  background: var(--dsw-alias-button-floating-fill);
+  cursor: pointer;
+}
+
 /* The details subtree stays mounted at zero width, so its border must not paint
    a 1px seam. The collapsed sidebar instead retains a bordered compact rail. */
 .frame[data-details-collapsed] .detailsCol {

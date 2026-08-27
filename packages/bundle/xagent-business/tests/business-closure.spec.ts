@@ -1,14 +1,17 @@
 /** Validate the XAgent business bundle's static, deny-by-default patch. */
 
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import * as yaml from 'js-yaml'
+import { composeEntries, loadProfile } from '@deepseek-ai/dsh-app-boot'
 import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 
 interface PatchRow {
   id?: string
+  name?: string
   disabled?: boolean
   config?: Record<string, unknown>
 }
@@ -133,6 +136,15 @@ describe('xagent business bundle', () => {
     }
   })
 
+  it('keeps the project surface disabled while retaining the private Host registry dependency', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const business = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(business.map(row => [row.id, row]))
+
+    expect(rows.get('ui-workspace')).toMatchObject({ id: 'ui-workspace', disabled: true })
+    expect(rows.has('workspace')).toBe(false)
+  })
+
   it('anchors every local state provider to the current Profile data directory', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
@@ -140,9 +152,117 @@ describe('xagent business bundle', () => {
     expect(readXagentStatePatches(patch)).toEqual({
       settings: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
       credentials: { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
-      'session-persistence-jsonl': { root: { __jsExpr: "dshProfileDataPath('sessions')" } },
       'attachment-local': { dshHome: { __jsExpr: 'dshProfileDataPath()' } },
       'storage-json': { root: { __jsExpr: "dshProfileDataPath('storages')" } },
+    })
+  })
+
+  it('replaces local Session persistence with the authenticated FastAPI stack', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(patch.flatMap(row => row.insert ?? [row]).map(row => [row.id, row]))
+
+    expect(rows.get('session-persistence-jsonl')).toMatchObject({ disabled: true })
+    expect(rows.get('xagent-session-persistence-api')).toMatchObject({
+      name: '@xagent/dsh-session-persistence-api',
+    })
+    expect(rows.get('xagent-connection-auth')).toMatchObject({ name: '@xagent/dsh-connection-auth' })
+    expect(rows.get('xagent-authorization')).toMatchObject({ name: '@xagent/dsh-authorization' })
+    expect(JSON.stringify(patch)).not.toContain("dshProfileDataPath('sessions')")
+  })
+
+  it('composes the authenticated project workbench and account browser surfaces', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = new Map(patch.flatMap(row => row.insert ?? [row]).map(row => [row.id, row]))
+
+    expect(rows.get('xagent-project')).toMatchObject({
+      name: '@xagent/dsh-project',
+      config: {
+        backendOrigin: { __jsExpr: 'process.env.XAGENT_API_ORIGIN' },
+        serviceToken: { __jsExpr: 'process.env.XAGENT_SERVICE_TOKEN' },
+      },
+    })
+    expect(rows.get('xagent-ui-project')).toMatchObject({
+      name: '@xagent/dsh-ui-project',
+      disabled: false,
+    })
+    expect(rows.get('xagent-ui-account')).toMatchObject({
+      name: '@xagent/dsh-ui-account',
+      disabled: false,
+    })
+  })
+
+  it('composes the Artifact Host before its Browser consumer with only service endpoint configuration', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = patch.flatMap(row => row.insert ?? [row])
+    const artifactIndex = rows.findIndex(row => row.id === 'xagent-artifact')
+    const uiArtifactIndex = rows.findIndex(row => row.id === 'xagent-ui-artifact')
+
+    expect(artifactIndex).toBeGreaterThanOrEqual(0)
+    expect(uiArtifactIndex).toBeGreaterThan(artifactIndex)
+    expect(rows[artifactIndex]).toEqual({
+      id: 'xagent-artifact',
+      name: '@xagent/dsh-artifact',
+      config: {
+        backendOrigin: { __jsExpr: 'process.env.XAGENT_API_ORIGIN' },
+        serviceToken: { __jsExpr: 'process.env.XAGENT_SERVICE_TOKEN' },
+      },
+    })
+    expect(rows[uiArtifactIndex]).toEqual({
+      id: 'xagent-ui-artifact',
+      name: '@xagent/dsh-ui-artifact',
+    })
+  })
+
+  it('keeps Artifact packages out of every shipped non-Business Profile dump', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'xagent-artifact-profile-dumps-'))
+    const anchor = fileURLToPath(new URL('../../../../apps/cli/package.json', import.meta.url))
+    try {
+      for (const profileName of ['xagent-developer', 'web', 'headless']) {
+        const profile = loadProfile('dsh-test', profileName, anchor, home)
+        const warnings: string[] = []
+        const rows = composeEntries(profile.layers.map(layer => layer.patches), message => warnings.push(message))
+        const names = rows.map(row => row.name)
+        expect(names, `${profileName} Host dump`).not.toContain('@xagent/dsh-artifact')
+        expect(names, `${profileName} Browser dump`).not.toContain('@xagent/dsh-ui-artifact')
+        expect(warnings, `${profileName} dump warnings`).toEqual([])
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('declares every XAgent runtime package as a bundle dependency', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>
+    }
+
+    expect(manifest.dependencies).toMatchObject({
+      '@xagent/dsh-authorization': 'workspace:^',
+      '@xagent/dsh-artifact': 'workspace:^',
+      '@xagent/dsh-backend-client': 'workspace:^',
+      '@xagent/dsh-connection-auth': 'workspace:^',
+      '@xagent/dsh-principal': 'workspace:^',
+      '@xagent/dsh-project': 'workspace:^',
+      '@xagent/dsh-session-persistence-api': 'workspace:^',
+      '@xagent/dsh-ui-account': 'workspace:^',
+      '@xagent/dsh-ui-artifact': 'workspace:^',
+      '@xagent/dsh-ui-project': 'workspace:^',
+    })
+  })
+
+  it('keeps both Artifact packages in the CLI resolver manifest', () => {
+    const manifest = JSON.parse(readFileSync(
+      fileURLToPath(new URL('../../../../apps/cli/package.json', import.meta.url)),
+      'utf8',
+    )) as { dependencies?: Record<string, string> }
+
+    expect(manifest.dependencies).toMatchObject({
+      '@xagent/dsh-artifact': 'workspace:^',
+      '@xagent/dsh-ui-artifact': 'workspace:^',
     })
   })
 })

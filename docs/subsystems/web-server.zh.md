@@ -54,6 +54,25 @@ interface Config {
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxconnectionrequestcontextresolver--xagentconnectionauthservice"></a>
+
+### `ctx.connectionRequestContextResolver` — `XAgentConnectionAuthService`
+
+Connection 可选解析服务；通用传输只依赖其结构，不导入 XAgent。
+
+```ts cordis-catalog
+/**
+ * Resolve one HTTP request into a context bound to its physical connection.
+ * @param request - browser request carrying only Host-managed credentials.
+ * @param connectionId - Host-generated physical connection identifier.
+ * @param signal - request cancellation signal.
+ * @returns the authenticated context used by RPC authorization.
+ */
+resolve(request: Request, connectionId: string, signal: AbortSignal): Promise<ResolvedConnectionRequestContext>
+```
+
+Source: [`packages/xagent/connection-auth/src/index.ts:48`](../../packages/xagent/connection-auth/src/index.ts)
+
 <a id="ctxwebserver--webserver"></a>
 
 ### `ctx.webServer` — `WebServer`
@@ -105,4 +124,157 @@ applyIndexTaps(html: string): string
 ```
 
 Source: [`packages/host/webserver/src/index.ts:59`](../../packages/host/webserver/src/index.ts)
+
+<a id="ctxxagentartifact--xagentartifactservice"></a>
+
+### `ctx.xagentArtifact` — `XAgentArtifactService`
+
+将账号绑定请求逐次转发给 FastAPI 的资料服务。
+
+```ts cordis-catalog
+/**
+ * 在 Host 认证所得的单请求身份内执行完整 Remote 调用。
+ * @param scope - 物理连接绑定的可信 Principal 与用户令牌。
+ * @param operation - 下游完整 Remote 操作。
+ * @returns 下游结果；退出时自动清除请求身份。
+ */
+async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * 列出当前 FastAPI 工作台范围内可见的资料。
+ * @param signal - 物理请求的取消信号。
+ * @returns 当前请求重新读取的资料摘要。
+ */
+@Remote async list(signal?: AbortSignal): Promise<readonly XAgentArtifactSummary[]>
+
+/**
+ * 读取当前账号可见的一份资料与版本历史。
+ * @param artifactId - 资料 UUID。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 当前资料详情。
+ */
+@Remote async detail(artifactId: string, signal?: AbortSignal): Promise<XAgentArtifactDetail>
+
+/**
+ * 创建当前 FastAPI 工作台范围内的新资料暂存上传。
+ * @param input - 文件名、声明大小和幂等键。
+ * @param signal - 物理请求的取消信号。
+ * @returns 单个暂存对象的短期 PUT 授权。
+ */
+@Remote('create-upload') async createUpload(input: XAgentArtifactUploadInput, signal?: AbortSignal): Promise<XAgentArtifactUpload>
+
+/**
+ * 为一份现有资料创建不可变新版本的暂存上传。
+ * @param artifactId - 资料 UUID。
+ * @param input - 文件名、声明大小和幂等键。
+ * @param signal - 物理请求的取消信号。
+ * @returns 单个暂存对象的短期 PUT 授权。
+ */
+@Remote('create-version-upload') async createVersionUpload( artifactId: string, input: XAgentArtifactUploadInput, signal?: AbortSignal, ): Promise<XAgentArtifactUpload>
+
+/**
+ * 完成暂存上传并把新版本提交到异步安全处理队列。
+ * @param uploadId - 暂存上传 UUID。
+ * @param input - 实际大小、SHA-256 和幂等键。
+ * @param signal - 物理请求的取消信号。
+ * @returns 新版本进入处理队列后的资料详情。
+ */
+@Remote('complete-upload') async completeUpload( uploadId: string, input: XAgentArtifactCompleteInput, signal?: AbortSignal, ): Promise<XAgentArtifactDetail>
+
+/**
+ * 重试一份仍有有效暂存正文的失败版本。
+ * @param versionId - 资料版本 UUID。
+ * @param idempotencyKey - 当前重试意图的幂等键。
+ * @param signal - 物理请求的取消信号。
+ * @returns 重试入队后的资料详情。
+ */
+@Remote async retry(versionId: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentArtifactDetail>
+
+/**
+ * 为 clean 版本创建一次新的安全预览地址。
+ * @param versionId - 资料版本 UUID。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 授权的短期 opaque 地址。
+ */
+@Remote async preview(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>
+
+/**
+ * 为 clean 版本创建一次新的安全下载地址。
+ * @param versionId - 资料版本 UUID。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 授权的短期 opaque 地址。
+ */
+@Remote async download(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>
+```
+
+Source: [`packages/xagent/artifact/src/index.ts:204`](../../packages/xagent/artifact/src/index.ts)
+
+<a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
+
+### `ctx.xagentPrincipal` — `XAgentPrincipalService` (abstract seam)
+
+XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。
+
+```ts cordis-catalog
+/**
+ * Introspect a login token and bind the resulting actor to one Host connection.
+ * @param userToken - opaque FastAPI login token.
+ * @param connectionId - Host-generated physical connection identifier.
+ * @param signal - optional introspection cancellation signal.
+ * @returns an immutable validated Principal.
+ */
+abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
+```
+
+Source: [`packages/xagent/principal/src/index.ts:60`](../../packages/xagent/principal/src/index.ts)
+
+<a id="ctxxagentproject--xagentprojectservice"></a>
+
+### `ctx.xagentProject` — `XAgentProjectService`
+
+将账号绑定请求转发给 FastAPI 的项目工作台服务。
+
+```ts cordis-catalog
+/**
+ * 在 Host 认证所得的单请求身份内执行完整 Remote 调用。
+ * @param scope - 物理连接绑定的可信 Principal 与用户令牌。
+ * @param operation - 下游完整 Remote 操作。
+ * @returns 下游结果；退出时自动清除请求身份。
+ */
+async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * 读取当前账号的完整工作台状态。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 当前可见的账号、能力、上下文、项目和会话摘要。
+ */
+@Remote('bootstrap') async bootstrap(signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>
+
+/**
+ * 为当前账号选择跨项目工作台或单项目上下文。
+ * @param context - 目标工作台或项目上下文。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 提交选择后重新读取的完整工作台状态。
+ */
+@Remote('select-context') async selectContext(context: XAgentWorkbenchContext, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>
+
+/**
+ * 使用服务端能力检查为当前账号创建项目。
+ * @param name - 用户提交的项目名称。
+ * @param idempotencyKey - 当前创建意图的幂等键。
+ * @param signal - 物理请求的取消信号。
+ * @returns FastAPI 创建项目后重新读取的完整工作台状态。
+ */
+@Remote('create-project') async createProject(name: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>
+
+/**
+ * 读取当前账号可见的一个项目详情。
+ * @param projectId - 当前账号请求查看的项目 UUID。
+ * @param signal - 物理请求的取消信号。
+ * @returns 与请求 Principal 账号一致的项目详情。
+ */
+@Remote('project') async project(projectId: string, signal?: AbortSignal): Promise<XAgentProjectDetail>
+```
+
+Source: [`packages/xagent/project/src/index.ts:67`](../../packages/xagent/project/src/index.ts)
 <!-- END GENERATED cordis-surface -->

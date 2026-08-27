@@ -503,6 +503,38 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'connectionRequestAuthorizer',
+    summary: 'Cordis 服务包装；服务键由通用 API Gateway 以可选结构读取。',
+    description: 'Cordis 服务包装；服务键由通用 API Gateway 以可选结构读取。',
+    methods: [
+      {
+        signature: 'run<T>( endpoint: string, payload: unknown, request: ConnectionRequestContext, signal: AbortSignal, operation: () => Promise<RpcResult<T>>, ): Promise<RpcResult<T>>',
+        description: 'Authorize one connection-bound RPC and run it inside the matching user scope.',
+        parameters: [{ name: 'endpoint', description: 'closed-table RPC method name.' }, { name: 'payload', description: 'untrusted parsed RPC payload.' }, { name: 'request', description: 'Host-created physical connection context.' }, { name: 'signal', description: 'request cancellation signal.' }, { name: 'operation', description: 'downstream operation admitted after authorization.' }],
+        returns: 'the downstream result or a stable authorization error.',
+      },
+      {
+        signature: 'filterEvent( endpoint: \'events.mux\' | \'events.host\', frame: unknown, request: ConnectionRequestContext, signal: AbortSignal, ): Promise<unknown>',
+        description: 'Remove Session event frames the authenticated connection cannot read.',
+        parameters: [{ name: 'endpoint', description: 'event stream carrying the frame.' }, { name: 'frame', description: 'untrusted candidate event frame.' }, { name: 'request', description: 'Host-created physical connection context.' }, { name: 'signal', description: 'stream cancellation signal.' }],
+        returns: 'the original frame when visible, or `undefined` when hidden.',
+      },
+    ],
+  },
+  {
+    key: 'connectionRequestContextResolver',
+    summary: 'Connection 可选解析服务；通用传输只依赖其结构，不导入 XAgent。',
+    description: 'Connection 可选解析服务；通用传输只依赖其结构，不导入 XAgent。',
+    methods: [
+      {
+        signature: 'resolve(request: Request, connectionId: string, signal: AbortSignal): Promise<ResolvedConnectionRequestContext>',
+        description: 'Resolve one HTTP request into a context bound to its physical connection.',
+        parameters: [{ name: 'request', description: 'browser request carrying only Host-managed credentials.' }, { name: 'connectionId', description: 'Host-generated physical connection identifier.' }, { name: 'signal', description: 'request cancellation signal.' }],
+        returns: 'the authenticated context used by RPC authorization.',
+      },
+    ],
+  },
+  {
     key: 'credentials',
     summary: 'Abstract credential service.',
     description: 'Abstract credential service. Providers implement the four operations over their source layers; one seam-wide rule binds them all: an empty stored value is absent everywhere — `resolve` skips it, `describe` reports it unconfigured — so a blank never masquerades as a configured secret.',
@@ -1035,6 +1067,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         throws: ['when this backend does not expose per-session raw artifacts.'],
       },
       {
+        signature: 'preparePublication(_session: Session): Promise<void>',
+        description: 'Durably register a fresh unpublished Session before the Agent/Session registries expose it. Remote backends override this boundary when their publication must be atomic with an initial event prefix; local and lazy backends keep the default no-op.',
+        parameters: [{ name: '_session', description: 'the fully seeded but still unpublished Session.' }],
+      },
+      {
         signature: 'abstract create(meta: SessionHeader): Promise<void>',
         description: 'Register a new session\'s metadata. A backend MAY defer the physical write until the first append (lazy materialization), in which case a created-but-never-appended session is absent from list — abandoned sessions leave nothing behind.',
         parameters: [{ name: 'meta', description: 'the immutable header (id, version, cwd, lineage) to record.' }],
@@ -1055,6 +1092,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Load an immutable balanced logical view and commit any required cold recovery. A complete interrupted final turn is preserved and durably closed with missing tool errors plus any open step and turn boundaries; only a torn final record is discarded. Unknown versions and corruption in the committed prefix reject. Implementations MUST NOT crash-repair an identity still bound to a live Session: a balanced live log may return as a durable snapshot, while an open live turn rejects. Returned values may be shared with immutable live or prepared state and must not be mutated. Revision-based implementations may wait for one stable read/check round trip.',
         parameters: [{ name: 'id', description: 'the persisted session to reload.' }],
         returns: 'the header and a log ending on a balanced `turn/end`.',
+      },
+      {
+        signature: 'listForBootstrap(signal?: AbortSignal): Promise<SessionHeader[]>',
+        description: 'List headers that a process-global index may consume before any request identity exists. User-scoped remote backends override this with an empty list so service bootstrap cannot enumerate one tenant or require a token. Request paths must continue to use list.',
+        parameters: [{ name: 'signal', description: 'optional cancellation for backend list work.' }],
+        returns: 'headers safe to expose to a process-global bootstrap index.',
       },
       {
         signature: 'abstract inspect(id: SessionId, signal?: AbortSignal): Promise<SessionInspection>',
@@ -2156,6 +2199,117 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Resolve by canonical directory path without creating or mutating a workspace. A missing path rejects during `realpath`; an existing unowned directory returns `undefined`.',
         parameters: [{ name: 'path', description: 'Existing directory path in any spelling.' }],
         returns: 'the workspace owning the canonical path, when one exists.',
+      },
+    ],
+  },
+  {
+    key: 'xagentArtifact',
+    summary: '将账号绑定请求逐次转发给 FastAPI 的资料服务。',
+    description: '将账号绑定请求逐次转发给 FastAPI 的资料服务。',
+    methods: [
+      {
+        signature: 'async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: '在 Host 认证所得的单请求身份内执行完整 Remote 调用。',
+        parameters: [{ name: 'scope', description: '物理连接绑定的可信 Principal 与用户令牌。' }, { name: 'operation', description: '下游完整 Remote 操作。' }],
+        returns: '下游结果；退出时自动清除请求身份。',
+      },
+      {
+        signature: '@Remote async list(signal?: AbortSignal): Promise<readonly XAgentArtifactSummary[]>',
+        description: '列出当前 FastAPI 工作台范围内可见的资料。',
+        parameters: [{ name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '当前请求重新读取的资料摘要。',
+      },
+      {
+        signature: '@Remote async detail(artifactId: string, signal?: AbortSignal): Promise<XAgentArtifactDetail>',
+        description: '读取当前账号可见的一份资料与版本历史。',
+        parameters: [{ name: 'artifactId', description: '资料 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 当前资料详情。',
+      },
+      {
+        signature: '@Remote(\'create-upload\') async createUpload(input: XAgentArtifactUploadInput, signal?: AbortSignal): Promise<XAgentArtifactUpload>',
+        description: '创建当前 FastAPI 工作台范围内的新资料暂存上传。',
+        parameters: [{ name: 'input', description: '文件名、声明大小和幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '单个暂存对象的短期 PUT 授权。',
+      },
+      {
+        signature: '@Remote(\'create-version-upload\') async createVersionUpload( artifactId: string, input: XAgentArtifactUploadInput, signal?: AbortSignal, ): Promise<XAgentArtifactUpload>',
+        description: '为一份现有资料创建不可变新版本的暂存上传。',
+        parameters: [{ name: 'artifactId', description: '资料 UUID。' }, { name: 'input', description: '文件名、声明大小和幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '单个暂存对象的短期 PUT 授权。',
+      },
+      {
+        signature: '@Remote(\'complete-upload\') async completeUpload( uploadId: string, input: XAgentArtifactCompleteInput, signal?: AbortSignal, ): Promise<XAgentArtifactDetail>',
+        description: '完成暂存上传并把新版本提交到异步安全处理队列。',
+        parameters: [{ name: 'uploadId', description: '暂存上传 UUID。' }, { name: 'input', description: '实际大小、SHA-256 和幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '新版本进入处理队列后的资料详情。',
+      },
+      {
+        signature: '@Remote async retry(versionId: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentArtifactDetail>',
+        description: '重试一份仍有有效暂存正文的失败版本。',
+        parameters: [{ name: 'versionId', description: '资料版本 UUID。' }, { name: 'idempotencyKey', description: '当前重试意图的幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '重试入队后的资料详情。',
+      },
+      {
+        signature: '@Remote async preview(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>',
+        description: '为 clean 版本创建一次新的安全预览地址。',
+        parameters: [{ name: 'versionId', description: '资料版本 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 授权的短期 opaque 地址。',
+      },
+      {
+        signature: '@Remote async download(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>',
+        description: '为 clean 版本创建一次新的安全下载地址。',
+        parameters: [{ name: 'versionId', description: '资料版本 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 授权的短期 opaque 地址。',
+      },
+    ],
+  },
+  {
+    key: 'xagentPrincipal',
+    summary: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
+    description: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
+    methods: [
+      {
+        signature: 'abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>',
+        description: 'Introspect a login token and bind the resulting actor to one Host connection.',
+        parameters: [{ name: 'userToken', description: 'opaque FastAPI login token.' }, { name: 'connectionId', description: 'Host-generated physical connection identifier.' }, { name: 'signal', description: 'optional introspection cancellation signal.' }],
+        returns: 'an immutable validated Principal.',
+      },
+    ],
+  },
+  {
+    key: 'xagentProject',
+    summary: '将账号绑定请求转发给 FastAPI 的项目工作台服务。',
+    description: '将账号绑定请求转发给 FastAPI 的项目工作台服务。',
+    methods: [
+      {
+        signature: 'async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: '在 Host 认证所得的单请求身份内执行完整 Remote 调用。',
+        parameters: [{ name: 'scope', description: '物理连接绑定的可信 Principal 与用户令牌。' }, { name: 'operation', description: '下游完整 Remote 操作。' }],
+        returns: '下游结果；退出时自动清除请求身份。',
+      },
+      {
+        signature: '@Remote(\'bootstrap\') async bootstrap(signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>',
+        description: '读取当前账号的完整工作台状态。',
+        parameters: [{ name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 当前可见的账号、能力、上下文、项目和会话摘要。',
+      },
+      {
+        signature: '@Remote(\'select-context\') async selectContext(context: XAgentWorkbenchContext, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>',
+        description: '为当前账号选择跨项目工作台或单项目上下文。',
+        parameters: [{ name: 'context', description: '目标工作台或项目上下文。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 提交选择后重新读取的完整工作台状态。',
+      },
+      {
+        signature: '@Remote(\'create-project\') async createProject(name: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentWorkbenchBootstrap>',
+        description: '使用服务端能力检查为当前账号创建项目。',
+        parameters: [{ name: 'name', description: '用户提交的项目名称。' }, { name: 'idempotencyKey', description: '当前创建意图的幂等键。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: 'FastAPI 创建项目后重新读取的完整工作台状态。',
+      },
+      {
+        signature: '@Remote(\'project\') async project(projectId: string, signal?: AbortSignal): Promise<XAgentProjectDetail>',
+        description: '读取当前账号可见的一个项目详情。',
+        parameters: [{ name: 'projectId', description: '当前账号请求查看的项目 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
+        returns: '与请求 Principal 账号一致的项目详情。',
       },
     ],
   },
@@ -3645,7 +3799,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RpcErrorDetailsMap',
-    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPreset?: string;\n    };\n    \'agent-preset-not-found\': {\n        agentPreset: string;\n      /* …truncated — full shape in source */',
+    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'unauthenticated\': {};\n    \'forbidden\': {};\n    \'not-found\': {};\n    \'idempotency-conflict\': {};\n    \'unsupported-version\': {};\n    \'service-unavailable\': {};\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n       /* …truncated — full shape in source */',
   },
   {
     name: 'RpcId',
@@ -4654,6 +4808,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'WorkflowStopReason',
     declaration: 'export type WorkflowStopReason = \'completed\' | \'cancelled\' | \'error\';',
+  },
+  {
+    name: 'XAgentAuthenticatedRequestScope',
+    declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n}',
+  },
+  {
+    name: 'XAgentPrincipal',
+    declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
+  },
+  {
+    name: 'XAgentRole',
+    declaration: 'export type XAgentRole = \'manager\' | \'specialist\';',
   },
 ]
 

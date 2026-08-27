@@ -5,7 +5,7 @@
  */
 
 import { Service, type Context } from '@deepseek-ai/cordis'
-import type { TypertContextMap } from './types.ts'
+import type { RemoteFailure, TypertContextMap } from './types.ts'
 
 const TYPERT_REMOTE_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
 
@@ -33,6 +33,22 @@ export class TypertLookupFailure<Failure = unknown> extends Error {
   constructor(failure: Failure) {
     super('Typert lookup policy rejected the requested identity')
     this.name = 'TypertLookupFailure'
+    this.failure = failure
+  }
+}
+
+/** A business rejection that a Gateway carrier must preserve on the Remote wire. */
+export class TypertRemoteFailure<Failure = RemoteFailure> extends Error {
+  /** Service-owned stable failure returned to the caller. */
+  readonly failure: Failure
+
+  /**
+   * Wrap one service-owned business failure without converting it to an infrastructure error.
+   * @param failure - Stable failure safe to expose through the active carrier.
+   */
+  constructor(failure: Failure) {
+    super('Typert Remote business operation was rejected')
+    this.name = 'TypertRemoteFailure'
     this.failure = failure
   }
 }

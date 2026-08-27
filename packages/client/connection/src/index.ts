@@ -9,13 +9,18 @@ import { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority, isTrustedApiRequest } from './api-request-trust.ts'
 import { HostConnectionService } from './rpc-host.ts'
+import type { ConnectionRequestContextResolver } from './rpc.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
 
 export type {
   ConnectionRpcAuthority,
+  ConnectionRequestAuthorizer,
   ConnectionRpcEndpointMatcher,
   ConnectionRpcHandler,
   ConnectionRpcHandlerOptions,
+  ConnectionRequestContext,
+  ConnectionRequestContextResolver,
+  ResolvedConnectionRequestContext,
   HostConnectionHandle,
   HostConnectionRpc,
 } from './rpc.ts'
@@ -137,7 +142,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
   const connection = new HostConnectionService(ctx, trustedHosts)
   const fetchHandler = connection.createSharedFetchHandler(API_PATH, {
-    async fetch(request) {
+    async fetch(request, requestContext) {
       const pathname = new URL(request.url).pathname
       const method = pathname.startsWith(`${API_PATH}/`)
         ? pathname.slice(API_PATH.length + 1)
@@ -155,7 +160,8 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
       }
       const apiProxy = ctx.get('apiProxy')
       if (apiProxy === undefined) return new Response('not found', { status: 404 })
-      return toFetchHandler(apiProxy).fetch(request)
+      const authorizer = ctx.get('connectionRequestAuthorizer') as import('./rpc.ts').ConnectionRequestAuthorizer | undefined
+      return toFetchHandler(apiProxy, { requestContext, ...authorizer === undefined ? {} : { authorizer } }).fetch(request)
     },
   })
   const route: WebRoute = {
@@ -173,7 +179,11 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
   ctx.effect(() => ctx.webServer.register(route), 'client-connection: /api route')
   ctx.inject(['apiProxy'], (apiCtx) => {
     assertImageBodyCapacity(apiCtx, maxRequestBodyBytes)
-    const downlinks = new WebSocketDownlinks(apiCtx.apiProxy)
+    const downlinks = new WebSocketDownlinks(
+      apiCtx.apiProxy,
+      () => apiCtx.get('connectionRequestContextResolver') as ConnectionRequestContextResolver | undefined,
+      () => apiCtx.get('connectionRequestAuthorizer') as import('./rpc.ts').ConnectionRequestAuthorizer | undefined,
+    )
     const registerDownlink = (
       path: string,
       handle: WebUpgradeRoute['handler'],
@@ -190,7 +200,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
       }), `client-connection: ${path} WebSocket`)
     }
     apiCtx.effect(() => () => downlinks.close(), 'client-connection: WebSocket downlinks')
-    registerDownlink(MUX_EVENTS_PATH, (req, socket, head) => { downlinks.handleMux(req, socket, head) })
-    registerDownlink(HOST_EVENTS_PATH, (req, socket, head) => { downlinks.handleHost(req, socket, head) })
+    registerDownlink(MUX_EVENTS_PATH, (req, socket, head) => downlinks.handleMux(req, socket, head))
+    registerDownlink(HOST_EVENTS_PATH, (req, socket, head) => downlinks.handleHost(req, socket, head))
   })
 }

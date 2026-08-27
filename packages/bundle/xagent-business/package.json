@@ -31,6 +31,18 @@
     "lib/types/**/*.d.ts"
   ],
   "license": "MIT",
+  "dependencies": {
+    "@xagent/dsh-artifact": "workspace:^",
+    "@xagent/dsh-authorization": "workspace:^",
+    "@xagent/dsh-backend-client": "workspace:^",
+    "@xagent/dsh-connection-auth": "workspace:^",
+    "@xagent/dsh-principal": "workspace:^",
+    "@xagent/dsh-project": "workspace:^",
+    "@xagent/dsh-session-persistence-api": "workspace:^",
+    "@xagent/dsh-ui-account": "workspace:^",
+    "@xagent/dsh-ui-artifact": "workspace:^",
+    "@xagent/dsh-ui-project": "workspace:^"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

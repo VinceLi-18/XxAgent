@@ -36,6 +36,24 @@ Any row it prints can be replaced by a patch of your own.
 
 Composition mechanics are in [app-boot](../packages/boot/app-boot/README.md#profiles); config fields are in the generated [config catalog](config-catalog.md).
 
+### XAgent authenticated Business runtime
+
+`xagent-business` keeps the dsh Host as the browser-facing process, but it does not use the local JSONL store as its session authority. The Host exchanges the browser's secure login cookie with the XAgent FastAPI service, derives an immutable principal for each physical connection, and passes that principal explicitly through RPC authorization. Browser payloads and identity-like headers never define the principal.
+
+The XAgent authorization service validates every Session method against a closed method table. It binds the request to the authenticated connection, asks FastAPI for the required read or edit decision, and opens a narrowly scoped user-token lease around the remote persistence call. Unknown Workspace methods and all browser Workspace RPCs fail closed; the internal Workspace registry remains mounted only because the generic API gateway requires it during boot.
+
+FastAPI owns passwords, revocable login records, permission revisions, account state, session headers, and append-only session events. PostgreSQL row-level security and the application transaction recheck the actor before each read or write. A private session is visible only to its owner, including to managers; invisible and absent sessions share the same not-found result. The Host never falls back to a profile-local session file when FastAPI is unavailable.
+
+New-session publication is atomic across the runtime boundary: the remote header and seed event must commit before the Agent becomes visible. Restored sessions preserve interrupted durable tails and append any required closure events remotely. Startup workspace discovery uses a separate bootstrap method; the XAgent provider intentionally returns no user sessions there because no authenticated principal exists yet.
+
+`xagent-developer`, `web`, `headless`, and other upstream profiles retain their existing local persistence and do not load XAgent service credentials, authentication, authorization, or delegation keys. Profile directories remain an organization boundary, not a multi-user security boundary.
+
+The Business project workbench keeps account capabilities, visible projects, the selected workbench or project context, and Session scope in FastAPI/PostgreSQL. `@xagent/dsh-project` exposes four request-scoped Remote methods whose user token comes only from the authenticated connection. `@xagent/dsh-ui-project` consumes their Bootstrap through reversible Slots for the project browser, central context marker, operation shield, and third-column details. It keeps no project cache in browser storage and discards late responses after an account change.
+
+Business artifact management follows the same authenticated scope without adding model tools. FastAPI and PostgreSQL own private and project artifact permissions, immutable versions, the five scan states, audit, and a durable PostgreSQL processing queue; a separately credentialed worker scans staged content through ClamAV and promotes clean objects into a versioned private MinIO bucket. `@xagent/dsh-artifact` exposes only the fixed human-interface Remote and same-origin content proxy, while `@xagent/dsh-ui-artifact` occupies the project details Slot for upload, history, retry, preview, and download. The browser keeps artifact state only in memory, clears it on account or project changes, and never adds artifact content or signed reads to Session events or model requests.
+
+`@xagent/dsh-ui-account` contributes the CSRF cookie header to the browser connection's generated Remote and existing Web API transports. This header service is inert without a contributor. Only `xagent-business` mounts these XAgent rows; the generic layout, Developer profile, and upstream profiles keep their prior UI and transport behavior.
+
 ## Core packages
 
 Here are some core packages that contribute to the Cordis tree.

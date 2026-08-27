@@ -1,6 +1,7 @@
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import type {
@@ -8,7 +9,7 @@ import type {
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { HOST_EVENTS_PATH, MUX_EVENTS_PATH } from '../src/api-path.ts'
-import { WebSocketDownlinks } from '../src/websocket-downlink.ts'
+import { rejectWebSocketUpgrade, WebSocketDownlinks } from '../src/websocket-downlink.ts'
 
 type MuxSource = (signal: AbortSignal) => AsyncIterable<RpcRequest<MuxFrame>>
 type HostSource = (signal: AbortSignal) => AsyncIterable<RpcRequest<HostFrame>>
@@ -46,8 +47,8 @@ async function serve(downlinks: WebSocketDownlinks): Promise<{
   const server = createServer()
   server.on('upgrade', (request, socket, head) => {
     const pathname = new URL(request.url ?? '/', 'http://dsh.internal').pathname
-    if (pathname === MUX_EVENTS_PATH) downlinks.handleMux(request, socket, head)
-    else if (pathname === HOST_EVENTS_PATH) downlinks.handleHost(request, socket, head)
+    if (pathname === MUX_EVENTS_PATH) void downlinks.handleMux(request, socket, head)
+    else if (pathname === HOST_EVENTS_PATH) void downlinks.handleHost(request, socket, head)
     else socket.destroy()
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -76,6 +77,114 @@ async function acceptedSocket(downlinks: WebSocketDownlinks): Promise<WebSocket>
 }
 
 describe('WebSocket downlinks', () => {
+  it('authenticates each physical upgrade once and rejects before opening a stream', async () => {
+    const opened: string[] = []
+    const resolver = vi.fn(async (_request: Request, connectionId: string) => {
+      if (connectionId === '') throw new Error('missing connection id')
+      return { principal: { actorId: 'alice' }, userToken: 'secret' }
+    })
+    const downlinks = new WebSocketDownlinks(api(
+      async function * () { opened.push('mux') },
+      idle,
+    ), () => ({ resolve: resolver }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+
+    const first = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`, { headers: { cookie: 'xagent_session=one' } })
+    await once(first, 'close')
+    const second = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`, { headers: { cookie: 'xagent_session=two' } })
+    await once(second, 'close')
+
+    expect(resolver).toHaveBeenCalledTimes(2)
+    expect(opened).toEqual(['mux', 'mux'])
+  })
+
+  it('does not negotiate a WebSocket when authentication rejects', async () => {
+    const open = vi.fn<MuxSource>(() => idle<MuxFrame>(new AbortController().signal))
+    const downlinks = new WebSocketDownlinks(api(open, idle), () => ({
+      resolve: async () => { throw new Error('secret must not escape') },
+    }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`, { headers: { cookie: 'xagent_session=secret' } })
+    const [, response] = await once(socket, 'unexpected-response') as [unknown, import('node:http').IncomingMessage]
+    const status = response.statusCode
+
+    expect(status).toBe(401)
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('closes an accepted stream when its authenticated lifetime expires', async () => {
+    const lifetime = new AbortController()
+    let sourceAborted = false
+    const downlinks = new WebSocketDownlinks(api(
+      async function * (signal) {
+        try {
+          await untilAbort(signal)
+        } finally {
+          sourceAborted = true
+        }
+      },
+      idle,
+    ), () => ({
+      resolve: async () => ({ lifetime: lifetime.signal }),
+    }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
+    await once(socket, 'open')
+
+    const closed = once(socket, 'close')
+    lifetime.abort()
+
+    const [code, reason] = await closed as [number, Buffer]
+    expect(code).toBe(1008)
+    expect(String(reason)).toBe('authentication expired')
+    await vi.waitFor(() => { expect(sourceAborted).toBe(true) })
+  })
+
+  it('closes immediately when authentication returns an already expired lifetime', async () => {
+    const lifetime = new AbortController()
+    lifetime.abort()
+    const downlinks = new WebSocketDownlinks(api(idle, idle), () => ({
+      resolve: async () => ({ lifetime: lifetime.signal }),
+    }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
+    const [code, reason] = await once(socket, 'close') as [number, Buffer]
+    expect(code).toBe(1008)
+    expect(String(reason)).toBe('authentication expired')
+  })
+
+  it('joins repeated request headers and cancels authentication when the raw socket fails', async () => {
+    let seenHeader: string | null = null
+    let seenSignal: AbortSignal | undefined
+    let started!: () => void
+    const entered = new Promise<void>((resolve) => { started = resolve })
+    const downlinks = new WebSocketDownlinks(api(idle, idle), () => ({
+      resolve: async (request, _connectionId, signal) => {
+        seenHeader = request.headers.get('set-cookie')
+        seenSignal = signal
+        started()
+        await untilAbort(signal)
+        throw new Error('closed')
+      },
+    }))
+    const socket = new PassThrough()
+    socket.on('error', () => {})
+    const pending = downlinks.handleMux({
+      headers: { 'set-cookie': ['first=1', 'second=2'], 'x-absent': undefined },
+      url: undefined,
+    } as unknown as import('node:http').IncomingMessage, socket, Buffer.alloc(0))
+    await entered
+    socket.emit('error', new Error('transport failed'))
+    await pending
+    expect(seenSignal?.aborted).toBe(true)
+    expect(seenHeader).toContain('first=1')
+    expect(seenHeader).toContain('second=2')
+  })
+
   it('carries mux and host over independent downstream sockets and cancels each source on close', async () => {
     let muxAborted = false
     let hostAborted = false
@@ -128,6 +237,40 @@ describe('WebSocket downlinks', () => {
     await vi.waitFor(() => {
       expect(muxAborted).toBe(true)
       expect(hostAborted).toBe(true)
+    })
+  })
+
+  it('filters every downlink frame with the authenticated connection context', async () => {
+    const filterEvent = vi.fn(async (
+      _endpoint: string,
+      frame: unknown,
+      _request: unknown,
+      _signal: AbortSignal,
+    ) => {
+      const value = frame as { sessionId?: string }
+      return value.sessionId === 'session-denied' ? undefined : frame
+    })
+    const downlinks = new WebSocketDownlinks(api(
+      async function * () {
+        yield { rpcId: RpcId('denied'), payload: { type: 'session/subscribed', sessionId: 'session-denied' as never, lastSeq: 0 } }
+        yield { rpcId: RpcId('allowed'), payload: { type: 'session/subscribed', sessionId: 'session-allowed' as never, lastSeq: 0 } }
+      },
+      idle,
+    ), () => ({
+      resolve: async (_request, connectionId) => ({
+        principal: { actorId: 'alice', connectionId },
+        userToken: 'alice-token',
+      }),
+    }), () => ({ run: async (_endpoint, _payload, _request, _signal, operation) => operation(), filterEvent }))
+    const host = await serve(downlinks)
+    running.push(host.close)
+    const socket = new WebSocket(`${host.origin}${MUX_EVENTS_PATH}`)
+
+    expect(await read(socket)).toMatchObject({ rpcId: 'allowed' })
+    expect(filterEvent).toHaveBeenCalledTimes(2)
+    expect(filterEvent.mock.calls[0]?.[2]).toMatchObject({
+      principal: { actorId: 'alice' },
+      userToken: 'alice-token',
     })
   })
 
@@ -304,5 +447,14 @@ describe('WebSocket downlinks', () => {
       releaseCleanup()
       await closing
     }
+  })
+
+  it('writes the stable forbidden upgrade response helper', async () => {
+    const socket = new PassThrough()
+    const chunks: Buffer[] = []
+    socket.on('data', (chunk: Uint8Array) => chunks.push(Buffer.from(chunk)))
+    rejectWebSocketUpgrade(socket)
+    await once(socket, 'end')
+    expect(Buffer.concat(chunks).toString()).toContain('HTTP/1.1 403 Forbidden')
   })
 })

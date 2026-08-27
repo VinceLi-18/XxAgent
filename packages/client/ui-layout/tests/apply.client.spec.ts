@@ -40,7 +40,7 @@ describe('ui-layout client apply', () => {
     expect(inject).toEqual(['slots', 'theme'])
   })
 
-  it('provides ctx.layout and registers AppFrame into root with the three child declarations', async () => {
+  it('provides ctx.layout and registers AppFrame into root with the optional shell details declaration', async () => {
     const { ctx, slots } = await bench()
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
@@ -51,9 +51,10 @@ describe('ui-layout client apply', () => {
     expect(slots.spec('sidebar')).toEqual({ kind: 'single', scope: 'root' })
     expect(slots.spec('conversation')).toEqual({ kind: 'single', scope: 'session-maybe' })
     expect(slots.spec('details')).toEqual({ kind: 'single', scope: 'session' })
+    expect(slots.spec('shell.details')).toEqual({ kind: 'single', scope: 'root' })
   })
 
-  it('injects no business face and attaches the layout actions', async () => {
+  it('injects reactive shell-details occupancy and attaches the layout actions', async () => {
     const { ctx, slots } = await bench()
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
@@ -61,7 +62,13 @@ describe('ui-layout client apply', () => {
       setSidebar: vi.fn(), setDetails: vi.fn(), toggleSidebar: vi.fn(), openDetails: vi.fn(), closeDetails: vi.fn(),
     }
     const injected = (slots.entries('root')[0]!.inject as (actions: never) => object)(actions as never)
-    expect(injected).toEqual({})
+    expect(injected).toHaveProperty('hooks.shellDetails')
+    const source = (injected as { hooks: { shellDetails: { getSnapshot: () => boolean } } }).hooks.shellDetails
+    expect(source.getSnapshot()).toBe(false)
+    const dispose = slots.register({ name: 'shell.details' }, () => null)
+    expect(source.getSnapshot()).toBe(true)
+    dispose()
+    expect(source.getSnapshot()).toBe(false)
     const layout = ctx.get('layout') as LayoutController
     layout.toggleSidebar()
     expect(actions.toggleSidebar).toHaveBeenCalledOnce()
@@ -100,6 +107,7 @@ describe('ui-layout client apply', () => {
     expect(ctx.get('layout')).toBeUndefined()
     expect(slots.entries('root')).toHaveLength(0)
     expect(slots.spec('sidebar')).toBeUndefined()
+    expect(slots.spec('shell.details')).toBeUndefined()
     // The built-in root declaration survives entry teardown (runtime-owned).
     expect(slots.spec('root')).toEqual({ kind: 'single', scope: 'root' })
   })

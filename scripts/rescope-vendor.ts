@@ -76,6 +76,12 @@ interface GenericSkip {
   readonly upstream: readonly string[]
 }
 
+/** A quoted runtime value that resembles a package name but is not an import. */
+interface GenericTokenSkip {
+  readonly file: string
+  readonly values: readonly string[]
+}
+
 const GENERIC_SKIPS: readonly GenericSkip[] = [
   // `vendorPackages` lists vendor/ directory names, joined with 'vendor' below it.
   { file: 'packages/examples/acp-demo/tests/built-bin.e2e.ts', upstream: ['cordis', 'cosmokit', 'schemastery'] },
@@ -104,6 +110,48 @@ const GENERIC_SKIPS: readonly GenericSkip[] = [
   // GROUP_ORDER holds `packages/<group>/` directory names, not package names.
   { file: 'scripts/gen-module-graph.ts', upstream: ['cordis'] },
   { file: 'scripts/gen-doc-graphs.ts', upstream: ['cordis'] },
+]
+
+const CORDIS_EVENT_TOKENS = [
+  'cordis/',
+  'cordis/*',
+  'cordis/dynamic-package',
+  'cordis/dynamic-retract',
+  'cordis/inspect-query',
+  'cordis/inspect-query-resolved',
+  'cordis/request-run',
+  'cordis/request-run-resolved',
+] as const
+
+/** Protocol, locale, preset, and catalog values that the package-token syntax cannot distinguish. */
+const GENERIC_TOKEN_SKIPS: readonly GenericTokenSkip[] = [
+  { file: 'docs/event-producer-consumer.md', values: CORDIS_EVENT_TOKENS },
+  { file: 'docs/event-producer-consumer.zh.md', values: CORDIS_EVENT_TOKENS },
+  { file: 'docs/subsystems/extensions.md', values: CORDIS_EVENT_TOKENS },
+  { file: 'docs/subsystems/extensions.zh.md', values: CORDIS_EVENT_TOKENS },
+  { file: 'docs/superpowers/progress/2026-08-22-xagent-phase-1.md', values: ['cordis'] },
+  { file: 'packages/api/remotes/src/remote-events.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/client/ui-settings-plugin-inventory/src/client/PluginInventorySettingsTab.tsx', values: ['cordis'] },
+  { file: 'packages/extensions/cordis-client-runner/src/client/index.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-client-runner/src/client/runtime.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-client-runner/tests/orchestrator.client.spec.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-client-runner/tests/plugin.client.spec.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-host-runner/src/index.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-host-runner/src/inspect-registry.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-host-runner/src/types.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-host-runner/tests/helpers.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-host-runner/tests/runner.spec.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/cordis-host-runner/tests/versioning.spec.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/tool-cordis/src/api-catalog.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/tool-cordis/src/providers.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/ui-cordis/src/client/CordisActionRow.tsx', values: ['cordis'] },
+  { file: 'packages/extensions/ui-cordis/src/client/CordisDefineRow.tsx', values: ['cordis'] },
+  { file: 'packages/extensions/ui-cordis/src/client/CordisPanel.tsx', values: ['cordis'] },
+  { file: 'packages/extensions/ui-cordis/src/client/CordisRunRow.tsx', values: ['cordis'] },
+  { file: 'packages/extensions/ui-cordis/src/client/index.ts', values: ['cordis', ...CORDIS_EVENT_TOKENS] },
+  { file: 'packages/extensions/ui-cordis/src/client/inventory.ts', values: CORDIS_EVENT_TOKENS },
+  { file: 'packages/extensions/ui-cordis/src/client/locales.ts', values: ['cordis'] },
+  { file: 'scripts/gen-cordis-catalog.ts', values: ['cordis', ...CORDIS_EVENT_TOKENS] },
 ]
 
 /** A string that must appear exactly `count` times once the rescope has run. */
@@ -463,6 +511,7 @@ const VENDORED_LIBRARY = /^@deepseek-ai\\/(cosmokit|schemastery)(\\/|$)/
 /** Files the rescope must never rewrite. */
 function excluded(file: string): boolean {
   if (file === 'scripts/rescope-vendor.ts') return true // the mapping itself
+  if (file === 'scripts/rescope-vendor.spec.ts') return true // fixtures exercise pre-rescope forms
   if (file.startsWith('.agents/notes/')) return true // notes record what was true when written
   // Recorded model payloads quote documentation verbatim, so they must mirror the
   // sources on disk — including the notes this rescope leaves alone.
@@ -507,11 +556,18 @@ function skipped(file: string, pattern: Pattern): boolean {
   return GENERIC_SKIPS.some(skip => skip.file === file && skip.upstream.includes(pattern.upstream))
 }
 
+function skippedToken(file: string, value: string): boolean {
+  const normalized = value.replace(/\\+$/, '')
+  return GENERIC_TOKEN_SKIPS.some(skip => skip.file === file && skip.values.includes(normalized))
+}
+
 function rewriteLine(line: string, file: string, all: readonly Pattern[]): string {
   let out = line
   for (const pattern of all) {
     if (skipped(file, pattern)) continue
-    out = out.replace(pattern.token, (_match, quote: string, subpath: string) => `${quote}${pattern.to}${subpath}${quote}`)
+    out = out.replace(pattern.token, (match, quote: string, subpath: string) => (
+      skippedToken(file, `${pattern.from}${subpath}`) ? match : `${quote}${pattern.to}${subpath}${quote}`
+    ))
     out = out.replace(pattern.yamlName, (_match, prefix: string, suffix: string) => `${prefix}${pattern.to}${suffix}`)
   }
   return out
@@ -546,6 +602,11 @@ function rewrite(text: string, file: string, all: readonly Pattern[]): { text: s
     return next
   })
   return { text: out.join('\n'), lines }
+}
+
+/** Rewrite package-name tokens for one file without touching the filesystem. */
+export function rewritePackageNames(text: string, file: string): string {
+  return rewrite(text, file, patterns(false)).text
 }
 
 function classify(file: string): string {

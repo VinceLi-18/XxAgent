@@ -59,6 +59,9 @@ describe('rpcErrorSchema', () => {
   it('accepts every code branch with its required details', () => {
     expect(rpcErrorSchema.parse({ code: 'bad-request', message: 'm', details: { issues: [] } }).code).toBe('bad-request')
     expect(rpcErrorSchema.parse({ code: 'cancelled', message: 'm', details: {} }).code).toBe('cancelled')
+    for (const code of ['forbidden', 'not-found', 'idempotency-conflict', 'unsupported-version', 'service-unavailable']) {
+      expect(rpcErrorSchema.parse({ code, message: 'm', details: {} }).code).toBe(code)
+    }
     expect(rpcErrorSchema.parse({ code: 'session-not-found', message: 'm', details: { sessionId: 's' } }).code).toBe('session-not-found')
     expect(rpcErrorSchema.parse({ code: 'session-conflict', message: 'm', details: { sessionId: 's', requestedCwd: '/a', existingCwd: '/b' } }).code).toBe('session-conflict')
     expect(rpcErrorSchema.parse({ code: 'invalid-time-zone', message: 'm', details: { value: 'CST' } }).code).toBe('invalid-time-zone')

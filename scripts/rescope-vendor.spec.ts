@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { exactEditState } from './rescope-vendor.ts'
+import { exactEditState, rewritePackageNames } from './rescope-vendor.ts'
 
 const ANCHOR = '\n## Sync procedure'
 const INSERTED = `\n15. **rescope**: one log entry.\n${ANCHOR}`
@@ -37,5 +37,24 @@ describe('exactEditState', () => {
     // A moved or partially applied site: neither state is complete.
     expect(exactEditState('a = 1\nb = 2\n', 'a = 1', 'b = 2', 1)).toBe('invalid')
     expect(exactEditState('x\n', 'a = 1', 'b = 2', 1)).toBe('invalid')
+  })
+})
+
+describe('runtime values that resemble package names', () => {
+  it('keeps a registered protocol value without hiding a package import in the same file', () => {
+    const file = 'packages/api/remotes/src/remote-events.ts'
+    const source = "import { Context } from 'cordis'\nconst event = 'cordis/request-run'\n"
+
+    expect(rewritePackageNames(source, file)).toBe(
+      "import { Context } from '@deepseek-ai/cordis'\nconst event = 'cordis/request-run'\n",
+    )
+  })
+
+  it('does not exempt an unregistered package subpath', () => {
+    const source = "const moduleName = 'cordis/context'\n"
+
+    expect(rewritePackageNames(source, 'packages/api/remotes/src/remote-events.ts')).toBe(
+      "const moduleName = '@deepseek-ai/cordis/context'\n",
+    )
   })
 })

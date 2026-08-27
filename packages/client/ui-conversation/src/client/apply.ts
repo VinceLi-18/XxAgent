@@ -117,6 +117,10 @@ export function apply(ctx: Context): void {
   const workspaces = ctx.workspaces
   const layout = ctx.layout
   const slots = ctx.slots
+  const conversationContext = {
+    getSnapshot: () => slots.entries('conversation.context').length > 0,
+    subscribe: (listener: () => void) => slots.subscribe('conversation.context', listener),
+  }
 
   registerConversationNodes(ctx)
   registerChatNodeRenderers(ctx)
@@ -197,6 +201,7 @@ export function apply(ctx: Context): void {
     name: 'conversation',
     locale: NS,
     children: {
+      'conversation.context': { kind: 'single', scope: 'root' },
       'conversation.session': { kind: 'single', scope: 'session' },
       'conversation.session.header': { kind: 'single', scope: 'session' },
       'conversation.composer': { kind: 'chain', scope: 'session' },
@@ -210,7 +215,10 @@ export function apply(ctx: Context): void {
       'conversation.hero.agentPreset': { kind: 'single', scope: 'root' },
     },
     inject: (sessionId: SessionId | undefined): ConversationInjected => ({
-      hooks: { composerBlock: sessionId === undefined ? ABSENT_BLOCK : composerBlocks.storeFor(sessionId) },
+      hooks: {
+        composerBlock: sessionId === undefined ? ABSENT_BLOCK : composerBlocks.storeFor(sessionId),
+        conversationContext,
+      },
       selectWorkspace: async (workspaceId) => {
         const nextId = await workspaces.connectWorkspace(workspaceId)
         if (sessionId !== undefined && nextId !== sessionId) {

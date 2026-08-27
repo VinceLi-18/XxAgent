@@ -412,7 +412,7 @@ export interface ConnectionConfig {
 }
 ```
 
-来源：[`packages/client/connection/src/index.ts:50`](../packages/client/connection/src/index.ts)
+来源：[`packages/client/connection/src/index.ts:55`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 
@@ -3023,6 +3023,100 @@ export interface Config {
 
 来源：[`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="xagentdsh-artifact"></a>
+
+## `@xagent/dsh-artifact`
+
+需要：`webServer`
+
+```ts config-catalog
+/** XAgent Artifact Host plugin configuration. */
+export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
+  backendOrigin: string
+  /** Host 调用内部资料接口时使用的服务身份。 */
+  serviceToken: string
+}
+```
+
+来源：[`packages/xagent/artifact/src/index.ts:51`](../packages/xagent/artifact/src/index.ts)
+
+<a id="xagentdsh-authorization"></a>
+
+## `@xagent/dsh-authorization`
+
+需要：`sessionPersistence`
+
+```ts config-catalog
+/** XAgent Session authorization plugin configuration. */
+export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
+  backendOrigin: string
+  /** Host 调用内部授权接口时使用的服务身份。 */
+  serviceToken: string
+}
+```
+
+来源：[`packages/xagent/authorization/src/index.ts:46`](../packages/xagent/authorization/src/index.ts)
+
+<a id="xagentdsh-connection-auth"></a>
+
+## `@xagent/dsh-connection-auth`
+
+需要：`webServer`
+
+```ts config-catalog
+/** XAgent browser connection authentication plugin configuration. */
+export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
+  backendOrigin: string
+  /** Host 调用内部认证接口时使用的服务身份。 */
+  serviceToken: string
+  /** 可以提交浏览器登录请求的精确 origin 清单。 */
+  allowedOrigins: string[]
+  /** 是否只通过 HTTPS 发送登录 Cookie。 */
+  secureCookie: boolean
+  /** 已认证连接再次 introspection 前的最长缓存时间。 */
+  revalidateIntervalMs: number
+}
+```
+
+来源：[`packages/xagent/connection-auth/src/index.ts:23`](../packages/xagent/connection-auth/src/index.ts)
+
+<a id="xagentdsh-project"></a>
+
+## `@xagent/dsh-project`
+
+```ts config-catalog
+/** XAgent Project Host plugin configuration. */
+export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
+  backendOrigin: string
+  /** Host 调用内部项目接口时使用的服务身份。 */
+  serviceToken: string
+}
+```
+
+来源：[`packages/xagent/project/src/index.ts:34`](../packages/xagent/project/src/index.ts)
+
+<a id="xagentdsh-session-persistence-api"></a>
+
+## `@xagent/dsh-session-persistence-api`
+
+需要：`sessions`
+
+```ts config-catalog
+/** XAgent FastAPI Session Persistence plugin configuration. */
+export interface Config {
+  /** FastAPI 服务的绝对 HTTP origin。 */
+  backendOrigin: string
+  /** Host 调用内部 Session 接口时使用的服务身份。 */
+  serviceToken: string
+}
+```
+
+来源：[`packages/xagent/session-persistence-api/src/index.ts:28`](../packages/xagent/session-persistence-api/src/index.ts)
+
 ## 无配置的可加载插件
 
 这些插件通过 `cordis.yml` 中不含 `config:` 块的条目加载；它们未声明任何配置接口。
@@ -3092,6 +3186,9 @@ export interface Config {
 - `@deepseek-ai/dsh-tool-subagent-control` — 需要 `tools` · `subagents`（[`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)）
 - `@deepseek-ai/dsh-user-questions`（[`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts)）
 - `@deepseek-ai/dsh-workspace` — 需要 `storageDomain` · `sessionPersistence`（[`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts)）
+- `@xagent/dsh-ui-account`（[`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts)）
+- `@xagent/dsh-ui-artifact`（[`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts)）
+- `@xagent/dsh-ui-project`（[`packages/xagent/ui-project/src/index.ts`](../packages/xagent/ui-project/src/index.ts)）
 
 ## Seam 包（不可直接加载）
 
@@ -3112,6 +3209,7 @@ export interface Config {
 - `@deepseek-ai/dsh-spill` — 抽象 `SpillStore`（[`packages/spill/spill/src/index.ts`](../packages/spill/spill/src/index.ts)）
 - `@deepseek-ai/dsh-subprocess` — 抽象 `SubprocessRuntime`（[`packages/subprocess/subprocess/src/index.ts`](../packages/subprocess/subprocess/src/index.ts)）
 - `@deepseek-ai/dsh-workflow` — 抽象 `WorkflowEngine`（[`packages/workflow/workflow/src/index.ts`](../packages/workflow/workflow/src/index.ts)）
+- `@xagent/dsh-principal` — 抽象 `XAgentPrincipalService`（[`packages/xagent/principal/src/index.ts`](../packages/xagent/principal/src/index.ts)）
 ## 库包（无插件入口）
 
 由其他包作为库导入；`cordis.yml` 无法加载它们。
@@ -3150,5 +3248,7 @@ export interface Config {
 - `@deepseek-ai/dsh-typert-generator`（[`packages/typert/generator/src/index.ts`](../packages/typert/generator/src/index.ts)）
 - `@deepseek-ai/dsh-typert-protocol`（[`packages/typert/protocol/src/index.ts`](../packages/typert/protocol/src/index.ts)）
 - `@deepseek-ai/dsh-typert-registry`（[`packages/typert/registry/src/index.ts`](../packages/typert/registry/src/index.ts)）
+- `@xagent/dsh-backend-client`（[`packages/xagent/backend-client/src/index.ts`](../packages/xagent/backend-client/src/index.ts)）
 - `@xagent/dsh-business`（[`packages/bundle/xagent-business/src/index.ts`](../packages/bundle/xagent-business/src/index.ts)）
+- `@xagent/dsh-delegation-token`（[`packages/xagent/delegation-token/src/index.ts`](../packages/xagent/delegation-token/src/index.ts)）
 - `@xagent/dsh-developer`（[`packages/bundle/xagent-developer/src/index.ts`](../packages/bundle/xagent-developer/src/index.ts)）

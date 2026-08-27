@@ -5,17 +5,22 @@ services:
     image: xagent-api:local
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}
       POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       JWT_SECRET_KEY: "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env to a high-entropy value}"
       JWT_ISSUER: "${JWT_ISSUER:?Set JWT_ISSUER in .env}"
       JWT_AUDIENCE: "${JWT_AUDIENCE:?Set JWT_AUDIENCE in .env}"
+      XAGENT_SERVICE_TOKEN: "${XAGENT_SERVICE_TOKEN:?Set XAGENT_SERVICE_TOKEN in .env to a high-entropy value}"
       MINIO_ENDPOINT: ${MINIO_ENDPOINT}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
       MINIO_SECURE: ${MINIO_SECURE}
       MINIO_PUBLIC_SECURE: ${MINIO_PUBLIC_SECURE}
-      MINIO_BUCKET: ${MINIO_BUCKET}
+      MINIO_BUCKET: ${MINIO_BUCKET:-xagent-private}
       MAX_ARTIFACT_SIZE_BYTES: ${MAX_ARTIFACT_SIZE_BYTES}
       STAGING_EXPIRY_DAYS: ${STAGING_EXPIRY_DAYS}
       CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT}
@@ -26,12 +31,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_started
       minio:
-        condition: service_started
-      clamav:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -47,16 +48,28 @@ services:
   worker:
     image: xagent-api:local
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
-    command: ["python", "-c", "import time; time.sleep(3600)"]
+      DATABASE_WORKER_URL: ${DATABASE_WORKER_URL}
+      POSTGRES_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_SECURE: ${MINIO_SECURE}
+      MINIO_BUCKET: ${MINIO_BUCKET:-xagent-private}
+      MINIO_TIMEOUT: ${MINIO_TIMEOUT:-10}
+      CLAMAV_HOST: ${CLAMAV_HOST:-clamav}
+      CLAMAV_PORT: ${CLAMAV_PORT:-3310}
+      CLAMAV_TIMEOUT: ${CLAMAV_TIMEOUT}
+    command: ["xagent-api", "worker"]
+    stop_grace_period: 2m
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_started
+      minio:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
 
   postgres:
     image: postgres:16-alpine
@@ -64,29 +77,43 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
-      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
     volumes:
       - xagent-api-postgres:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+  roles:
+    image: xagent-api:local
+    environment:
+      DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      POSTGRES_WORKER_USER: ${POSTGRES_WORKER_USER}
+      POSTGRES_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD}
+    command: ["xagent-api", "roles", "ensure"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   migrate:
     image: xagent-api:local
     environment:
       DATABASE_ADMIN_URL: ${DATABASE_ADMIN_URL}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_WORKER_USER: ${POSTGRES_WORKER_USER}
     command: ["alembic", "upgrade", "head"]
     depends_on:
-      postgres:
-        condition: service_healthy
-
-  redis:
-    image: redis:7-alpine
+      roles:
+        condition: service_completed_successfully
 
   minio:
     image: minio/minio:RELEASE.2024-10-13T13-34-11Z
@@ -100,11 +127,18 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - xagent-api-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   clamav:
-    image: clamav/clamav:1.4.3_base
-    platform: linux/amd64
+    image: clamav/clamav-debian:1.4
+    volumes:
+      - xagent-api-clamav:/var/lib/clamav
 
 volumes:
+  xagent-api-clamav:
   xagent-api-minio:
   xagent-api-postgres:

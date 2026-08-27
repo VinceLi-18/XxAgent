@@ -242,6 +242,7 @@ function mount(
     useWorkspaces: bindSnapshotSelector(workspaces),
     useProjection: (() => undefined),
     useComposerBlock: select => select(options.composerBlock),
+    useConversationContext: select => select(false),
     useInput,
     inputActions,
     renderSlot,

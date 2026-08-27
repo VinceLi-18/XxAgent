@@ -2,38 +2,40 @@ import os
 from uuid import UUID
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.db_context import set_actor_context
 from app.core.security import Actor
 from app.models.identity import Role
+from app.models.xagent_session import XAgentSession
 
 
 @pytest.mark.anyio
-async def test_specialist_cannot_read_other_specialists_private_thread(
-    api_client, alice_token, bob_private_thread
+async def test_specialist_cannot_read_other_specialists_private_session(
+    actor_session, alice, bob_private_xagent_session
 ):
-    response = await api_client.get(
-        f"/api/v1/conversations/{bob_private_thread.id}",
-        headers={"Authorization": f"Bearer {alice_token}"},
+    await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(
+            XAgentSession.id == bob_private_xagent_session.id
+        )
     )
 
-    assert response.status_code == 404
+    assert row is None
 
 
 @pytest.mark.anyio
-async def test_specialist_can_read_a_project_thread_after_membership(
-    api_client, alice_token, shared_thread
+async def test_specialist_can_read_a_project_session_after_membership(
+    actor_session, alice, shared_xagent_session
 ):
-    response = await api_client.get(
-        f"/api/v1/conversations/{shared_thread.id}",
-        headers={"Authorization": f"Bearer {alice_token}"},
+    await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
+    row = await actor_session.scalar(
+        select(XAgentSession).where(XAgentSession.id == shared_xagent_session.id)
     )
 
-    assert response.status_code == 200
-    assert response.json()["id"] == str(shared_thread.id)
+    assert row is not None
 
 
 @pytest.mark.anyio

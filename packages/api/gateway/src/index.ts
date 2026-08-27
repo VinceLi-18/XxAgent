@@ -5,10 +5,15 @@
  */
 
 import { Context, Service, symbols } from '@deepseek-ai/cordis'
-import type { ConnectionRpcHandler } from '@deepseek-ai/dsh-client-connection'
+import type {
+  ConnectionRequestAuthorizer,
+  ConnectionRequestContext,
+  ConnectionRpcHandler,
+} from '@deepseek-ai/dsh-client-connection'
 import {
   remoteMethods,
   TypertLookupFailure,
+  TypertRemoteFailure,
   type InvocationDescriptor,
   type InvocationParameterDescriptor,
   type TypertCodec,
@@ -105,7 +110,7 @@ export class TypertGatewayService extends Service implements TypertGateway {
       connectionCtx.connection.rpc.intercept(
         '/api',
         endpoint => this.claimsEndpoint(endpoint),
-        (endpoint, payload, signal) => this.dispatchRpc(endpoint, payload, signal),
+        (endpoint, payload, signal, request) => this.dispatchRpc(endpoint, payload, signal, request),
         { authority: 'trusted-host' },
       )
     })
@@ -187,8 +192,11 @@ export class TypertGatewayService extends Service implements TypertGateway {
     endpoint: string,
     payload: unknown,
     signal: AbortSignal,
+    request: ConnectionRequestContext,
   ): Promise<ConnectionRpcResult> {
-    return this.invokeRpc(endpoint, payload, signal)
+    const authorizer = this.ctx.get('connectionRequestAuthorizer') as ConnectionRequestAuthorizer | undefined
+    if (authorizer === undefined) return this.invokeRpc(endpoint, payload, signal)
+    return authorizer.run(endpoint, payload, request, signal, () => this.invokeRpc(endpoint, payload, signal))
   }
 
   private async invokeRpc(endpoint: string, payload: unknown, signal: AbortSignal): Promise<ConnectionRpcResult> {
@@ -476,6 +484,9 @@ function rpcFailure(error: unknown): ConnectionRpcResult {
     }
   }
   if (error instanceof TypertLookupFailure) {
+    return { ok: false, error: error.failure as ConnectionRpcError }
+  }
+  if (error instanceof TypertRemoteFailure) {
     return { ok: false, error: error.failure as ConnectionRpcError }
   }
   return {

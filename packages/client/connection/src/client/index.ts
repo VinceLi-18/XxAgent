@@ -11,6 +11,10 @@ import { WebApiClient } from './web-api-client.ts'
 import { createWebConnectionRpc } from './rpc.ts'
 import { isLoopbackHostname } from '../loopback-hostname.ts'
 import type { ClientConnectionRpc } from '../rpc.ts'
+import { BrowserRequestHeadersService } from './request-headers.ts'
+
+export { BrowserRequestHeadersService } from './request-headers.ts'
+export type { BrowserRequestHeadersProvider } from './request-headers.ts'
 
 // ---- Contract re-exports (browser-safe apiproxy channels + core types) ----
 export type {
@@ -82,11 +86,12 @@ export interface ConnectionHandle {
  * @param ctx - client cordis context.
  */
 export function apply(ctx: Context): void {
+  const requestHeaders = new BrowserRequestHeadersService(ctx)
   const pageLocation = typeof location === 'undefined' ? undefined : location
   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')
   const fixtureClient = fixture ? new FixtureApiClient() : undefined
-  const api: IApiClient = fixtureClient ?? new WebApiClient()
-  const rpc = fixtureClient?.rpc ?? createWebConnectionRpc()
+  const api: IApiClient = fixtureClient ?? new WebApiClient(requestHeaders)
+  const rpc = fixtureClient?.rpc ?? createWebConnectionRpc(requestHeaders)
   let started = false
   let description: HostDescription | undefined
   const descriptionListeners = new Set<() => void>()

@@ -7,7 +7,7 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import { SessionPreparation } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
 import type { SessionPersistenceRevision } from './revision.ts'
 
 // Re-export the metadata vocabulary so Consumers import it from the Service Definition.
@@ -124,6 +124,17 @@ export abstract class SessionPersistence extends Service {
   }
 
   /**
+   * Durably register a fresh unpublished Session before the Agent/Session
+   * registries expose it. Remote backends override this boundary when their
+   * publication must be atomic with an initial event prefix; local and lazy
+   * backends keep the default no-op.
+   * @param _session - the fully seeded but still unpublished Session.
+   */
+  preparePublication(_session: Session): Promise<void> {
+    return Promise.resolve()
+  }
+
+  /**
    * Register a new session's metadata. A backend MAY defer the physical write
    * until the first {@link append} (lazy materialization), in which case a
    * created-but-never-appended session is absent from {@link list}
@@ -181,6 +192,18 @@ export abstract class SessionPersistence extends Service {
    * @returns the header and a log ending on a balanced `turn/end`.
    */
   abstract load(id: SessionId): Promise<SessionInspection>
+
+  /**
+   * List headers that a process-global index may consume before any request
+   * identity exists. User-scoped remote backends override this with an empty
+   * list so service bootstrap cannot enumerate one tenant or require a token.
+   * Request paths must continue to use {@link list}.
+   * @param signal - optional cancellation for backend list work.
+   * @returns headers safe to expose to a process-global bootstrap index.
+   */
+  listForBootstrap(signal?: AbortSignal): Promise<SessionHeader[]> {
+    return this.list(signal)
+  }
 
   /**
    * Inspect an immutable logical session without committing recovery or

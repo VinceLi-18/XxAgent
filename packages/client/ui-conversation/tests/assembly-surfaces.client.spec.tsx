@@ -48,6 +48,10 @@ function WorkspaceProbe({ open }: EmptyWorkspaceOwnerProps) {
   )
 }
 
+function ContextProbe() {
+  return <div data-testid="conversation-context">项目上下文</div>
+}
+
 async function bench(opts?: { blank?: boolean }) {
   const runtime = await SlotTestRuntime.create()
   runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
@@ -76,6 +80,23 @@ async function bench(opts?: { blank?: boolean }) {
 }
 
 describe('resident composer', () => {
+  it('declares a root-scoped context seat above the conversation header without changing the empty layout', async () => {
+    const runtime = await bench()
+    expect(runtime.slots.spec('conversation.context')).toEqual({ kind: 'single', scope: 'root' })
+    const emptyView = runtime.renderRoot()
+    expect(emptyView.queryByTestId('conversation-context')).toBeNull()
+    expect(emptyView.container.querySelector('[data-phase]')?.children).toHaveLength(2)
+    emptyView.unmount()
+
+    runtime.slots.register({ name: 'conversation.context' }, ContextProbe)
+    const view = runtime.renderRoot()
+    const context = view.getByTestId('conversation-context')
+    const header = view.container.querySelector('[data-slot="conversation.session.header"]')
+    expect(header).not.toBeNull()
+    expect(context.compareDocumentPosition(header!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    await runtime.dispose()
+  })
+
   it('renders the locked view state while no session exists at all', async () => {
     const runtime = await SlotTestRuntime.create()
     runtime.provide('connection', { api: { settings: {} }, isLoopback: false })

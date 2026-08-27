@@ -54,20 +54,39 @@
 - `.agents/notes/archived/`：冻结的历史三文件配对。[`verify-archived-agent-notes`](../../scripts/verify-archived-agent-notes.ts) 校验其完整性和内容封存记录；翻译维护绝不能重写这些文件。
 - **XAgent fork 产品文档——仓库所有者例外。** 仓库所有者已明确决定以下精确文件只使用中文维护；该例外不授予目录通配符，也不覆盖今后新增的文档：
   - `.agents/notes/implemented/architecture/2026-08-23-xagent-api-baseline-import.md`
+  - `.agents/notes/implemented/architecture/2026-08-25-xagent-auth-session-runtime.md`
   - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
   - `docs/superpowers/plans/2026-08-23-xagent-phase-2a-backend-baseline-import.md`
+  - `docs/superpowers/plans/2026-08-24-xagent-phase-2b-auth-session-runtime.md`
+  - `docs/superpowers/plans/2026-08-25-xagent-phase-3a-project-workbench.md`
+  - `docs/superpowers/plans/2026-08-25-xagent-phase-3b-artifact-lifecycle.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
   - `docs/superpowers/progress/2026-08-22-xagent-phase-1.md`
+  - `docs/superpowers/progress/2026-08-25-xagent-phase-2b.md`
+  - `docs/superpowers/progress/2026-08-25-xagent-phase-3a.md`
+  - `docs/superpowers/progress/2026-08-25-xagent-phase-3b.md`
   - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
   - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
   - `docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md`
+  - `docs/superpowers/specs/2026-08-25-xagent-phase-3a-project-workbench-design.md`
+  - `docs/superpowers/specs/2026-08-25-xagent-phase-3b-artifact-lifecycle-design.md`
   - `docs/upstream/dsh-baseline.md`
   - `docs/upstream/jiaxin-api-baseline.md`
   - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
+  - `packages/xagent/artifact/README.md`
+  - `packages/xagent/artifact/architecture.md`
+  - `packages/xagent/project/README.md`
+  - `packages/xagent/project/architecture.md`
+  - `packages/xagent/ui-account/README.md`
+  - `packages/xagent/ui-account/architecture.md`
+  - `packages/xagent/ui-artifact/README.md`
+  - `packages/xagent/ui-artifact/architecture.md`
+  - `packages/xagent/ui-project/README.md`
+  - `packages/xagent/ui-project/architecture.md`
   - `services/api/README.md`
 
 **统一要求**：除上述精确排除项外，当前及今后纳入范围的每篇文档，合并时都必须构成完整的双语配对。[scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) 只包含显式排除项；不存在 XAgent 目录级例外、逐文件推进清单、日期分界或 README 专用政策类别。

@@ -614,6 +614,37 @@ interface TurnEndReasonMap {
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxconnectionrequestauthorizer--xagentauthorizationservice"></a>
+
+### `ctx.connectionRequestAuthorizer` — `XAgentAuthorizationService`
+
+Cordis 服务包装；服务键由通用 API Gateway 以可选结构读取。
+
+```ts cordis-catalog
+/**
+ * Authorize one connection-bound RPC and run it inside the matching user scope.
+ * @param endpoint - closed-table RPC method name.
+ * @param payload - untrusted parsed RPC payload.
+ * @param request - Host-created physical connection context.
+ * @param signal - request cancellation signal.
+ * @param operation - downstream operation admitted after authorization.
+ * @returns the downstream result or a stable authorization error.
+ */
+run<T>( endpoint: string, payload: unknown, request: ConnectionRequestContext, signal: AbortSignal, operation: () => Promise<RpcResult<T>>, ): Promise<RpcResult<T>>
+
+/**
+ * Remove Session event frames the authenticated connection cannot read.
+ * @param endpoint - event stream carrying the frame.
+ * @param frame - untrusted candidate event frame.
+ * @param request - Host-created physical connection context.
+ * @param signal - stream cancellation signal.
+ * @returns the original frame when visible, or `undefined` when hidden.
+ */
+filterEvent( endpoint: 'events.mux' | 'events.host', frame: unknown, request: ConnectionRequestContext, signal: AbortSignal, ): Promise<unknown>
+```
+
+Source: [`packages/xagent/authorization/src/index.ts:329`](../../packages/xagent/authorization/src/index.ts)
+
 <a id="ctxsessions--sessionstore"></a>
 
 ### `ctx.sessions` — `SessionStore`

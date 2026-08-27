@@ -63,6 +63,8 @@ export const SERVICE_PAGE: Record<string, string> = {
   codeRuntime: 'code-runtime.md',
   commands: 'commands.md',
   compaction: 'compaction.md',
+  connectionRequestAuthorizer: 'session.md',
+  connectionRequestContextResolver: 'web-server.md',
   cordisInspect: 'extensions.md',
   credentials: 'credentials.md',
   directoryPicker: 'workspace.md',
@@ -106,6 +108,9 @@ export const SERVICE_PAGE: Record<string, string> = {
   web: 'web.md',
   workflowEngine: 'workflow.md',
   workspaceRegistry: 'workspace.md',
+  xagentProject: 'web-server.md',
+  xagentArtifact: 'web-server.md',
+  xagentPrincipal: 'web-server.md',
 }
 
 /**
@@ -135,6 +140,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   dshHomePath: 'not a service: boot-provided root accessor function (typeof dshHomePath | undefined) for Loader !!js config expressions — packages/boot/app-boot/README.md owns the boot contract',
   launchEnvironment: 'not a service: launcher-provided root accessor value (LaunchEnvironmentSnapshot | undefined) — packages/util/launch-environment/README.md owns this launcher contract',
   connection: 'interface-typed (HostConnectionHandle); implementing class HostConnectionService is declared in rpc-host.ts — packages/client/connection/README.md owns the API',
+  browserRequestHeaders: 'client-side browser request-header registry — packages/client/connection/README.md owns the API',
   appShell: 'client-side interface-typed browser service — packages/client/web/README.md owns the API',
   settingsScope: 'client-side settings-namespace transport service — packages/client/ui-settings/README.md owns the API',
   chatFileMentions: 'client-side slot-contract accessor (ChatFileMentions) — packages/client/ui-conversation/README.md owns the API',
@@ -153,6 +159,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   slots: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
   theme: 'client-side interface-typed browser service — packages/client/ui-theme/README.md owns the API',
   workspaces: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
+  xagentWorkbench: 'client-side account-scoped project workbench service — packages/xagent/ui-project/README.md owns the API',
 }
 
 /**
@@ -499,6 +506,7 @@ export const FOUNDATION_TYPE_NAMES: ReadonlySet<string> = new Set([
   'Pick',
   'Promise',
   'Record',
+  'Request',
   'Readonly',
   'Uint8Array',
 ])
@@ -518,6 +526,19 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   CompactionAgentContext: 'compaction service input is owned by packages/compaction/compaction/src/index.ts',
   ManualCompactAgentContext: 'manual compaction service input is owned by packages/compaction/compaction/src/index.ts',
   ClientResponse: 'wire response message is owned by packages/host/apiproxy/src/api/rpc.ts',
+  ConnectionRequestContext: 'XAgent connection authorization context is owned by packages/xagent/authorization/architecture.md',
+  ResolvedConnectionRequestContext: 'XAgent authenticated connection context is owned by packages/xagent/connection-auth/architecture.md',
+  RpcResult: 'wire result contract is owned by packages/host/apiproxy/src/api/rpc.ts',
+  XAgentArtifactCompleteInput: 'XAgent Artifact Remote input is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactDetail: 'XAgent Artifact response contract is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactSummary: 'XAgent Artifact response contract is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactUpload: 'XAgent Artifact upload response is owned by packages/xagent/artifact/architecture.md',
+  XAgentArtifactUploadInput: 'XAgent Artifact Remote input is owned by packages/xagent/artifact/architecture.md',
+  XAgentAuthenticatedRequestScope: 'XAgent authenticated request identity is owned by packages/xagent/principal/architecture.md',
+  XAgentProjectDetail: 'XAgent project response contract is owned by packages/xagent/project/architecture.md',
+  XAgentWorkbenchBootstrap: 'XAgent workbench response contract is owned by packages/xagent/project/architecture.md',
+  XAgentWorkbenchContext: 'XAgent workbench selection contract is owned by packages/xagent/project/architecture.md',
+  XAgentPrincipal: 'XAgent principal contract is owned by packages/xagent/principal/architecture.md',
   ApprovalRequestId: 'dynamic Plugin approval identity is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisErrorDetails: 'Cordis runtime error payload is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisInspectPlatform: 'Cordis inspect platform identity is owned by packages/extensions/cordis-host-runner/src/types.ts',

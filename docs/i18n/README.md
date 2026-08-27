@@ -54,20 +54,39 @@ Generated English references and graphs participate in pairing when a reviewed C
 - `.agents/notes/archived/` — frozen historical triplets. [`verify-archived-agent-notes`](../../scripts/verify-archived-agent-notes.ts) validates their completeness and content seals; translation maintenance must never rewrite them.
 - **XAgent fork product documents — repository-owner exception.** The following exact files are maintained in Chinese only by explicit repository-owner decision; the exception grants no directory wildcard and does not cover future documents:
   - `.agents/notes/implemented/architecture/2026-08-23-xagent-api-baseline-import.md`
+  - `.agents/notes/implemented/architecture/2026-08-25-xagent-auth-session-runtime.md`
   - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
   - `docs/superpowers/plans/2026-08-23-xagent-phase-2a-backend-baseline-import.md`
+  - `docs/superpowers/plans/2026-08-24-xagent-phase-2b-auth-session-runtime.md`
+  - `docs/superpowers/plans/2026-08-25-xagent-phase-3a-project-workbench.md`
+  - `docs/superpowers/plans/2026-08-25-xagent-phase-3b-artifact-lifecycle.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
   - `docs/superpowers/progress/2026-08-22-xagent-phase-1.md`
+  - `docs/superpowers/progress/2026-08-25-xagent-phase-2b.md`
+  - `docs/superpowers/progress/2026-08-25-xagent-phase-3a.md`
+  - `docs/superpowers/progress/2026-08-25-xagent-phase-3b.md`
   - `docs/superpowers/specs/2026-08-20-xagent-dsh-fork-integration-design.md`
   - `docs/superpowers/specs/2026-08-22-xagent-phase-1-product-shell-design.md`
   - `docs/superpowers/specs/2026-08-23-xagent-phase-2-auth-session-isolation-design.md`
+  - `docs/superpowers/specs/2026-08-25-xagent-phase-3a-project-workbench-design.md`
+  - `docs/superpowers/specs/2026-08-25-xagent-phase-3b-artifact-lifecycle-design.md`
   - `docs/upstream/dsh-baseline.md`
   - `docs/upstream/jiaxin-api-baseline.md`
   - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
+  - `packages/xagent/artifact/README.md`
+  - `packages/xagent/artifact/architecture.md`
+  - `packages/xagent/project/README.md`
+  - `packages/xagent/project/architecture.md`
+  - `packages/xagent/ui-account/README.md`
+  - `packages/xagent/ui-account/architecture.md`
+  - `packages/xagent/ui-artifact/README.md`
+  - `packages/xagent/ui-artifact/architecture.md`
+  - `packages/xagent/ui-project/README.md`
+  - `packages/xagent/ui-project/architecture.md`
   - `services/api/README.md`
 
 **Universal requirement**: apart from the exact exclusions above, every current or future document in scope must merge as a complete bilingual pair. [scripts/translation-pairing.manifest.json](../../scripts/translation-pairing.manifest.json) contains only explicit exclusions; there is no directory-wide XAgent exception, per-file rollout list, date cutoff, or README-specific policy class.

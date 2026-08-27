@@ -7,6 +7,7 @@ import {
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { ClientConnectionRpc } from '../rpc.ts'
 import { randomUuid } from './random-uuid.ts'
+import type { BrowserRequestHeadersService } from './request-headers.ts'
 
 const INTERNAL_BASE = 'http://dsh.internal'
 const CHANNEL_PATTERN = /^\/[A-Za-z0-9._~-]+$/
@@ -14,9 +15,10 @@ const ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
 
 /**
  * Create the browser-backed generic RPC caller.
+ * @param requestHeaders optional page-scoped header contributors resolved for each request.
  * @returns caller that owns request correlation and response-envelope validation.
  */
-export function createWebConnectionRpc(): ClientConnectionRpc {
+export function createWebConnectionRpc(requestHeaders?: BrowserRequestHeadersService): ClientConnectionRpc {
   return {
     async call(channel, endpoint, payload, signal) {
       assertTarget(channel, endpoint)
@@ -31,7 +33,8 @@ export function createWebConnectionRpc(): ClientConnectionRpc {
         new URL(`${channel}/${endpoint}`, resolveBase()),
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: requestHeaders?.resolve({ 'content-type': 'application/json' })
+            ?? { 'content-type': 'application/json' },
           body: JSON.stringify(message),
           ...signal === undefined ? {} : { signal },
         },

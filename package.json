@@ -40,7 +40,7 @@
     "test:snapshot:refresh": "DSH_SNAPSHOT=refresh vitest run --config vitest.snapshot.config.ts",
     "api:sync": "uv sync --python 3.11 --project services/api --extra dev --frozen",
     "api:test": "uv run --python 3.11 --directory services/api --extra dev pytest",
-    "api:test:db:up": "docker compose -f services/api/compose.test.yml up -d --wait",
+    "api:test:db:up": "docker compose -f services/api/compose.test.yml up -d postgres --wait",
     "api:test:db:down": "docker compose -f services/api/compose.test.yml down --volumes --remove-orphans",
     "api:dev:up": "docker compose --env-file services/api/.env -f services/api/compose.yml up -d --build --wait",
     "api:dev:down": "docker compose --env-file services/api/.env -f services/api/compose.yml down",

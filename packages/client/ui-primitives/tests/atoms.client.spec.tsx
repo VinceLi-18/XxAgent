@@ -406,6 +406,42 @@ describe('Modal', () => {
     fireEvent.click(mask)
     expect(onClose).toHaveBeenCalledTimes(2)
   })
+
+  it('封闭背景与 Tab 顺序，并在关闭后恢复原焦点', () => {
+    const appRoot = document.createElement('div')
+    appRoot.id = 'root'
+    const trigger = document.createElement('button')
+    trigger.textContent = '打开'
+    const mount = document.createElement('div')
+    appRoot.append(trigger, mount)
+    document.body.append(appRoot)
+    trigger.focus()
+    const onClose = vi.fn()
+    const view = render(
+      <Modal open onClose={onClose} title="预览" closeLabel="关闭预览" footer={<button type="button">末尾操作</button>}>
+        <button type="button">正文操作</button>
+      </Modal>,
+      { container: mount },
+    )
+
+    const close = screen.getByRole('button', { name: '关闭预览' })
+    const last = screen.getByRole('button', { name: '末尾操作' })
+    expect(appRoot.inert).toBe(true)
+    expect(close).toBe(document.activeElement)
+    last.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(close).toBe(document.activeElement)
+    close.focus()
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(last).toBe(document.activeElement)
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledOnce()
+    view.rerender(<Modal open={false} onClose={onClose} title="预览" />)
+    expect(appRoot.inert).toBe(false)
+    expect(trigger).toBe(document.activeElement)
+    appRoot.remove()
+  })
 })
 
 describe('ConnectionBanner', () => {

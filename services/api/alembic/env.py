@@ -4,20 +4,29 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from app.core.database_engine import create_database_engine
 
 from app.core.migration_config import migration_settings
 from app.models.audit import AuditEvent
-from app.models.artifact import Artifact, ArtifactVersion, StagingUpload
+from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion, StagingUpload
 from app.models.base import Base
-from app.models.conversation import ConversationThread
 from app.models.identity import Account
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
+from app.models.workbench import (
+    XAgentAccountCapabilityGrant,
+    XAgentSessionProjectRef,
+    XAgentWorkbenchPreference,
+)
 
 config = context.config
 if config.get_main_option("sqlalchemy.url") == "postgresql+asyncpg://placeholder":
-    config.set_main_option("sqlalchemy.url", migration_settings.DATABASE_ADMIN_URL)
+    config.set_main_option(
+        "sqlalchemy.url",
+        migration_settings.DATABASE_ADMIN_URL.replace("%", "%%"),
+    )
 config.set_main_option("application_role", migration_settings.POSTGRES_APP_USER)
+config.set_main_option("worker_role", migration_settings.POSTGRES_WORKER_USER)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -43,9 +52,9 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
+    connectable = create_database_engine(
+        config.get_main_option("sqlalchemy.url"),
+        password=migration_settings.POSTGRES_PASSWORD,
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:

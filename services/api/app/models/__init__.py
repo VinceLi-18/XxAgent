@@ -1,5 +1,28 @@
 """Database models for the API."""
 
-from app.models.artifact import Artifact, ArtifactVersion, StagingUpload
+from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion, StagingUpload
+from app.models.auth import XAgentAccountCredential, XAgentAuthSession, XAgentPermissionRevision
+from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
+from app.models.workbench import (
+    XAgentAccountCapabilityGrant,
+    XAgentCapability,
+    XAgentSessionProjectRef,
+    XAgentWorkbenchPreference,
+)
 
-__all__ = ("Artifact", "ArtifactVersion", "StagingUpload")
+__all__ = (
+    "Artifact",
+    "ArtifactProcessingJob",
+    "ArtifactVersion",
+    "StagingUpload",
+    "XAgentAccountCredential",
+    "XAgentAuthSession",
+    "XAgentPermissionRevision",
+    "XAgentIdempotencyKey",
+    "XAgentSession",
+    "XAgentSessionEvent",
+    "XAgentAccountCapabilityGrant",
+    "XAgentCapability",
+    "XAgentSessionProjectRef",
+    "XAgentWorkbenchPreference",
+)
