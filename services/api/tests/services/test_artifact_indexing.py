@@ -12,6 +12,7 @@ from app.models.artifact import Artifact, ArtifactVersion
 from app.models.audit import AuditEvent
 from app.models.retrieval import ArtifactIndexJob, ArtifactSearchHead, ArtifactTextChunk, ArtifactTextIndex
 from app.services import artifact_indexing
+from app.retrieval.chunking import TextChunk
 from app.services.artifact_index_jobs import claim_due_index_job, enqueue_index_job
 from app.services.artifact_indexing import process_artifact_index_job
 from app.retrieval.embedding_client import RetrievalUnavailableError
@@ -126,8 +127,22 @@ async def test_index_worker_streams_validates_embeds_and_publishes_atomically(
     assert head is not None and head.index_id == index.id and head.version_id == version.id
     assert chunks[-1].text == body.decode().rstrip()
     assert all(chunk.text_sha256 == hashlib.sha256(chunk.text.encode()).hexdigest() for chunk in chunks)
-    assert [audit.action for audit in audits] == ["artifact.index.start", "artifact.index.ready"]
-    assert all(body.decode() not in repr(audit.__dict__) for audit in audits)
+    assert {(audit.action, audit.result) for audit in audits} == {
+        ("artifact.index.created", "created"),
+        ("artifact.index.start", "started"),
+        ("artifact.index.ready", "ready"),
+    }
+    assert all(audit.artifact_id == artifact.id for audit in audits)
+    assert all(audit.version_id == version.id for audit in audits)
+    assert all(audit.index_id == lease.generation_id for audit in audits)
+    assert all(audit.index_generation == 1 for audit in audits)
+    for audit in audits:
+        stored = repr(audit.__dict__)
+        assert body.decode() not in stored
+        assert version.sha256 not in stored
+        assert version.object_key not in stored
+        assert str(lease.lease_token) not in stored
+        assert "embedding" not in stored.lower()
 
 
 @pytest.mark.anyio
@@ -168,6 +183,61 @@ async def test_retry_after_chunk_insert_does_not_duplicate_chunks(
 
 
 @pytest.mark.anyio
+async def test_chunk_inserts_are_bind_bounded_and_real_batches_are_idempotent(
+    seeded_database: AsyncEngine, worker_engine: AsyncEngine, alice
+) -> None:
+    body = b"batch persistence"
+    _artifact, _version, lease = await _seed_leased_index(
+        seeded_database, worker_engine, actor_id=alice.id, body=body
+    )
+    batch_size = getattr(artifact_indexing, "_CHUNK_INSERT_BATCH_SIZE", 1_000)
+    row_count = 7_500
+    chunks = [
+        TextChunk(ordinal, f"chunk-{ordinal}", 1, 1, 1)
+        for ordinal in range(row_count)
+    ]
+    vector = [1.0] + [0.0] * 1023
+    vectors = [vector] * row_count
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.statements = []
+
+        async def scalar(self, _statement):
+            return object()
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+
+    recording = RecordingSession()
+    assert await artifact_indexing._persist_chunks(
+        recording, lease, chunks, vectors, now=datetime.now(UTC)
+    )
+    assert len(recording.statements) > 1
+    assert all(len(statement.compile().params) <= 9_000 for statement in recording.statements)
+
+    real_row_count = batch_size + 1
+    sessions = async_sessionmaker(worker_engine, expire_on_commit=False)
+    for _attempt in range(2):
+        async with sessions() as session:
+            async with session.begin():
+                assert await artifact_indexing._persist_chunks(
+                    session,
+                    lease,
+                    chunks[:real_row_count],
+                    vectors[:real_row_count],
+                    now=datetime.now(UTC),
+                )
+    async with AsyncSession(seeded_database) as session:
+        stored = await session.scalar(
+            select(func.count())
+            .select_from(ArtifactTextChunk)
+            .where(ArtifactTextChunk.index_id == lease.generation_id)
+        )
+    assert stored == real_row_count
+
+
+@pytest.mark.anyio
 async def test_invalid_utf8_fails_generation_without_publishing_head(
     seeded_database: AsyncEngine, worker_engine: AsyncEngine, alice, monkeypatch
 ) -> None:
@@ -187,7 +257,11 @@ async def test_invalid_utf8_fails_generation_without_publishing_head(
     assert index is not None and index.status == "failed" and index.failure_code == "invalid-utf8"
     assert job is not None and job.status == "dead" and job.failure_code == "invalid-utf8"
     assert head is None
-    assert [audit.action for audit in audits] == ["artifact.index.start", "artifact.index.failed"]
+    assert {(audit.action, audit.result) for audit in audits} == {
+        ("artifact.index.created", "created"),
+        ("artifact.index.start", "started"),
+        ("artifact.index.failed", "dead"),
+    }
     assert all("valid-prefix" not in repr(audit.__dict__) for audit in audits)
 
 
@@ -210,8 +284,20 @@ async def test_object_identity_drift_and_embedding_unavailability_are_retryable(
     async with AsyncSession(seeded_database) as session:
         first_job = await session.get(ArtifactIndexJob, lease.job_id)
         first_index = await session.get(ArtifactTextIndex, lease.generation_id)
+        first_audits = list(
+            await session.scalars(
+                select(AuditEvent)
+                .where(AuditEvent.request_id == lease.job_id)
+                .order_by(AuditEvent.created_at, AuditEvent.id)
+            )
+        )
     assert first_job is not None and first_job.status == "ready" and first_job.failure_code == "indexing-failed"
     assert first_index is not None and first_index.status == "building"
+    assert {(audit.action, audit.result) for audit in first_audits} == {
+        ("artifact.index.created", "created"),
+        ("artifact.index.start", "started"),
+        ("artifact.index.retry", "retry"),
+    }
 
     async with seeded_database.begin() as connection:
         await connection.execute(

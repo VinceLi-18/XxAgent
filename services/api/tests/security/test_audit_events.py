@@ -424,13 +424,22 @@ async def test_worker_scan_transitions_use_uploader_actor_and_worker_executor(
                 )
             ).all()
         )
-    assert [(event.action, event.result) for event in events] == [
+    expected = [
         ("artifact.scan.start", "allowed"),
         (f"artifact.scan.{terminal}", "allowed"),
     ]
+    if terminal == "clean":
+        expected.append(("artifact.index.created", "created"))
+    assert {(event.action, event.result) for event in events} == set(expected)
     assert all(event.actor_id == alice.id for event in events)
     assert all(event.executor_kind == "artifact_worker" for event in events)
     assert all("c" * 64 not in repr(event.__dict__) for event in events)
+    index_events = [event for event in events if event.action.startswith("artifact.index.")]
+    assert all(event.artifact_id == artifact_id for event in index_events)
+    assert all(event.version_id == version_id for event in index_events)
+    assert all(event.index_id is not None for event in index_events)
+    assert all(event.index_generation == 1 for event in index_events)
+    assert all("embedding" not in repr(event.__dict__).lower() for event in index_events)
     async with AsyncSession(seeded_database) as session:
         index_count = await session.scalar(
             select(func.count()).select_from(ArtifactTextIndex)

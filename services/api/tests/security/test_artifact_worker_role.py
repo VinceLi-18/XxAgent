@@ -522,6 +522,7 @@ async def test_worker_can_write_only_artifact_worker_audit_events(
 ) -> None:
     artifact_id = uuid4()
     version_id = uuid4()
+    index_id = uuid4()
     async with seeded_database.begin() as connection:
         await connection.execute(
             text(
@@ -545,6 +546,22 @@ async def test_worker_can_write_only_artifact_worker_audit_events(
                 "actor_id": alice.id,
                 "expires_at": datetime.now(UTC),
                 "sha256": "0" * 64,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_text_indexes "
+                "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                "embedding_model, embedding_revision, configuration_fingerprint) VALUES "
+                "(:id, :artifact_id, :version_id, 1, :sha256, 'parser', "
+                "'BAAI/bge-m3', 'revision', :fingerprint)"
+            ),
+            {
+                "id": index_id,
+                "artifact_id": artifact_id,
+                "version_id": version_id,
+                "sha256": "0" * 64,
+                "fingerprint": "1" * 64,
             },
         )
     values = {
@@ -574,6 +591,25 @@ async def test_worker_can_write_only_artifact_worker_audit_events(
                     ":resource_id, :request_id, 'allowed', 'artifact_worker')"
                 ),
                 {**values, "actor_id": bob.id},
+            )
+
+    with pytest.raises(DBAPIError):
+        async with worker_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO audit_events "
+                    "(id, actor_id, action, resource_type, resource_id, request_id, result, "
+                    "executor_kind, artifact_id, version_id, index_id, index_generation) "
+                    "VALUES (gen_random_uuid(), :actor_id, 'artifact.index.failed', "
+                    "'artifact_version', :resource_id, :request_id, 'allowed', "
+                    "'artifact_worker', :artifact_id, :version_id, :index_id, 1)"
+                ),
+                {
+                    **values,
+                    "artifact_id": artifact_id,
+                    "version_id": version_id,
+                    "index_id": index_id,
+                },
             )
 
     async with worker_engine.begin() as connection:

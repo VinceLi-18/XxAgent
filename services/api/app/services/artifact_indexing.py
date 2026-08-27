@@ -52,6 +52,7 @@ from app.storage.minio_gateway import MinioGateway, ObjectMetadata
 
 _INDEX_FAILURE = "indexing-failed"
 _EMBED_BATCH_SIZE = 64
+_CHUNK_INSERT_BATCH_SIZE = 500
 
 
 class _ArtifactIndexingSettings(ArtifactWorkerSettings):
@@ -209,7 +210,9 @@ async def _persist_chunks(
         return False
     if len(chunks) != len(vectors):
         raise RuntimeError("embedding vector count differs from chunks")
-    if chunks:
+    for offset in range(0, len(chunks), _CHUNK_INSERT_BATCH_SIZE):
+        chunk_batch = chunks[offset : offset + _CHUNK_INSERT_BATCH_SIZE]
+        vector_batch = vectors[offset : offset + _CHUNK_INSERT_BATCH_SIZE]
         await session.execute(
             insert(ArtifactTextChunk)
             .values(
@@ -225,7 +228,7 @@ async def _persist_chunks(
                         "text_sha256": hashlib.sha256(chunk.text.encode()).hexdigest(),
                         "embedding": vector,
                     }
-                    for chunk, vector in zip(chunks, vectors, strict=True)
+                    for chunk, vector in zip(chunk_batch, vector_batch, strict=True)
                 ]
             )
             .on_conflict_do_nothing()
@@ -325,7 +328,7 @@ async def publish_index(
             updated_at=now,
         )
     )
-    await _audit_index_transition(session, lease, "artifact.index.ready")
+    await _audit_index_transition(session, lease, "artifact.index.ready", "ready")
     return True
 
 

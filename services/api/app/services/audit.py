@@ -16,6 +16,10 @@ async def write_audit_event(
     result: str,
     *,
     executor_kind: Literal["account", "artifact_worker"] = "account",
+    artifact_id: UUID | None = None,
+    version_id: UUID | None = None,
+    index_id: UUID | None = None,
+    index_generation: int | None = None,
 ) -> AuditEvent:
     event = AuditEvent(
         id=uuid4(),
@@ -26,6 +30,10 @@ async def write_audit_event(
         request_id=request_id,
         result=result,
         executor_kind=executor_kind,
+        artifact_id=artifact_id,
+        version_id=version_id,
+        index_id=index_id,
+        index_generation=index_generation,
     )
     if executor_kind == "artifact_worker":
         await session.execute(
@@ -38,6 +46,10 @@ async def write_audit_event(
                 request_id=request_id,
                 result=result,
                 executor_kind=executor_kind,
+                artifact_id=artifact_id,
+                version_id=version_id,
+                index_id=index_id,
+                index_generation=index_generation,
             )
         )
         return event

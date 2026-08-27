@@ -62,12 +62,25 @@ async def _audit_index_transition(
     session: AsyncSession,
     lease: ArtifactIndexLease,
     action: str,
+    result: str,
 ) -> None:
-    actor_id = await session.scalar(
-        select(ArtifactVersion.uploaded_by_id).where(ArtifactVersion.id == lease.version_id)
-    )
-    if actor_id is None:
-        raise RuntimeError("artifact version uploader is required for index audit")
+    identity = (
+        await session.execute(
+            select(
+                ArtifactVersion.uploaded_by_id,
+                ArtifactTextIndex.artifact_id,
+                ArtifactTextIndex.generation,
+            )
+            .join(ArtifactTextIndex, ArtifactTextIndex.version_id == ArtifactVersion.id)
+            .where(
+                ArtifactVersion.id == lease.version_id,
+                ArtifactTextIndex.id == lease.generation_id,
+            )
+        )
+    ).one_or_none()
+    if identity is None:
+        raise RuntimeError("artifact index identity is required for index audit")
+    actor_id, artifact_id, index_generation = identity
     await write_audit_event(
         session,
         actor_id,
@@ -75,8 +88,12 @@ async def _audit_index_transition(
         "artifact_version",
         lease.version_id,
         lease.job_id,
-        "allowed",
+        result,
         executor_kind="artifact_worker",
+        artifact_id=artifact_id,
+        version_id=lease.version_id,
+        index_id=lease.generation_id,
+        index_generation=index_generation,
     )
 
 
@@ -151,9 +168,10 @@ async def enqueue_index_job(
     )
     session.add(index)
     await session.flush()
+    job_id = uuid4()
     session.add(
         ArtifactIndexJob(
-            id=uuid4(),
+            id=job_id,
             index_id=index_id,
             status="ready",
             attempts=0,
@@ -161,6 +179,12 @@ async def enqueue_index_job(
         )
     )
     await session.flush()
+    await _audit_index_transition(
+        session,
+        ArtifactIndexLease(job_id, version.id, index_id, uuid4(), 0),
+        "artifact.index.created",
+        "created",
+    )
     return index_id
 
 
@@ -238,6 +262,7 @@ async def claim_due_index_job(
             session,
             ArtifactIndexLease(job_id, version_id, index_id, uuid4(), prior_attempts),
             "artifact.index.failed",
+            "dead",
         )
 
     lease_token = uuid4()
@@ -256,7 +281,9 @@ async def claim_due_index_job(
     )
     lease = ArtifactIndexLease(job_id, version_id, index_id, lease_token, attempt)
     if attempt == 1:
-        await _audit_index_transition(session, lease, "artifact.index.start")
+        await _audit_index_transition(
+            session, lease, "artifact.index.start", "started"
+        )
     return lease
 
 
@@ -319,7 +346,13 @@ async def retry_index_job(
         )
         if changed.rowcount != 1:
             raise RuntimeError("terminal index job must own a building generation")
-        await _audit_index_transition(session, lease, "artifact.index.failed")
+        await _audit_index_transition(
+            session, lease, "artifact.index.failed", "dead"
+        )
+    else:
+        await _audit_index_transition(
+            session, lease, "artifact.index.retry", "retry"
+        )
     return True
 
 
@@ -355,5 +388,5 @@ async def fail_index_job(
     )
     if changed.rowcount != 1:
         raise RuntimeError("failed index job must own a building generation")
-    await _audit_index_transition(session, lease, "artifact.index.failed")
+    await _audit_index_transition(session, lease, "artifact.index.failed", "dead")
     return True

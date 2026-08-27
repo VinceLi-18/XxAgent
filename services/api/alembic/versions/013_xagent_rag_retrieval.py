@@ -30,6 +30,16 @@ def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 
+    op.add_column("audit_events", sa.Column("artifact_id", sa.UUID(), nullable=True))
+    op.add_column("audit_events", sa.Column("version_id", sa.UUID(), nullable=True))
+    op.add_column("audit_events", sa.Column("index_id", sa.UUID(), nullable=True))
+    op.add_column("audit_events", sa.Column("index_generation", sa.Integer(), nullable=True))
+    op.create_check_constraint(
+        "ck_audit_event_index_generation",
+        "audit_events",
+        "index_generation IS NULL OR index_generation >= 1",
+    )
+
     op.add_column(
         "xagent_sessions",
         sa.Column("next_citation_ordinal", sa.Integer(), nullable=False, server_default="1"),
@@ -392,6 +402,36 @@ def upgrade() -> None:
         f"FOR INSERT TO {worker_role} WITH CHECK (true)"
     )
 
+    op.execute("DROP POLICY artifact_worker_audit_insert ON audit_events")
+    op.execute(
+        f"CREATE POLICY artifact_worker_audit_insert ON audit_events FOR INSERT TO {worker_role} "
+        "WITH CHECK (executor_kind = 'artifact_worker' "
+        "AND resource_type = 'artifact_version' AND ("
+        "(action NOT LIKE 'artifact.index.%' "
+        "AND artifact_id IS NULL AND version_id IS NULL AND index_id IS NULL "
+        "AND index_generation IS NULL AND EXISTS ("
+        "SELECT 1 FROM artifact_versions "
+        "WHERE artifact_versions.id = audit_events.resource_id "
+        "AND artifact_versions.uploaded_by_id = audit_events.actor_id)) OR "
+        "(result = CASE action "
+        "WHEN 'artifact.index.created' THEN 'created' "
+        "WHEN 'artifact.index.start' THEN 'started' "
+        "WHEN 'artifact.index.retry' THEN 'retry' "
+        "WHEN 'artifact.index.ready' THEN 'ready' "
+        "WHEN 'artifact.index.failed' THEN 'dead' END "
+        "AND artifact_id IS NOT NULL AND version_id IS NOT NULL "
+        "AND index_id IS NOT NULL AND index_generation IS NOT NULL AND EXISTS ("
+        "SELECT 1 FROM artifact_versions JOIN artifact_text_indexes "
+        "ON artifact_text_indexes.version_id = artifact_versions.id "
+        "AND artifact_text_indexes.artifact_id = artifact_versions.artifact_id "
+        "WHERE artifact_versions.id = audit_events.resource_id "
+        "AND artifact_versions.id = audit_events.version_id "
+        "AND artifact_versions.artifact_id = audit_events.artifact_id "
+        "AND artifact_versions.uploaded_by_id = audit_events.actor_id "
+        "AND artifact_text_indexes.id = audit_events.index_id "
+        "AND artifact_text_indexes.generation = audit_events.index_generation))))"
+    )
+
     op.execute(
         f"GRANT SELECT ON artifact_text_indexes, artifact_text_chunks, artifact_search_heads TO {application_role}"
     )
@@ -417,11 +457,29 @@ def upgrade() -> None:
     op.execute(
         f"GRANT UPDATE (index_id, version_id, updated_at) ON artifact_search_heads TO {worker_role}"
     )
+    op.execute(
+        "GRANT INSERT (artifact_id, version_id, index_id, index_generation) "
+        f"ON audit_events TO {worker_role}"
+    )
 
 
 def downgrade() -> None:
     application_role = _configured_role("application_role")
     worker_role = _configured_role("worker_role")
+
+    op.execute("DROP POLICY artifact_worker_audit_insert ON audit_events")
+    op.execute(
+        f"CREATE POLICY artifact_worker_audit_insert ON audit_events FOR INSERT TO {worker_role} "
+        "WITH CHECK (executor_kind = 'artifact_worker' "
+        "AND resource_type = 'artifact_version' "
+        "AND EXISTS (SELECT 1 FROM artifact_versions "
+        "WHERE artifact_versions.id = audit_events.resource_id "
+        "AND artifact_versions.uploaded_by_id = audit_events.actor_id))"
+    )
+    op.execute(
+        "REVOKE INSERT (artifact_id, version_id, index_id, index_generation) "
+        f"ON audit_events FROM {worker_role}"
+    )
 
     op.execute(
         f"REVOKE ALL PRIVILEGES ON artifact_text_indexes, artifact_text_chunks, artifact_index_jobs, "
@@ -460,5 +518,10 @@ def downgrade() -> None:
     op.drop_constraint("uq_artifact_version_id_artifact", "artifact_versions", type_="unique")
     op.drop_constraint("ck_xagent_session_next_citation_ordinal", "xagent_sessions", type_="check")
     op.drop_column("xagent_sessions", "next_citation_ordinal")
+    op.drop_constraint("ck_audit_event_index_generation", "audit_events", type_="check")
+    op.drop_column("audit_events", "index_generation")
+    op.drop_column("audit_events", "index_id")
+    op.drop_column("audit_events", "version_id")
+    op.drop_column("audit_events", "artifact_id")
     op.execute("DROP EXTENSION IF EXISTS pg_trgm")
     op.execute("DROP EXTENSION IF EXISTS vector")

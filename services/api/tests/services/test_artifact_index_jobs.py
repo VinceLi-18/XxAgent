@@ -7,6 +7,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.models.artifact import Artifact, ArtifactVersion
+from app.models.audit import AuditEvent
 from app.models.retrieval import ArtifactIndexJob, ArtifactTextIndex
 from app.services.artifact_index_jobs import (
     MAX_INDEX_ATTEMPTS,
@@ -78,6 +79,17 @@ async def test_clean_supported_version_enqueues_one_immutable_generation(
     assert len(indexes) == len(jobs) == 1
     assert indexes[0].id == first and indexes[0].generation == 1
     assert indexes[0].status == "building" and jobs[0].status == "ready"
+    async with AsyncSession(seeded_database) as session:
+        audit = await session.scalar(
+            select(AuditEvent).where(AuditEvent.request_id == jobs[0].id)
+        )
+    assert audit is not None
+    assert (audit.action, audit.result) == ("artifact.index.created", "created")
+    assert audit.resource_id == version.id
+    assert audit.artifact_id == version.artifact_id
+    assert audit.version_id == version.id
+    assert audit.index_id == first
+    assert audit.index_generation == 1
 
 
 @pytest.mark.anyio
@@ -165,6 +177,15 @@ async def test_retry_is_bounded_and_terminal_failure_preserves_clean_version(
     assert job is not None and job.status == "dead" and job.failure_code == "indexing-failed"
     assert index is not None and index.status == "failed" and index.failure_code == "indexing-failed"
     assert stored_version is not None and stored_version.scan_status == "clean"
+    async with AsyncSession(seeded_database) as session:
+        outcomes = list(
+            await session.scalars(
+                select(AuditEvent.result)
+                .where(AuditEvent.request_id == job.id)
+                .order_by(AuditEvent.created_at, AuditEvent.id)
+            )
+        )
+    assert outcomes == ["created", "dead"]
 
 
 @pytest.mark.anyio
