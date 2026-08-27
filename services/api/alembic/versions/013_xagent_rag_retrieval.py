@@ -34,6 +34,15 @@ def upgrade() -> None:
     op.add_column("audit_events", sa.Column("version_id", sa.UUID(), nullable=True))
     op.add_column("audit_events", sa.Column("index_id", sa.UUID(), nullable=True))
     op.add_column("audit_events", sa.Column("index_generation", sa.Integer(), nullable=True))
+    op.add_column(
+        "audit_events",
+        sa.Column(
+            "details",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+            server_default=sa.text("'{}'::jsonb"),
+        ),
+    )
     op.create_check_constraint(
         "ck_audit_event_index_generation",
         "audit_events",
@@ -519,6 +528,7 @@ def downgrade() -> None:
     op.drop_constraint("ck_xagent_session_next_citation_ordinal", "xagent_sessions", type_="check")
     op.drop_column("xagent_sessions", "next_citation_ordinal")
     op.drop_constraint("ck_audit_event_index_generation", "audit_events", type_="check")
+    op.drop_column("audit_events", "details")
     op.drop_column("audit_events", "index_generation")
     op.drop_column("audit_events", "index_id")
     op.drop_column("audit_events", "version_id")

@@ -8,6 +8,7 @@ from app.api.routes.internal_artifacts import (
     versions_router as internal_artifact_versions_router,
 )
 from app.api.routes.internal_sessions import router as internal_sessions_router
+from app.api.routes.internal_retrieval import router as internal_retrieval_router
 from app.api.routes.internal_workbench import (
     projects_router as internal_projects_router,
     router as internal_workbench_router,
@@ -27,6 +28,7 @@ app.include_router(internal_auth_router)
 app.include_router(internal_artifacts_router)
 app.include_router(internal_artifact_versions_router)
 app.include_router(internal_sessions_router)
+app.include_router(internal_retrieval_router)
 app.include_router(internal_workbench_router)
 app.include_router(internal_projects_router)
 app.include_router(internal_session_project_refs_router)
