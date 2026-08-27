@@ -392,4 +392,28 @@ async def publish_clean_job(
         request_id=lease.job_id,
         action="artifact.scan.clean",
     )
+    clean_version_row = (
+        await session.execute(
+            select(
+                ArtifactVersion.id,
+                ArtifactVersion.artifact_id,
+                ArtifactVersion.actual_size,
+                ArtifactVersion.detected_content_type,
+                ArtifactVersion.sha256,
+            ).where(ArtifactVersion.id == lease.version_id)
+        )
+    ).one_or_none()
+    if clean_version_row is None:
+        raise RuntimeError("published clean artifact version must remain readable")
+    from app.services.artifact_index_jobs import enqueue_index_job
+
+    clean_version = ArtifactVersion(
+        id=clean_version_row.id,
+        artifact_id=clean_version_row.artifact_id,
+        actual_size=clean_version_row.actual_size,
+        detected_content_type=clean_version_row.detected_content_type,
+        sha256=clean_version_row.sha256,
+        scan_status="clean",
+    )
+    await enqueue_index_job(session, clean_version, now=now)
     return True

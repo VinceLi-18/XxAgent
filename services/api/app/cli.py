@@ -177,8 +177,11 @@ def _parser() -> argparse.ArgumentParser:
     show_capabilities = capability_commands.add_parser("show")
     show_capabilities.add_argument("--email", required=True)
 
-    worker = commands.add_parser("worker")
-    worker.add_argument("--once", action="store_true")
+    worker = commands.add_parser(
+        "worker",
+        help="处理扫描、对象清理与资料索引持久任务",
+    )
+    worker.add_argument("--once", action="store_true", help="处理当前可领取任务后退出")
     roles = commands.add_parser("roles")
     roles_commands = roles.add_subparsers(dest="operation", required=True)
     roles_commands.add_parser("ensure")
