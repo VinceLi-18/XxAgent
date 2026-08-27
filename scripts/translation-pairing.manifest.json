@@ -5,6 +5,7 @@
     ".agents/notes/implemented/CLAUDE.md",
     ".agents/notes/implemented/architecture/2026-08-23-xagent-api-baseline-import.md",
     ".agents/notes/implemented/architecture/2026-08-25-xagent-auth-session-runtime.md",
+    ".agents/notes/proposed/architecture/2026-08-28-xagent-rag-retrieval.md",
     "docs/AGENTS.md",
     "docs/cordis-api/inherited.md",
     "docs/i18n/style-samples.md",

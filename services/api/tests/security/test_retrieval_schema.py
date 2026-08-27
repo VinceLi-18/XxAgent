@@ -1,0 +1,325 @@
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+async def _require_retrieval_schema(engine: AsyncEngine) -> None:
+    required_tables = {
+        "artifact_text_indexes",
+        "artifact_text_chunks",
+        "artifact_index_jobs",
+        "artifact_search_heads",
+        "xagent_retrieval_receipts",
+    }
+    required_columns = {
+        "artifact_text_indexes.artifact_id",
+        "artifact_text_indexes.version_id",
+        "artifact_text_indexes.generation",
+        "artifact_text_indexes.status",
+        "artifact_text_chunks.embedding",
+        "artifact_text_chunks.lexical_document",
+        "artifact_index_jobs.index_id",
+        "artifact_search_heads.index_id",
+        "xagent_retrieval_receipts.expires_at",
+        "xagent_retrieval_receipts.consumed_at",
+        "xagent_sessions.next_citation_ordinal",
+    }
+    async with engine.connect() as connection:
+        table_names = set(
+            await connection.scalars(
+                text("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
+            )
+        )
+        rows = await connection.execute(
+            text(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public'"
+            )
+        )
+        extensions = set(
+            await connection.scalars(
+                text("SELECT extname FROM pg_extension WHERE extname IN ('vector', 'pg_trgm')")
+            )
+        )
+
+    assert required_tables <= table_names
+    assert required_columns <= {f"{table}.{column}" for table, column in rows}
+    assert extensions == {"vector", "pg_trgm"}
+
+
+async def _insert_artifact_version(engine: AsyncEngine, account_id: UUID) -> tuple[UUID, UUID]:
+    artifact_id = uuid4()
+    version_id = uuid4()
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
+                "VALUES (:artifact_id, 'retrieval.txt', :account_id, :account_id)"
+            ),
+            {"artifact_id": artifact_id, "account_id": account_id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_versions "
+                "(id, artifact_id, owner_id, version_number, original_filename, uploaded_by_id, "
+                "declared_size, actual_size, detected_content_type, scan_status, object_key, size, "
+                "content_type, sha256) "
+                "VALUES (:version_id, :artifact_id, :account_id, 1, 'retrieval.txt', :account_id, "
+                "1, 1, 'text/plain', 'clean', :object_key, 1, 'text/plain', :sha256)"
+            ),
+            {
+                "version_id": version_id,
+                "artifact_id": artifact_id,
+                "account_id": account_id,
+                "object_key": f"artifacts/{artifact_id}/{version_id}",
+                "sha256": "0" * 64,
+            },
+        )
+    return artifact_id, version_id
+
+
+async def _insert_index(engine: AsyncEngine, artifact_id: UUID, version_id: UUID) -> UUID:
+    index_id = uuid4()
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_text_indexes "
+                "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                "embedding_model, embedding_revision, vector_dimensions, configuration_fingerprint, status) "
+                "VALUES (:id, :artifact_id, :version_id, 1, :sha256, 'parser-1', 'bge-m3', "
+                "'revision-1', 1024, :fingerprint, 'building')"
+            ),
+            {
+                "id": index_id,
+                "artifact_id": artifact_id,
+                "version_id": version_id,
+                "sha256": "1" * 64,
+                "fingerprint": "2" * 64,
+            },
+        )
+    return index_id
+
+
+@pytest.mark.anyio
+async def test_retrieval_schema_installs_extensions_and_durable_tables(
+    seeded_database: AsyncEngine,
+) -> None:
+    await _require_retrieval_schema(seeded_database)
+
+
+@pytest.mark.anyio
+async def test_text_chunks_enforce_generation_coordinates_and_embedding_limits(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    await _require_retrieval_schema(seeded_database)
+    artifact_id, version_id = await _insert_artifact_version(seeded_database, alice.id)
+    index_id = await _insert_index(seeded_database, artifact_id, version_id)
+    values = {
+        "id": uuid4(),
+        "index_id": index_id,
+        "embedding": "[0" + ",0" * 1023 + "]",
+        "sha256": "3" * 64,
+    }
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_text_chunks "
+                "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                "VALUES (:id, :index_id, 0, 1, 1, 'one', 1, :sha256, CAST(:embedding AS vector))"
+            ),
+            values,
+        )
+
+    with pytest.raises(IntegrityError, match="uq_artifact_text_chunks_index_ordinal"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index_id, 0, 1, 1, 'duplicate', 1, :sha256, CAST(:embedding AS vector))"
+                ),
+                {**values, "id": uuid4()},
+            )
+
+    with pytest.raises(DBAPIError, match="expected 1024 dimensions"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index_id, 1, 1, 1, 'wrong dimensions', 1, :sha256, '[0]'::vector)"
+                ),
+                {**values, "id": uuid4()},
+            )
+
+    with pytest.raises(IntegrityError, match="ck_artifact_text_chunk_token_count"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index_id, 1, 1, 1, 'oversized token count', 513, :sha256, "
+                    "CAST(:embedding AS vector))"
+                ),
+                {**values, "id": uuid4()},
+            )
+
+    with pytest.raises(IntegrityError, match="ck_artifact_text_chunk_bytes"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index_id, 1, 1, 1, :oversized_text, 1, :sha256, "
+                    "CAST(:embedding AS vector))"
+                ),
+                {**values, "id": uuid4(), "oversized_text": "x" * 8193},
+            )
+
+
+@pytest.mark.anyio
+async def test_search_heads_require_ready_indexes_and_one_head_per_artifact(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    await _require_retrieval_schema(seeded_database)
+    artifact_id, version_id = await _insert_artifact_version(seeded_database, alice.id)
+    index_id = await _insert_index(seeded_database, artifact_id, version_id)
+
+    with pytest.raises(DBAPIError, match="search heads require a ready index"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+                    "VALUES (:artifact_id, :index_id, :version_id)"
+                ),
+                {"artifact_id": artifact_id, "index_id": index_id, "version_id": version_id},
+            )
+
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text("UPDATE artifact_text_indexes SET status = 'ready' WHERE id = :index_id"),
+            {"index_id": index_id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+                "VALUES (:artifact_id, :index_id, :version_id)"
+            ),
+            {"artifact_id": artifact_id, "index_id": index_id, "version_id": version_id},
+        )
+
+    with pytest.raises(IntegrityError, match="artifact_search_heads_pkey"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+                    "VALUES (:artifact_id, :index_id, :version_id)"
+                ),
+                {"artifact_id": artifact_id, "index_id": index_id, "version_id": version_id},
+            )
+
+
+@pytest.mark.anyio
+async def test_index_status_cannot_leave_ready_or_failed_terminal_states(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    await _require_retrieval_schema(seeded_database)
+    artifact_id, version_id = await _insert_artifact_version(seeded_database, alice.id)
+    index_id = await _insert_index(seeded_database, artifact_id, version_id)
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text("UPDATE artifact_text_indexes SET status = 'ready' WHERE id = :index_id"),
+            {"index_id": index_id},
+        )
+
+    with pytest.raises(DBAPIError, match="invalid artifact text index status transition"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text("UPDATE artifact_text_indexes SET status = 'failed' WHERE id = :index_id"),
+                {"index_id": index_id},
+            )
+
+
+@pytest.mark.anyio
+async def test_receipts_expire_after_five_minutes_and_keep_positive_citation_ranges(
+    seeded_database: AsyncEngine,
+    alice,
+    alice_private_xagent_session,
+) -> None:
+    await _require_retrieval_schema(seeded_database)
+    issued_at = datetime.now(UTC)
+    values = {
+        "id": uuid4(),
+        "actor_id": alice.id,
+        "session_id": alice_private_xagent_session.id,
+        "issued_at": issued_at,
+        "expires_at": issued_at + timedelta(minutes=5),
+        "invalid_expires_at": issued_at + timedelta(minutes=4),
+        "query_sha256": "4" * 64,
+        "payload_sha256": "5" * 64,
+    }
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO xagent_retrieval_receipts "
+                "(id, kind, actor_id, session_id, tool_call_id, query_sha256, scope, "
+                "permission_revision, project_ids, index_generations, chunk_ids, payload_sha256, "
+                "issued_at, expires_at, citation_ordinal_start, citation_ordinal_end) "
+                "VALUES (:id, 'artifact_search', :actor_id, :session_id, 'call-1', :query_sha256, "
+                "'{}'::jsonb, 1, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, :payload_sha256, "
+                ":issued_at, :expires_at, 1, 1)"
+            ),
+            values,
+        )
+
+    with pytest.raises(IntegrityError, match="ck_xagent_retrieval_receipt_expiry"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO xagent_retrieval_receipts "
+                    "(id, kind, actor_id, session_id, tool_call_id, query_sha256, scope, "
+                    "permission_revision, project_ids, index_generations, chunk_ids, payload_sha256, "
+                    "issued_at, expires_at, citation_ordinal_start, citation_ordinal_end) "
+                    "VALUES (:id, 'artifact_search', :actor_id, :session_id, 'call-2', :query_sha256, "
+                    "'{}'::jsonb, 1, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, :payload_sha256, "
+                    ":issued_at, :invalid_expires_at, 1, 1)"
+                ),
+                {**values, "id": uuid4()},
+            )
+
+    with pytest.raises(IntegrityError, match="ck_xagent_retrieval_receipt_consumption"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO xagent_retrieval_receipts "
+                    "(id, kind, actor_id, session_id, tool_call_id, query_sha256, scope, "
+                    "permission_revision, project_ids, index_generations, chunk_ids, payload_sha256, "
+                    "issued_at, expires_at, consumed_at) "
+                    "VALUES (:id, 'artifact_search', :actor_id, :session_id, 'call-3', :query_sha256, "
+                    "'{}'::jsonb, 1, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, :payload_sha256, "
+                    ":issued_at, :expires_at, :issued_at)"
+                ),
+                {**values, "id": uuid4()},
+            )
+
+    with pytest.raises(IntegrityError, match="ck_xagent_retrieval_receipt_citation_ordinals"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO xagent_retrieval_receipts "
+                    "(id, kind, actor_id, session_id, tool_call_id, query_sha256, scope, "
+                    "permission_revision, project_ids, index_generations, chunk_ids, payload_sha256, "
+                    "issued_at, expires_at, citation_ordinal_start, citation_ordinal_end) "
+                    "VALUES (:id, 'artifact_search', :actor_id, :session_id, 'call-4', :query_sha256, "
+                    "'{}'::jsonb, 1, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, :payload_sha256, "
+                    ":issued_at, :expires_at, 0, 1)"
+                ),
+                {**values, "id": uuid4()},
+            )

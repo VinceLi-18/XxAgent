@@ -19,6 +19,7 @@ class XAgentSession(Base):
         ),
         CheckConstraint("permission_revision_created >= 1", name="ck_xagent_session_permission_revision"),
         CheckConstraint("last_event_sequence >= -1", name="ck_xagent_session_last_event_sequence"),
+        CheckConstraint("next_citation_ordinal >= 1", name="ck_xagent_session_next_citation_ordinal"),
         CheckConstraint("version >= 1", name="ck_xagent_session_version"),
     )
 
@@ -31,6 +32,7 @@ class XAgentSession(Base):
     runtime_header: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_event_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=-1)
+    next_citation_ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

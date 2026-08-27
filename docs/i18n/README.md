@@ -55,6 +55,7 @@ Generated English references and graphs participate in pairing when a reviewed C
 - **XAgent fork product documents — repository-owner exception.** The following exact files are maintained in Chinese only by explicit repository-owner decision; the exception grants no directory wildcard and does not cover future documents:
   - `.agents/notes/implemented/architecture/2026-08-23-xagent-api-baseline-import.md`
   - `.agents/notes/implemented/architecture/2026-08-25-xagent-auth-session-runtime.md`
+  - `.agents/notes/proposed/architecture/2026-08-28-xagent-rag-retrieval.md`
   - `docs/superpowers/plans/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/plans/2026-08-22-xagent-phase-1-product-shell.md`
   - `docs/superpowers/plans/2026-08-23-xagent-phase-2a-backend-baseline-import.md`
