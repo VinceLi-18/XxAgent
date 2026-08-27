@@ -200,3 +200,26 @@ class XAgentRetrievalReceipt(Base):
     consumed_payload_sha256: Mapped[str | None] = mapped_column(String(64))
     citation_ordinal_start: Mapped[int | None] = mapped_column(Integer)
     citation_ordinal_end: Mapped[int | None] = mapped_column(Integer)
+
+
+class XAgentDelegationNonce(Base):
+    """A durable digest proving one delegation nonce was consumed once."""
+
+    __tablename__ = "xagent_delegation_nonces"
+    __table_args__ = (
+        CheckConstraint(
+            "nonce_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_xagent_delegation_nonce_digest",
+        ),
+        CheckConstraint(
+            "expires_at > consumed_at",
+            name="ck_xagent_delegation_nonce_expiry",
+        ),
+    )
+
+    nonce_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    actor_id: Mapped[UUID] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

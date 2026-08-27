@@ -3,18 +3,18 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 
 class _ClosedModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class _OperationRequest(_ClosedModel):
-    schema_version: int = Field(ge=1, le=1)
+    schema_version: StrictInt = Field(ge=1, le=1)
     session_id: UUID
     tool_call_id: str = Field(min_length=1, max_length=255)
-    permission_revision: int = Field(ge=1)
+    permission_revision: StrictInt = Field(ge=1)
 
 
 class ProjectDiscoveryRequest(_OperationRequest):
@@ -23,8 +23,8 @@ class ProjectDiscoveryRequest(_OperationRequest):
 
 class SearchRequest(_OperationRequest):
     query: str = Field(min_length=1, max_length=8192)
-    project_ids: list[UUID] | None = Field(default=None, max_length=20)
-    include_private: bool = False
+    project_ids: list[UUID] | None = None
+    include_private: StrictBool = False
 
 
 class ProjectResult(_ClosedModel):

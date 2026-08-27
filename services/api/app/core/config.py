@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     JWT_ISSUER: str
     JWT_AUDIENCE: str
     XAGENT_SERVICE_TOKEN: str = Field(min_length=32)
+    XAGENT_DELEGATION_PUBLIC_KEY: str | None = None
+    XAGENT_DELEGATION_ISSUER: str = "xagent-host"
+    XAGENT_DELEGATION_AUDIENCE: str = "xagent-api"
     XAGENT_AUTH_SESSION_HOURS: int = Field(default=8, ge=1, le=24)
     MINIO_ENDPOINT: str
     MINIO_PUBLIC_ENDPOINT: str

@@ -4,10 +4,11 @@ import hashlib
 import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any, Literal
+from functools import lru_cache
+from typing import Any, Protocol
 from uuid import UUID
 
-from sqlalchemy import Select, func, literal_column, or_, select
+from sqlalchemy import Select, func, literal_column, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.artifact import Artifact, ArtifactVersion
@@ -28,6 +29,30 @@ MAX_RESULTS = 8
 MAX_RESULTS_PER_ARTIFACT = 3
 MAX_RESULT_BYTES = 32 * 1024
 MAX_RESULT_TOKENS = 4096
+
+
+class RetrievalTokenizer(Protocol):
+    """Count tokens in the exact serialized model-visible payload."""
+
+    def count(self, value: str) -> int: ...
+
+
+class _PinnedRetrievalTokenizer:
+    def __init__(self) -> None:
+        from tokenizers import Tokenizer
+
+        from app.retrieval.embedding_client import MODEL_ID, MODEL_REVISION
+
+        self._tokenizer = Tokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
+
+    def count(self, value: str) -> int:
+        return len(self._tokenizer.encode(value).ids)
+
+
+@lru_cache(maxsize=1)
+def get_retrieval_tokenizer() -> RetrievalTokenizer:
+    """Return the tokenizer pinned to the retrieval embedding model revision."""
+    return _PinnedRetrievalTokenizer()
 
 
 class RetrievalError(RuntimeError):
@@ -110,39 +135,54 @@ def reciprocal_rank_fusion(
     )
 
 
-def select_bounded_results(candidates: list[RetrievalCandidate]) -> list[RetrievalCandidate]:
+def _public_citation(candidate: RetrievalCandidate, ordinal: int) -> dict[str, Any]:
+    return {
+        "id": f"[资料{ordinal}]",
+        "artifact_id": str(candidate.artifact_id),
+        "version_id": str(candidate.version_id),
+        "chunk_id": str(candidate.chunk_id),
+        "display_name": candidate.filename,
+        "version_number": candidate.version_number,
+        "line_start": candidate.line_start,
+        "line_end": candidate.line_end,
+        "text": candidate.text,
+        "scope": "project" if candidate.project_id is not None else "private",
+    }
+
+
+def select_bounded_results(
+    candidates: list[RetrievalCandidate],
+    *,
+    tokenizer: RetrievalTokenizer | None = None,
+    citation_ordinal_start: int = 1,
+) -> list[RetrievalCandidate]:
     """Select complete chunks within all model-visible result limits."""
     selected: list[RetrievalCandidate] = []
     artifact_counts: Counter[UUID] = Counter()
-    byte_count = len(b'{"schema_version":1,"citations":[]}')
-    token_count = 0
     for candidate in candidates:
-        candidate_bytes = len(
-            json.dumps(
-                {
-                    "id": "[资料9999999999]",
-                    "artifact_id": str(candidate.artifact_id),
-                    "version_id": str(candidate.version_id),
-                    "chunk_id": str(candidate.chunk_id),
-                    "display_name": candidate.filename,
-                    "version_number": candidate.version_number,
-                    "line_start": candidate.line_start,
-                    "line_end": candidate.line_end,
-                    "text": candidate.text,
-                    "scope": "project" if candidate.project_id is not None else "private",
-                },
-                separators=(",", ":"),
-                ensure_ascii=False,
-            ).encode("utf-8")
-        ) + 1
         if artifact_counts[candidate.artifact_id] >= MAX_RESULTS_PER_ARTIFACT:
             continue
-        if byte_count + candidate_bytes > MAX_RESULT_BYTES or token_count + candidate.token_count > MAX_RESULT_TOKENS:
-            continue
-        selected.append(candidate)
+        proposed = [*selected, candidate]
+        serialized = json.dumps(
+            {
+                "schema_version": 1,
+                "citations": [
+                    _public_citation(item, citation_ordinal_start + offset)
+                    for offset, item in enumerate(proposed)
+                ],
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        exact_tokens = (
+            tokenizer.count(serialized)
+            if tokenizer is not None
+            else sum(item.token_count for item in proposed)
+        )
+        if len(serialized.encode("utf-8")) > MAX_RESULT_BYTES or exact_tokens > MAX_RESULT_TOKENS:
+            break
+        selected = proposed
         artifact_counts[candidate.artifact_id] += 1
-        byte_count += candidate_bytes
-        token_count += candidate.token_count
         if len(selected) == MAX_RESULTS:
             break
     return selected
@@ -169,8 +209,25 @@ async def load_retrieval_session(
         statement = statement.with_for_update()
     item = await session.scalar(statement)
     if item is None or (item.visibility == "private" and item.owner_id != actor_id):
-        raise RetrievalError("session-not-found")
+        raise RetrievalError("service-unavailable")
     return item
+
+
+async def reserve_citation_ordinals(
+    session: AsyncSession, session_id: UUID, count: int
+) -> int:
+    """Reserve a Session-local citation range through the narrow RLS-aware function."""
+    try:
+        async with session.begin_nested():
+            value = await session.scalar(
+                text("SELECT public.xagent_reserve_citation_ordinals(:session_id, :count)"),
+                {"session_id": session_id, "count": count},
+            )
+    except Exception:
+        raise RetrievalError("service-unavailable") from None
+    if not isinstance(value, int):
+        raise RetrievalError("service-unavailable")
+    return value
 
 
 async def resolve_scope(
@@ -190,7 +247,7 @@ async def resolve_scope(
     try:
         await authorize_projects(session, actor_id, scope.project_ids, ProjectAction.READ)
     except ForbiddenError:
-        raise RetrievalError("session-not-found") from None
+        raise RetrievalError("service-unavailable") from None
     return scope
 
 
@@ -248,35 +305,41 @@ async def hybrid_search(
     *,
     query: str,
     scope: RetrievalScope,
+    citation_ordinal_start: int = 1,
 ) -> tuple[list[RetrievalCandidate], int]:
     """Run independent exact cosine and lexical top-40 queries, then apply RRF limits."""
     try:
-        vectors = await embedding_client.embed([query])
-        vector = vectors[0]
-        base = _candidate_statement(scope)
-        vector_rows = (
-            await session.execute(
-                base.order_by(ArtifactTextChunk.embedding.cosine_distance(vector), ArtifactTextChunk.id).limit(40)
+        async with session.begin_nested():
+            vectors = await embedding_client.embed([query])
+            vector = vectors[0]
+            base = _candidate_statement(scope)
+            vector_rows = (
+                await session.execute(
+                    base.order_by(ArtifactTextChunk.embedding.cosine_distance(vector), ArtifactTextChunk.id).limit(40)
+                )
+            ).all()
+            lexical_score = func.greatest(
+                func.ts_rank_cd(
+                    ArtifactTextChunk.lexical_document,
+                    func.plainto_tsquery(literal_column("'simple'::regconfig"), query),
+                ),
+                func.similarity(ArtifactTextChunk.normalized_text, query.casefold()),
             )
-        ).all()
-        lexical_score = func.greatest(
-            func.ts_rank_cd(
-                ArtifactTextChunk.lexical_document,
-                func.plainto_tsquery(literal_column("'simple'::regconfig"), query),
-            ),
-            func.similarity(ArtifactTextChunk.normalized_text, query.casefold()),
-        )
-        lexical_rows = (
-            await session.execute(
-                base.where(lexical_score > 0).order_by(lexical_score.desc(), ArtifactTextChunk.id).limit(40)
-            )
-        ).all()
+            lexical_rows = (
+                await session.execute(
+                    base.where(lexical_score > 0).order_by(lexical_score.desc(), ArtifactTextChunk.id).limit(40)
+                )
+            ).all()
     except RetrievalUnavailableError:
         raise
     except Exception:
         raise RetrievalUnavailableError() from None
     fused = reciprocal_rank_fusion(_rows_to_candidates(vector_rows), _rows_to_candidates(lexical_rows))
-    return select_bounded_results(fused), len(fused)
+    return select_bounded_results(
+        fused,
+        tokenizer=get_retrieval_tokenizer(),
+        citation_ordinal_start=citation_ordinal_start,
+    ), len(fused)
 
 
 async def authorize_citation_chunks(

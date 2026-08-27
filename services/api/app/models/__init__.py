@@ -7,6 +7,7 @@ from app.models.retrieval import (
     ArtifactSearchHead,
     ArtifactTextChunk,
     ArtifactTextIndex,
+    XAgentDelegationNonce,
     XAgentRetrievalReceipt,
 )
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
@@ -29,6 +30,7 @@ __all__ = (
     "ArtifactSearchHead",
     "ArtifactTextChunk",
     "ArtifactTextIndex",
+    "XAgentDelegationNonce",
     "XAgentRetrievalReceipt",
     "XAgentIdempotencyKey",
     "XAgentSession",

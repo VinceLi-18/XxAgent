@@ -1,3 +1,4 @@
+import base64
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -11,10 +12,17 @@ import pytest
 from anyio import to_thread
 from alembic import command
 from alembic.config import Config
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+
+DELEGATION_PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+DELEGATION_PUBLIC_KEY = base64.b64encode(
+    DELEGATION_PRIVATE_KEY.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+).decode()
 
 _test_database_url = os.environ["JX_TEST_DATABASE_URL"]
 os.environ.update(
@@ -29,6 +37,7 @@ os.environ.update(
         "JWT_ISSUER": "xagent-tests",
         "JWT_AUDIENCE": "jiaxin-agent-api-tests",
         "XAGENT_SERVICE_TOKEN": "xagent-test-service-token-00000001",
+        "XAGENT_DELEGATION_PUBLIC_KEY": DELEGATION_PUBLIC_KEY,
         "MINIO_ENDPOINT": "minio.test:9000",
         "MINIO_PUBLIC_ENDPOINT": "storage.test:9000",
         "MINIO_ACCESS_KEY": "test-minio-access-key",

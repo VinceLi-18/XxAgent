@@ -70,6 +70,7 @@ def retrieval_audit_details(
     returned_count: int,
     result: str,
     latency_ms: int,
+    evidence: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
     """Build the fixed redacted fields permitted for a retrieval audit."""
     details = {
@@ -81,6 +82,7 @@ def retrieval_audit_details(
         "returned_count": returned_count,
         "result": result,
         "latency_ms": latency_ms,
+        "evidence": evidence or [],
     }
     if (
         len(tool_call_id) == 0
@@ -97,4 +99,16 @@ def retrieval_audit_details(
     ):
         raise ValueError("retrieval audit details are invalid")
     UUID(session_id)
+    if len(details["evidence"]) > 8:
+        raise ValueError("retrieval audit details are invalid")
+    for identity in details["evidence"]:
+        if set(identity) != {"artifact_id", "version_id", "index_id", "generation", "chunk_id"}:
+            raise ValueError("retrieval audit details are invalid")
+        UUID(str(identity["artifact_id"]))
+        UUID(str(identity["version_id"]))
+        UUID(str(identity["index_id"]))
+        UUID(str(identity["chunk_id"]))
+        generation = identity["generation"]
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+            raise ValueError("retrieval audit details are invalid")
     return details

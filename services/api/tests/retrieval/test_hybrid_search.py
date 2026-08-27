@@ -73,6 +73,47 @@ def test_bounded_selection_enforces_total_artifact_byte_and_token_limits() -> No
     assert len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()) <= 32 * 1024
 
 
+def test_global_payload_overflow_stops_at_the_first_ranked_chunk() -> None:
+    oversized = _candidate(1, artifact=1, tokens=4096, text="中" * 11000)
+    lower_ranked = _candidate(2, artifact=2, tokens=1, text="small")
+
+    assert select_bounded_results([oversized, lower_ranked]) == []
+
+
+class _CharacterTokenizer:
+    def count(self, value: str) -> int:
+        return len(value)
+
+
+def test_token_limit_measures_exact_serialized_metadata_and_framing() -> None:
+    empty = _candidate(1, artifact=1, tokens=1, text="")
+    payload = {
+        "schema_version": 1,
+        "citations": [{
+            "id": "[资料37]", "artifact_id": str(empty.artifact_id),
+            "version_id": str(empty.version_id), "chunk_id": str(empty.chunk_id),
+            "display_name": empty.filename, "version_number": empty.version_number,
+            "line_start": empty.line_start, "line_end": empty.line_end,
+            "text": "", "scope": "private",
+        }],
+    }
+    framing_tokens = len(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+    exact = _candidate(
+        1, artifact=1, tokens=1, text="x" * (4096 - framing_tokens)
+    )
+    over = _candidate(
+        1, artifact=1, tokens=1, text="x" * (4097 - framing_tokens)
+    )
+
+    assert select_bounded_results(
+        [exact], tokenizer=_CharacterTokenizer(), citation_ordinal_start=37
+    ) == [exact]
+    assert select_bounded_results(
+        [over, _candidate(2, artifact=2)],
+        tokenizer=_CharacterTokenizer(), citation_ordinal_start=37,
+    ) == []
+
+
 def test_rrf_accepts_dense_only_lexical_only_duplicates_and_empty_results() -> None:
     dense = _candidate(1)
     lexical = _candidate(2, artifact=2)

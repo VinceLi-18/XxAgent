@@ -19,6 +19,11 @@ class AuditEvent(Base):
             "index_generation IS NULL OR index_generation >= 1",
             name="ck_audit_event_index_generation",
         ),
+        CheckConstraint(
+            "jsonb_typeof(details) = 'object' AND octet_length(details::text) <= 8192 AND "
+            "(action NOT LIKE 'retrieval.%' OR public.xagent_valid_retrieval_audit_details(details))",
+            name="ck_audit_event_details",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

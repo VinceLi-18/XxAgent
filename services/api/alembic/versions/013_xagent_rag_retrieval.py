@@ -48,6 +48,47 @@ def upgrade() -> None:
         "audit_events",
         "index_generation IS NULL OR index_generation >= 1",
     )
+    op.execute(
+        "CREATE FUNCTION public.xagent_valid_retrieval_audit_details(value jsonb) "
+        "RETURNS boolean LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog, public AS $$ "
+        "DECLARE identity jsonb; BEGIN "
+        "IF jsonb_typeof(value) <> 'object' OR NOT (value ?& ARRAY["
+        "'session_id','tool_call_id','project_scope_sha256','query_sha256','candidate_count',"
+        "'returned_count','result','latency_ms','evidence']) OR "
+        "value - ARRAY['session_id','tool_call_id','project_scope_sha256','query_sha256',"
+        "'candidate_count','returned_count','result','latency_ms','evidence'] <> '{}'::jsonb "
+        "OR value->>'session_id' !~ '^[0-9a-f-]{36}$' "
+        "OR length(value->>'tool_call_id') NOT BETWEEN 1 AND 255 "
+        "OR value->>'project_scope_sha256' !~ '^[0-9a-f]{64}$' "
+        "OR value->>'query_sha256' !~ '^[0-9a-f]{64}$' "
+        "OR jsonb_typeof(value->'candidate_count') <> 'number' "
+        "OR jsonb_typeof(value->'returned_count') <> 'number' "
+        "OR jsonb_typeof(value->'latency_ms') <> 'number' "
+        "OR value->>'candidate_count' !~ '^[0-9]+$' OR value->>'returned_count' !~ '^[0-9]+$' "
+        "OR value->>'latency_ms' !~ '^[0-9]+$' "
+        "OR (value->>'candidate_count')::numeric < 0 OR (value->>'returned_count')::numeric < 0 "
+        "OR (value->>'latency_ms')::numeric < 0 OR length(value->>'result') NOT BETWEEN 1 AND 32 "
+        "OR jsonb_typeof(value->'evidence') <> 'array' "
+        "OR jsonb_array_length(value->'evidence') > 8 THEN RETURN false; END IF; "
+        "FOR identity IN SELECT * FROM jsonb_array_elements(value->'evidence') LOOP "
+        "IF jsonb_typeof(identity) <> 'object' OR NOT (identity ?& ARRAY["
+        "'artifact_id','version_id','index_id','generation','chunk_id']) OR "
+        "identity - ARRAY['artifact_id','version_id','index_id','generation','chunk_id'] <> '{}'::jsonb "
+        "OR identity->>'artifact_id' !~ '^[0-9a-f-]{36}$' "
+        "OR identity->>'version_id' !~ '^[0-9a-f-]{36}$' "
+        "OR identity->>'index_id' !~ '^[0-9a-f-]{36}$' "
+        "OR identity->>'chunk_id' !~ '^[0-9a-f-]{36}$' "
+        "OR jsonb_typeof(identity->'generation') <> 'number' "
+        "OR identity->>'generation' !~ '^[0-9]+$' "
+        "OR (identity->>'generation')::numeric < 1 THEN RETURN false; END IF; END LOOP; "
+        "RETURN true; EXCEPTION WHEN others THEN RETURN false; END $$"
+    )
+    op.create_check_constraint(
+        "ck_audit_event_details",
+        "audit_events",
+        "jsonb_typeof(details) = 'object' AND octet_length(details::text) <= 8192 AND "
+        "(action NOT LIKE 'retrieval.%' OR public.xagent_valid_retrieval_audit_details(details))",
+    )
 
     op.add_column(
         "xagent_sessions",
@@ -282,6 +323,23 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("session_id", "consumed_event_sequence", name="uq_xagent_retrieval_receipt_consumption"),
     )
+    op.create_table(
+        "xagent_delegation_nonces",
+        sa.Column("nonce_sha256", sa.String(length=64), nullable=False),
+        sa.Column("actor_id", sa.UUID(), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.CheckConstraint(
+            "nonce_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_xagent_delegation_nonce_digest",
+        ),
+        sa.CheckConstraint(
+            "expires_at > consumed_at",
+            name="ck_xagent_delegation_nonce_expiry",
+        ),
+        sa.ForeignKeyConstraint(["actor_id"], ["accounts.id"]),
+        sa.PrimaryKeyConstraint("nonce_sha256"),
+    )
 
     op.execute(
         "CREATE FUNCTION public.enforce_artifact_text_index_status_transition() "
@@ -358,6 +416,21 @@ def upgrade() -> None:
         "CREATE TRIGGER xagent_retrieval_receipt_consumption BEFORE UPDATE ON xagent_retrieval_receipts "
         "FOR EACH ROW EXECUTE FUNCTION public.enforce_xagent_retrieval_receipt_consumption()"
     )
+    op.execute(
+        "CREATE FUNCTION public.xagent_reserve_citation_ordinals(target_session_id uuid, reserve_count integer) "
+        "RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
+        "DECLARE start_ordinal integer; BEGIN "
+        "IF reserve_count < 1 OR reserve_count > 8 THEN RAISE EXCEPTION 'invalid citation reservation'; END IF; "
+        "SELECT next_citation_ordinal INTO start_ordinal FROM public.xagent_sessions "
+        "WHERE id = target_session_id AND ((visibility = 'private' AND owner_id = "
+        "NULLIF(current_setting('app.actor_id', true), '')::uuid) OR (visibility = 'project' "
+        "AND project_id IN (SELECT public.authorized_project_ids()))) FOR UPDATE; "
+        "IF start_ordinal IS NULL THEN RAISE EXCEPTION 'session unavailable'; END IF; "
+        "UPDATE public.xagent_sessions SET next_citation_ordinal = start_ordinal + reserve_count "
+        "WHERE id = target_session_id; RETURN start_ordinal; END $$"
+    )
+    op.execute("REVOKE ALL ON FUNCTION public.xagent_reserve_citation_ordinals(uuid, integer) FROM PUBLIC")
+    op.execute(f"GRANT EXECUTE ON FUNCTION public.xagent_reserve_citation_ordinals(uuid, integer) TO {application_role}")
 
     for table in (
         "artifact_text_indexes",
@@ -365,6 +438,7 @@ def upgrade() -> None:
         "artifact_index_jobs",
         "artifact_search_heads",
         "xagent_retrieval_receipts",
+        "xagent_delegation_nonces",
     ):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
@@ -373,6 +447,7 @@ def upgrade() -> None:
     artifact_visible = "artifact_id IN (SELECT id FROM public.artifacts)"
     index_visible = "index_id IN (SELECT id FROM public.artifact_text_indexes)"
     receipt_visible = f"actor_id = {actor_id} AND session_id IN (SELECT id FROM public.xagent_sessions)"
+    nonce_visible = f"actor_id = {actor_id}"
     op.execute(
         f"CREATE POLICY artifact_text_index_read ON artifact_text_indexes FOR SELECT TO {application_role} "
         f"USING ({artifact_visible})"
@@ -398,6 +473,14 @@ def upgrade() -> None:
     op.execute(
         f"CREATE POLICY xagent_retrieval_receipt_update ON xagent_retrieval_receipts "
         f"FOR UPDATE TO {application_role} USING ({receipt_visible}) WITH CHECK ({receipt_visible})"
+    )
+    op.execute(
+        f"CREATE POLICY xagent_delegation_nonce_select ON xagent_delegation_nonces "
+        f"FOR SELECT TO {application_role} USING ({nonce_visible})"
+    )
+    op.execute(
+        f"CREATE POLICY xagent_delegation_nonce_insert ON xagent_delegation_nonces "
+        f"FOR INSERT TO {application_role} WITH CHECK ({nonce_visible})"
     )
 
     for table in ("artifact_text_indexes", "artifact_index_jobs", "artifact_search_heads"):
@@ -451,6 +534,7 @@ def upgrade() -> None:
         f"GRANT UPDATE (consumed_at, consumed_event_sequence, consumed_payload_sha256) "
         f"ON xagent_retrieval_receipts TO {application_role}"
     )
+    op.execute(f"GRANT SELECT, INSERT ON xagent_delegation_nonces TO {application_role}")
     op.execute(f"GRANT SELECT, INSERT ON artifact_text_indexes TO {worker_role}")
     op.execute(
         f"GRANT UPDATE (status, chunk_count, failure_code, updated_at) "
@@ -491,6 +575,9 @@ def downgrade() -> None:
     )
 
     op.execute(
+        f"REVOKE ALL PRIVILEGES ON xagent_delegation_nonces FROM {application_role}"
+    )
+    op.execute(
         f"REVOKE ALL PRIVILEGES ON artifact_text_indexes, artifact_text_chunks, artifact_index_jobs, "
         f"artifact_search_heads, xagent_retrieval_receipts FROM {application_role}"
     )
@@ -504,6 +591,7 @@ def downgrade() -> None:
         ("artifact_index_jobs", ("artifact_index_jobs_worker_update", "artifact_index_jobs_worker_insert", "artifact_index_jobs_worker_select")),
         ("artifact_search_heads", ("artifact_search_heads_worker_update", "artifact_search_heads_worker_insert", "artifact_search_heads_worker_select", "artifact_search_head_read")),
         ("xagent_retrieval_receipts", ("xagent_retrieval_receipt_update", "xagent_retrieval_receipt_insert", "xagent_retrieval_receipt_select")),
+        ("xagent_delegation_nonces", ("xagent_delegation_nonce_insert", "xagent_delegation_nonce_select")),
     ):
         for policy in policies:
             op.execute(f"DROP POLICY {policy} ON {table}")
@@ -511,12 +599,14 @@ def downgrade() -> None:
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
 
     op.execute("DROP TRIGGER xagent_retrieval_receipt_consumption ON xagent_retrieval_receipts")
+    op.execute("DROP FUNCTION public.xagent_reserve_citation_ordinals(uuid, integer)")
     op.execute("DROP FUNCTION public.enforce_xagent_retrieval_receipt_consumption()")
     op.execute("DROP TRIGGER artifact_search_head_valid ON artifact_search_heads")
     op.execute("DROP FUNCTION public.enforce_artifact_search_head()")
     op.execute("DROP TRIGGER artifact_text_index_status_transition ON artifact_text_indexes")
     op.execute("DROP FUNCTION public.enforce_artifact_text_index_status_transition()")
     op.drop_table("xagent_retrieval_receipts")
+    op.drop_table("xagent_delegation_nonces")
     op.drop_table("artifact_search_heads")
     op.drop_table("artifact_index_jobs")
     op.drop_index("ix_artifact_text_chunks_normalized_text_trgm", table_name="artifact_text_chunks")
@@ -528,6 +618,8 @@ def downgrade() -> None:
     op.drop_constraint("ck_xagent_session_next_citation_ordinal", "xagent_sessions", type_="check")
     op.drop_column("xagent_sessions", "next_citation_ordinal")
     op.drop_constraint("ck_audit_event_index_generation", "audit_events", type_="check")
+    op.drop_constraint("ck_audit_event_details", "audit_events", type_="check")
+    op.execute("DROP FUNCTION public.xagent_valid_retrieval_audit_details(jsonb)")
     op.drop_column("audit_events", "details")
     op.drop_column("audit_events", "index_generation")
     op.drop_column("audit_events", "index_id")

@@ -104,7 +104,7 @@ async def test_private_scope_authorizes_every_project_before_retrieval(
         select(XAgentSession).where(XAgentSession.id == alice_private_xagent_session.id)
     )
 
-    with pytest.raises(RetrievalError, match="session-not-found"):
+    with pytest.raises(RetrievalError, match="service-unavailable"):
         await resolve_scope(
             actor_session,
             actor_id=alice.id,
