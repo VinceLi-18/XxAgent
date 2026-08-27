@@ -61,6 +61,7 @@
   - `docs/superpowers/plans/2026-08-24-xagent-phase-2b-auth-session-runtime.md`
   - `docs/superpowers/plans/2026-08-25-xagent-phase-3a-project-workbench.md`
   - `docs/superpowers/plans/2026-08-25-xagent-phase-3b-artifact-lifecycle.md`
+  - `docs/superpowers/plans/2026-08-28-xagent-phase-4a-rag.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-fork-handoff.md`
   - `docs/superpowers/progress/2026-08-20-xagent-dsh-phase-0.md`
   - `docs/superpowers/progress/2026-08-20-xagent-profile-closure.md`
