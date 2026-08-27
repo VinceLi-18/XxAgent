@@ -5,7 +5,19 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, CheckConstraint, Computed, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Computed,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,12 +36,19 @@ class ArtifactTextIndex(Base):
             name="ck_artifact_text_index_status",
         ),
         CheckConstraint("chunk_count >= 0", name="ck_artifact_text_index_chunk_count"),
+        ForeignKeyConstraint(
+            ("version_id", "artifact_id"),
+            ("artifact_versions.id", "artifact_versions.artifact_id"),
+            name="fk_artifact_text_index_version_artifact",
+            ondelete="CASCADE",
+        ),
         UniqueConstraint("artifact_id", "generation", name="uq_artifact_text_index_artifact_generation"),
+        UniqueConstraint("id", "artifact_id", "version_id", name="uq_artifact_text_index_identity"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    artifact_id: Mapped[UUID] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False)
-    version_id: Mapped[UUID] = mapped_column(ForeignKey("artifact_versions.id", ondelete="CASCADE"), nullable=False)
+    artifact_id: Mapped[UUID] = mapped_column(nullable=False)
+    version_id: Mapped[UUID] = mapped_column(nullable=False)
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     parser_revision: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -116,12 +135,22 @@ class ArtifactSearchHead(Base):
     """The one ready retrieval generation currently searchable for an artifact."""
 
     __tablename__ = "artifact_search_heads"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("index_id", "artifact_id", "version_id"),
+            (
+                "artifact_text_indexes.id",
+                "artifact_text_indexes.artifact_id",
+                "artifact_text_indexes.version_id",
+            ),
+            name="fk_artifact_search_head_index_identity",
+            ondelete="RESTRICT",
+        ),
+    )
 
     artifact_id: Mapped[UUID] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"), primary_key=True)
-    index_id: Mapped[UUID] = mapped_column(
-        ForeignKey("artifact_text_indexes.id", ondelete="RESTRICT"), unique=True, nullable=False
-    )
-    version_id: Mapped[UUID] = mapped_column(ForeignKey("artifact_versions.id", ondelete="RESTRICT"), nullable=False)
+    index_id: Mapped[UUID] = mapped_column(unique=True, nullable=False)
+    version_id: Mapped[UUID] = mapped_column(nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

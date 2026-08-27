@@ -40,6 +40,11 @@ def upgrade() -> None:
         "next_citation_ordinal >= 1",
     )
     op.alter_column("xagent_sessions", "next_citation_ordinal", server_default=None)
+    op.create_unique_constraint(
+        "uq_artifact_version_id_artifact",
+        "artifact_versions",
+        ["id", "artifact_id"],
+    )
 
     op.create_table(
         "artifact_text_indexes",
@@ -75,10 +80,15 @@ def upgrade() -> None:
             name="ck_artifact_text_index_status",
         ),
         sa.CheckConstraint("chunk_count >= 0", name="ck_artifact_text_index_chunk_count"),
-        sa.ForeignKeyConstraint(["artifact_id"], ["artifacts.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["version_id"], ["artifact_versions.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["version_id", "artifact_id"],
+            ["artifact_versions.id", "artifact_versions.artifact_id"],
+            name="fk_artifact_text_index_version_artifact",
+            ondelete="CASCADE",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("artifact_id", "generation", name="uq_artifact_text_index_artifact_generation"),
+        sa.UniqueConstraint("id", "artifact_id", "version_id", name="uq_artifact_text_index_identity"),
     )
     op.create_index(
         "uq_artifact_text_index_building_configuration",
@@ -192,8 +202,16 @@ def upgrade() -> None:
             server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.ForeignKeyConstraint(["artifact_id"], ["artifacts.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["index_id"], ["artifact_text_indexes.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["version_id"], ["artifact_versions.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(
+            ["index_id", "artifact_id", "version_id"],
+            [
+                "artifact_text_indexes.id",
+                "artifact_text_indexes.artifact_id",
+                "artifact_text_indexes.version_id",
+            ],
+            name="fk_artifact_search_head_index_identity",
+            ondelete="RESTRICT",
+        ),
         sa.PrimaryKeyConstraint("artifact_id"),
         sa.UniqueConstraint("index_id"),
     )
@@ -251,6 +269,16 @@ def upgrade() -> None:
         "RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER "
         "SET search_path = pg_catalog, public AS $$ "
         "BEGIN "
+        "IF OLD.id IS DISTINCT FROM NEW.id OR OLD.artifact_id IS DISTINCT FROM NEW.artifact_id "
+        "OR OLD.version_id IS DISTINCT FROM NEW.version_id OR OLD.generation IS DISTINCT FROM NEW.generation "
+        "OR OLD.content_sha256 IS DISTINCT FROM NEW.content_sha256 "
+        "OR OLD.parser_revision IS DISTINCT FROM NEW.parser_revision "
+        "OR OLD.embedding_model IS DISTINCT FROM NEW.embedding_model "
+        "OR OLD.embedding_revision IS DISTINCT FROM NEW.embedding_revision "
+        "OR OLD.vector_dimensions IS DISTINCT FROM NEW.vector_dimensions "
+        "OR OLD.configuration_fingerprint IS DISTINCT FROM NEW.configuration_fingerprint THEN "
+        "RAISE EXCEPTION 'artifact text index identity is immutable' USING ERRCODE = '23514'; "
+        "END IF; "
         "IF OLD.status IS DISTINCT FROM NEW.status AND NOT "
         "(OLD.status = 'building' AND NEW.status IN ('ready', 'failed')) THEN "
         "RAISE EXCEPTION 'invalid artifact text index status transition' USING ERRCODE = '23514'; "
@@ -276,6 +304,40 @@ def upgrade() -> None:
     op.execute(
         "CREATE TRIGGER artifact_search_head_valid BEFORE INSERT OR UPDATE ON artifact_search_heads "
         "FOR EACH ROW EXECUTE FUNCTION public.enforce_artifact_search_head()"
+    )
+    op.execute(
+        "CREATE FUNCTION public.enforce_xagent_retrieval_receipt_consumption() "
+        "RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER "
+        "SET search_path = pg_catalog, public AS $$ "
+        "BEGIN "
+        "IF OLD.kind IS DISTINCT FROM NEW.kind OR OLD.actor_id IS DISTINCT FROM NEW.actor_id "
+        "OR OLD.session_id IS DISTINCT FROM NEW.session_id OR OLD.tool_call_id IS DISTINCT FROM NEW.tool_call_id "
+        "OR OLD.query_sha256 IS DISTINCT FROM NEW.query_sha256 OR OLD.scope IS DISTINCT FROM NEW.scope "
+        "OR OLD.permission_revision IS DISTINCT FROM NEW.permission_revision "
+        "OR OLD.project_ids IS DISTINCT FROM NEW.project_ids "
+        "OR OLD.index_generations IS DISTINCT FROM NEW.index_generations "
+        "OR OLD.chunk_ids IS DISTINCT FROM NEW.chunk_ids "
+        "OR OLD.payload_sha256 IS DISTINCT FROM NEW.payload_sha256 "
+        "OR OLD.issued_at IS DISTINCT FROM NEW.issued_at OR OLD.expires_at IS DISTINCT FROM NEW.expires_at "
+        "OR OLD.citation_ordinal_start IS DISTINCT FROM NEW.citation_ordinal_start "
+        "OR OLD.citation_ordinal_end IS DISTINCT FROM NEW.citation_ordinal_end THEN "
+        "RAISE EXCEPTION 'retrieval receipt claims are immutable' USING ERRCODE = '23514'; "
+        "END IF; "
+        "IF OLD.consumed_at IS NOT NULL THEN "
+        "RAISE EXCEPTION 'retrieval receipt is already consumed' USING ERRCODE = '23514'; "
+        "END IF; "
+        "IF OLD.expires_at <= CURRENT_TIMESTAMP THEN "
+        "RAISE EXCEPTION 'retrieval receipt is expired' USING ERRCODE = '23514'; "
+        "END IF; "
+        "IF NEW.consumed_at IS NULL OR NEW.consumed_event_sequence IS NULL "
+        "OR NEW.consumed_payload_sha256 IS NULL THEN "
+        "RAISE EXCEPTION 'retrieval receipt consumption must be complete' USING ERRCODE = '23514'; "
+        "END IF; "
+        "RETURN NEW; END $$"
+    )
+    op.execute(
+        "CREATE TRIGGER xagent_retrieval_receipt_consumption BEFORE UPDATE ON xagent_retrieval_receipts "
+        "FOR EACH ROW EXECUTE FUNCTION public.enforce_xagent_retrieval_receipt_consumption()"
     )
 
     for table in (
@@ -304,38 +366,57 @@ def upgrade() -> None:
         f"CREATE POLICY artifact_search_head_read ON artifact_search_heads FOR SELECT TO {application_role} "
         f"USING ({artifact_visible})"
     )
-    for operation, clause in (
-        ("SELECT", f"USING ({receipt_visible})"),
-        ("INSERT", f"WITH CHECK ({receipt_visible})"),
-        ("UPDATE", f"USING ({receipt_visible}) WITH CHECK ({receipt_visible})"),
-    ):
-        op.execute(
-            f"CREATE POLICY xagent_retrieval_receipt_{operation.lower()} ON xagent_retrieval_receipts "
-            f"FOR {operation} TO {application_role} {clause}"
-        )
+    op.execute(
+        f"CREATE POLICY xagent_retrieval_receipt_select ON xagent_retrieval_receipts "
+        f"FOR SELECT TO {application_role} USING ({receipt_visible})"
+    )
+    op.execute(
+        f"CREATE POLICY xagent_retrieval_receipt_insert ON xagent_retrieval_receipts "
+        f"FOR INSERT TO {application_role} WITH CHECK ("
+        f"{receipt_visible} AND consumed_at IS NULL AND consumed_event_sequence IS NULL "
+        "AND consumed_payload_sha256 IS NULL)"
+    )
+    op.execute(
+        f"CREATE POLICY xagent_retrieval_receipt_update ON xagent_retrieval_receipts "
+        f"FOR UPDATE TO {application_role} USING ({receipt_visible}) WITH CHECK ({receipt_visible})"
+    )
 
-    for table in ("artifact_text_indexes", "artifact_text_chunks", "artifact_index_jobs", "artifact_search_heads"):
-        for operation, clause in (
-            ("SELECT", "USING (true)"),
-            ("INSERT", "WITH CHECK (true)"),
-            ("UPDATE", "USING (true) WITH CHECK (true)"),
-        ):
+    for table in ("artifact_text_indexes", "artifact_index_jobs", "artifact_search_heads"):
+        for operation, clause in (("SELECT", "USING (true)"), ("INSERT", "WITH CHECK (true)"), ("UPDATE", "USING (true) WITH CHECK (true)")):
             op.execute(
                 f"CREATE POLICY {table}_worker_{operation.lower()} ON {table} "
                 f"FOR {operation} TO {worker_role} {clause}"
             )
+    op.execute(
+        f"CREATE POLICY artifact_text_chunks_worker_insert ON artifact_text_chunks "
+        f"FOR INSERT TO {worker_role} WITH CHECK (true)"
+    )
 
     op.execute(
         f"GRANT SELECT ON artifact_text_indexes, artifact_text_chunks, artifact_search_heads TO {application_role}"
     )
     op.execute(
-        f"GRANT SELECT, INSERT, UPDATE ON xagent_retrieval_receipts TO {application_role}"
+        f"GRANT SELECT, INSERT ON xagent_retrieval_receipts TO {application_role}"
     )
     op.execute(
-        f"GRANT SELECT, INSERT, UPDATE ON artifact_text_indexes, artifact_index_jobs, artifact_search_heads "
-        f"TO {worker_role}"
+        f"GRANT UPDATE (consumed_at, consumed_event_sequence, consumed_payload_sha256) "
+        f"ON xagent_retrieval_receipts TO {application_role}"
     )
-    op.execute(f"GRANT SELECT, INSERT ON artifact_text_chunks TO {worker_role}")
+    op.execute(f"GRANT SELECT, INSERT ON artifact_text_indexes TO {worker_role}")
+    op.execute(
+        f"GRANT UPDATE (status, chunk_count, failure_code, updated_at) "
+        f"ON artifact_text_indexes TO {worker_role}"
+    )
+    op.execute(f"GRANT INSERT ON artifact_text_chunks TO {worker_role}")
+    op.execute(f"GRANT SELECT, INSERT ON artifact_index_jobs TO {worker_role}")
+    op.execute(
+        f"GRANT UPDATE (status, attempts, next_attempt_at, lease_token, lease_expires_at, failure_code, updated_at) "
+        f"ON artifact_index_jobs TO {worker_role}"
+    )
+    op.execute(f"GRANT SELECT, INSERT ON artifact_search_heads TO {worker_role}")
+    op.execute(
+        f"GRANT UPDATE (index_id, version_id, updated_at) ON artifact_search_heads TO {worker_role}"
+    )
 
 
 def downgrade() -> None:
@@ -352,7 +433,7 @@ def downgrade() -> None:
     )
     for table, policies in (
         ("artifact_text_indexes", ("artifact_text_indexes_worker_update", "artifact_text_indexes_worker_insert", "artifact_text_indexes_worker_select", "artifact_text_index_read")),
-        ("artifact_text_chunks", ("artifact_text_chunks_worker_update", "artifact_text_chunks_worker_insert", "artifact_text_chunks_worker_select", "artifact_text_chunk_read")),
+        ("artifact_text_chunks", ("artifact_text_chunks_worker_insert", "artifact_text_chunk_read")),
         ("artifact_index_jobs", ("artifact_index_jobs_worker_update", "artifact_index_jobs_worker_insert", "artifact_index_jobs_worker_select")),
         ("artifact_search_heads", ("artifact_search_heads_worker_update", "artifact_search_heads_worker_insert", "artifact_search_heads_worker_select", "artifact_search_head_read")),
         ("xagent_retrieval_receipts", ("xagent_retrieval_receipt_update", "xagent_retrieval_receipt_insert", "xagent_retrieval_receipt_select")),
@@ -362,6 +443,8 @@ def downgrade() -> None:
         op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
 
+    op.execute("DROP TRIGGER xagent_retrieval_receipt_consumption ON xagent_retrieval_receipts")
+    op.execute("DROP FUNCTION public.enforce_xagent_retrieval_receipt_consumption()")
     op.execute("DROP TRIGGER artifact_search_head_valid ON artifact_search_heads")
     op.execute("DROP FUNCTION public.enforce_artifact_search_head()")
     op.execute("DROP TRIGGER artifact_text_index_status_transition ON artifact_text_indexes")
@@ -374,6 +457,7 @@ def downgrade() -> None:
     op.drop_table("artifact_text_chunks")
     op.drop_index("uq_artifact_text_index_building_configuration", table_name="artifact_text_indexes")
     op.drop_table("artifact_text_indexes")
+    op.drop_constraint("uq_artifact_version_id_artifact", "artifact_versions", type_="unique")
     op.drop_constraint("ck_xagent_session_next_citation_ordinal", "xagent_sessions", type_="check")
     op.drop_column("xagent_sessions", "next_citation_ordinal")
     op.execute("DROP EXTENSION IF EXISTS pg_trgm")

@@ -3,8 +3,12 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+
+from app.core.db_context import set_actor_context
+from app.core.security import Actor
+from app.models.identity import Role
 
 
 async def _require_retrieval_schema(engine: AsyncEngine) -> None:
@@ -248,6 +252,57 @@ async def test_index_status_cannot_leave_ready_or_failed_terminal_states(
 
 
 @pytest.mark.anyio
+async def test_indexes_require_their_artifacts_own_version(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    artifact_id, version_id = await _insert_artifact_version(seeded_database, alice.id)
+    _, other_version_id = await _insert_artifact_version(seeded_database, alice.id)
+    with pytest.raises(IntegrityError, match="fk_artifact_text_index_version_artifact"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO artifact_text_indexes "
+                    "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                    "embedding_model, embedding_revision, vector_dimensions, configuration_fingerprint, status) "
+                    "VALUES (:id, :artifact_id, :version_id, 2, :sha256, 'parser-1', 'bge-m3', "
+                    "'revision-1', 1024, :fingerprint, 'building')"
+                ),
+                {
+                    "id": uuid4(),
+                    "artifact_id": artifact_id,
+                    "version_id": other_version_id,
+                    "sha256": "1" * 64,
+                    "fingerprint": "2" * 64,
+                },
+            )
+
+
+@pytest.mark.anyio
+async def test_index_identity_is_immutable(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    artifact_id, version_id = await _insert_artifact_version(seeded_database, alice.id)
+    other_artifact_id, other_version_id = await _insert_artifact_version(seeded_database, alice.id)
+    index_id = await _insert_index(seeded_database, artifact_id, version_id)
+
+    with pytest.raises(DBAPIError, match="artifact text index identity is immutable"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE artifact_text_indexes SET artifact_id = :artifact_id, version_id = :version_id "
+                    "WHERE id = :index_id"
+                ),
+                {
+                    "index_id": index_id,
+                    "artifact_id": other_artifact_id,
+                    "version_id": other_version_id,
+                },
+            )
+
+
+@pytest.mark.anyio
 async def test_receipts_expire_after_five_minutes_and_keep_positive_citation_ranges(
     seeded_database: AsyncEngine,
     alice,
@@ -323,3 +378,136 @@ async def test_receipts_expire_after_five_minutes_and_keep_positive_citation_ran
                 ),
                 {**values, "id": uuid4()},
             )
+
+
+async def _insert_receipt(
+    engine: AsyncEngine,
+    *,
+    actor_id: UUID,
+    session_id: UUID,
+    consumed: bool = False,
+) -> tuple[UUID, datetime]:
+    receipt_id = uuid4()
+    issued_at = datetime.now(UTC)
+    columns = (
+        "id, kind, actor_id, session_id, tool_call_id, query_sha256, scope, permission_revision, "
+        "project_ids, index_generations, chunk_ids, payload_sha256, issued_at, expires_at"
+    )
+    values = (
+        ":id, 'artifact_search', :actor_id, :session_id, 'call-immutable', :query_sha256, "
+        "'{}'::jsonb, 1, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, :payload_sha256, :issued_at, :expires_at"
+    )
+    parameters = {
+        "id": receipt_id,
+        "actor_id": actor_id,
+        "session_id": session_id,
+        "query_sha256": "4" * 64,
+        "payload_sha256": "5" * 64,
+        "issued_at": issued_at,
+        "expires_at": issued_at + timedelta(minutes=5),
+    }
+    if consumed:
+        columns += ", consumed_at, consumed_event_sequence, consumed_payload_sha256"
+        values += ", :consumed_at, 7, :consumed_payload_sha256"
+        parameters.update(
+            {
+                "consumed_at": issued_at,
+                "consumed_payload_sha256": "6" * 64,
+            }
+        )
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(f"INSERT INTO xagent_retrieval_receipts ({columns}) VALUES ({values})"), parameters
+        )
+    return receipt_id, issued_at
+
+
+@pytest.mark.anyio
+async def test_application_role_cannot_renew_a_retrieval_receipt(
+    seeded_database: AsyncEngine,
+    actor_session: AsyncSession,
+    alice,
+    alice_private_xagent_session,
+) -> None:
+    receipt_id, issued_at = await _insert_receipt(
+        seeded_database,
+        actor_id=alice.id,
+        session_id=alice_private_xagent_session.id,
+    )
+    await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
+
+    with pytest.raises(ProgrammingError) as rejected:
+        await actor_session.execute(
+            text(
+                "UPDATE xagent_retrieval_receipts SET issued_at = :issued_at, expires_at = :expires_at "
+                "WHERE id = :id"
+            ),
+            {
+                "id": receipt_id,
+                "issued_at": issued_at + timedelta(minutes=1),
+                "expires_at": issued_at + timedelta(minutes=6),
+            },
+        )
+
+    assert rejected.value.orig.sqlstate == "42501"
+
+
+@pytest.mark.anyio
+async def test_application_role_cannot_insert_an_already_consumed_receipt(
+    actor_session: AsyncSession,
+    alice,
+    alice_private_xagent_session,
+) -> None:
+    issued_at = datetime.now(UTC)
+    await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
+
+    with pytest.raises(ProgrammingError) as rejected:
+        await actor_session.execute(
+            text(
+                "INSERT INTO xagent_retrieval_receipts "
+                "(id, kind, actor_id, session_id, tool_call_id, query_sha256, scope, permission_revision, "
+                "project_ids, index_generations, chunk_ids, payload_sha256, issued_at, expires_at, consumed_at, "
+                "consumed_event_sequence, consumed_payload_sha256) "
+                "VALUES (:id, 'artifact_search', :actor_id, :session_id, 'call-consumed', :query_sha256, "
+                "'{}'::jsonb, 1, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, :payload_sha256, :issued_at, "
+                ":expires_at, :consumed_at, 1, :consumed_payload_sha256)"
+            ),
+            {
+                "id": uuid4(),
+                "actor_id": alice.id,
+                "session_id": alice_private_xagent_session.id,
+                "query_sha256": "4" * 64,
+                "payload_sha256": "5" * 64,
+                "issued_at": issued_at,
+                "expires_at": issued_at + timedelta(minutes=5),
+                "consumed_at": issued_at,
+                "consumed_payload_sha256": "6" * 64,
+            },
+        )
+
+    assert rejected.value.orig.sqlstate == "42501"
+
+
+@pytest.mark.anyio
+async def test_application_role_cannot_consume_a_receipt_twice(
+    seeded_database: AsyncEngine,
+    actor_session: AsyncSession,
+    alice,
+    alice_private_xagent_session,
+) -> None:
+    receipt_id, _ = await _insert_receipt(
+        seeded_database,
+        actor_id=alice.id,
+        session_id=alice_private_xagent_session.id,
+        consumed=True,
+    )
+    await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
+
+    with pytest.raises(DBAPIError, match="retrieval receipt is already consumed"):
+        await actor_session.execute(
+            text(
+                "UPDATE xagent_retrieval_receipts SET consumed_at = CURRENT_TIMESTAMP, "
+                "consumed_event_sequence = 8, consumed_payload_sha256 = :payload_sha256 WHERE id = :id"
+            ),
+            {"id": receipt_id, "payload_sha256": "7" * 64},
+        )
