@@ -99,3 +99,15 @@ def test_chunk_text_keeps_overlap_after_a_paragraph_boundary_before_a_long_parag
     assert chunks[0].text.split() == prefix
     assert chunks[1].text.split()[:64] == prefix[-64:]
     assert chunks == chunk_text((" ".join(prefix) + "\n\n" + " ".join(following)).encode(), "text/plain", tokenizer)
+
+
+def test_chunk_text_does_not_emit_an_overlap_only_chunk_before_a_long_paragraph() -> None:
+    tokenizer = WhitespaceTokenizer()
+    prefix = [f"prefix{index}" for index in range(512)]
+    following = [f"following{index}" for index in range(600)]
+    payload = (" ".join(prefix) + "   \n\n" + " ".join(following)).encode()
+    chunks = chunk_text(payload, "text/plain", tokenizer)
+
+    assert [chunk.token_count for chunk in chunks] == [512, 512, 216]
+    assert chunks[1].text.split()[:64] == prefix[-64:]
+    assert chunks == chunk_text(payload, "text/plain", tokenizer)
