@@ -19,6 +19,7 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:^",
     "@types/mdast": "^4.0.4",
+    "entities": "^8.0.0",
     "mdast-util-from-markdown": "^2.0.3"
   },
   "peerDependencies": {

@@ -12,6 +12,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { XAgentCitationIdentity } from '@xagent/dsh-backend-client'
+import { decodeHTML, decodeHTMLAttribute } from 'entities/decode'
 import type { Nodes, Root } from 'mdast'
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import type { XAgentCitationInvalidReason } from './events.ts'
@@ -218,6 +219,7 @@ function unescaped(text: string, index: number): boolean {
 interface ProseSegment {
   readonly rendered: string
   readonly source: string
+  readonly rawHtml: boolean
 }
 
 const HTML_VOID_ELEMENTS = new Set([
@@ -242,6 +244,7 @@ function insideRange(index: number, ranges: readonly SourceRange[]): boolean {
 }
 
 interface RawHtmlTag {
+  readonly start: number
   readonly end: number
   readonly name: string
   readonly closing: boolean
@@ -266,16 +269,16 @@ function rawHtmlTagAt(value: string, start: number): RawHtmlTag | undefined {
   if (closing) {
     skipWhitespace()
     return value[cursor] === '>'
-      ? { end: cursor + 1, name, closing: true, selfClosing: false }
+      ? { start, end: cursor + 1, name, closing: true, selfClosing: false }
       : undefined
   }
   while (cursor < value.length) {
     skipWhitespace()
     if (value[cursor] === '>') {
-      return { end: cursor + 1, name, closing: false, selfClosing: false }
+      return { start, end: cursor + 1, name, closing: false, selfClosing: false }
     }
     if (value[cursor] === '/' && value[cursor + 1] === '>') {
-      return { end: cursor + 2, name, closing: false, selfClosing: true }
+      return { start, end: cursor + 2, name, closing: false, selfClosing: true }
     }
     const attributeStart = cursor
     while (cursor < value.length && !/[\s"'<>/=]/u.test(value[cursor] ?? '')) cursor += 1
@@ -310,7 +313,19 @@ function rawTextClosingTag(value: string, start: number, name: string): RawHtmlT
   return undefined
 }
 
-function scanRawHtml(value: string, stack: string[]): boolean {
+interface RawHtmlScan {
+  readonly visible: string
+  readonly hiddenAliases: readonly string[]
+  readonly unsafe: boolean
+}
+
+function citationAliases(value: string): string[] {
+  return [...value.matchAll(CITATION_LIKE)].map(match => match[0])
+}
+
+function scanRawHtml(value: string, stack: string[]): RawHtmlScan {
+  const visible: string[] = []
+  const hiddenAliases: string[] = []
   let unsafe = false
   let cursor = 0
   while (cursor < value.length) {
@@ -318,33 +333,40 @@ function scanRawHtml(value: string, stack: string[]): boolean {
     if (rawTextElement !== undefined && HTML_RAW_TEXT_ELEMENTS.has(rawTextElement)) {
       const closing = rawTextClosingTag(value, cursor, rawTextElement)
       if (closing === undefined) break
+      hiddenAliases.push(...citationAliases(decodeHTML(value.slice(cursor, closing.start))))
       stack.pop()
       cursor = closing.end
       continue
     }
     const start = value.indexOf('<', cursor)
+    const dataEnd = start < 0 ? value.length : start
+    visible.push(decodeHTML(value.slice(cursor, dataEnd)))
     if (start < 0) break
     if (value.startsWith('<!--', start)) {
       const end = value.indexOf('-->', start + 4)
-      if (end < 0) return true
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 4, end))))
       cursor = end + 3
       continue
     }
     if (value.startsWith('<![CDATA[', start)) {
       const end = value.indexOf(']]>', start + 9)
-      if (end < 0) return true
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 9, end))))
       cursor = end + 3
       continue
     }
     if (value.startsWith('<?', start)) {
       const end = value.indexOf('?>', start + 2)
-      if (end < 0) return true
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 2, end))))
       cursor = end + 2
       continue
     }
     if (value.startsWith('<!', start)) {
       const end = value.indexOf('>', start + 2)
-      if (end < 0) return true
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 2, end))))
       cursor = end + 1
       continue
     }
@@ -359,6 +381,7 @@ function scanRawHtml(value: string, stack: string[]): boolean {
       cursor = start + 1
       continue
     }
+    hiddenAliases.push(...citationAliases(decodeHTMLAttribute(value.slice(start, tag.end))))
     if (tag.closing) {
       if (stack.at(-1) === tag.name) stack.pop()
       else unsafe = true
@@ -367,7 +390,7 @@ function scanRawHtml(value: string, stack: string[]): boolean {
     }
     cursor = tag.end
   }
-  return unsafe
+  return { visible: visible.join(''), hiddenAliases, unsafe }
 }
 
 function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliases: string[]; htmlUnsafe: boolean } {
@@ -390,22 +413,27 @@ function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliase
       }
     }
     if (node.type === 'html') {
-      htmlAliases.push(...[...node.value.matchAll(CITATION_LIKE)].map(match => match[0]))
       const range = sourceRange(node)
       if (range !== undefined) htmlRanges.push(range)
-      htmlUnsafe ||= scanRawHtml(node.value, htmlStack)
+      const scanned = scanRawHtml(node.value, htmlStack)
+      htmlAliases.push(...scanned.hiddenAliases)
+      htmlUnsafe ||= scanned.unsafe
+      if (scanned.visible.length > 0) {
+        segments.push({ rendered: scanned.visible, source: node.value, rawHtml: true })
+      }
       return
     }
     if (node.type === 'text') {
       const start = node.position?.start.offset
       const end = node.position?.end.offset
       if (htmlStack.length > 0) {
-        htmlAliases.push(...[...node.value.matchAll(CITATION_LIKE)].map(match => match[0]))
+        segments.push({ rendered: node.value, source: node.value, rawHtml: true })
         return
       }
       segments.push({
         rendered: node.value,
         source: start === undefined || end === undefined ? node.value : markdown.slice(start, end),
+        rawHtml: false,
       })
       return
     }
@@ -444,6 +472,10 @@ function explicitCitations(text: string): { ids: string[]; malformed: string[] }
     }
   }
   for (const segment of prose.segments) {
+    if (segment.rawHtml) {
+      malformed.push(...citationAliases(segment.rendered))
+      continue
+    }
     const ignoredRanges: Array<[number, number]> = []
     let sourceCursor = 0
     for (const match of segment.rendered.matchAll(CITATION_TOKEN)) {

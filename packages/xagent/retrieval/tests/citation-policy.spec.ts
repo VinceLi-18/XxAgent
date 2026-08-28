@@ -735,6 +735,44 @@ describe('XAgent citation policy', () => {
   })
 
   test.each([
+    ['decimal character reference', '<div>[资&#26009;2]</div>\n\n结论[资料1]'],
+    ['hexadecimal character reference', '<div>[资&#x6599;2]</div>\n\n结论[资料1]'],
+    ['named character references', '<div>&lbrack;资料2&rbrack;</div>\n\n结论[资料1]'],
+    ['comment split', '<div>[资<!-- hidden -->料2]</div>\n\n结论[资料1]'],
+    ['empty-element split', '<div>[资<span></span>料2]</div>\n\n结论[资料1]'],
+    ['element-content split', '<div>[资<span>料</span>2]</div>\n\n结论[资料1]'],
+    ['nested case-varied split', '<DIV><section>[资<EM>料</EM>2]</section></DIV>\n\n结论[资料1]'],
+    ['raw-HTML-to-prose split', '<span>[资</span>料2] 结论[资料1]'],
+  ])('fails closed when raw HTML visible text forms a citation through %s', async (_kind, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
+    ['entity-encoded attribute', '<span title="[资&#26009;2]">label</span> 结论[资料1]'],
+    ['entity-encoded comment', '<!-- [资&#x6599;2] -->\n结论[资料1]'],
+    ['entity-encoded raw-text content', '<script>const ref = "[资&#26009;2]"</script>\n\n结论[资料1]'],
+  ])('fails closed on a citation alias in invisible raw HTML %s', async (_kind, text) => {
+    const { authorize, ctx, session } = await setup()
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
     ['unmatched opener', '<span>[资料1]'],
     ['unmatched closer', '</span>[资料1]'],
     ['malformed opener', '<span\n[资料1]'],
@@ -780,9 +818,12 @@ describe('XAgent citation policy', () => {
 
   test.each([
     ['inline element', '<span>label</span> 结论[资料1]'],
+    ['non-citation attribute', '<span title="reference">label</span> 结论[资料1]'],
+    ['non-citation comment', '<!-- reference -->\n结论[资料1]'],
     ['block element', '<div>\nlabel\n</div>\n\n结论[资料1]'],
     ['nested block across Markdown blocks', '<DIV class="outer">\n\n<section data-kind="label">label</section>\n\n</DIV>\n\n结论[资料1]'],
     ['raw-text block containing tag-like text', '<script>\nconst template = "<div>"\n</script>\n\n结论[资料1]'],
+    ['raw HTML inside CommonMark code', '```html\n<div>[资&#26009;2]</div>\n```\n\n结论[资料1]'],
   ])('keeps a prose citation outside a well-closed raw HTML %s visible', async (_kind, text) => {
     const { authorize, ctx } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
