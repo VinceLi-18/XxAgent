@@ -12,7 +12,7 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务最多缓冲 64 KiB assistant 输出、32 KiB 工具参数和 4,096 个 stream chunk。服务只接受从匹配检索 `tool/result` 事件重建的短引用 ID，并在第一个回答 chunk 放行前立即重新授权所有已使用资料。只含工具调用的 continuation 会完整缓冲，但不会用空引用集合调用授权；其工具结果必须 checkpoint 后才进入后续模型请求。任何采用证据的正文都必须包含至少一个允许引用。普通请求和空检索保持下游流不变。
 
-第一份无效草稿会被完全抑制。log-only `xagent/citation-correction` 事件保存草稿 SHA-256、最多 8 KiB 的 UTF-8 前缀、固定原因、无效 ID 和最多 64 个允许 ID；配套的 plugin-origin `user/message` 通过普通历史把纠正指令交给模型。Agent 只为本策略拥有的 `CITATION_INVALID` 重试一次。第二份无效草稿记录 `xagent/citation-failure`，追加明确的中文失败消息，并以 `CITATION_FAILED` 结束，不生成 assistant 回答。取消、撤权、账号替换、Session 替换和服务释放均不放行缓冲的回答字节。
+第一份无效草稿会被完全抑制。log-only `xagent/citation-correction` 事件保存草稿 SHA-256、最多 8 KiB 的 UTF-8 前缀、固定原因、无效 ID 和最多 64 个允许 ID；配套的 plugin-origin `user/message` 通过普通历史把纠正指令交给模型。Agent 只为该请求精确拥有的 `CITATION_INVALID` 重试一次。第二份无效草稿只记录 `xagent/citation-failure`，并通过持久中文 `CITATION_FAILED` turn error 结束，不生成 assistant 回答或模型可见诊断。FastAPI append 与 Host 恢复都使用关闭且有上限的引用事件 schema。取消、撤权、账号替换、Session 替换和服务释放均不放行缓冲的回答字节。64 KiB 以内的草稿只留在内存；更大的草稿仅为完成权威 SHA-256 写入私有临时目录，并在成功、失败或取消时删除。
 
 ## Model Experience
 

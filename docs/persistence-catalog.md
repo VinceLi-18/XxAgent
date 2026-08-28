@@ -954,7 +954,7 @@ Source: [`packages/web/web-search-deepseek/src/provider.ts:83`](../packages/web/
 'xagent/citation-correction': XAgentCitationCorrectionEventData
 ```
 
-Source: [`packages/xagent/retrieval/src/events.ts:32`](../packages/xagent/retrieval/src/events.ts)
+Source: [`packages/xagent/retrieval/src/events.ts:90`](../packages/xagent/retrieval/src/events.ts)
 
 <a id="xagentcitation-failure--log-only"></a>
 
@@ -965,4 +965,4 @@ Source: [`packages/xagent/retrieval/src/events.ts:32`](../packages/xagent/retrie
 'xagent/citation-failure': XAgentCitationFailureEventData
 ```
 
-Source: [`packages/xagent/retrieval/src/events.ts:34`](../packages/xagent/retrieval/src/events.ts)
+Source: [`packages/xagent/retrieval/src/events.ts:92`](../packages/xagent/retrieval/src/events.ts)

@@ -1,6 +1,9 @@
 /** Bounded answer validation and one reconstructable XAgent citation retry. */
 
 import { createHash } from 'node:crypto'
+import { appendFileSync, createReadStream, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import {
@@ -26,7 +29,7 @@ export const CITATION_CORRECTION_DRAFT_MAX_BYTES = 8 * 1024
 export const CITATION_ALLOWED_MAX = 64
 
 const CITATION_ID = /^\[资料([1-9][0-9]*)\]$/u
-const CITATION_LIKE = /\[资料[^\]\r\n]*\]/gu
+const CITATION_TOKEN = /\[资料[1-9][0-9]*\]/gu
 const HASH_PATTERN = /^[0-9a-f]{64}$/u
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u
 const CORRECTION_MESSAGE = '上一份回答未通过引用校验。请只根据已入账的资料证据重新回答；每个采用资料的事实陈述都必须使用以下允许引用，且不得编造或改写引用 ID：'
@@ -139,13 +142,14 @@ function evidenceFor(options: GenerateOptions, session: Session): EvidenceSet | 
       if (previous !== undefined && (previous.artifactId !== item.artifactId
         || previous.versionId !== item.versionId || previous.chunkId !== item.chunkId)) {
         invalid = true
-      } else {
+      } else if (citations.size < CITATION_ALLOWED_MAX) {
         citations.set(item.id, item)
+      } else {
+        invalid = true
       }
     }
   }
   if (citations.size === 0 && !invalid) return undefined
-  if (citations.size > CITATION_ALLOWED_MAX) invalid = true
   return { citations, invalid }
 }
 
@@ -164,23 +168,60 @@ function utf8Prefix(value: string, maxBytes: number): string {
   return value.slice(0, end)
 }
 
-function answerText(assembler: BlockAssembler): { text: string; hasToolCall: boolean } {
+function answerText(assembler: BlockAssembler): { text: string; hasToolCall: boolean; hasReasoning: boolean } {
   const blocks = assembler.blocks()
   return {
     text: blocks.filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
       .map(block => block.text).join('\n'),
     hasToolCall: blocks.some(block => block.type === 'tool-call'),
+    hasReasoning: blocks.some(block => block.type === 'reasoning'),
   }
+}
+
+function proseText(text: string): string {
+  const chars = text.split('')
+  const mask = (start: number, end: number): void => {
+    for (let index = start; index < end; index += 1) chars[index] = ' '
+  }
+  for (const match of text.matchAll(/```[^]*?```|~~~[^]*?~~~/gu)) {
+    mask(match.index, match.index + match[0].length)
+  }
+  for (const match of text.matchAll(/`+[^`\r\n]*`+/gu)) {
+    mask(match.index, match.index + match[0].length)
+  }
+  return chars.join('')
+}
+
+function unescaped(text: string, index: number): boolean {
+  let slashes = 0
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) slashes += 1
+  return slashes % 2 === 0
+}
+
+function explicitCitations(text: string): { ids: string[]; malformed: string[] } {
+  const prose = proseText(text)
+  const ids: string[] = []
+  const malformed: string[] = []
+  const validRanges: Array<[number, number]> = []
+  for (const match of prose.matchAll(CITATION_TOKEN)) {
+    if (!unescaped(prose, match.index)) continue
+    ids.push(match[0])
+    validRanges.push([match.index, match.index + match[0].length])
+  }
+  const covered = (index: number): boolean => validRanges.some(([start, end]) => index >= start && index < end)
+  for (const match of prose.matchAll(/[\[\]【】［］]?资料[0-9]+[\[\]【】［］]?/gu)) {
+    if (covered(match.index) || !unescaped(prose, match.index)) continue
+    malformed.push(match[0])
+  }
+  return { ids: [...new Set(ids)], malformed: [...new Set(malformed)].slice(0, CITATION_ALLOWED_MAX) }
 }
 
 function validateAnswer(text: string, evidence: EvidenceSet): Validation {
   if (evidence.invalid) return { ok: false, reason: 'stream-invalid', invalidIds: [], used: [] }
-  const tokens = [...text.matchAll(CITATION_LIKE)].map(match => match[0])
-  const malformed = tokens.filter(id => !validCitationId(id))
+  const { ids, malformed } = explicitCitations(text)
   if (malformed.length > 0) {
     return { ok: false, reason: 'citation-malformed', invalidIds: malformed.slice(0, CITATION_ALLOWED_MAX), used: [] }
   }
-  const ids = [...new Set(tokens)]
   if (text.trim().length > 0 && ids.length === 0) {
     return { ok: false, reason: 'citation-missing', invalidIds: [], used: [] }
   }
@@ -195,6 +236,88 @@ function validateAnswer(text: string, evidence: EvidenceSet): Validation {
 interface BlockBytes {
   output: number
   tool: number
+}
+
+class CanonicalDraft {
+  private directory: string | undefined
+  private readonly order: number[] = []
+  private readonly blocks = new Map<number, { type: string; closed: boolean; text: string; path?: string }>()
+
+  push(chunk: StreamChunk): void {
+    const ensure = (index: number, type: string) => {
+      let block = this.blocks.get(index)
+      if (block === undefined) {
+        const path = this.directory === undefined ? undefined : join(this.directory, String(index))
+        block = { type, closed: false, text: '', ...path === undefined ? {} : { path } }
+        if (path !== undefined) writeFileSync(path, '', { mode: 0o600 })
+        this.blocks.set(index, block)
+        this.order.push(index)
+      }
+      return block
+    }
+    if (chunk.type === 'block-start') ensure(chunk.index, chunk.blockType)
+    else if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') {
+      const block = ensure(chunk.index, chunk.type === 'text-delta' ? 'text' : 'reasoning')
+      if (!block.closed) {
+        if (block.path === undefined) block.text += chunk.text
+        else appendFileSync(block.path, chunk.text)
+      }
+    } else if (chunk.type === 'tool-call-delta') {
+      ensure(chunk.index, 'tool-call')
+    } else if (chunk.type === 'block-end') {
+      const block = ensure(chunk.index, chunk.block.type)
+      if (block.closed) return
+      block.closed = true
+      block.type = chunk.block.type
+      block.text = chunk.block.type === 'text' ? chunk.block.text : ''
+      if (block.path !== undefined) {
+        writeFileSync(block.path, block.text, { mode: 0o600 })
+        block.text = ''
+      }
+    }
+  }
+
+  spill(): void {
+    if (this.directory !== undefined) return
+    this.directory = mkdtempSync(join(tmpdir(), 'xagent-citation-'))
+    for (const [index, block] of this.blocks) {
+      block.path = join(this.directory, String(index))
+      writeFileSync(block.path, block.text, { mode: 0o600 })
+      block.text = ''
+    }
+  }
+
+  async digest(): Promise<{ hash: string; preview: string }> {
+    const hash = createHash('sha256')
+    let preview = ''
+    let seen = false
+    for (const index of this.order) {
+      const block = this.blocks.get(index)
+      if (block?.type !== 'text') continue
+      if (seen) {
+        hash.update('\n')
+        preview = utf8Prefix(`${preview}\n`, CITATION_CORRECTION_DRAFT_MAX_BYTES)
+      }
+      seen = true
+      if (block.path === undefined) {
+        hash.update(block.text)
+        preview = utf8Prefix(preview + block.text, CITATION_CORRECTION_DRAFT_MAX_BYTES)
+      } else {
+        const stream: AsyncIterable<Buffer> = createReadStream(block.path, { highWaterMark: 8192 })
+        for await (const chunk of stream) {
+          hash.update(chunk)
+          if (Buffer.byteLength(preview) < CITATION_CORRECTION_DRAFT_MAX_BYTES) {
+            preview = utf8Prefix(preview + chunk.toString('utf8'), CITATION_CORRECTION_DRAFT_MAX_BYTES)
+          }
+        }
+      }
+    }
+    return { hash: hash.digest('hex'), preview }
+  }
+
+  dispose(): void {
+    if (this.directory !== undefined) rmSync(this.directory, { recursive: true, force: true })
+  }
 }
 
 function bufferedBytes(chunk: StreamChunk, blocks: Map<number, BlockBytes>): { output: number; tool: number; invalid: boolean } {
@@ -276,10 +399,6 @@ function appendInvalid(
     invalidIds: validation.invalidIds,
     allowedIds,
   })
-  request.session.append('user/message', createUserMessage({
-    content: [{ type: 'text', text: TERMINAL_FAILURE_MESSAGE }],
-    source: { kind: 'plugin', plugin: 'xagent-retrieval' },
-  }), { surfaceOp: 'append' })
   return finishError('CITATION_FAILED', TERMINAL_FAILURE_MESSAGE)
 }
 
@@ -290,7 +409,8 @@ function protectedStream(
   evidence: EvidenceSet,
   retrying: boolean,
   flush: () => Promise<void>,
-  markInvalid: () => void,
+  markInvalid: (failure: object) => void,
+  markTerminal: (failure: object) => void,
   clearRetry: () => void,
 ): AsyncIterable<StreamChunk> {
   return (async function* (): AsyncIterable<StreamChunk> {
@@ -298,99 +418,102 @@ function protectedStream(
     options.signal?.throwIfAborted()
     const chunks: StreamChunk[] = []
     const assembler = new BlockAssembler()
-    let outputBytes = 0
-    let toolBytes = 0
-    let overflow = false
-    let invalidChunk = false
-    let draftPreview = ''
-    const draftHash = createHash('sha256')
-    const textIndexes = new Set<number>()
-    const deltaIndexes = new Set<number>()
-    const hashText = (index: number, text: string): void => {
-      if (!textIndexes.has(index)) {
-        if (textIndexes.size > 0) draftHash.update('\n')
-        textIndexes.add(index)
-      }
-      draftHash.update(text)
-    }
-    const blockBytes = new Map<number, BlockBytes>()
-    let final: StreamChunk | undefined
-    for await (const chunk of next()) {
-      if (options.signal?.aborted === true) {
-        if (chunk.type === 'finish' && chunk.reason.kind === 'aborted') yield chunk
-        return
-      }
-      const bytes = bufferedBytes(chunk, blockBytes)
-      outputBytes += bytes.output
-      toolBytes += bytes.tool
-      invalidChunk ||= bytes.invalid
-      if (chunk.type === 'text-delta') {
-        deltaIndexes.add(chunk.index)
-        hashText(chunk.index, chunk.text)
-        draftPreview = utf8Prefix(draftPreview + chunk.text, CITATION_CORRECTION_DRAFT_MAX_BYTES)
-      } else if (chunk.type === 'block-end' && chunk.block.type === 'text' && !deltaIndexes.has(chunk.index)) {
-        hashText(chunk.index, chunk.block.text)
-        if (draftPreview.length === 0) {
-          draftPreview = utf8Prefix(chunk.block.text, CITATION_CORRECTION_DRAFT_MAX_BYTES)
+    const canonicalDraft = new CanonicalDraft()
+    try {
+      let outputBytes = 0
+      let toolBytes = 0
+      let overflow = false
+      let invalidChunk = false
+      let draftPreview = ''
+      const blockBytes = new Map<number, BlockBytes>()
+      let final: StreamChunk | undefined
+      for await (const chunk of next()) {
+        if (options.signal?.aborted === true) {
+          if (chunk.type === 'finish' && chunk.reason.kind === 'aborted') yield chunk
+          return
         }
-      }
-      if (chunks.length >= CITATION_STREAM_CHUNK_MAX
+        const bytes = bufferedBytes(chunk, blockBytes)
+        outputBytes += bytes.output
+        toolBytes += bytes.tool
+        invalidChunk ||= bytes.invalid
+        if (chunk.type === 'text-delta') {
+          draftPreview = utf8Prefix(draftPreview + chunk.text, CITATION_CORRECTION_DRAFT_MAX_BYTES)
+        } else if (chunk.type === 'block-end' && chunk.block.type === 'text') {
+          if (draftPreview.length === 0) {
+            draftPreview = utf8Prefix(chunk.block.text, CITATION_CORRECTION_DRAFT_MAX_BYTES)
+          }
+        }
+        const wasOverflow = overflow
+        if (chunks.length >= CITATION_STREAM_CHUNK_MAX
         || outputBytes > CITATION_ANSWER_MAX_BYTES
         || toolBytes > CITATION_TOOL_ARGUMENTS_MAX_BYTES) overflow = true
-      if (!overflow && !invalidChunk) {
-        chunks.push(chunk)
-        assembler.push(chunk)
+        if (!overflow && !invalidChunk) {
+          chunks.push(chunk)
+          assembler.push(chunk)
+        }
+        if (!bytes.invalid) canonicalDraft.push(chunk)
+        if (overflow && !wasOverflow) canonicalDraft.spill()
+        if (chunk.type === 'finish') {
+          final = chunk
+          break
+        }
       }
-      if (chunk.type === 'finish') {
-        final = chunk
-        break
-      }
-    }
-    if (options.signal?.aborted === true) return
-    if (final?.type === 'finish' && (final.reason.kind === 'error' || final.reason.kind === 'aborted')) {
-      yield final
-      return
-    }
-    const answer = answerText(assembler)
-    const draftSha256 = draftHash.digest('hex')
-    let validation = invalidChunk || final?.type !== 'finish'
-      ? { ok: false, reason: 'stream-invalid' as const, invalidIds: [], used: [] }
-      : overflow
-        ? { ok: false, reason: 'answer-too-large' as const, invalidIds: [], used: [] }
-        : validateAnswer(answer.text, evidence)
-    if (answer.text.length === 0 && answer.hasToolCall && !overflow && !evidence.invalid) {
-      validation = { ok: true, invalidIds: [], used: [] }
-    }
-    const allowedIds = [...evidence.citations.keys()].sort((left, right) => {
-      const a = Number(CITATION_ID.exec(left)?.[1] ?? 0)
-      const b = Number(CITATION_ID.exec(right)?.[1] ?? 0)
-      return a - b
-    })
-    if (!validation.ok) {
-      if (!retrying) markInvalid()
-      yield appendInvalid(request, retrying, draftSha256, overflow ? draftPreview : answer.text, validation, allowedIds)
-      return
-    }
-    if (validation.used.length > 0) {
-      try {
-        await request.authorize({
-          sessionId: String(request.session.id),
-          citations: validation.used,
-          ...options.signal === undefined ? {} : { signal: options.signal },
-        })
-      } catch (error: unknown) {
-        if (aborted(options.signal)
-          || error instanceof DOMException && error.name === 'AbortError') return
-        if (!retrying) markInvalid()
-        yield appendInvalid(request, retrying, draftSha256, answer.text, {
-          ok: false, reason: 'citation-revoked', invalidIds: validation.used.map(item => item.id), used: [],
-        }, allowedIds)
+      if (options.signal?.aborted === true) return
+      if (final?.type === 'finish' && (final.reason.kind === 'error' || final.reason.kind === 'aborted')) {
+        yield final
         return
       }
+      const answer = answerText(assembler)
+      const canonical = await canonicalDraft.digest()
+      const draftSha256 = overflow ? canonical.hash : createHash('sha256').update(answer.text).digest('hex')
+      if (overflow) draftPreview = canonical.preview
+      let validation = invalidChunk || final?.type !== 'finish'
+        ? { ok: false, reason: 'stream-invalid' as const, invalidIds: [], used: [] }
+        : overflow
+          ? { ok: false, reason: 'answer-too-large' as const, invalidIds: [], used: [] }
+          : validateAnswer(answer.text, evidence)
+      if (answer.hasReasoning) {
+        validation = { ok: false, reason: 'stream-invalid', invalidIds: [], used: [] }
+      } else if (answer.text.length === 0 && answer.hasToolCall && !overflow && !evidence.invalid) {
+        validation = { ok: true, invalidIds: [], used: [] }
+      }
+      const allowedIds = [...evidence.citations.keys()].sort((left, right) => {
+        const a = Number(CITATION_ID.exec(left)?.[1] ?? 0)
+        const b = Number(CITATION_ID.exec(right)?.[1] ?? 0)
+        return a - b
+      })
+      if (!validation.ok) {
+        const failure = appendInvalid(request, retrying, draftSha256, overflow ? draftPreview : answer.text, validation, allowedIds)
+        if (!retrying && failure.type === 'finish' && failure.reason.kind === 'error') markInvalid(failure.reason.failure)
+        if (retrying && failure.type === 'finish' && failure.reason.kind === 'error') markTerminal(failure.reason.failure)
+        yield failure
+        return
+      }
+      if (validation.used.length > 0) {
+        try {
+          await request.authorize({
+            sessionId: String(request.session.id),
+            citations: validation.used,
+            ...options.signal === undefined ? {} : { signal: options.signal },
+          })
+        } catch (error: unknown) {
+          if (aborted(options.signal)
+          || error instanceof DOMException && error.name === 'AbortError') return
+          const failure = appendInvalid(request, retrying, draftSha256, answer.text, {
+            ok: false, reason: 'citation-revoked', invalidIds: validation.used.map(item => item.id), used: [],
+          }, allowedIds)
+          if (!retrying && failure.type === 'finish' && failure.reason.kind === 'error') markInvalid(failure.reason.failure)
+          if (retrying && failure.type === 'finish' && failure.reason.kind === 'error') markTerminal(failure.reason.failure)
+          yield failure
+          return
+        }
+      }
+      if (aborted(options.signal)) return
+      clearRetry()
+      for (const chunk of chunks) yield chunk
+    } finally {
+      canonicalDraft.dispose()
     }
-    if (aborted(options.signal)) return
-    clearRetry()
-    for (const chunk of chunks) yield chunk
   })()
 }
 
@@ -405,7 +528,8 @@ export function installXAgentCitationPolicy(
   resolve: XAgentCitationPolicyResolver,
 ): () => void {
   const retrying = new WeakSet<object>()
-  const eligibleRetry = new WeakSet<object>()
+  const eligibleRetry = new WeakMap<object, object>()
+  const terminalFailures = new WeakMap<object, object>()
   const closeStream = ctx.on('llm/stream', (options, next) => {
     const request = resolve(options)
     if (request === undefined || options.sessionId === undefined
@@ -419,23 +543,24 @@ export function installXAgentCitationPolicy(
       evidence,
       retrying.has(request.agent),
       async () => { await ctx.sessions.flush(request.session) },
-      () => { eligibleRetry.add(request.agent) },
+      (failure) => { eligibleRetry.set(failure, request.agent) },
+      (failure) => { terminalFailures.set(failure, request.agent) },
       () => {
-        eligibleRetry.delete(request.agent)
         retrying.delete(request.agent)
       },
     )
   })
   const closeError = ctx.on('agent/request-error', ({ agent, failure }, next): Promise<RequestErrorAction> => {
     if (failure.code === 'CITATION_INVALID') {
-      if (!eligibleRetry.has(agent) || retrying.has(agent)) return next()
-      eligibleRetry.delete(agent)
+      const owner = eligibleRetry.get(failure)
+      if (owner !== agent || retrying.has(agent)) return next()
+      eligibleRetry.delete(failure)
       retrying.add(agent)
       return Promise.resolve({ kind: 'retry' })
     }
     if (failure.code === 'CITATION_FAILED') {
-      if (!retrying.has(agent)) return next()
-      eligibleRetry.delete(agent)
+      if (terminalFailures.get(failure) !== agent || !retrying.has(agent)) return next()
+      terminalFailures.delete(failure)
       retrying.delete(agent)
       return Promise.resolve(undefined)
     }
@@ -443,7 +568,6 @@ export function installXAgentCitationPolicy(
   })
   const closeTurn = ctx.on('agent/status', ({ agent, status }) => {
     if (status === 'idle') {
-      eligibleRetry.delete(agent)
       retrying.delete(agent)
     }
   })

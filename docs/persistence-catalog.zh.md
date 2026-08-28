@@ -956,7 +956,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 'xagent/citation-correction': XAgentCitationCorrectionEventData
 ```
 
-来源：[`packages/xagent/retrieval/src/events.ts:32`](../packages/xagent/retrieval/src/events.ts)
+来源：[`packages/xagent/retrieval/src/events.ts:90`](../packages/xagent/retrieval/src/events.ts)
 
 <a id="xagentcitation-failure--log-only"></a>
 
@@ -967,4 +967,4 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 'xagent/citation-failure': XAgentCitationFailureEventData
 ```
 
-来源：[`packages/xagent/retrieval/src/events.ts:34`](../packages/xagent/retrieval/src/events.ts)
+来源：[`packages/xagent/retrieval/src/events.ts:92`](../packages/xagent/retrieval/src/events.ts)

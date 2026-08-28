@@ -22,7 +22,7 @@ Session Persistence 按每个 append 批次的首尾 sequence 取出已绑定收
 
 Host 只在当前模型 request 包含与 Session 中已 checkpoint 检索结果相同的非空证据时启用引用策略。策略在固定 64 KiB 回答、32 KiB 工具参数、4,096 chunk 和 64 个允许引用上限内缓冲，并从已入账公开结果重建引用身份；普通对话和空检索直接保留下游流。引用在回答第一个 chunk 放行前使用当前请求 token、permission revision 和新委托 nonce 交给 FastAPI 重新授权，任何撤权、未知或损坏引用、无引用证据正文、超限、取消或未知 chunk 均不放行回答字节。
 
-第一次无效回答只保存 SHA-256、最多 8 KiB 草稿前缀、稳定原因、无效 ID 和允许 ID 的 log-only 事件，并追加一条 plugin-origin 用户消息，使唯一一次纠正重试可从标准历史重建。无效 assistant chunk 不进入 Session；custom event 不进入模型历史。只有策略自身刚产生的 `CITATION_INVALID` 才触发 request-error retry。第二次失败保存终止事件和明确中文失败消息，以 `CITATION_FAILED` 结束，不生成 assistant 回答。重试状态按 Agent 隔离，并在成功、终止、idle 或释放时清除。
+第一次无效回答只保存 SHA-256、最多 8 KiB 草稿前缀、稳定原因、无效 ID 和允许 ID 的 log-only 事件，并追加一条 plugin-origin 用户消息，使唯一一次纠正重试可从标准历史重建。无效 assistant chunk 不进入 Session；custom event 不进入模型历史。只有策略为同一请求产生的精确 `CITATION_INVALID` 对象才触发 request-error retry。第二次失败只保存终止事件，以持久中文 `CITATION_FAILED` turn error 结束，不生成 assistant 回答或模型可见诊断。FastAPI append 与 Host 恢复使用相同的关闭有界事件字段。64 KiB 内的权威草稿只保留在内存；溢出草稿写入 0700 临时目录中的 0600 文件以完成摘要，并在所有终止路径删除。重试状态按请求、Agent 与 Session 隔离，并在成功、终止、idle 或释放时清除。
 
 FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把 nonce 的 SHA-256 摘要作为全局唯一键持久化；令牌原文、nonce 原文和签名不进入数据库或日志。令牌严格绑定 actor、Session、Project Session 的 project 或 Private Session 的 null project、endpoint tool、tool call、权限 revision 和不超过六十秒的有效期。nonce 消费使用独立提交的事务，因此后续查询失败也不能重新使用同一委托。
 

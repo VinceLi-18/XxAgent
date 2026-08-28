@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -79,6 +79,50 @@ function service(value = backend(), registry = new XAgentReceiptRegistry()) {
     issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
     tokenizer: tokenizer(),
   }) }
+}
+
+class DeferredAdapter extends LlmAdapter {
+  readonly requests: GenerateOptions[] = []
+
+  constructor(private readonly responses: Array<readonly StreamChunk[] | ((options: GenerateOptions) => AsyncIterable<StreamChunk>)>) {
+    super()
+  }
+
+  override resolveModel(provider: string, model: string) {
+    return Promise.resolve({ provider, id: model, name: model })
+  }
+
+  async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    const response = this.responses.shift()
+    if (response === undefined) throw new Error('DeferredAdapter: script exhausted')
+    if (typeof response === 'function') yield* response(options)
+    else yield* response
+  }
+}
+
+async function agentHarness(adapter: LlmAdapter, value = backend()) {
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await ctx.plugin(AgentLoop, { agents: [] })
+  ctx.llm.registerAdapter(['mock'], adapter)
+  const retrieval = new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+    issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+  })
+  await ctx.plugin(retrievalTools)
+  const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+  return { ctx, owner, retrieval, value }
+}
+
+async function settlesWithin(operation: Promise<unknown>, milliseconds = 30): Promise<boolean> {
+  return Promise.race([
+    operation.then(() => true, () => true),
+    new Promise<false>((resolve) => { setTimeout(() => { resolve(false) }, milliseconds) }),
+  ])
 }
 
 describe('XAgentRetrievalService', () => {
@@ -159,6 +203,7 @@ describe('XAgentRetrievalService', () => {
       toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
       textResponse('first invalid'),
       textResponse('second invalid'),
+      textResponse('next turn'),
     ])
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
@@ -181,14 +226,20 @@ describe('XAgentRetrievalService', () => {
     expect(owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(1)
     expect(owner.session.events.filter(event => event.type === 'xagent/citation-failure')).toHaveLength(1)
     expect(owner.session.events.filter(event => event.type === 'assistant/message')).toHaveLength(1)
-    expect(owner.session.deriveMessages().at(-1)).toMatchObject({
-      source: { kind: 'plugin', plugin: 'xagent-retrieval' },
-      content: [{ type: 'text', text: '引用校验失败，无法提供经过验证的回答。' }],
+    expect(JSON.stringify(owner.session.deriveMessages())).not.toContain('引用校验失败，无法提供经过验证的回答。')
+    expect(owner.session.events.findLast(event => event.type === 'turn/end')).toMatchObject({
+      data: { reason: { kind: 'error', error: { code: 'CITATION_FAILED', message: '引用校验失败，无法提供经过验证的回答。' } } },
     })
     expect(JSON.stringify(owner.session.events.filter(event => event.type === 'assistant/chunk'
       || event.type === 'assistant/message'))).not.toContain('first invalid')
     expect(JSON.stringify(owner.session.events)).not.toContain('second invalid')
     expect(value.authorizeCitations).not.toHaveBeenCalled()
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'new turn' }], source: { kind: 'user' } }))
+    })
+    await owner.whenIdle()
+    expect(adapter.requests).toHaveLength(5)
+    expect(JSON.stringify(adapter.requests.at(-1)?.messages)).not.toContain('引用校验失败，无法提供经过验证的回答。')
   })
 
   test('disposal aborts in-flight answer authorization and releases no answer chunks', async () => {
@@ -231,6 +282,89 @@ describe('XAgentRetrievalService', () => {
     expect(JSON.stringify(owner.session.events.filter(event => event.type === 'assistant/chunk'
       || event.type === 'assistant/message'))).not.toContain('must stay hidden')
     expect(owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(0)
+  })
+
+  test.each(['request', 'connection'] as const)('aborts protected generation when the %s lifetime ends', async (ownerKind) => {
+    const requestController = new AbortController()
+    const connectionController = new AbortController()
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      'hang',
+    ])
+    const created = await agentHarness(adapter)
+    const ownedScope = Object.freeze({
+      ...scope(), requestSignal: requestController.signal, connectionSignal: connectionController.signal,
+    })
+    runWithXAgentAuthenticatedRequestScope(ownedScope, () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(2) })
+    ;(ownerKind === 'request' ? requestController : connectionController).abort(new Error(`${ownerKind} ended`))
+    const idle = await settlesWithin(created.owner.whenIdle())
+    if (!idle) created.owner.cancel({ kind: 'user' })
+    expect(idle).toBe(true)
+    expect(JSON.stringify(created.owner.session.events)).not.toContain('partial')
+    expect(created.owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(0)
+  })
+
+  test('connection abort during authorization cancels the backend and publishes no answer', async () => {
+    const connectionController = new AbortController()
+    const value = backend()
+    let authorizationSignal: AbortSignal | undefined
+    value.authorizeCitations = vi.fn(async (_token, _delegation, _input, signal?: AbortSignal) => {
+      authorizationSignal = signal
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => { reject(new DOMException('aborted', 'AbortError')) }, { once: true })
+      })
+    })
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      textResponse('hidden[资料1]'),
+    ])
+    const created = await agentHarness(adapter, value)
+    runWithXAgentAuthenticatedRequestScope(Object.freeze({
+      ...scope(), connectionSignal: connectionController.signal,
+    }), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(value.authorizeCitations).toHaveBeenCalledOnce() })
+    connectionController.abort(new Error('connection ended'))
+    const idle = await settlesWithin(created.owner.whenIdle())
+    if (!idle) created.owner.cancel({ kind: 'user' })
+    expect(idle).toBe(true)
+    expect(authorizationSignal?.aborted).toBe(true)
+    expect(JSON.stringify(created.owner.session.events)).not.toContain('hidden')
+  })
+
+  test.each(['tool-only', 'invalid-draft'] as const)('service disposal quiesces a protected %s stream', async (kind) => {
+    const release = Promise.withResolvers<undefined>()
+    async function* delayed(): AsyncIterable<StreamChunk> {
+      if (kind === 'tool-only') {
+        yield { type: 'tool-call-delta', index: 0, id: CallId('follow-up'), name: 'search_artifacts', argumentsDelta: '{}' }
+      } else {
+        yield { type: 'text-delta', index: 0, text: 'late invalid draft' }
+      }
+      await release.promise
+      yield { type: 'finish', reason: { kind: kind === 'tool-only' ? 'tool-calls' : 'stop' } }
+    }
+    const adapter = new DeferredAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      delayed,
+    ])
+    const created = await agentHarness(adapter)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(2) })
+    const disposal = created.retrieval.dispose()
+    const settled = await settlesWithin(disposal)
+    release.resolve(undefined)
+    await disposal
+    await created.owner.whenIdle()
+    expect(settled).toBe(true)
+    expect(JSON.stringify(created.owner.session.events)).not.toContain('late invalid draft')
+    expect(JSON.stringify(created.owner.session.events)).not.toContain('follow-up')
+    expect(created.owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(0)
   })
 
   test('requires the pinned BGE-M3 tokenizer identity and validates the production HTTP response', async () => {

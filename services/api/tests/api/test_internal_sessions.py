@@ -138,6 +138,57 @@ async def test_create_list_open_append_and_archive_are_actor_isolated(
 
 
 @pytest.mark.anyio
+async def test_citation_events_use_closed_bounded_append_schemas(
+    client, seeded_database, alice,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    created = await client.post(
+        "/internal/xagent/sessions", headers=_headers(token),
+        json={"schema_version": 1, "title": "Citation events", "idempotency_key": "citation-events-create"},
+    )
+    assert created.status_code == 201
+    session_id = created.json()["session"]["id"]
+    base = {
+        "type": "xagent/citation-correction", "seq": 0, "time": 1,
+        "data": {
+            "draftSha256": "a" * 64, "invalidDraft": "未引用草稿",
+            "reason": "citation-missing", "invalidIds": [], "allowedIds": ["[资料1]"],
+        },
+    }
+    malformed = [
+        {**base, "secret": "token"},
+        {**base, "data": {**base["data"], "secret": "token"}},
+        {**base, "data": {**base["data"], "draftSha256": "bad"}},
+        {**base, "data": {**base["data"], "invalidDraft": "资" * 2731}},
+        {**base, "data": {**base["data"], "allowedIds": [f"[资料{i}]" for i in range(1, 66)]}},
+    ]
+    for index, payload in enumerate(malformed):
+        response = await client.post(
+            f"/internal/xagent/sessions/{session_id}/append", headers=_headers(token),
+            json={
+                "schema_version": 1, "expected_sequence": -1,
+                "idempotency_key": f"citation-invalid-{index}",
+                "events": [{"event_type": "xagent/citation-correction", "schema_version": 1, "payload": payload}],
+            },
+        )
+        assert response.status_code == 422
+        assert response.json() == {"detail": {"code": "invalid-request"}}
+
+    valid = await client.post(
+        f"/internal/xagent/sessions/{session_id}/append", headers=_headers(token),
+        json={
+            "schema_version": 1, "expected_sequence": -1, "idempotency_key": "citation-valid",
+            "events": [{"event_type": "xagent/citation-correction", "schema_version": 1, "payload": base}],
+        },
+    )
+    assert valid.status_code == 200
+    opened = await client.post(
+        f"/internal/xagent/sessions/{session_id}/open", headers=_headers(token), json={"schema_version": 1},
+    )
+    assert opened.json()["events"][0]["payload"] == base
+
+
+@pytest.mark.anyio
 async def test_create_uses_the_saved_server_context_and_ignores_forged_scope(
     client,
     seeded_database,

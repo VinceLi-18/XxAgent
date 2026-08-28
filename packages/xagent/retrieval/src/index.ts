@@ -41,7 +41,7 @@ import type {
 
 export type * from './types.ts'
 export * from './citation-policy.ts'
-export type * from './events.ts'
+export * from './events.ts'
 export { XAgentReceiptRegistry } from './receipt-registry.ts'
 export * from './tokenizer.ts'
 
@@ -221,7 +221,10 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     readonly scope?: XAgentAuthenticatedSessionRequestScope
     readonly close?: () => void
   }>()
-  private readonly activeScopes = new Map<Agent, XAgentAuthenticatedSessionRequestScope>()
+  private readonly activeScopes = new Map<Agent, {
+    readonly scope: XAgentAuthenticatedSessionRequestScope
+    readonly close: () => void
+  }>()
   private disposal: Promise<void> | undefined
 
   constructor(
@@ -268,7 +271,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       this.deleteMessageScope(String(message.id))
     })
     const closeDisposed = ctx.on('agent/disposed', ({ agent }) => {
-      this.activeScopes.delete(agent)
+      this.deleteActiveScope(agent)
       this.receipts.discardSession(String(agent.session.id))
       for (const [messageId, binding] of this.messageScopes) {
         if (binding.agent === agent) this.deleteMessageScope(messageId)
@@ -299,17 +302,17 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         }
       }
       if (invalidated || scopes.length > 1) {
-        this.activeScopes.delete(agent)
+        this.deleteActiveScope(agent)
         return { kind: 'reject' as const }
       }
-      if (scopes[0] !== undefined) this.activeScopes.set(agent, scopes[0])
+      if (scopes[0] !== undefined) this.setActiveScope(agent, scopes[0])
       const decision = await next()
-      if (decision.kind === 'reject') this.activeScopes.delete(agent)
+      if (decision.kind === 'reject') this.deleteActiveScope(agent)
       return decision
     })
     const closeToolExecution = ctx.on('tools/execute', (exec, next) => {
       if (exec.name !== 'list_accessible_projects' && exec.name !== 'search_artifacts') return next()
-      const scope = exec.agent === undefined ? undefined : this.activeScopes.get(exec.agent)
+      const scope = exec.agent === undefined ? undefined : this.activeScopes.get(exec.agent)?.scope
       return scope === undefined
         ? runWithoutXAgentAuthenticatedRequestScope(next)
         : runWithXAgentAuthenticatedRequestScope(scope, next)
@@ -323,7 +326,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       if (event.type === 'turn/end') {
         for (const [agent] of this.activeScopes) {
           if (String((agent as { session?: { id?: unknown } }).session?.id) === String(session.id)) {
-            this.activeScopes.delete(agent)
+            this.deleteActiveScope(agent)
           }
         }
       }
@@ -429,7 +432,10 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       this.accepting = false
       for (const close of this.closeScopeObservers) close()
       for (const messageId of this.messageScopes.keys()) this.deleteMessageScope(messageId)
-      this.activeScopes.clear()
+      for (const agent of this.activeScopes.keys()) {
+        agent.cancel({ kind: 'user' })
+        this.deleteActiveScope(agent)
+      }
       const active = [...this.controllers.entries()]
       const receiptDisposal = this.receipts.dispose()
       for (const [controller] of active) controller.abort()
@@ -477,6 +483,28 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     this.messageScopes.set(messageId, { agent: binding.agent })
   }
 
+  private setActiveScope(agent: Agent, scope: XAgentAuthenticatedSessionRequestScope): void {
+    this.deleteActiveScope(agent)
+    const abort = (): void => {
+      this.deleteActiveScope(agent)
+      agent.cancel({ kind: 'user' })
+    }
+    scope.requestSignal?.addEventListener('abort', abort, { once: true })
+    scope.connectionSignal?.addEventListener('abort', abort, { once: true })
+    this.activeScopes.set(agent, {
+      scope,
+      close: () => {
+        scope.requestSignal?.removeEventListener('abort', abort)
+        scope.connectionSignal?.removeEventListener('abort', abort)
+      },
+    })
+  }
+
+  private deleteActiveScope(agent: Agent): void {
+    this.activeScopes.get(agent)?.close()
+    this.activeScopes.delete(agent)
+  }
+
   private requireScope(sessionId: string): XAgentAuthenticatedSessionRequestScope {
     if (!this.accepting) throw new XAgentRetrievalError('service-unavailable')
     const scope = currentXAgentAuthenticatedRequestScope()
@@ -489,13 +517,13 @@ export class XAgentRetrievalService extends XAgentRetrieval {
   private citationRequest(options: GenerateOptions): XAgentCitationPolicyRequest | undefined {
     if (!this.accepting || options.sessionId === undefined) return undefined
     let resolved: XAgentCitationPolicyRequest | undefined
-    for (const [agent, scope] of this.activeScopes) {
+    for (const [agent, binding] of this.activeScopes) {
       if (String(agent.session.id) !== String(options.sessionId)) continue
       if (resolved !== undefined) return undefined
       resolved = {
         agent,
         session: agent.session,
-        authorize: input => this.authorizeCitations(scope, input.citations, input.signal),
+        authorize: input => this.authorizeCitations(binding.scope, input.citations, input.signal),
       }
     }
     return resolved

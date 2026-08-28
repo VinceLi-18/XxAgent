@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto'
+import { readdirSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import LlmRuntime, {
@@ -28,18 +31,18 @@ const citation = {
   chunkId: '00000000-0000-0000-0000-000000000801',
 }
 
-function evidenceMessage(id = '[资料1]') {
+function evidenceMessage(id = '[资料1]', ordinal = 1) {
   return createToolResultMessage({
-    callId: CallId('search-1'),
+    callId: CallId(`search-${String(ordinal)}`),
     isError: false,
     content: [{
       type: 'text',
       text: JSON.stringify({
         citations: [{
           id,
-          artifact_id: citation.artifactId,
-          version_id: citation.versionId,
-          chunk_id: citation.chunkId,
+          artifact_id: ordinal === 1 ? citation.artifactId : `00000000-0000-0000-0000-${ordinal.toString(16).padStart(12, '0')}`,
+          version_id: ordinal === 1 ? citation.versionId : `10000000-0000-0000-0000-${ordinal.toString(16).padStart(12, '0')}`,
+          chunk_id: ordinal === 1 ? citation.chunkId : `20000000-0000-0000-0000-${ordinal.toString(16).padStart(12, '0')}`,
           display_name: 'brief.md',
           version_number: 1,
           line_start: 1,
@@ -212,9 +215,13 @@ describe('XAgent citation policy', () => {
     expect(correctionContent.text).toContain('[资料1]')
     expect(session.deriveMessages().at(-1)).toEqual(correctionMessage?.data)
 
+    const firstFailure = first[0]?.type === 'finish' && first[0].reason.kind === 'error'
+      ? first[0].reason.failure
+      : undefined
+    if (firstFailure === undefined) throw new Error('missing citation failure')
     const retry = await ctx.waterfall(agent as never, 'agent/request-error', {
       agent, turn: 1, step: 2, provider: 'mock',
-      failure: { code: 'CITATION_INVALID', message: '引用校验失败，正在重试。' },
+      failure: firstFailure,
       retryPolicy: undefined, signal: new AbortController().signal,
     }, () => Promise.resolve(undefined))
     expect(retry).toEqual({ kind: 'retry' })
@@ -229,13 +236,16 @@ describe('XAgent citation policy', () => {
     }])
     expect(session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(1)
     expect(session.events.find(event => event.type === 'xagent/citation-failure')).toBeDefined()
-    expect(session.deriveMessages().at(-1)).toMatchObject({
-      source: { kind: 'plugin', plugin: 'xagent-retrieval' },
-      content: [{ type: 'text', text: '引用校验失败，无法提供经过验证的回答。' }],
-    })
+    expect(session.deriveMessages()).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ content: [{ type: 'text', text: '引用校验失败，无法提供经过验证的回答。' }] }),
+    ]))
+    const terminalFailure = second[0]?.type === 'finish' && second[0].reason.kind === 'error'
+      ? second[0].reason.failure
+      : undefined
+    if (terminalFailure === undefined) throw new Error('missing terminal citation failure')
     await expect(ctx.waterfall(agent as never, 'agent/request-error', {
       agent, turn: 1, step: 2, provider: 'mock',
-      failure: { code: 'CITATION_FAILED', message: '引用校验失败，无法提供经过验证的回答。' },
+      failure: terminalFailure,
       retryPolicy: undefined, signal: new AbortController().signal,
     }, () => Promise.resolve(undefined))).resolves.toBeUndefined()
   })
@@ -254,7 +264,7 @@ describe('XAgent citation policy', () => {
     expect(delegated).toBe(1)
   })
 
-  test('owns CITATION_FAILED as terminal so downstream retry policies cannot loop', async () => {
+  test('does not claim a terminal failure without its exact protected request identity', async () => {
     const { agent, ctx } = await setup()
     await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
       { type: 'text-delta', index: 0, text: 'uncited' },
@@ -273,8 +283,8 @@ describe('XAgent citation policy', () => {
     }, () => {
       delegated += 1
       return Promise.resolve({ kind: 'retry' as const })
-    })).resolves.toBeUndefined()
-    expect(delegated).toBe(0)
+    })).resolves.toEqual({ kind: 'retry' })
+    expect(delegated).toBe(1)
   })
 
   test.each([
@@ -289,6 +299,109 @@ describe('XAgent citation policy', () => {
     expect(chunks).toMatchObject([{ type: 'finish', reason: { kind: 'error' } }])
     expect(session.events.find(event => event.type === 'xagent/citation-correction'))
       .toMatchObject({ data: { reason } })
+  })
+
+  test.each([
+    ['missing closing bracket', '事实一[资料1]；事实二[资料2'],
+    ['missing opening bracket', '事实一[资料1]；事实二资料2]'],
+    ['corner bracket alias', '事实一[资料1]；事实二【资料2】'],
+    ['fullwidth bracket alias', '事实一[资料1]；事实二［资料2］'],
+    ['unknown beside valid', '事实一[资料1]；事实二[资料2]'],
+  ])('rejects %s even beside one valid citation', async (_name, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{ type: 'finish', reason: { kind: 'error' } }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction')).toBeDefined()
+  })
+
+  test.each([
+    ['inline code', '事实来自代码 `[资料1]`'],
+    ['fenced code', '事实来自代码\n```text\n[资料1]\n```'],
+    ['escaped literal', String.raw`事实来自字面量 \[资料1]`],
+  ])('does not accept a citation appearing only in %s', async (_name, text) => {
+    const { authorize, ctx, session } = await setup()
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-missing' } })
+  })
+
+  test('ignores citation literals in code when prose has one allowed citation', async () => {
+    const { authorize, ctx } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: '示例 `[资料2]`，结论[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ citations: [citation] }))
+  })
+
+  test('hashes authoritative block-end replacements in first-seen block order', async () => {
+    const { ctx, session } = await setup()
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 5, text: 'delta-five' },
+      { type: 'text-delta', index: 1, text: 'delta-one' },
+      { type: 'block-end', index: 1, block: { type: 'text', text: 'final-one' } },
+      { type: 'block-end', index: 5, block: { type: 'text', text: 'final-five' } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const correction = session.events.find(event => event.type === 'xagent/citation-correction')
+    expect(correction).toMatchObject({ data: { invalidDraft: 'final-five\nfinal-one' } })
+    if (correction?.type !== 'xagent/citation-correction') throw new Error('missing correction')
+    expect(correction.data.draftSha256)
+      .toBe(createHash('sha256').update('final-five\nfinal-one').digest('hex'))
+  })
+
+  test.each([
+    ['reasoning only', [
+      { type: 'reasoning-delta' as const, index: 0, text: '分析[资料1]' },
+      { type: 'finish' as const, reason: { kind: 'stop' as const } },
+    ]],
+    ['reasoning and tool', [
+      { type: 'reasoning-delta' as const, index: 0, text: '分析[资料1]' },
+      { type: 'tool-call-delta' as const, index: 1, id: CallId('follow-up'), name: 'search_artifacts', argumentsDelta: '{}' },
+      { type: 'finish' as const, reason: { kind: 'tool-calls' as const } },
+    ]],
+    ['reasoning with unknown reference', [
+      { type: 'reasoning-delta' as const, index: 0, text: '分析[资料2]' },
+      { type: 'text-delta' as const, index: 1, text: '结论[资料1]' },
+      { type: 'finish' as const, reason: { kind: 'stop' as const } },
+    ]],
+  ])('suppresses %s without entering citation authorization', async (_name, chunks) => {
+    const { authorize, ctx } = await setup()
+    authorize.mockRejectedValue(new Error('revoked'))
+    const released = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source(chunks)))
+    expect(released).toMatchObject([{ type: 'finish', reason: { kind: 'error' } }])
+    expect(released.some(chunk => chunk.type === 'reasoning-delta' || chunk.type === 'text-delta'
+      || chunk.type === 'tool-call-delta')).toBe(false)
+    expect(authorize).not.toHaveBeenCalled()
+  })
+
+  test('bounds a 65-citation evidence set before persisting or prompting', async () => {
+    const { ctx, session } = await setup()
+    const messages = Array.from({ length: 65 }, (_, index) => evidenceMessage(`[资料${String(index + 1)}]`, index + 1))
+    for (const [index, message] of messages.entries()) {
+      session.append('tool/result', {
+        turn: 1, step: index + 2, message,
+        meta: { kind: 'xagent-retrieval', payloadHash: 'b'.repeat(64), citations: [`[资料${String(index + 1)}]`] },
+      }, { surfaceOp: 'append' })
+    }
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(messages), () => source([
+      { type: 'text-delta', index: 0, text: '结论[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const correction = session.events.find(event => event.type === 'xagent/citation-correction')
+    if (correction?.type !== 'xagent/citation-correction') throw new Error('missing correction')
+    expect(correction.data.allowedIds).toHaveLength(64)
+    const correctionMessage = session.events.findLast(event => event.type === 'user/message')
+    expect(JSON.stringify(correctionMessage)).not.toContain('[资料65]')
   })
 
   test('fails closed on revocation immediately before release', async () => {
@@ -330,6 +443,37 @@ describe('XAgent citation policy', () => {
     expect(Buffer.byteLength(correction.data.invalidDraft)).toBeLessThanOrEqual(CITATION_CORRECTION_DRAFT_MAX_BYTES)
     expect(correction.data.draftSha256).toBe(createHash('sha256').update(oversized).digest('hex'))
     expect(correction.data.reason).toBe('answer-too-large')
+  })
+
+  test('spills only overflow to private files and removes them on cancellation', async () => {
+    const { ctx } = await setup()
+    const existing = new Set(readdirSync(tmpdir()).filter(name => name.startsWith('xagent-citation-')))
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: '结论[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(new Set(readdirSync(tmpdir()).filter(name => name.startsWith('xagent-citation-')))).toEqual(existing)
+    const controller = new AbortController()
+    const gate = Promise.withResolvers<undefined>()
+    async function* paused(): AsyncIterable<StreamChunk> {
+      yield { type: 'text-delta', index: 0, text: '资'.repeat(Math.ceil(CITATION_ANSWER_MAX_BYTES / 3) + 1) }
+      await gate.promise
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+    const iterator = ctx.waterfall(ctx.llm, 'llm/stream', { ...options(), signal: controller.signal }, paused)[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    let directory = ''
+    await vi.waitFor(() => {
+      directory = readdirSync(tmpdir()).find(name => name.startsWith('xagent-citation-') && !existing.has(name)) ?? ''
+      expect(directory).not.toBe('')
+    })
+    const path = join(tmpdir(), directory)
+    expect(statSync(path).mode & 0o777).toBe(0o700)
+    expect(statSync(join(path, '0')).mode & 0o777).toBe(0o600)
+    controller.abort()
+    gate.resolve(undefined)
+    await pending
+    expect(readdirSync(tmpdir())).not.toContain(directory)
   })
 
   test('ignores evidence from a different Session and fails closed on unknown stream chunks', async () => {
