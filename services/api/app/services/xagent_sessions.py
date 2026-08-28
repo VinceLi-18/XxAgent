@@ -551,7 +551,7 @@ async def _validate_artifact_search(
     session: AsyncSession,
     public: dict[str, Any],
     claims: ReceiptClaims,
-) -> list[RetrievalCandidate]:
+) -> dict[UUID, RetrievalCandidate]:
     citations = public["citations"]
     citation_keys = {
         "id", "artifact_id", "version_id", "chunk_id", "display_name",
@@ -565,7 +565,7 @@ async def _validate_artifact_search(
         if not citations:
             if claims.chunk_ids or start is not None or end is not None:
                 raise ValueError
-            return []
+            return {}
         if start is None or end != start + len(citations) - 1:
             raise ValueError
         if [citation["id"] for citation in citations] != [
@@ -612,7 +612,7 @@ async def _validate_artifact_search(
             )
         ):
             raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
-    return candidates
+    return by_chunk
 
 
 @dataclass
@@ -789,8 +789,8 @@ async def _admit_retrieval_receipts(
 ) -> dict[int, _AdmittedRetrieval]:
     admitted: dict[int, _AdmittedRetrieval] = {}
     for admission in pending:
-        candidates = (
-            []
+        candidates_by_chunk = (
+            {}
             if admission.receipt.kind == "project_discovery"
             else await _validate_artifact_search(
                 session,
@@ -798,6 +798,10 @@ async def _admit_retrieval_receipts(
                 admission.claims,
             )
         )
+        candidates = [
+            candidates_by_chunk[UUID(citation["chunk_id"])]
+            for citation in admission.public.get("citations", [])
+        ]
         evidence = _audit_evidence(candidates)
         public_items = (
             admission.public["projects"]

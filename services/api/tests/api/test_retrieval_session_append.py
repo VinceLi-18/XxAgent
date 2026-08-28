@@ -138,6 +138,32 @@ async def _seed_search_chunk(engine, actor_id: UUID, project_id: UUID) -> None:
             )
 
 
+async def _seed_second_search_chunk(engine) -> None:
+    index_id = UUID("00000000-0000-0000-0000-000000000723")
+    chunk_id = UUID("00000000-0000-0000-0000-000000000725")
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "UPDATE artifact_text_indexes SET chunk_count = 2 WHERE id = :index_id"
+                ),
+                {"index_id": index_id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index, 1, 2, 3, '第二份资料证据', 3, :sha, CAST(:vector AS vector))"
+                ),
+                {
+                    "id": chunk_id,
+                    "index": index_id,
+                    "sha": hashlib.sha256("第二份资料证据".encode()).hexdigest(),
+                    "vector": "[0,1" + ",0" * 1022 + "]",
+                },
+            )
+
+
 def _tool_result(sequence: int, tool_call_id: str, search: dict[str, object]) -> dict[str, object]:
     public = {"citations": search["citations"]}
     return {
@@ -378,6 +404,135 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
     serialized_audit = json.dumps(admission_audit.details)
     assert search_body["receipt"] not in serialized_audit
     assert "项目预算" not in serialized_audit
+
+
+@pytest.mark.anyio
+async def test_append_resolves_persisted_evidence_by_citation_chunk_order(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[0.0, 1.0] + [0.0] * 1022 for _ in texts]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    await _seed_search_chunk(seeded_database, alice.id, alice_project.id)
+    await _seed_second_search_chunk(seeded_database)
+    token = await _login(client, seeded_database, alice)
+    headers = {"Authorization": f"Bearer {token}", "X-XAgent-Service-Token": SERVICE_TOKEN}
+    tool_call_id = "append-search-citation-order"
+    search_response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=alice_private_xagent_session.id,
+                tool_call_id=tool_call_id,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": 1,
+            "query": "检索",
+            "project_ids": [str(alice_project.id)],
+            "include_private": False,
+        },
+    )
+    assert search_response.status_code == 200
+    search = search_response.json()
+    assert search["citations"] == [
+        {
+            "id": "[资料1]",
+            "artifact_id": "00000000-0000-0000-0000-000000000721",
+            "version_id": "00000000-0000-0000-0000-000000000722",
+            "chunk_id": "00000000-0000-0000-0000-000000000725",
+            "display_name": "预算.txt",
+            "version_number": 1,
+            "line_start": 2,
+            "line_end": 3,
+            "text": "第二份资料证据",
+            "scope": "project",
+        },
+        {
+            "id": "[资料2]",
+            "artifact_id": "00000000-0000-0000-0000-000000000721",
+            "version_id": "00000000-0000-0000-0000-000000000722",
+            "chunk_id": "00000000-0000-0000-0000-000000000724",
+            "display_name": "预算.txt",
+            "version_number": 1,
+            "line_start": 1,
+            "line_end": 1,
+            "text": "项目预算",
+            "scope": "project",
+        },
+    ]
+    event = _tool_result(0, tool_call_id, search)
+    request = {
+        "schema_version": 1,
+        "expected_sequence": -1,
+        "idempotency_key": "append-search-citation-order-1",
+        "events": [event],
+        "retrieval_receipts": [{
+            "event_sequence": 0,
+            "tool_call_id": tool_call_id,
+            "receipt": search["receipt"],
+            "payload_hash": search["payload_sha256"],
+        }],
+    }
+    endpoint = f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append"
+
+    appended = await client.post(endpoint, headers=headers, json=request)
+    replay = await client.post(endpoint, headers=headers, json=request)
+    opened = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/open",
+        headers=headers,
+        json={"schema_version": 1},
+    )
+
+    assert appended.status_code == replay.status_code == opened.status_code == 200
+    assert appended.json() == replay.json()
+    persisted_event = opened.json()["events"][0]
+    persisted = persisted_event["payload"]
+    persisted_public = json.loads(
+        persisted["data"]["message"]["content"][0]["content"][0]["text"]
+    )
+    assert persisted_public == {"citations": search["citations"]}
+    persisted_meta = persisted["data"]["meta"]
+    assert persisted_meta["payloadHash"] == search["payload_sha256"]
+    assert persisted_meta["citations"] == ["[资料1]", "[资料2]"]
+    assert persisted_event["audit_id"] is not None
+    assert persisted_meta["evidence"] == [
+        {
+            "citationId": "[资料1]",
+            "artifactId": "00000000-0000-0000-0000-000000000721",
+            "versionId": "00000000-0000-0000-0000-000000000722",
+            "chunkId": "00000000-0000-0000-0000-000000000725",
+            "indexId": "00000000-0000-0000-0000-000000000723",
+            "generation": 1,
+        },
+        {
+            "citationId": "[资料2]",
+            "artifactId": "00000000-0000-0000-0000-000000000721",
+            "versionId": "00000000-0000-0000-0000-000000000722",
+            "chunkId": "00000000-0000-0000-0000-000000000724",
+            "indexId": "00000000-0000-0000-0000-000000000723",
+            "generation": 1,
+        },
+    ]
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        admission_audit = await session.get(AuditEvent, UUID(persisted_event["audit_id"]))
+        receipt = await session.get(
+            XAgentRetrievalReceipt,
+            receipt_digest_id(search["receipt"]),
+        )
+    assert admission_audit is not None and admission_audit.result == "allowed"
+    assert receipt is not None and receipt.consumed_event_sequence == 0
 
 
 @pytest.mark.anyio
