@@ -760,8 +760,29 @@ describe('XAgent citation policy', () => {
   })
 
   test.each([
+    ['unclosed block before prose', '<div>\nlabel\n\n结论[资料1]'],
+    ['unclosed attributed block before prose', '<DIV class="outer">\nlabel\n\n结论[资料1]'],
+    ['misordered nested block closer', '<div>\n<span data-kind="label">label</div>\n\n结论[资料1]'],
+    ['unclosed outer block across Markdown blocks', '<DIV class="outer">\n\n<section data-kind="label">label</section>\n\n结论[资料1]'],
+  ])('fails closed for %s raw HTML block structure', async (_kind, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
     ['inline element', '<span>label</span> 结论[资料1]'],
     ['block element', '<div>\nlabel\n</div>\n\n结论[资料1]'],
+    ['nested block across Markdown blocks', '<DIV class="outer">\n\n<section data-kind="label">label</section>\n\n</DIV>\n\n结论[资料1]'],
+    ['raw-text block containing tag-like text', '<script>\nconst template = "<div>"\n</script>\n\n结论[资料1]'],
   ])('keeps a prose citation outside a well-closed raw HTML %s visible', async (_kind, text) => {
     const { authorize, ctx } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([

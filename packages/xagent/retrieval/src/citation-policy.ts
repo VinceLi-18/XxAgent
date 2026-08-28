@@ -224,6 +224,7 @@ const HTML_VOID_ELEMENTS = new Set([
   'area', 'base', 'basefont', 'bgsound', 'br', 'col', 'embed', 'frame', 'hr', 'img',
   'input', 'keygen', 'link', 'meta', 'param', 'source', 'track', 'wbr',
 ])
+const HTML_RAW_TEXT_ELEMENTS = new Set(['script', 'style', 'textarea', 'title'])
 
 interface SourceRange {
   readonly start: number
@@ -238,6 +239,135 @@ function sourceRange(node: Nodes): SourceRange | undefined {
 
 function insideRange(index: number, ranges: readonly SourceRange[]): boolean {
   return ranges.some(range => index >= range.start && index < range.end)
+}
+
+interface RawHtmlTag {
+  readonly end: number
+  readonly name: string
+  readonly closing: boolean
+  readonly selfClosing: boolean
+}
+
+function rawHtmlTagAt(value: string, start: number): RawHtmlTag | undefined {
+  let cursor = start + 1
+  let closing = false
+  if (value[cursor] === '/') {
+    closing = true
+    cursor += 1
+  }
+  const nameStart = cursor
+  if (!/[A-Za-z]/u.test(value[cursor] ?? '')) return undefined
+  cursor += 1
+  while (/[A-Za-z0-9-]/u.test(value[cursor] ?? '')) cursor += 1
+  const name = value.slice(nameStart, cursor).toLowerCase()
+  const skipWhitespace = (): void => {
+    while (/\s/u.test(value[cursor] ?? '')) cursor += 1
+  }
+  if (closing) {
+    skipWhitespace()
+    return value[cursor] === '>'
+      ? { end: cursor + 1, name, closing: true, selfClosing: false }
+      : undefined
+  }
+  while (cursor < value.length) {
+    skipWhitespace()
+    if (value[cursor] === '>') {
+      return { end: cursor + 1, name, closing: false, selfClosing: false }
+    }
+    if (value[cursor] === '/' && value[cursor + 1] === '>') {
+      return { end: cursor + 2, name, closing: false, selfClosing: true }
+    }
+    const attributeStart = cursor
+    while (cursor < value.length && !/[\s"'<>/=]/u.test(value[cursor] ?? '')) cursor += 1
+    if (cursor === attributeStart) return undefined
+    skipWhitespace()
+    if (value[cursor] !== '=') continue
+    cursor += 1
+    skipWhitespace()
+    const quote = value[cursor]
+    if (quote === '"' || quote === "'") {
+      cursor += 1
+      const end = value.indexOf(quote, cursor)
+      if (end < 0) return undefined
+      cursor = end + 1
+      continue
+    }
+    const valueStart = cursor
+    while (cursor < value.length && !/[\s"'=<>`]/u.test(value[cursor] ?? '')) cursor += 1
+    if (cursor === valueStart) return undefined
+  }
+  return undefined
+}
+
+function rawTextClosingTag(value: string, start: number, name: string): RawHtmlTag | undefined {
+  const lower = value.toLowerCase()
+  let candidate = lower.indexOf(`</${name}`, start)
+  while (candidate >= 0) {
+    const tag = rawHtmlTagAt(value, candidate)
+    if (tag?.closing === true && tag.name === name) return tag
+    candidate = lower.indexOf(`</${name}`, candidate + 2)
+  }
+  return undefined
+}
+
+function scanRawHtml(value: string, stack: string[]): boolean {
+  let unsafe = false
+  let cursor = 0
+  while (cursor < value.length) {
+    const rawTextElement = stack.at(-1)
+    if (rawTextElement !== undefined && HTML_RAW_TEXT_ELEMENTS.has(rawTextElement)) {
+      const closing = rawTextClosingTag(value, cursor, rawTextElement)
+      if (closing === undefined) break
+      stack.pop()
+      cursor = closing.end
+      continue
+    }
+    const start = value.indexOf('<', cursor)
+    if (start < 0) break
+    if (value.startsWith('<!--', start)) {
+      const end = value.indexOf('-->', start + 4)
+      if (end < 0) return true
+      cursor = end + 3
+      continue
+    }
+    if (value.startsWith('<![CDATA[', start)) {
+      const end = value.indexOf(']]>', start + 9)
+      if (end < 0) return true
+      cursor = end + 3
+      continue
+    }
+    if (value.startsWith('<?', start)) {
+      const end = value.indexOf('?>', start + 2)
+      if (end < 0) return true
+      cursor = end + 2
+      continue
+    }
+    if (value.startsWith('<!', start)) {
+      const end = value.indexOf('>', start + 2)
+      if (end < 0) return true
+      cursor = end + 1
+      continue
+    }
+    const candidate = value[start + 1] === '/' ? value[start + 2] : value[start + 1]
+    if (!/[A-Za-z]/u.test(candidate ?? '')) {
+      cursor = start + 1
+      continue
+    }
+    const tag = rawHtmlTagAt(value, start)
+    if (tag === undefined) {
+      unsafe = true
+      cursor = start + 1
+      continue
+    }
+    if (tag.closing) {
+      if (stack.at(-1) === tag.name) stack.pop()
+      else unsafe = true
+    } else if (!tag.selfClosing && !HTML_VOID_ELEMENTS.has(tag.name)) {
+      stack.push(tag.name)
+    }
+    cursor = tag.end
+  }
+  return unsafe
 }
 
 function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliases: string[]; htmlUnsafe: boolean } {
@@ -263,18 +393,7 @@ function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliase
       htmlAliases.push(...[...node.value.matchAll(CITATION_LIKE)].map(match => match[0]))
       const range = sourceRange(node)
       if (range !== undefined) htmlRanges.push(range)
-      const closing = /^<\/([A-Za-z][A-Za-z0-9-]*)\s*>$/u.exec(node.value)
-      if (closing?.[1] !== undefined) {
-        const name = closing[1].toLowerCase()
-        if (htmlStack.at(-1) === name) htmlStack.pop()
-        else htmlUnsafe = true
-        return
-      }
-      const opening = /^<([A-Za-z][A-Za-z0-9-]*)(?:\s[\s\S]*?)?>$/u.exec(node.value)
-      if (opening?.[1] !== undefined && !/\/\s*>$/u.test(node.value)) {
-        const name = opening[1].toLowerCase()
-        if (!HTML_VOID_ELEMENTS.has(name)) htmlStack.push(name)
-      }
+      htmlUnsafe ||= scanRawHtml(node.value, htmlStack)
       return
     }
     if (node.type === 'text') {
