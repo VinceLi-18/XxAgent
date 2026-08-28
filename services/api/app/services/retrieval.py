@@ -224,10 +224,52 @@ async def reserve_citation_ordinals(
                 {"session_id": session_id, "count": count},
             )
     except Exception:
-        raise RetrievalError("service-unavailable") from None
+        raise RetrievalUnavailableError() from None
     if not isinstance(value, int):
         raise RetrievalError("service-unavailable")
     return value
+
+
+async def citation_ordinal_base(session: AsyncSession, session_id: UUID) -> int:
+    """Lock and return a Session citation base through the narrow RLS-aware function."""
+    try:
+        async with session.begin_nested():
+            value = await session.scalar(
+                text("SELECT public.xagent_citation_ordinal_base(:session_id)"),
+                {"session_id": session_id},
+            )
+    except Exception:
+        raise RetrievalUnavailableError() from None
+    if not isinstance(value, int):
+        raise RetrievalError("service-unavailable")
+    return value
+
+
+async def finalize_retrieval_authorization(
+    session: AsyncSession,
+    *,
+    session_id: UUID,
+    permission_revision: int,
+    project_ids: tuple[UUID, ...],
+) -> None:
+    """Serialize retrieval output against revision and project authorization changes."""
+    try:
+        async with session.begin_nested():
+            authorized = await session.scalar(
+                text(
+                    "SELECT public.xagent_finalize_retrieval_authorization"
+                    "(:session_id, :permission_revision, CAST(:project_ids AS uuid[]))"
+                ),
+                {
+                    "session_id": session_id,
+                    "permission_revision": permission_revision,
+                    "project_ids": list(project_ids),
+                },
+            )
+    except Exception:
+        raise RetrievalUnavailableError() from None
+    if authorized is not True:
+        raise RetrievalError("service-unavailable")
 
 
 async def resolve_scope(

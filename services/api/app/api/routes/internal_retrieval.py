@@ -39,6 +39,8 @@ from app.services.retrieval import (
     RetrievalCandidate,
     RetrievalError,
     authorize_session_citations,
+    citation_ordinal_base,
+    finalize_retrieval_authorization,
     hybrid_search,
     list_accessible_projects,
     load_retrieval_session,
@@ -78,9 +80,9 @@ class _ClosedRetrievalRoute(APIRoute):
                         return _error("service-unavailable")
                 body = bytearray()
                 async for chunk in request.stream():
-                    body.extend(chunk)
-                    if len(body) > MAX_RETRIEVAL_BODY_BYTES:
+                    if len(body) + len(chunk) > MAX_RETRIEVAL_BODY_BYTES:
                         return _error("service-unavailable")
+                    body.extend(chunk)
                 async def receive() -> dict[str, object]:
                     return {
                         "type": "http.request",
@@ -249,6 +251,75 @@ async def _write_isolated_failure_audit(
             )
 
 
+async def _commit_response(
+    context: SessionContext,
+    response: Response,
+    *,
+    action: str,
+    session_id: UUID,
+    tool_call_id: str,
+    failure_code: str,
+    started: float,
+) -> Response:
+    """Commit operation output and map commit-time transaction failures to a closed response."""
+    try:
+        await context.session.commit()
+    except Exception:
+        await context.session.rollback()
+        await _write_isolated_failure_audit(
+            context,
+            action=action,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            result=failure_code,
+            started=started,
+        )
+        return _error(failure_code)
+    return response
+
+
+async def _closed_denial_response(
+    context: SessionContext,
+    *,
+    action: str,
+    session_id: UUID,
+    tool_call_id: str,
+    code: str,
+    failure_code: str,
+    started: float,
+) -> Response:
+    """Persist a denial or replace audit/commit failures with an isolated closed denial."""
+    try:
+        await _write_retrieval_audit(
+            context,
+            action=action,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            result=code,
+            latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+        )
+    except Exception:
+        await context.session.rollback()
+        await _write_isolated_failure_audit(
+            context,
+            action=action,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            result=failure_code,
+            started=started,
+        )
+        return _error(failure_code)
+    return await _commit_response(
+        context,
+        _error(code),
+        action=action,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+        failure_code=failure_code,
+        started=started,
+    )
+
+
 @router.post("/projects", response_model=ProjectDiscoveryResponse)
 async def projects_route(
     request: ProjectDiscoveryRequest,
@@ -259,7 +330,7 @@ async def projects_route(
     try:
         _check_revision(request.permission_revision, context)
         session_item = await load_retrieval_session(
-            context.session, context.principal.actor_id, request.session_id, lock=True
+            context.session, context.principal.actor_id, request.session_id
         )
         await _verify_delegation(
             delegation_token, context=context, session_item=session_item,
@@ -269,6 +340,12 @@ async def projects_route(
         if session_item.visibility != "private":
             raise RetrievalError("invalid-retrieval-scope")
         projects = await list_accessible_projects(context.session, query=request.query)
+        await finalize_retrieval_authorization(
+            context.session,
+            session_id=request.session_id,
+            permission_revision=context.principal.permission_revision,
+            project_ids=tuple(item["project_id"] for item in projects),
+        )
         public_projects = [
             {"project_id": str(item["project_id"]), "name": item["name"]}
             for item in projects
@@ -306,18 +383,22 @@ async def projects_route(
             candidate_count=len(projects), returned_count=len(projects),
             latency_ms=max(0, int((time.monotonic() - started) * 1000)),
         )
-        return ProjectDiscoveryResponse(
+        response = ProjectDiscoveryResponse(
             projects=[ProjectResult(**item) for item in projects],
             receipt=receipt,
             payload_sha256=digest,
         )
-    except (DelegationError, RetrievalError) as error:
-        await _write_retrieval_audit(
-            context, action="retrieval.project_discovery", session_id=request.session_id,
-            tool_call_id=request.tool_call_id, result=error.code,
-            latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+        return await _commit_response(
+            context, response, action="retrieval.project_discovery",
+            session_id=request.session_id, tool_call_id=request.tool_call_id,
+            failure_code="service-unavailable", started=started,
         )
-        return _error(error.code)
+    except (DelegationError, RetrievalError) as error:
+        return await _closed_denial_response(
+            context, action="retrieval.project_discovery", code=error.code,
+            session_id=request.session_id, tool_call_id=request.tool_call_id,
+            failure_code="service-unavailable", started=started,
+        )
     except Exception:
         await context.session.rollback()
         await _write_isolated_failure_audit(
@@ -337,7 +418,7 @@ async def search_route(
     try:
         _check_revision(request.permission_revision, context)
         session_item = await load_retrieval_session(
-            context.session, context.principal.actor_id, request.session_id, lock=True
+            context.session, context.principal.actor_id, request.session_id
         )
         await _verify_delegation(
             delegation_token, context=context, session_item=session_item,
@@ -351,6 +432,7 @@ async def search_route(
             project_ids=request.project_ids,
             include_private=request.include_private,
         )
+        ordinal_base = await citation_ordinal_base(context.session, request.session_id)
         async with httpx.AsyncClient(
             base_url=settings.EMBEDDING_URL,
             timeout=settings.EMBEDDING_TIMEOUT,
@@ -360,8 +442,14 @@ async def search_route(
                 EmbeddingClient(http_client),
                 query=request.query,
                 scope=scope,
-                citation_ordinal_start=session_item.next_citation_ordinal,
+                citation_ordinal_start=ordinal_base,
             )
+        await finalize_retrieval_authorization(
+            context.session,
+            session_id=request.session_id,
+            permission_revision=context.principal.permission_revision,
+            project_ids=scope.project_ids,
+        )
         ordinal_start = (
             await reserve_citation_ordinals(
                 context.session, request.session_id, len(candidates)
@@ -369,6 +457,8 @@ async def search_route(
             if candidates
             else None
         )
+        if ordinal_start is not None and ordinal_start != ordinal_base:
+            raise RetrievalError("service-unavailable")
         citation_base = ordinal_start if ordinal_start is not None else 1
         citations = [
             CitationResult(
@@ -437,15 +527,18 @@ async def search_route(
                 for item in candidates
             ],
         )
-        return SearchResponse(citations=citations, receipt=receipt, payload_sha256=digest)
-    except (DelegationError, RetrievalError, RetrievalUnavailableError) as error:
-        code = error.code
-        await _write_retrieval_audit(
-            context, action="retrieval.search", session_id=request.session_id,
-            tool_call_id=request.tool_call_id, result=code,
-            latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+        response = SearchResponse(citations=citations, receipt=receipt, payload_sha256=digest)
+        return await _commit_response(
+            context, response, action="retrieval.search",
+            session_id=request.session_id, tool_call_id=request.tool_call_id,
+            failure_code="retrieval-unavailable", started=started,
         )
-        return _error(code)
+    except (DelegationError, RetrievalError, RetrievalUnavailableError) as error:
+        return await _closed_denial_response(
+            context, action="retrieval.search", code=error.code,
+            session_id=request.session_id, tool_call_id=request.tool_call_id,
+            failure_code="retrieval-unavailable", started=started,
+        )
     except Exception:
         await context.session.rollback()
         await _write_isolated_failure_audit(
@@ -474,12 +567,24 @@ async def _authorized_citations(
         (item.id, item.artifact_id, item.version_id, item.chunk_id)
         for item in (request.citations if hasattr(request, "citations") else [request.citation])
     ]
-    return await authorize_session_citations(
+    candidates = await authorize_session_citations(
         context.session,
         actor_id=context.principal.actor_id,
         session_id=request.session_id,
         citations=identities,
     )
+    await finalize_retrieval_authorization(
+        context.session,
+        session_id=request.session_id,
+        permission_revision=context.principal.permission_revision,
+        project_ids=tuple(
+            sorted(
+                {item.project_id for item in candidates if item.project_id is not None},
+                key=str,
+            )
+        ),
+    )
+    return candidates
 
 
 @router.post("/citations/authorize", response_model=CitationAuthorizeResponse)
@@ -508,21 +613,25 @@ async def authorize_citations_route(
                 for item in candidates
             ],
         )
-        return CitationAuthorizeResponse(authorized=True)
-    except (DelegationError, RetrievalError) as error:
-        await _write_retrieval_audit(
-            context, action="retrieval.citation_authorize", session_id=request.session_id,
-            tool_call_id=request.tool_call_id, result=error.code,
-            latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+        return await _commit_response(
+            context, CitationAuthorizeResponse(authorized=True),
+            action="retrieval.citation_authorize", session_id=request.session_id,
+            tool_call_id=request.tool_call_id, failure_code="service-unavailable",
+            started=started,
         )
-        return _error(error.code)
+    except (DelegationError, RetrievalError) as error:
+        return await _closed_denial_response(
+            context, action="retrieval.citation_authorize", code=error.code,
+            session_id=request.session_id, tool_call_id=request.tool_call_id,
+            failure_code="service-unavailable", started=started,
+        )
     except Exception:
         await context.session.rollback()
         await _write_isolated_failure_audit(
             context, action="retrieval.citation_authorize", session_id=request.session_id,
-            tool_call_id=request.tool_call_id, result="citation-invalid", started=started,
+            tool_call_id=request.tool_call_id, result="service-unavailable", started=started,
         )
-        return _error("citation-invalid")
+        return _error("service-unavailable")
 
 
 @router.post("/citations/resolve", response_model=CitationResolveResponse)
@@ -547,24 +656,28 @@ async def resolve_citation_route(
                 "chunk_id": str(item.chunk_id),
             }],
         )
-        return CitationResolveResponse(
+        response = CitationResolveResponse(
             artifact_id=item.artifact_id,
             version_id=item.version_id,
             chunk_id=item.chunk_id,
             line_start=item.line_start,
             line_end=item.line_end,
         )
-    except (DelegationError, RetrievalError) as error:
-        await _write_retrieval_audit(
-            context, action="retrieval.citation_resolve", session_id=request.session_id,
-            tool_call_id=request.tool_call_id, result=error.code,
-            latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+        return await _commit_response(
+            context, response, action="retrieval.citation_resolve",
+            session_id=request.session_id, tool_call_id=request.tool_call_id,
+            failure_code="service-unavailable", started=started,
         )
-        return _error(error.code)
+    except (DelegationError, RetrievalError) as error:
+        return await _closed_denial_response(
+            context, action="retrieval.citation_resolve", code=error.code,
+            session_id=request.session_id, tool_call_id=request.tool_call_id,
+            failure_code="service-unavailable", started=started,
+        )
     except Exception:
         await context.session.rollback()
         await _write_isolated_failure_audit(
             context, action="retrieval.citation_resolve", session_id=request.session_id,
-            tool_call_id=request.tool_call_id, result="citation-invalid", started=started,
+            tool_call_id=request.tool_call_id, result="service-unavailable", started=started,
         )
-        return _error("citation-invalid")
+        return _error("service-unavailable")

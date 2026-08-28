@@ -211,3 +211,141 @@ async def test_embedding_failure_never_falls_back_to_lexical_search(actor_sessio
             query="cross language budget",
             scope=RetrievalScope((), True),
         )
+
+
+@pytest.mark.anyio
+async def test_real_postgres_keeps_dense_and_english_chinese_lexical_top40_independent(
+    seeded_database,
+    actor_session,
+    alice,
+) -> None:
+    base = 2000
+    artifacts = []
+    versions = []
+    indexes = []
+    chunks = []
+    heads = []
+    dense_vector = "[1" + ",0" * 1023 + "]"
+    lexical_vector = "[-1" + ",0" * 1023 + "]"
+    for offset in range(80):
+        artifact_id = UUID(int=base + offset)
+        version_id = UUID(int=base + 100 + offset)
+        index_id = UUID(int=base + 200 + offset)
+        chunk_id = UUID(int=base + 300 + offset)
+        is_dense = offset < 40
+        artifacts.append(
+            {"id": artifact_id, "filename": f"candidate-{offset}.txt", "actor": alice.id}
+        )
+        versions.append(
+            {
+                "id": version_id, "artifact": artifact_id, "actor": alice.id,
+                "filename": f"candidate-{offset}.txt",
+                "key": f"artifacts/{artifact_id}/{version_id}", "sha": f"{offset:064x}",
+            }
+        )
+        indexes.append(
+            {
+                "id": index_id, "artifact": artifact_id, "version": version_id,
+                "sha": f"{offset + 100:064x}", "fingerprint": f"{offset + 200:064x}",
+            }
+        )
+        chunks.append(
+            {
+                "id": chunk_id, "index": index_id,
+                "content": (
+                    f"dense semantic evidence {offset}"
+                    if is_dense
+                    else f"english needle evidence 预算报告 {offset}"
+                ),
+                "sha": f"{offset + 300:064x}",
+                "vector": dense_vector if is_dense else lexical_vector,
+            }
+        )
+        heads.append({"artifact": artifact_id, "index": index_id, "version": version_id})
+
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
+                "VALUES (:id, :filename, :actor, :actor)"
+            ),
+            artifacts,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_versions "
+                "(id, artifact_id, owner_id, version_number, original_filename, uploaded_by_id, "
+                "declared_size, actual_size, detected_content_type, scan_status, object_key, size, "
+                "content_type, sha256) VALUES (:id, :artifact, :actor, 1, :filename, :actor, "
+                "1, 1, 'text/plain', 'clean', :key, 1, 'text/plain', :sha)"
+            ),
+            versions,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_text_indexes "
+                "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                "embedding_model, embedding_revision, vector_dimensions, configuration_fingerprint, "
+                "status, chunk_count) VALUES (:id, :artifact, :version, 1, :sha, 'parser', "
+                "'BAAI/bge-m3', 'revision', 1024, :fingerprint, 'ready', 1)"
+            ),
+            indexes,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_text_chunks "
+                "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                "VALUES (:id, :index, 0, 1, 1, :content, 4, :sha, CAST(:vector AS vector))"
+            ),
+            chunks,
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+                "VALUES (:artifact, :index, :version)"
+            ),
+            heads,
+        )
+
+    await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
+    english, english_count = await hybrid_search(
+        actor_session,
+        _Embedding(),  # type: ignore[arg-type]
+        query="cross language budget",
+        scope=RetrievalScope((), True),
+    )
+
+    class _EnglishLexicalEmbedding:
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            assert texts == ["english needle evidence"]
+            return [[1.0, *([0.0] * 1023)]]
+
+    english_lexical, english_lexical_count = await hybrid_search(
+        actor_session,
+        _EnglishLexicalEmbedding(),  # type: ignore[arg-type]
+        query="english needle evidence",
+        scope=RetrievalScope((), True),
+    )
+
+    class _ChineseEmbedding:
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            assert texts == ["预算报告"]
+            return [[1.0, *([0.0] * 1023)]]
+
+    chinese, chinese_count = await hybrid_search(
+        actor_session,
+        _ChineseEmbedding(),  # type: ignore[arg-type]
+        query="预算报告",
+        scope=RetrievalScope((), True),
+    )
+
+    assert english_count == 40
+    assert english_lexical_count == 80
+    assert chinese_count == 80
+    assert [item.chunk_id for item in chinese[:4]] == [
+        UUID(int=base + 300), UUID(int=base + 340),
+        UUID(int=base + 301), UUID(int=base + 341),
+    ]
+    assert any("dense semantic" in item.text for item in chinese)
+    assert any("预算报告" in item.text for item in chinese)
+    assert any("english needle" in item.text for item in english_lexical)

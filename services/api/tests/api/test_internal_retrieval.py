@@ -1,3 +1,5 @@
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -7,15 +9,27 @@ from argon2 import PasswordHasher
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.internal_retrieval import MAX_RETRIEVAL_BODY_BYTES, projects_route, search_route
+from app.api.routes.internal_retrieval import (
+    MAX_RETRIEVAL_BODY_BYTES,
+    authorize_citations_route,
+    projects_route,
+    resolve_citation_route,
+    search_route,
+)
 from app.api.routes.internal_sessions import SessionContext
 from app.core.db_context import set_actor_context
 from app.core.security import Actor
 from app.models.audit import AuditEvent
 from app.models.identity import Role
-from app.models.retrieval import XAgentRetrievalReceipt
+from app.models.retrieval import XAgentDelegationNonce, XAgentRetrievalReceipt
 from app.models.xagent_session import XAgentSession
-from app.schemas.retrieval import ProjectDiscoveryRequest, SearchRequest, SearchResponse
+from app.schemas.retrieval import (
+    CitationAuthorizeRequest,
+    CitationResolveRequest,
+    ProjectDiscoveryRequest,
+    SearchRequest,
+    SearchResponse,
+)
 from app.services.auth import Principal
 from app.services.retrieval import RetrievalCandidate
 from app.services.retrieval_receipts import receipt_digest_id
@@ -39,7 +53,10 @@ async def _login(client, engine, account) -> str:
             )
     response = await client.post(
         "/api/v1/auth/login",
-        json={"email": "alice@example.test", "password": PASSWORD},
+        json={
+            "email": "alice@example.test" if account.id.int == 1 else "bob@example.test",
+            "password": PASSWORD,
+        },
     )
     assert response.status_code == 200
     return response.json()["access_token"]
@@ -133,15 +150,20 @@ async def test_retrieval_body_cap_counts_streamed_bytes_when_length_is_absent_or
 
 def _delegation_token(
     *, actor_id: UUID, session_id: UUID, tool_call_id: str, nonce: str,
+    tool_name: str = "list_accessible_projects",
+    project_id: UUID | None = None,
+    permission_revision: int = 1,
     overrides: dict[str, object] | None = None,
 ) -> str:
     now = datetime.now(UTC)
     claims = {
         "iss": "xagent-host", "aud": "xagent-api", "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=30)).timestamp()),
-        "actor_id": str(actor_id), "project_id": None, "session_id": str(session_id),
-        "tool_call_id": tool_call_id, "tool_name": "list_accessible_projects",
-        "permission_revision": 1, "nonce": nonce,
+        "actor_id": str(actor_id),
+        "project_id": str(project_id) if project_id is not None else None,
+        "session_id": str(session_id),
+        "tool_call_id": tool_call_id, "tool_name": tool_name,
+        "permission_revision": permission_revision, "nonce": nonce,
     }
     claims.update(overrides or {})
     return jwt.encode(
@@ -237,6 +259,579 @@ async def test_project_discovery_rejects_tampered_expired_or_mismatched_delegati
 
 
 @pytest.mark.anyio
+async def test_read_only_project_grant_can_search_through_the_real_http_route(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    alice_project,
+    monkeypatch,
+) -> None:
+    session_id = UUID(int=860)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO temporary_project_grants "
+                    "(id, project_id, account_id, action, granted_by_id, expires_at) "
+                    "VALUES (:id, :project, :account, 'read', :grantor, :expires)"
+                ),
+                {
+                    "id": UUID(int=861), "project": alice_project.id,
+                    "account": bob.id, "grantor": alice.id,
+                    "expires": datetime.now(UTC) + timedelta(hours=1),
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO xagent_sessions "
+                    "(id, owner_id, project_id, visibility, permission_revision_created, "
+                    "title, archived, last_event_sequence, next_citation_ordinal, version) "
+                    "VALUES (:id, :owner, :project, 'project', 1, 'read-only route', "
+                    "false, -1, 1, 1)"
+                ),
+                {"id": session_id, "owner": alice.id, "project": alice_project.id},
+            )
+        revision = await session.scalar(
+            text("SELECT revision FROM xagent_permission_revisions WHERE account_id = :actor"),
+            {"actor": bob.id},
+        )
+    user_token = await _login(client, seeded_database, bob)
+
+    async def fake_embed(self, texts):
+        return [[0.0] * 1024]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    body = {
+        "schema_version": 1, "session_id": str(session_id),
+        "tool_call_id": "read-only-search", "permission_revision": revision,
+        "query": "no matching evidence",
+    }
+    delegation = _delegation_token(
+        actor_id=bob.id, session_id=session_id, tool_call_id="read-only-search",
+        nonce="read-only-project-route", tool_name="search_artifacts",
+        project_id=alice_project.id, permission_revision=revision,
+    )
+
+    response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            "X-XAgent-Service-Token": SERVICE_TOKEN,
+            "X-XAgent-Delegation": delegation,
+            "Authorization": f"Bearer {user_token}",
+        },
+        json=body,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["citations"] == []
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        ordinal = await verification.scalar(
+            select(XAgentSession.next_citation_ordinal).where(XAgentSession.id == session_id)
+        )
+    assert ordinal == 1
+
+
+@pytest.mark.anyio
+async def test_http_search_closes_commit_time_serialization_failure_without_reusing_nonce(
+    client,
+    seeded_database,
+    alice,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "CREATE FUNCTION test_retrieval_commit_failure() RETURNS trigger "
+                    "LANGUAGE plpgsql AS $$ BEGIN "
+                    "IF NEW.result = 'allowed' AND NEW.details->>'tool_call_id' = 'commit-failure' "
+                    "THEN RAISE EXCEPTION 'serialization conflict' USING ERRCODE = '40001'; END IF; "
+                    "RETURN NEW; END $$"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE CONSTRAINT TRIGGER test_retrieval_commit_failure "
+                    "AFTER INSERT ON audit_events DEFERRABLE INITIALLY DEFERRED "
+                    "FOR EACH ROW EXECUTE FUNCTION test_retrieval_commit_failure()"
+                )
+            )
+    user_token = await _login(client, seeded_database, alice)
+
+    async def fake_embed(self, texts):
+        return [[0.0] * 1024]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    body = {
+        "schema_version": 1, "session_id": str(alice_private_xagent_session.id),
+        "tool_call_id": "commit-failure", "permission_revision": 1,
+        "query": "empty corpus", "include_private": True,
+    }
+    delegation = _delegation_token(
+        actor_id=alice.id, session_id=alice_private_xagent_session.id,
+        tool_call_id="commit-failure", nonce="survives-operation-rollback",
+        tool_name="search_artifacts",
+    )
+    headers = {
+        "X-XAgent-Service-Token": SERVICE_TOKEN,
+        "X-XAgent-Delegation": delegation,
+        "Authorization": f"Bearer {user_token}",
+    }
+
+    response = await client.post("/internal/xagent/retrieval/search", headers=headers, json=body)
+    replay = await client.post("/internal/xagent/retrieval/search", headers=headers, json=body)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"code": "retrieval-unavailable"}}
+    assert replay.status_code == 503
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        receipts = await verification.scalar(
+            select(func.count()).select_from(XAgentRetrievalReceipt)
+        )
+        ordinal = await verification.scalar(
+            select(XAgentSession.next_citation_ordinal).where(
+                XAgentSession.id == alice_private_xagent_session.id
+            )
+        )
+        audits = (
+            await verification.scalars(
+                select(AuditEvent).where(AuditEvent.action == "retrieval.search")
+            )
+        ).all()
+    assert receipts == 0
+    assert ordinal == 1
+    assert [item.result for item in audits] == ["retrieval-unavailable", "service-unavailable"]
+
+
+@pytest.mark.anyio
+async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_bindings(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    alice_private_xagent_session,
+) -> None:
+    artifact_id, version_id, index_id, chunk_id = (
+        UUID(int=value) for value in range(870, 874)
+    )
+    other_session_id = UUID(int=874)
+    issued_at = datetime.now(UTC)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
+                    "VALUES (:id, 'citation.txt', :actor, :actor)"
+                ),
+                {"id": artifact_id, "actor": alice.id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_versions "
+                    "(id, artifact_id, owner_id, version_number, original_filename, uploaded_by_id, "
+                    "declared_size, actual_size, detected_content_type, scan_status, object_key, size, "
+                    "content_type, sha256) VALUES (:id, :artifact, :actor, 1, 'citation.txt', :actor, "
+                    "1, 1, 'text/plain', 'clean', :key, 1, 'text/plain', :sha)"
+                ),
+                {
+                    "id": version_id, "artifact": artifact_id, "actor": alice.id,
+                    "key": f"artifacts/{artifact_id}/{version_id}", "sha": "a" * 64,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_text_indexes "
+                    "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                    "embedding_model, embedding_revision, vector_dimensions, configuration_fingerprint, "
+                    "status, chunk_count) VALUES (:id, :artifact, :version, 1, :sha, 'parser', "
+                    "'BAAI/bge-m3', 'revision', 1024, :fingerprint, 'ready', 1)"
+                ),
+                {
+                    "id": index_id, "artifact": artifact_id, "version": version_id,
+                    "sha": "b" * 64, "fingerprint": "c" * 64,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index, 0, 4, 6, 'citation evidence', 2, :sha, CAST(:vector AS vector))"
+                ),
+                {
+                    "id": chunk_id, "index": index_id, "sha": "d" * 64,
+                    "vector": "[1" + ",0" * 1023 + "]",
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO xagent_sessions "
+                    "(id, owner_id, visibility, permission_revision_created, title, archived, "
+                    "last_event_sequence, next_citation_ordinal, version) "
+                    "VALUES (:id, :actor, 'private', 1, 'other', false, -1, 1, 1)"
+                ),
+                {"id": other_session_id, "actor": alice.id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO xagent_retrieval_receipts "
+                    "(id, kind, actor_id, session_id, tool_call_id, query_sha256, scope, "
+                    "permission_revision, project_ids, index_generations, chunk_ids, payload_sha256, "
+                    "issued_at, expires_at, consumed_at, consumed_event_sequence, "
+                    "consumed_payload_sha256, citation_ordinal_start, citation_ordinal_end) "
+                    "VALUES (:id, 'artifact_search', :actor, :session, 'seed-search', :query, "
+                    "CAST(:scope AS jsonb), 1, CAST('[]' AS jsonb), CAST(:generations AS jsonb), "
+                    "CAST(:chunks AS jsonb), :payload, :issued, :expires, :consumed, 0, :payload, 1, 1)"
+                ),
+                {
+                    "id": UUID(int=875), "actor": alice.id,
+                    "session": alice_private_xagent_session.id, "query": "e" * 64,
+                    "scope": '{"kind":"private","project_ids":[],"include_private":true}',
+                    "generations": json.dumps([{"index_id": str(index_id), "generation": 1}]),
+                    "chunks": json.dumps([str(chunk_id)]), "payload": "f" * 64,
+                    "issued": issued_at, "expires": issued_at + timedelta(minutes=5),
+                    "consumed": issued_at,
+                },
+            )
+    user_token = await _login(client, seeded_database, alice)
+    base_headers = {
+        "X-XAgent-Service-Token": SERVICE_TOKEN,
+        "Authorization": f"Bearer {user_token}",
+    }
+    citation = {
+        "id": "[资料1]", "artifact_id": str(artifact_id),
+        "version_id": str(version_id), "chunk_id": str(chunk_id),
+    }
+
+    async def call(path, session_id, tool_call_id, tool_name, nonce, payload):
+        token = _delegation_token(
+            actor_id=alice.id, session_id=session_id, tool_call_id=tool_call_id,
+            nonce=nonce, tool_name=tool_name,
+        )
+        return await client.post(
+            path,
+            headers={**base_headers, "X-XAgent-Delegation": token},
+            json={
+                "schema_version": 1, "session_id": str(session_id),
+                "tool_call_id": tool_call_id, "permission_revision": 1, **payload,
+            },
+        ), token
+
+    authorized, authorize_token = await call(
+        "/internal/xagent/retrieval/citations/authorize",
+        alice_private_xagent_session.id, "authorize-real", "authorize_citations",
+        "authorize-real", {"citations": [citation]},
+    )
+    resolved, _ = await call(
+        "/internal/xagent/retrieval/citations/resolve",
+        alice_private_xagent_session.id, "resolve-real", "resolve_citation",
+        "resolve-real", {"citation": citation},
+    )
+    replay = await client.post(
+        "/internal/xagent/retrieval/citations/authorize",
+        headers={**base_headers, "X-XAgent-Delegation": authorize_token},
+        json={
+            "schema_version": 1, "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": "authorize-real", "permission_revision": 1,
+            "citations": [citation],
+        },
+    )
+    cross_session, _ = await call(
+        "/internal/xagent/retrieval/citations/resolve",
+        other_session_id, "resolve-cross-session", "resolve_citation",
+        "resolve-cross-session", {"citation": citation},
+    )
+    unknown = {**citation, "chunk_id": str(UUID(int=999))}
+    unknown_response, _ = await call(
+        "/internal/xagent/retrieval/citations/authorize",
+        alice_private_xagent_session.id, "authorize-unknown", "authorize_citations",
+        "authorize-unknown", {"citations": [unknown]},
+    )
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "CREATE FUNCTION test_citation_commit_failure() RETURNS trigger "
+                    "LANGUAGE plpgsql AS $$ BEGIN "
+                    "IF NEW.result = 'allowed' AND NEW.details->>'tool_call_id' "
+                    "IN ('authorize-commit-failure', 'resolve-commit-failure') "
+                    "THEN RAISE EXCEPTION 'serialization conflict' USING ERRCODE = '40001'; END IF; "
+                    "RETURN NEW; END $$"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE CONSTRAINT TRIGGER test_citation_commit_failure "
+                    "AFTER INSERT ON audit_events DEFERRABLE INITIALLY DEFERRED "
+                    "FOR EACH ROW EXECUTE FUNCTION test_citation_commit_failure()"
+                )
+            )
+    authorize_commit_failure, _ = await call(
+        "/internal/xagent/retrieval/citations/authorize",
+        alice_private_xagent_session.id, "authorize-commit-failure", "authorize_citations",
+        "authorize-commit-failure", {"citations": [citation]},
+    )
+    resolve_commit_failure, _ = await call(
+        "/internal/xagent/retrieval/citations/resolve",
+        alice_private_xagent_session.id, "resolve-commit-failure", "resolve_citation",
+        "resolve-commit-failure", {"citation": citation},
+    )
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text("UPDATE artifacts SET owner_id = :owner WHERE id = :artifact"),
+                {"owner": bob.id, "artifact": artifact_id},
+            )
+            await session.execute(
+                text("UPDATE artifact_versions SET owner_id = :owner WHERE id = :version"),
+                {"owner": bob.id, "version": version_id},
+            )
+    revoked_response, _ = await call(
+        "/internal/xagent/retrieval/citations/resolve",
+        alice_private_xagent_session.id, "resolve-revoked", "resolve_citation",
+        "resolve-revoked", {"citation": citation},
+    )
+
+    assert authorized.status_code == 200
+    assert authorized.json()["authorized"] is True
+    assert resolved.status_code == 200
+    assert resolved.json()["line_start"] == 4
+    assert replay.status_code == 503
+    assert authorize_commit_failure.status_code == resolve_commit_failure.status_code == 503
+    assert authorize_commit_failure.json() == resolve_commit_failure.json() == {
+        "detail": {"code": "service-unavailable"}
+    }
+    assert cross_session.status_code == unknown_response.status_code == revoked_response.status_code == 422
+    assert cross_session.json() == unknown_response.json() == revoked_response.json() == {
+        "detail": {"code": "citation-invalid"}
+    }
+
+
+@pytest.mark.anyio
+async def test_concurrent_http_searches_allocate_unique_session_ordinals(
+    client,
+    seeded_database,
+    alice,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    artifact_id, version_id, index_id, chunk_id = (
+        UUID(int=value) for value in range(880, 884)
+    )
+    vector = "[1" + ",0" * 1023 + "]"
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
+                    "VALUES (:id, 'concurrent.txt', :actor, :actor)"
+                ),
+                {"id": artifact_id, "actor": alice.id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_versions "
+                    "(id, artifact_id, owner_id, version_number, original_filename, uploaded_by_id, "
+                    "declared_size, actual_size, detected_content_type, scan_status, object_key, size, "
+                    "content_type, sha256) VALUES (:id, :artifact, :actor, 1, 'concurrent.txt', :actor, "
+                    "1, 1, 'text/plain', 'clean', :key, 1, 'text/plain', :sha)"
+                ),
+                {
+                    "id": version_id, "artifact": artifact_id, "actor": alice.id,
+                    "key": f"artifacts/{artifact_id}/{version_id}", "sha": "1" * 64,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_text_indexes "
+                    "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                    "embedding_model, embedding_revision, vector_dimensions, configuration_fingerprint, "
+                    "status, chunk_count) VALUES (:id, :artifact, :version, 1, :sha, 'parser', "
+                    "'BAAI/bge-m3', 'revision', 1024, :fingerprint, 'ready', 1)"
+                ),
+                {
+                    "id": index_id, "artifact": artifact_id, "version": version_id,
+                    "sha": "2" * 64, "fingerprint": "3" * 64,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index, 0, 1, 1, 'concurrent evidence', 2, :sha, CAST(:vector AS vector))"
+                ),
+                {
+                    "id": chunk_id, "index": index_id, "sha": "4" * 64,
+                    "vector": vector,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+                    "VALUES (:artifact, :index, :version)"
+                ),
+                {"artifact": artifact_id, "index": index_id, "version": version_id},
+            )
+    user_token = await _login(client, seeded_database, alice)
+    second_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "alice@example.test", "password": PASSWORD},
+    )
+    assert second_login.status_code == 200
+    user_tokens = (user_token, second_login.json()["access_token"])
+
+    async def fake_embed(self, texts):
+        return [[1.0, *([0.0] * 1023)]]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+
+    async def search(number: int):
+        tool_call_id = f"concurrent-{number}"
+        delegation = _delegation_token(
+            actor_id=alice.id, session_id=alice_private_xagent_session.id,
+            tool_call_id=tool_call_id, nonce=f"concurrent-nonce-{number}",
+            tool_name="search_artifacts",
+        )
+        return await client.post(
+            "/internal/xagent/retrieval/search",
+            headers={
+                "X-XAgent-Service-Token": SERVICE_TOKEN,
+                "X-XAgent-Delegation": delegation,
+                "Authorization": f"Bearer {user_tokens[number - 1]}",
+            },
+            json={
+                "schema_version": 1,
+                "session_id": str(alice_private_xagent_session.id),
+                "tool_call_id": tool_call_id,
+                "permission_revision": 1,
+                "query": "concurrent evidence",
+                "include_private": True,
+            },
+        )
+
+    responses = await asyncio.gather(search(1), search(2))
+
+    assert sorted(response.status_code for response in responses) == [200, 503]
+    successful = next(response for response in responses if response.status_code == 200)
+    conflicted = next(response for response in responses if response.status_code == 503)
+    assert successful.json()["citations"][0]["id"] == "[资料1]"
+    assert conflicted.json() == {"detail": {"code": "retrieval-unavailable"}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        ordinal = await verification.scalar(
+            select(XAgentSession.next_citation_ordinal).where(
+                XAgentSession.id == alice_private_xagent_session.id
+            )
+        )
+    assert ordinal == 2
+
+
+@pytest.mark.anyio
+async def test_mid_query_project_revocation_closes_the_whole_http_search_snapshot(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    alice_project,
+    bob_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    grant_id = UUID(int=890)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO temporary_project_grants "
+                    "(id, project_id, account_id, action, granted_by_id, expires_at) "
+                    "VALUES (:id, :project, :account, 'read', :grantor, :expires)"
+                ),
+                {
+                    "id": grant_id, "project": bob_project.id, "account": alice.id,
+                    "grantor": bob.id, "expires": datetime.now(UTC) + timedelta(hours=1),
+                },
+            )
+        revision = await session.scalar(
+            text("SELECT revision FROM xagent_permission_revisions WHERE account_id = :actor"),
+            {"actor": alice.id},
+        )
+    user_token = await _login(client, seeded_database, alice)
+    embedding_started = asyncio.Event()
+    revocation_committed = asyncio.Event()
+
+    async def blocked_embed(self, texts):
+        embedding_started.set()
+        await revocation_committed.wait()
+        return [[0.0] * 1024]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", blocked_embed)
+    body = {
+        "schema_version": 1,
+        "session_id": str(alice_private_xagent_session.id),
+        "tool_call_id": "mid-query-revocation",
+        "permission_revision": revision,
+        "query": "must not return a partial scope",
+        "project_ids": [str(alice_project.id), str(bob_project.id)],
+    }
+    delegation = _delegation_token(
+        actor_id=alice.id,
+        session_id=alice_private_xagent_session.id,
+        tool_call_id="mid-query-revocation",
+        nonce="mid-query-revocation-nonce",
+        tool_name="search_artifacts",
+        permission_revision=revision,
+    )
+    request_task = asyncio.create_task(
+        client.post(
+            "/internal/xagent/retrieval/search",
+            headers={
+                "X-XAgent-Service-Token": SERVICE_TOKEN,
+                "X-XAgent-Delegation": delegation,
+                "Authorization": f"Bearer {user_token}",
+            },
+            json=body,
+        )
+    )
+    await embedding_started.wait()
+    async with AsyncSession(seeded_database, expire_on_commit=False) as revoker:
+        async with revoker.begin():
+            await revoker.execute(
+                text("DELETE FROM temporary_project_grants WHERE id = :id"),
+                {"id": grant_id},
+            )
+    revocation_committed.set()
+
+    response = await request_task
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"code": "retrieval-unavailable"}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        receipt_count = await verification.scalar(
+            select(func.count()).select_from(XAgentRetrievalReceipt)
+        )
+        nonce_count = await verification.scalar(
+            select(func.count()).select_from(XAgentDelegationNonce)
+        )
+        ordinal = await verification.scalar(
+            select(XAgentSession.next_citation_ordinal).where(
+                XAgentSession.id == alice_private_xagent_session.id
+            )
+        )
+        audits = (
+            await verification.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.action == "retrieval.search",
+                    AuditEvent.details["tool_call_id"].as_string() == "mid-query-revocation",
+                )
+            )
+        ).all()
+    assert receipt_count == 0
+    assert nonce_count == 1
+    assert ordinal == 1
+    assert [item.result for item in audits] == ["retrieval-unavailable"]
+
+
+@pytest.mark.anyio
 async def test_search_allocates_monotonic_ordinals_and_discovery_allocates_none(
     actor_session,
     alice,
@@ -265,9 +860,15 @@ async def test_search_allocates_monotonic_ordinals_and_discovery_allocates_none(
     async def fake_verify_delegation(*args, **kwargs):
         return None
 
+    async def keep_test_transaction(context, response, **kwargs):
+        return response
+
     monkeypatch.setattr("app.api.routes.internal_retrieval.hybrid_search", fake_hybrid_search)
     monkeypatch.setattr(
         "app.api.routes.internal_retrieval._verify_delegation", fake_verify_delegation
+    )
+    monkeypatch.setattr(
+        "app.api.routes.internal_retrieval._commit_response", keep_test_transaction
     )
     request = SearchRequest(
         schema_version=1,
@@ -354,3 +955,64 @@ async def test_search_statement_failure_rolls_back_output_and_persists_redacted_
     assert "must-not-appear" not in str(audit.details)
     assert stored_session.next_citation_ordinal == 1
     assert receipt_count == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("route", "request_type", "action"),
+    (
+        (authorize_citations_route, CitationAuthorizeRequest, "retrieval.citation_authorize"),
+        (resolve_citation_route, CitationResolveRequest, "retrieval.citation_resolve"),
+    ),
+)
+async def test_citation_statement_failures_are_service_failures_not_invalid_evidence(
+    route,
+    request_type,
+    action,
+    seeded_database,
+    actor_session,
+    alice,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    await set_actor_context(actor_session, Actor(id=alice.id, role=Role.SPECIALIST))
+    context = SessionContext(
+        Principal(
+            actor_id=alice.id, role=Role.SPECIALIST, permission_revision=1,
+            auth_session_id=UUID(int=992), email="alice@example.test",
+        ),
+        actor_session,
+    )
+
+    async def fake_verify(*args, **kwargs):
+        return None
+
+    async def failing_authorization(session, *args, **kwargs):
+        async with session.begin_nested():
+            await session.execute(text("SELECT * FROM xagent_missing_citation_relation"))
+
+    monkeypatch.setattr("app.api.routes.internal_retrieval._verify_delegation", fake_verify)
+    monkeypatch.setattr(
+        "app.api.routes.internal_retrieval.authorize_session_citations",
+        failing_authorization,
+    )
+    citation = {
+        "id": "[资料1]", "artifact_id": UUID(int=993),
+        "version_id": UUID(int=994), "chunk_id": UUID(int=995),
+    }
+    common = {
+        "schema_version": 1, "session_id": alice_private_xagent_session.id,
+        "tool_call_id": f"{action}-statement-failure", "permission_revision": 1,
+    }
+    request = request_type(
+        **common,
+        **({"citations": [citation]} if request_type is CitationAuthorizeRequest else {"citation": citation}),
+    )
+
+    response = await route(request, context)
+
+    assert response.status_code == 503
+    assert response.body == b'{"detail":{"code":"service-unavailable"}}'
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        audit = await verification.scalar(select(AuditEvent).where(AuditEvent.action == action))
+    assert audit.result == "service-unavailable"

@@ -417,6 +417,41 @@ def upgrade() -> None:
         "FOR EACH ROW EXECUTE FUNCTION public.enforce_xagent_retrieval_receipt_consumption()"
     )
     op.execute(
+        "CREATE FUNCTION public.xagent_citation_ordinal_base(target_session_id uuid) "
+        "RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
+        "DECLARE start_ordinal integer; BEGIN "
+        "SELECT next_citation_ordinal INTO start_ordinal FROM public.xagent_sessions "
+        "WHERE id = target_session_id AND ((visibility = 'private' AND owner_id = "
+        "NULLIF(current_setting('app.actor_id', true), '')::uuid) OR (visibility = 'project' "
+        "AND project_id IN (SELECT public.authorized_project_ids()))) FOR UPDATE; "
+        "IF start_ordinal IS NULL THEN RAISE EXCEPTION 'session unavailable'; END IF; "
+        "RETURN start_ordinal; END $$"
+    )
+    op.execute("REVOKE ALL ON FUNCTION public.xagent_citation_ordinal_base(uuid) FROM PUBLIC")
+    op.execute(f"GRANT EXECUTE ON FUNCTION public.xagent_citation_ordinal_base(uuid) TO {application_role}")
+    op.execute(
+        "CREATE FUNCTION public.xagent_finalize_retrieval_authorization("
+        "target_session_id uuid, expected_revision bigint, requested_project_ids uuid[]) "
+        "RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
+        "DECLARE actor uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
+        "locked_revision bigint; BEGIN "
+        "UPDATE public.xagent_permission_revisions SET revision = revision "
+        "WHERE account_id = actor AND revision = expected_revision RETURNING revision INTO locked_revision; "
+        "IF locked_revision IS NULL THEN RETURN false; END IF; "
+        "IF NOT EXISTS (SELECT 1 FROM public.xagent_sessions WHERE id = target_session_id "
+        "AND ((visibility = 'private' AND owner_id = actor) OR (visibility = 'project' "
+        "AND project_id IN (SELECT public.authorized_project_ids())))) THEN RETURN false; END IF; "
+        "IF EXISTS (SELECT requested_id FROM unnest(requested_project_ids) requested_id "
+        "EXCEPT SELECT public.authorized_project_ids()) THEN RETURN false; END IF; "
+        "RETURN true; END $$"
+    )
+    op.execute(
+        "REVOKE ALL ON FUNCTION public.xagent_finalize_retrieval_authorization(uuid, bigint, uuid[]) FROM PUBLIC"
+    )
+    op.execute(
+        f"GRANT EXECUTE ON FUNCTION public.xagent_finalize_retrieval_authorization(uuid, bigint, uuid[]) TO {application_role}"
+    )
+    op.execute(
         "CREATE FUNCTION public.xagent_reserve_citation_ordinals(target_session_id uuid, reserve_count integer) "
         "RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
         "DECLARE start_ordinal integer; BEGIN "
@@ -600,6 +635,8 @@ def downgrade() -> None:
 
     op.execute("DROP TRIGGER xagent_retrieval_receipt_consumption ON xagent_retrieval_receipts")
     op.execute("DROP FUNCTION public.xagent_reserve_citation_ordinals(uuid, integer)")
+    op.execute("DROP FUNCTION public.xagent_finalize_retrieval_authorization(uuid, bigint, uuid[])")
+    op.execute("DROP FUNCTION public.xagent_citation_ordinal_base(uuid)")
     op.execute("DROP FUNCTION public.enforce_xagent_retrieval_receipt_consumption()")
     op.execute("DROP TRIGGER artifact_search_head_valid ON artifact_search_heads")
     op.execute("DROP FUNCTION public.enforce_artifact_search_head()")
