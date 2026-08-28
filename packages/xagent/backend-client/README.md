@@ -2,7 +2,7 @@
 
 `@xagent/dsh-backend-client` 是 XAgent Host 到 FastAPI 的唯一内部 HTTP 客户端。构造时固定 origin、服务身份、超时和最大响应正文；每次请求单独携带用户 JWT，不缓存用户令牌，不跟随重定向。检索调用还必须携带与该次 Session、tool call、tool name、project 和 permission revision 一致的短时委托令牌。
 
-会话接口覆盖 list、create、open、events、append、fork 和 archive。工作台接口覆盖账号态初始化、上下文选择、项目创建、项目详情和 Session 项目引用登记。上下文选择与项目创建成功后会重新读取完整 Bootstrap，调用方得到的账号、权限、项目、当前上下文、会话范围索引和会话计数均来自服务端当前状态。范围索引严格校验 private/null 与 project/UUID 组合，并拒绝重复 Session 或不可见项目引用。
+会话接口覆盖 list、create、open、events、append、fork 和 archive。append 只接受关闭的 `schema_version: 1`、精确末事件 sequence 与正整数 Session version 响应；未知或私有字段会使请求失败关闭。证据入账只接受 409 `evidence-conflict`、410 `evidence-expired` 及会话 append 的固定错误配对，其他状态、code 或额外错误字段统一为 `service-unavailable`。工作台接口覆盖账号态初始化、上下文选择、项目创建、项目详情和 Session 项目引用登记。上下文选择与项目创建成功后会重新读取完整 Bootstrap，调用方得到的账号、权限、项目、当前上下文、会话范围索引和会话计数均来自服务端当前状态。范围索引严格校验 private/null 与 project/UUID 组合，并拒绝重复 Session 或不可见项目引用。
 
 资料接口覆盖列表、详情、新资料上传、新版本上传、上传完成、失败重试、预览和下载。上传创建只返回短期 PUT 授权；完成和重试返回包含不可变版本历史的完整详情。预览与下载只返回服务端授权后的 opaque URL，客户端不跟随该 URL，也不读取资料正文。
 

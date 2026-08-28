@@ -753,11 +753,14 @@ describe('XAgent 后端客户端', () => {
       origin: 'http://127.0.0.1:3000',
       serviceToken: 'service-secret',
       fetch: async (input, init) => {
+        const path = new URL(requestUrl(input)).pathname
         calls.push({
           url: requestUrl(input),
           body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined,
         })
-        return Response.json({ ok: true })
+        return Response.json(path.endsWith('/append')
+          ? { schema_version: 1, version: 2, last_event_sequence: -1 }
+          : { ok: true })
       },
     })
     const id = 'id/unsafe'
@@ -804,6 +807,80 @@ describe('XAgent 后端客户端', () => {
         payload_hash: 'a'.repeat(64),
       }],
     })
+  })
+
+  test.each([
+    [409, { detail: { code: 'evidence-conflict' } }, 'evidence-conflict'],
+    [410, { detail: { code: 'evidence-expired' } }, 'evidence-expired'],
+  ] as const)('Session append 保留精确证据错误 %i %s', async (status, body, code) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(body, { status }),
+    })
+    await expect(client.sessions.append('token', retrievalIds.session, {
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: 'append-error',
+      events: [{ event_type: 'turn/start', schema_version: 1, payload: { seq: 0 } }],
+      retrieval_receipts: [],
+    })).rejects.toMatchObject({ code })
+  })
+
+  test.each([
+    [409, { detail: { code: 'evidence-expired' } }],
+    [410, { detail: { code: 'evidence-conflict' } }],
+    [409, { detail: { code: 'unknown' } }],
+    [409, { detail: { code: 'evidence-conflict', private: 'secret' } }],
+    [409, { detail: { code: 'evidence-conflict' }, private: 'secret' }],
+  ])('Session append 拒绝错误状态、未知字段和未知代码 %#', async (status, body) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(body, { status }),
+    })
+    await expect(client.sessions.append('token', retrievalIds.session, {
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: 'append-invalid-error',
+      events: [{ event_type: 'turn/start', schema_version: 1, payload: { seq: 0 } }],
+      retrieval_receipts: [],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    {},
+    { schema_version: 1, version: 2, last_event_sequence: 0, retrieval_receipts: [] },
+    { schema_version: 1, version: 0, last_event_sequence: 0 },
+    { schema_version: 1, version: 2, last_event_sequence: 1 },
+  ])('Session append 拒绝畸形或私有成功响应 %#', async (body) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json(body),
+    })
+    await expect(client.sessions.append('token', retrievalIds.session, {
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: 'append-invalid-success',
+      events: [{ event_type: 'turn/start', schema_version: 1, payload: { seq: 0 } }],
+      retrieval_receipts: [],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('Session append 返回关闭且与事件范围一致的成功响应', async () => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json({ schema_version: 1, version: 2, last_event_sequence: 0 }),
+    })
+    await expect(client.sessions.append('token', retrievalIds.session, {
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: 'append-success',
+      events: [{ event_type: 'turn/start', schema_version: 1, payload: { seq: 0 } }],
+      retrieval_receipts: [],
+    })).resolves.toEqual({ schema_version: 1, version: 2, last_event_sequence: 0 })
   })
 
   test('内部调用缺少用户令牌时失败关闭', async () => {

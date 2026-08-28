@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import json
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -9,6 +11,7 @@ from argon2 import PasswordHasher
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.audit import AuditEvent
 from app.models.retrieval import XAgentRetrievalReceipt
 from app.models.workbench import XAgentSessionProjectRef
 from app.services.retrieval_receipts import receipt_digest_id
@@ -44,6 +47,7 @@ def _delegation_token(
     session_id: UUID,
     tool_call_id: str,
     tool_name: str = "search_artifacts",
+    permission_revision: int = 1,
 ) -> str:
     now = datetime.now(UTC)
     return jwt.encode(
@@ -57,7 +61,7 @@ def _delegation_token(
             "session_id": str(session_id),
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
-            "permission_revision": 1,
+            "permission_revision": permission_revision,
             "nonce": f"nonce-{tool_call_id}",
         },
         DELEGATION_PRIVATE_KEY,
@@ -317,7 +321,30 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
     assert reused.json() == {"detail": {"code": "evidence-conflict"}}
     assert search_body["receipt"] not in opened.text
     assert "retrieval_receipts" not in opened.text
-    assert opened.json()["events"][0]["payload"] == event["payload"]
+    persisted_event = opened.json()["events"][0]
+    persisted_meta = persisted_event["payload"]["data"]["meta"]
+    assert persisted_event["payload"] != event["payload"]
+    assert set(persisted_meta) == {
+        "kind", "tool", "payloadHash", "scopeHash", "queryHash", "citations", "evidence",
+    }
+    assert persisted_meta == {
+        "kind": "xagent-retrieval",
+        "tool": "artifact_search",
+        "payloadHash": search_body["payload_sha256"],
+        "scopeHash": persisted_meta["scopeHash"],
+        "queryHash": hashlib.sha256("预算".encode()).hexdigest(),
+        "citations": [search_body["citations"][0]["id"]],
+        "evidence": [{
+            "citationId": search_body["citations"][0]["id"],
+            "artifactId": search_body["citations"][0]["artifact_id"],
+            "versionId": search_body["citations"][0]["version_id"],
+            "chunkId": search_body["citations"][0]["chunk_id"],
+            "indexId": "00000000-0000-0000-0000-000000000723",
+            "generation": 1,
+        }],
+    }
+    assert len(persisted_meta["scopeHash"]) == 64
+    assert persisted_event["audit_id"] is not None
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         receipt = await session.get(XAgentRetrievalReceipt, receipt_digest_id(search_body["receipt"]))
         project_ref = await session.get(
@@ -331,11 +358,309 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
             ),
             {"receipt": f"%{search_body['receipt']}%"},
         )
+        admission_audit = await session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.id == UUID(persisted_event["audit_id"]),
+                AuditEvent.action == "retrieval.evidence_admission",
+            )
+        )
     assert receipt is not None
     assert receipt.consumed_event_sequence == 0
     assert receipt.consumed_payload_sha256 == search_body["payload_sha256"]
     assert project_ref is not None
     assert audit_leaks == 0
+    assert admission_audit is not None
+    assert admission_audit.result == "allowed"
+    assert admission_audit.resource_id == alice_private_xagent_session.id
+    assert admission_audit.details["tool_call_id"] == tool_call_id
+    assert admission_audit.details["query_sha256"] == hashlib.sha256("预算".encode()).hexdigest()
+    assert admission_audit.details["project_scope_sha256"] == persisted_meta["scopeHash"]
+    serialized_audit = json.dumps(admission_audit.details)
+    assert search_body["receipt"] not in serialized_audit
+    assert "项目预算" not in serialized_audit
+
+
+@pytest.mark.anyio
+async def test_append_records_redacted_admission_infrastructure_failure(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    async def fail_candidate_validation(*_args, **_kwargs):
+        raise RuntimeError("candidate store unavailable")
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    await _seed_search_chunk(seeded_database, alice.id, alice_project.id)
+    token = await _login(client, seeded_database, alice)
+    headers = {"Authorization": f"Bearer {token}", "X-XAgent-Service-Token": SERVICE_TOKEN}
+    tool_call_id = "append-infrastructure-failure"
+    search_response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=alice_private_xagent_session.id,
+                tool_call_id=tool_call_id,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": 1,
+            "query": "预算",
+            "project_ids": [str(alice_project.id)],
+            "include_private": False,
+        },
+    )
+    assert search_response.status_code == 200
+    search = search_response.json()
+    monkeypatch.setattr(
+        "app.services.xagent_sessions._validate_artifact_search",
+        fail_candidate_validation,
+    )
+
+    failed = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "append-infrastructure-failure-1",
+            "events": [_tool_result(0, tool_call_id, search)],
+            "retrieval_receipts": [{
+                "event_sequence": 0,
+                "tool_call_id": tool_call_id,
+                "receipt": search["receipt"],
+                "payload_hash": search["payload_sha256"],
+            }],
+        },
+    )
+
+    assert failed.status_code == 503
+    assert failed.json() == {"detail": {"code": "service-unavailable"}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        receipt = await session.get(
+            XAgentRetrievalReceipt,
+            receipt_digest_id(search["receipt"]),
+        )
+        event_count = await session.scalar(
+            text("SELECT count(*) FROM xagent_session_events WHERE session_id = :session_id"),
+            {"session_id": alice_private_xagent_session.id},
+        )
+        project_ref = await session.get(
+            XAgentSessionProjectRef,
+            (alice_private_xagent_session.id, alice_project.id),
+        )
+        admission_audits = list((await session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.action == "retrieval.evidence_admission",
+                AuditEvent.resource_id == alice_private_xagent_session.id,
+            )
+        )).all())
+    assert receipt is not None and receipt.consumed_at is None
+    assert event_count == 0
+    assert project_ref is None
+    assert [audit.result for audit in admission_audits] == ["service-unavailable"]
+    serialized_audit = json.dumps(admission_audits[0].details)
+    assert search["receipt"] not in serialized_audit
+    assert "项目预算" not in serialized_audit
+
+
+@pytest.mark.anyio
+async def test_append_rejects_every_open_or_extra_retrieval_event_field(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    await _seed_search_chunk(seeded_database, alice.id, alice_project.id)
+    token = await _login(client, seeded_database, alice)
+    headers = {"Authorization": f"Bearer {token}", "X-XAgent-Service-Token": SERVICE_TOKEN}
+    tool_call_id = "append-closed-event"
+    response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=alice_private_xagent_session.id,
+                tool_call_id=tool_call_id,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": 1,
+            "query": "预算",
+            "project_ids": [str(alice_project.id)],
+            "include_private": False,
+        },
+    )
+    assert response.status_code == 200
+    search = response.json()
+    canonical = _tool_result(0, tool_call_id, search)
+    variants: list[dict[str, object]] = []
+
+    second_item = deepcopy(canonical)
+    second_item["payload"]["data"]["message"]["content"].append({
+        "type": "text", "text": f"secret:{search['receipt']}"
+    })
+    variants.append(second_item)
+    secret_message_id = deepcopy(canonical)
+    secret_message_id["payload"]["data"]["message"]["id"] = search["receipt"]
+    variants.append(secret_message_id)
+    for path in (
+        ("payload",),
+        ("payload", "data"),
+        ("payload", "data", "message"),
+        ("payload", "data", "message", "content", 0),
+        ("payload", "data", "message", "content", 0, "content", 0),
+    ):
+        extra = deepcopy(canonical)
+        value: object = extra
+        for key in path:
+            value = value[key]
+        value["receipt"] = search["receipt"]
+        variants.append(extra)
+    missing = deepcopy(canonical)
+    del missing["payload"]["data"]["message"]["id"]
+    variants.append(missing)
+
+    endpoint = f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append"
+    for index, event in enumerate(variants):
+        denied = await client.post(
+            endpoint,
+            headers=headers,
+            json={
+                "schema_version": 1,
+                "expected_sequence": -1,
+                "idempotency_key": f"closed-event-{index}",
+                "events": [event],
+                "retrieval_receipts": [{
+                    "event_sequence": 0,
+                    "tool_call_id": tool_call_id,
+                    "receipt": search["receipt"],
+                    "payload_hash": search["payload_sha256"],
+                }],
+            },
+        )
+        assert denied.status_code == 409
+        assert denied.json() == {"detail": {"code": "evidence-conflict"}}
+        assert search["receipt"] not in denied.text
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        receipt = await session.get(
+            XAgentRetrievalReceipt,
+            receipt_digest_id(search["receipt"]),
+        )
+        event_count = await session.scalar(
+            text("SELECT count(*) FROM xagent_session_events WHERE session_id = :session_id"),
+            {"session_id": alice_private_xagent_session.id},
+        )
+    assert receipt is not None and receipt.consumed_at is None
+    assert event_count == 0
+
+
+@pytest.mark.anyio
+async def test_admission_audit_failure_rolls_back_event_ref_and_receipt(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    async def reject_audit(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    await _seed_search_chunk(seeded_database, alice.id, alice_project.id)
+    token = await _login(client, seeded_database, alice)
+    headers = {"Authorization": f"Bearer {token}", "X-XAgent-Service-Token": SERVICE_TOKEN}
+    tool_call_id = "append-audit-failure"
+    search_response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=alice_private_xagent_session.id,
+                tool_call_id=tool_call_id,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": 1,
+            "query": "预算",
+            "project_ids": [str(alice_project.id)],
+            "include_private": False,
+        },
+    )
+    assert search_response.status_code == 200
+    search = search_response.json()
+    monkeypatch.setattr("app.services.xagent_sessions.write_audit_event", reject_audit)
+    failed = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "append-audit-failure-1",
+            "events": [_tool_result(0, tool_call_id, search)],
+            "retrieval_receipts": [{
+                "event_sequence": 0,
+                "tool_call_id": tool_call_id,
+                "receipt": search["receipt"],
+                "payload_hash": search["payload_sha256"],
+            }],
+        },
+    )
+
+    assert failed.status_code == 503
+    assert failed.json() == {"detail": {"code": "service-unavailable"}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        receipt = await session.get(
+            XAgentRetrievalReceipt,
+            receipt_digest_id(search["receipt"]),
+        )
+        event_count = await session.scalar(
+            text("SELECT count(*) FROM xagent_session_events WHERE session_id = :session_id"),
+            {"session_id": alice_private_xagent_session.id},
+        )
+        project_ref = await session.get(
+            XAgentSessionProjectRef,
+            (alice_private_xagent_session.id, alice_project.id),
+        )
+        admission_count = await session.scalar(
+            select(text("count(*)")).select_from(AuditEvent).where(
+                AuditEvent.action == "retrieval.evidence_admission",
+                AuditEvent.resource_id == alice_private_xagent_session.id,
+            )
+        )
+    assert receipt is not None and receipt.consumed_at is None
+    assert event_count == 0
+    assert project_ref is None
+    assert admission_count == 0
 
 
 @pytest.mark.anyio
@@ -390,8 +715,42 @@ async def test_append_admits_project_discovery_without_allocating_citation_ordin
             }],
         },
     )
+    replay = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "append-projects-1",
+            "events": [event],
+            "retrieval_receipts": [{
+                "event_sequence": 0,
+                "tool_call_id": tool_call_id,
+                "receipt": discovery["receipt"],
+                "payload_hash": discovery["payload_sha256"],
+            }],
+        },
+    )
+    opened = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/open",
+        headers=headers,
+        json={"schema_version": 1},
+    )
 
     assert appended.status_code == 200
+    assert replay.status_code == 200
+    assert replay.json() == appended.json()
+    stored = opened.json()["events"][0]
+    assert stored["payload"]["data"]["meta"] == {
+        "kind": "xagent-retrieval",
+        "tool": "project_discovery",
+        "payloadHash": discovery["payload_sha256"],
+        "scopeHash": hashlib.sha256(b"private-project-discovery").hexdigest(),
+        "queryHash": hashlib.sha256(b"").hexdigest(),
+        "citations": [],
+        "evidence": [],
+    }
+    assert stored["audit_id"] is not None
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         receipt = await session.get(
             XAgentRetrievalReceipt,
@@ -627,3 +986,132 @@ async def test_append_reauthorizes_receipt_projects_after_access_revocation(
     assert receipt is not None and receipt.consumed_at is None
     assert event_count == 0
     assert project_ref is None
+
+
+@pytest.mark.anyio
+async def test_append_serializes_permission_revocation_before_receipt_admission(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text("UPDATE projects SET owner_id = :owner WHERE id = :project"),
+                {"owner": bob.id, "project": alice_project.id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO project_memberships (id, project_id, account_id) "
+                    "VALUES (:id, :project, :actor)"
+                ),
+                {
+                    "id": UUID("00000000-0000-0000-0000-000000000725"),
+                    "project": alice_project.id,
+                    "actor": alice.id,
+                },
+            )
+        revision = await session.scalar(
+            text("SELECT revision FROM xagent_permission_revisions WHERE account_id = :actor"),
+            {"actor": alice.id},
+        )
+    assert isinstance(revision, int) and revision > 1
+    await _seed_search_chunk(seeded_database, alice.id, alice_project.id)
+    token = await _login(client, seeded_database, alice)
+    headers = {"Authorization": f"Bearer {token}", "X-XAgent-Service-Token": SERVICE_TOKEN}
+    tool_call_id = "append-coordinated-revocation"
+    search_response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=alice_private_xagent_session.id,
+                tool_call_id=tool_call_id,
+                permission_revision=revision,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": revision,
+            "query": "预算",
+            "project_ids": [str(alice_project.id)],
+            "include_private": False,
+        },
+    )
+    assert search_response.status_code == 200
+    search = search_response.json()
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            session.add(XAgentSessionProjectRef(
+                session_id=alice_private_xagent_session.id,
+                project_id=alice_project.id,
+            ))
+
+    revocation = AsyncSession(seeded_database, expire_on_commit=False)
+    await revocation.begin()
+    await revocation.execute(
+        text(
+            "DELETE FROM project_memberships "
+            "WHERE project_id = :project AND account_id = :actor"
+        ),
+        {"project": alice_project.id, "actor": alice.id},
+    )
+    append_task = asyncio.create_task(client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "append-coordinated-revocation-1",
+            "events": [_tool_result(0, tool_call_id, search)],
+            "retrieval_receipts": [{
+                "event_sequence": 0,
+                "tool_call_id": tool_call_id,
+                "receipt": search["receipt"],
+                "payload_hash": search["payload_sha256"],
+            }],
+        },
+    ))
+    await asyncio.sleep(0.1)
+    assert not append_task.done()
+    await revocation.commit()
+    await revocation.close()
+    denied = await append_task
+
+    assert denied.status_code == 404
+    assert denied.json() == {"detail": {"code": "session-not-found"}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        receipt = await session.get(
+            XAgentRetrievalReceipt,
+            receipt_digest_id(search["receipt"]),
+        )
+        event_count = await session.scalar(
+            text("SELECT count(*) FROM xagent_session_events WHERE session_id = :session_id"),
+            {"session_id": alice_private_xagent_session.id},
+        )
+        refs = await session.scalar(
+            text("SELECT count(*) FROM xagent_session_project_refs WHERE session_id = :session_id"),
+            {"session_id": alice_private_xagent_session.id},
+        )
+        admission_audits = list((await session.scalars(
+            select(AuditEvent).where(
+                AuditEvent.action == "retrieval.evidence_admission",
+                AuditEvent.resource_id == alice_private_xagent_session.id,
+            )
+        )).all())
+    assert receipt is not None and receipt.consumed_at is None
+    assert event_count == 0
+    assert refs == 1
+    assert [audit.result for audit in admission_audits] == ["session-not-found"]
+    assert all(search["receipt"] not in json.dumps(audit.details) for audit in admission_audits)

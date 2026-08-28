@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, cast
@@ -13,6 +14,7 @@ from app.models.project import Project, ProjectAction
 from app.models.retrieval import XAgentRetrievalReceipt
 from app.models.workbench import XAgentSessionProjectRef
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
+from app.services.audit import retrieval_audit_details, write_audit_event
 from app.services.auth import Principal
 from app.services.authorization import ForbiddenError, authorize_projects
 from app.services.retrieval import (
@@ -391,42 +393,64 @@ def _retrieval_public_payload(
     *,
     sequence: int,
     receipt_kind: str,
-) -> tuple[str, str, dict[str, Any]]:
+) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
     try:
         payload = event["payload"]
         data = payload["data"]
         meta = data["meta"]
         message = data["message"]
-        result = message["content"][0]
+        message_content = message["content"]
+        if not isinstance(message_content, list) or len(message_content) != 1:
+            raise ValueError
+        result = message_content[0]
+        result_content = result["content"]
+        if not isinstance(result_content, list) or len(result_content) != 1:
+            raise ValueError
+        text_content = result_content[0]
         tool_call_id = result["toolCallId"]
         if (
             event["event_type"] != "tool/result"
+            or event["schema_version"] != 1
+            or set(payload) != {"seq", "time", "type", "data"}
             or payload["type"] != "tool/result"
             or payload["seq"] != sequence
+            or isinstance(payload["time"], bool)
+            or not isinstance(payload["time"], int)
+            or payload["time"] < 0
+            or set(data) != {"turn", "step", "message", "meta"}
+            or any(
+                isinstance(data[key], bool)
+                or not isinstance(data[key], int)
+                or data[key] < 0
+                for key in ("turn", "step")
+            )
             or set(meta) != {"kind", "payloadHash", "citations"}
             or meta["kind"] != "xagent-retrieval"
+            or set(message) != {"id", "role", "source", "content"}
+            or not isinstance(message["id"], str)
+            or not 1 <= len(message["id"]) <= 255
+            or message["role"] != "user"
+            or set(message["source"]) != {"kind", "callId"}
             or message["source"] != {"kind": "tool", "callId": tool_call_id}
+            or set(result) != {"type", "toolCallId", "isError", "content"}
             or result["type"] != "tool-result"
             or result["isError"] is not False
             or result["toolCallId"] != tool_call_id
+            or not isinstance(tool_call_id, str)
+            or not 1 <= len(tool_call_id) <= 255
+            or set(text_content) != {"type", "text"}
+            or text_content["type"] != "text"
+            or not isinstance(text_content["text"], str)
             or not isinstance(meta["payloadHash"], str)
             or not isinstance(meta["citations"], list)
         ):
             raise ValueError
-        content = result["content"]
         if receipt_kind == "artifact_search" and meta["citations"] == []:
-            if content != [{"type": "text", "text": "未找到符合当前明确范围的资料证据。"}]:
+            if text_content["text"] != "未找到符合当前明确范围的资料证据。":
                 raise ValueError
             public = {"citations": []}
         else:
-            if (
-                not isinstance(content, list)
-                or len(content) != 1
-                or content[0].get("type") != "text"
-                or not isinstance(content[0].get("text"), str)
-            ):
-                raise ValueError
-            public = json.loads(content[0]["text"])
+            public = json.loads(text_content["text"])
         expected_key = "projects" if receipt_kind == "project_discovery" else "citations"
         if set(public) != {expected_key} or not isinstance(public[expected_key], list):
             raise ValueError
@@ -440,7 +464,32 @@ def _retrieval_public_payload(
         digest = payload_sha256({"schema_version": 1, **public})
         if meta["payloadHash"] != digest:
             raise ValueError
-        return tool_call_id, digest, public
+        canonical_text = (
+            "未找到符合当前明确范围的资料证据。"
+            if receipt_kind == "artifact_search" and public["citations"] == []
+            else json.dumps(public, ensure_ascii=False, separators=(",", ":"))
+        )
+        canonical_payload = {
+            "seq": sequence,
+            "time": payload["time"],
+            "type": "tool/result",
+            "data": {
+                "turn": data["turn"],
+                "step": data["step"],
+                "message": {
+                    "id": message["id"],
+                    "role": "user",
+                    "source": {"kind": "tool", "callId": tool_call_id},
+                    "content": [{
+                        "type": "tool-result",
+                        "toolCallId": tool_call_id,
+                        "isError": False,
+                        "content": [{"type": "text", "text": canonical_text}],
+                    }],
+                },
+            },
+        }
+        return tool_call_id, digest, public, canonical_payload
     except (AttributeError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
         raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT) from None
 
@@ -566,7 +615,25 @@ async def _validate_artifact_search(
     return candidates
 
 
-async def _admit_retrieval_receipts(
+@dataclass
+class _PendingRetrievalAdmission:
+    sequence: int
+    receipt: XAgentRetrievalReceipt
+    claims: ReceiptClaims
+    tool_call_id: str
+    digest: str
+    public: dict[str, Any]
+    canonical_payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _AdmittedRetrieval:
+    tool_call_id: str
+    payload: dict[str, Any]
+    audit_id: UUID
+
+
+async def _load_retrieval_admissions(
     session: AsyncSession,
     principal: Principal,
     item: XAgentSession,
@@ -574,7 +641,7 @@ async def _admit_retrieval_receipts(
     expected_sequence: int,
     events: list[dict[str, Any]],
     attachments: list[dict[str, Any]],
-) -> dict[int, str]:
+) -> list[_PendingRetrievalAdmission]:
     by_sequence: dict[int, dict[str, Any]] = {}
     for attachment in attachments:
         sequence = attachment["event_sequence"]
@@ -590,7 +657,7 @@ async def _admit_retrieval_receipts(
     if retrieval_sequences != set(by_sequence):
         raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
 
-    admitted: dict[int, str] = {}
+    pending: list[_PendingRetrievalAdmission] = []
     for sequence in sorted(by_sequence):
         attachment = by_sequence[sequence]
         event = events[sequence - expected_sequence - 1]
@@ -612,11 +679,17 @@ async def _admit_retrieval_receipts(
                 else SessionErrorCode.EVIDENCE_CONFLICT
             )
             raise SessionServiceError(code) from None
-        tool_call_id, digest, public = _retrieval_public_payload(
+        tool_call_id, digest, public, canonical_payload = _retrieval_public_payload(
             event,
             sequence=sequence,
             receipt_kind=receipt.kind,
         )
+        if attachment["receipt"] in json.dumps(
+            canonical_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ):
+            raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
         if (
             receipt.actor_id != principal.actor_id
             or receipt.session_id != item.id
@@ -628,27 +701,169 @@ async def _admit_retrieval_receipts(
         ):
             raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
         _validate_receipt_scope(item, claims)
-        try:
-            await authorize_projects(session, principal.actor_id, claims.project_ids, ProjectAction.READ)
-        except ForbiddenError:
-            raise SessionServiceError(SessionErrorCode.SESSION_NOT_FOUND) from None
         if receipt.kind == "project_discovery":
             _validate_project_discovery(public, claims)
-        else:
-            await _validate_artifact_search(session, public, claims)
-        if item.visibility == "private" and claims.project_ids:
+        pending.append(_PendingRetrievalAdmission(
+            sequence=sequence,
+            receipt=receipt,
+            claims=claims,
+            tool_call_id=tool_call_id,
+            digest=digest,
+            public=public,
+            canonical_payload=canonical_payload,
+        ))
+    return pending
+
+
+async def _session_ref_project_ids(
+    session: AsyncSession,
+    session_id: UUID,
+) -> tuple[UUID, ...]:
+    return tuple((await session.scalars(
+        select(XAgentSessionProjectRef.project_id)
+        .where(XAgentSessionProjectRef.session_id == session_id)
+        .order_by(XAgentSessionProjectRef.project_id)
+    )).all())
+
+
+async def _finalize_append_authorization(
+    session: AsyncSession,
+    principal: Principal,
+    item: XAgentSession,
+    pending: list[_PendingRetrievalAdmission],
+) -> XAgentSession:
+    existing_project_ids = await _session_ref_project_ids(session, item.id)
+    project_ids = set(existing_project_ids)
+    if item.project_id is not None:
+        project_ids.add(item.project_id)
+    for admission in pending:
+        project_ids.update(admission.claims.project_ids)
+    ordered_project_ids = tuple(sorted(project_ids))
+    try:
+        authorized = await session.scalar(
+            text(
+                "SELECT public.xagent_finalize_retrieval_authorization"
+                "(:session_id, :permission_revision, CAST(:project_ids AS uuid[]))"
+            ),
+            {
+                "session_id": item.id,
+                "permission_revision": principal.permission_revision,
+                "project_ids": list(ordered_project_ids),
+            },
+        )
+    except Exception:
+        raise SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE) from None
+    if authorized is not True:
+        raise SessionServiceError(SessionErrorCode.SESSION_NOT_FOUND)
+    refreshed = await _visible_session(session, item.id, lock=True)
+    refreshed_refs = await _session_ref_project_ids(session, item.id)
+    if set(refreshed_refs) != set(existing_project_ids):
+        raise SessionServiceError(SessionErrorCode.SESSION_NOT_FOUND)
+    try:
+        await authorize_projects(
+            session,
+            principal.actor_id,
+            ordered_project_ids,
+            ProjectAction.READ,
+        )
+    except ForbiddenError:
+        raise SessionServiceError(SessionErrorCode.SESSION_NOT_FOUND) from None
+    return refreshed
+
+
+def _audit_evidence(candidates: list[RetrievalCandidate]) -> list[dict[str, object]]:
+    return [{
+        "artifact_id": str(candidate.artifact_id),
+        "version_id": str(candidate.version_id),
+        "index_id": str(candidate.index_id),
+        "generation": candidate.generation,
+        "chunk_id": str(candidate.chunk_id),
+    } for candidate in candidates]
+
+
+async def _admit_retrieval_receipts(
+    session: AsyncSession,
+    principal: Principal,
+    item: XAgentSession,
+    pending: list[_PendingRetrievalAdmission],
+) -> dict[int, _AdmittedRetrieval]:
+    admitted: dict[int, _AdmittedRetrieval] = {}
+    for admission in pending:
+        candidates = (
+            []
+            if admission.receipt.kind == "project_discovery"
+            else await _validate_artifact_search(
+                session,
+                admission.public,
+                admission.claims,
+            )
+        )
+        evidence = _audit_evidence(candidates)
+        public_items = (
+            admission.public["projects"]
+            if admission.receipt.kind == "project_discovery"
+            else admission.public["citations"]
+        )
+        metadata_evidence = [{
+            "citationId": citation["id"],
+            "artifactId": str(candidate.artifact_id),
+            "versionId": str(candidate.version_id),
+            "chunkId": str(candidate.chunk_id),
+            "indexId": str(candidate.index_id),
+            "generation": candidate.generation,
+        } for citation, candidate in zip(
+            admission.public.get("citations", []),
+            candidates,
+            strict=True,
+        )]
+        admission.canonical_payload["data"]["meta"] = {
+            "kind": "xagent-retrieval",
+            "tool": admission.receipt.kind,
+            "payloadHash": admission.digest,
+            "scopeHash": admission.claims.scope["sha256"],
+            "queryHash": admission.claims.query_sha256,
+            "citations": [
+                citation["id"] for citation in admission.public.get("citations", [])
+            ],
+            "evidence": metadata_evidence,
+        }
+        audit = await write_audit_event(
+            session,
+            principal.actor_id,
+            "retrieval.evidence_admission",
+            "xagent_session",
+            item.id,
+            item.id,
+            "allowed",
+            details=retrieval_audit_details(
+                session_id=str(item.id),
+                tool_call_id=admission.tool_call_id,
+                project_scope_sha256=admission.claims.scope["sha256"],
+                query_sha256=admission.claims.query_sha256,
+                candidate_count=len(public_items),
+                returned_count=len(public_items),
+                result="allowed",
+                latency_ms=0,
+                evidence=evidence,
+            ),
+        )
+        if item.visibility == "private" and admission.claims.project_ids:
             await session.execute(
                 insert(XAgentSessionProjectRef)
                 .values([
                     {"session_id": item.id, "project_id": project_id}
-                    for project_id in claims.project_ids
+                    for project_id in admission.claims.project_ids
                 ])
                 .on_conflict_do_nothing(index_elements=["session_id", "project_id"])
             )
-        receipt.consumed_at = datetime.now(UTC)
-        receipt.consumed_event_sequence = sequence
-        receipt.consumed_payload_sha256 = digest
-        admitted[sequence] = tool_call_id
+        admission.receipt.consumed_at = datetime.now(UTC)
+        admission.receipt.consumed_event_sequence = admission.sequence
+        admission.receipt.consumed_payload_sha256 = admission.digest
+        admitted[admission.sequence] = _AdmittedRetrieval(
+            tool_call_id=admission.tool_call_id,
+            payload=admission.canonical_payload,
+            audit_id=audit.id,
+        )
     return admitted
 
 
@@ -676,6 +891,62 @@ async def _reject_consumed_receipt_reuse(
         raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
 
 
+async def write_append_admission_denial(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    session_id: UUID,
+    attachments: list[dict[str, Any]],
+    result: str,
+) -> None:
+    """Write one closed denial audit without retaining the private sidecar."""
+    fallback_hash = hashlib.sha256(b"unavailable").hexdigest()
+    tool_call_id = "missing-receipt"
+    scope_hash = fallback_hash
+    query_hash = fallback_hash
+    candidate_count = 0
+    if attachments:
+        attachment = attachments[0]
+        tool_call_id = attachment["tool_call_id"]
+        receipt = await session.scalar(
+            select(XAgentRetrievalReceipt).where(
+                XAgentRetrievalReceipt.id == receipt_digest_id(attachment["receipt"])
+            )
+        )
+        if receipt is not None:
+            claims = _receipt_claims(receipt)
+            if (
+                isinstance(claims.scope.get("sha256"), str)
+                and len(claims.scope["sha256"]) == 64
+            ):
+                scope_hash = claims.scope["sha256"]
+            query_hash = claims.query_sha256
+            candidate_count = len(
+                claims.project_ids
+                if claims.kind == "project_discovery"
+                else claims.chunk_ids
+            )
+    await write_audit_event(
+        session,
+        principal.actor_id,
+        "retrieval.evidence_admission",
+        "xagent_session",
+        session_id,
+        session_id,
+        result,
+        details=retrieval_audit_details(
+            session_id=str(session_id),
+            tool_call_id=tool_call_id,
+            project_scope_sha256=scope_hash,
+            query_sha256=query_hash,
+            candidate_count=candidate_count,
+            returned_count=0,
+            result=result,
+            latency_ms=0,
+        ),
+    )
+
+
 async def append_events(
     session: AsyncSession,
     principal: Principal,
@@ -701,7 +972,7 @@ async def append_events(
     await _reject_consumed_receipt_reuse(session, retrieval_receipts)
     if item.last_event_sequence != expected_sequence:
         raise SessionServiceError(SessionErrorCode.SEQUENCE_CONFLICT)
-    admitted = await _admit_retrieval_receipts(
+    pending = await _load_retrieval_admissions(
         session,
         principal,
         item,
@@ -709,22 +980,31 @@ async def append_events(
         events=events,
         attachments=retrieval_receipts,
     )
+    if pending:
+        item = await _finalize_append_authorization(session, principal, item, pending)
+    admitted = await _admit_retrieval_receipts(
+        session,
+        principal,
+        item,
+        pending,
+    )
     for offset, event in enumerate(events, start=1):
         sequence = expected_sequence + offset
-        admitted_identity = admitted.get(sequence)
+        admission = admitted.get(sequence)
         session.add(
             XAgentSessionEvent(
                 session_id=session_id,
                 sequence=sequence,
                 event_type=event["event_type"],
                 schema_version=event["schema_version"],
-                payload=event["payload"],
+                payload=(admission.payload if admission is not None else event["payload"]),
                 actor_id=principal.actor_id,
                 tool_call_id=(
-                    admitted_identity
-                    if admitted_identity is not None
+                    admission.tool_call_id
+                    if admission is not None
                     else event.get("tool_call_id")
                 ),
+                audit_id=(admission.audit_id if admission is not None else None),
             )
         )
     item.last_event_sequence = expected_sequence + len(events)

@@ -31,6 +31,7 @@ from app.services.xagent_sessions import (
     read_events,
     request_hash,
     require_protocol_version,
+    write_append_admission_denial,
 )
 
 
@@ -149,8 +150,8 @@ async def get_session_context(
     return SessionContext(principal, session)
 
 
-def _raise_http(error: SessionServiceError) -> None:
-    status_code = {
+def _error_status(error: SessionServiceError) -> int:
+    return {
         SessionErrorCode.NOT_FOUND: status.HTTP_404_NOT_FOUND,
         SessionErrorCode.SESSION_NOT_FOUND: status.HTTP_404_NOT_FOUND,
         SessionErrorCode.SEQUENCE_CONFLICT: status.HTTP_409_CONFLICT,
@@ -160,7 +161,18 @@ def _raise_http(error: SessionServiceError) -> None:
         SessionErrorCode.EVIDENCE_CONFLICT: status.HTTP_409_CONFLICT,
         SessionErrorCode.SERVICE_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
     }[error.code]
+
+
+def _raise_http(error: SessionServiceError) -> None:
+    status_code = _error_status(error)
     raise HTTPException(status_code=status_code, detail={"code": error.code.value})
+
+
+def _error_response(error: SessionServiceError) -> JSONResponse:
+    return JSONResponse(
+        status_code=_error_status(error),
+        content={"detail": {"code": error.code.value}},
+    )
 
 
 def _check_version(version: int) -> None:
@@ -173,6 +185,17 @@ def _check_version(version: int) -> None:
 def _check_event_versions(events: list[EventInput]) -> None:
     if any(event.schema_version != 1 for event in events):
         _raise_http(SessionServiceError(SessionErrorCode.UNSUPPORTED_VERSION))
+
+
+def _is_retrieval_event(event: dict[str, Any]) -> bool:
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return False
+    meta = data.get("meta")
+    return isinstance(meta, dict) and meta.get("kind") == "xagent-retrieval"
 
 
 @router.post("/list")
@@ -266,35 +289,76 @@ async def events_route(
     return {"schema_version": 1, "events": events}
 
 
-@router.post("/{session_id}/append")
+@router.post("/{session_id}/append", response_model=None)
 async def append_route(
     session_id: UUID,
     request: AppendRequest,
     context: SessionContext = Depends(get_session_context),
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     _check_version(request.schema_version)
     _check_event_versions(request.events)
     body = request.model_dump(mode="json", exclude={"idempotency_key"})
+    events = [event.model_dump(mode="json") for event in request.events]
+    attachments = [
+        attachment.model_dump(mode="json")
+        for attachment in request.retrieval_receipts
+    ]
+    retrieval_append = bool(attachments) or any(_is_retrieval_event(event) for event in events)
     try:
-        return await append_events(
-            context.session,
-            context.principal,
-            session_id=session_id,
-            expected_sequence=request.expected_sequence,
-            events=[event.model_dump(mode="json") for event in request.events],
-            retrieval_receipts=[
-                attachment.model_dump(mode="json")
-                for attachment in request.retrieval_receipts
-            ],
-            idempotency_key=request.idempotency_key,
-            digest=request_hash(body),
-        )
+        async with context.session.begin_nested():
+            return await append_events(
+                context.session,
+                context.principal,
+                session_id=session_id,
+                expected_sequence=request.expected_sequence,
+                events=events,
+                retrieval_receipts=attachments,
+                idempotency_key=request.idempotency_key,
+                digest=request_hash(body),
+            )
     except SessionServiceError as error:
-        _raise_http(error)
+        if retrieval_append:
+            try:
+                await write_append_admission_denial(
+                    context.session,
+                    context.principal,
+                    session_id=session_id,
+                    attachments=attachments,
+                    result=error.code.value,
+                )
+            except Exception:
+                return _error_response(
+                    SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
+                )
+        return _error_response(error)
     except SQLAlchemyError:
-        _raise_http(SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE))
+        error = SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
+        if retrieval_append:
+            try:
+                await write_append_admission_denial(
+                    context.session,
+                    context.principal,
+                    session_id=session_id,
+                    attachments=attachments,
+                    result=error.code.value,
+                )
+            except Exception:
+                pass
+        return _error_response(error)
     except Exception:
-        _raise_http(SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE))
+        error = SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
+        if retrieval_append:
+            try:
+                await write_append_admission_denial(
+                    context.session,
+                    context.principal,
+                    session_id=session_id,
+                    attachments=attachments,
+                    result=error.code.value,
+                )
+            except Exception:
+                pass
+        return _error_response(error)
 
 
 @router.post("/{session_id}/fork", status_code=status.HTTP_201_CREATED)

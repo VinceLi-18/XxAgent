@@ -62,7 +62,12 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
       },
       append: async (...args) => {
         calls.push({ name: 'append', args })
-        return { schema_version: 1, version: 2, last_event_sequence: 0 }
+        const body = args[2] as { expected_sequence: number; events: readonly unknown[] }
+        return {
+          schema_version: 1,
+          version: 2,
+          last_event_sequence: body.expected_sequence + body.events.length,
+        }
       },
       fork: vi.fn(),
       archive: vi.fn(),
@@ -131,6 +136,35 @@ describe('XAgent FastAPI Session Persistence', () => {
 
     expect(append.mock.calls[0]?.[2]).toEqual(append.mock.calls[1]?.[2])
     expect(attachments).toHaveBeenCalledTimes(2)
+    expect(commit).toHaveBeenCalledOnce()
+  })
+
+  test.each([
+    {},
+    { schema_version: 1, version: 2, last_event_sequence: 0, receipt: 'private' },
+  ])('malformed append success retains the receipt and blocks checkpoint %#', async (invalid) => {
+    const ctx = new Context()
+    const value = backend()
+    const attachments = vi.fn(() => [{
+      eventSequence: 0,
+      toolCallId: 'call-invalid-success',
+      receipt: 'opaque-invalid-success',
+      payloadHash: 'c'.repeat(64),
+    }])
+    const commit = vi.fn()
+    ctx.provide('xagentRetrieval', { receipts: {
+      attachments,
+      commit,
+    } as unknown as XAgentReceiptRegistryContract } as never)
+    value.sessions.append = vi.fn()
+      .mockResolvedValueOnce(invalid)
+      .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 0 })
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await expect(persistence.append(id, [event])).rejects.toThrow('invalid XAgent session append response')
+    expect(commit).not.toHaveBeenCalled()
+    await expect(persistence.append(id, [event])).resolves.toBeUndefined()
     expect(commit).toHaveBeenCalledOnce()
   })
   test('模块插件入口只暴露带配置的安装函数', () => {
@@ -552,7 +586,10 @@ describe('XAgent FastAPI Session Persistence', () => {
       const value = backend()
       let release!: () => void
       const blocked = new Promise<void>((resolve) => { release = resolve })
-      const append = vi.fn(async () => { await blocked; return {} as never })
+      const append = vi.fn(async () => {
+        await blocked
+        return { schema_version: 1 as const, version: 2, last_event_sequence: 1 }
+      })
       value.sessions.append = append
       const persistence = new XAgentSessionPersistence(ctx, value)
       persistence.authorizeRequest(id, 'request', 'token')

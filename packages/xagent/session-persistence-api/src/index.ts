@@ -114,6 +114,19 @@ function validateCreatedSession(value: unknown, expectedId: string): void {
   throw new TypeError('invalid XAgent session create response')
 }
 
+function validateAppendResult(value: unknown, expectedLastSequence: number): void {
+  const row = object(value)
+  if (
+    row.schema_version !== 1
+    || row.last_event_sequence !== expectedLastSequence
+    || !Number.isSafeInteger(row.version)
+    || (row.version as number) < 1
+    || Object.keys(row).length !== 3
+  ) {
+    throw new TypeError('invalid XAgent session append response')
+  }
+}
+
 function responseInspection(value: unknown): SessionInspection {
   const row = object(value)
   const session = object(row.session)
@@ -253,7 +266,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     }
     const receipts = this.receiptRegistry()
     const attachments = receipts?.attachments(String(id), first.seq, last.seq) ?? []
-    await this.backend.sessions.append(token, backendSessionId(id), {
+    const response = await this.backend.sessions.append(token, backendSessionId(id), {
       schema_version: 1,
       expected_sequence: first.seq - 1,
       idempotency_key: `append:${id}:${String(first.seq)}:${String(last.seq)}`,
@@ -269,6 +282,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
         payload_hash: attachment.payloadHash,
       })),
     }, undefined)
+    validateAppendResult(response, last.seq)
     receipts?.commit(String(id), last.seq)
     if (events.some(event => event.type === 'turn/end')) this.turnTokens.delete(id)
   }

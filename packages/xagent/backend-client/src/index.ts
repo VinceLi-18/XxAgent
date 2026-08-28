@@ -21,6 +21,7 @@ import type {
   XAgentRetrievalBackend,
   XAgentRetrievalCitation,
   XAgentSessionBackend,
+  XAgentSessionAppendResult,
   XAgentSessionScopeSummary,
   XAgentWorkbenchBackend,
   XAgentWorkbenchBootstrap,
@@ -57,6 +58,7 @@ export type {
   XAgentCitationIdentity,
   XAgentSessionBackend,
   XAgentSessionAppendInput,
+  XAgentSessionAppendResult,
   XAgentSessionRetrievalReceiptAttachment,
   XAgentSessionProjectRefsInput,
   XAgentSessionScopeSummary,
@@ -793,6 +795,35 @@ function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
   return accepted ? code : 'service-unavailable'
 }
 
+const SESSION_APPEND_ERRORS: readonly RetrievalErrorPair[] = [
+  [400, 'unsupported-version'],
+  [401, 'unauthenticated'],
+  [404, 'not-found'],
+  [404, 'session-not-found'],
+  [409, 'sequence-conflict'],
+  [409, 'idempotency-conflict'],
+  [409, 'evidence-conflict'],
+  [410, 'evidence-expired'],
+  [503, 'service-unavailable'],
+]
+
+function sessionAppendResult(
+  value: unknown,
+  expectedLastSequence: number,
+): XAgentSessionAppendResult {
+  const row = exactRecord(value, ['schema_version', 'last_event_sequence', 'version'])
+  if (
+    row.schema_version !== 1
+    || !Number.isSafeInteger(row.last_event_sequence)
+    || row.last_event_sequence !== expectedLastSequence
+  ) failSchema()
+  return {
+    schema_version: 1,
+    last_event_sequence: row.last_event_sequence,
+    version: positiveInteger(row.version),
+  }
+}
+
 const COMMON_ARTIFACT_ERROR_CODES: readonly (readonly [number, XAgentBackendErrorCode])[] = [
   [401, 'unauthenticated'],
   [503, 'service-unavailable'],
@@ -877,7 +908,19 @@ export class XAgentBackendClient implements XAgentBackend {
       create: (token, body, signal) => this.request(token, '/internal/xagent/sessions', body, signal),
       open: (token, id, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/open`, { schema_version: 1 }, signal),
       events: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/events`, body, signal),
-      append: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/append`, body, signal),
+      append: async (token, id, body, signal) => sessionAppendResult(
+        await this.request(
+          token,
+          `/internal/xagent/sessions/${encodeURIComponent(id)}/append`,
+          body,
+          signal,
+          false,
+          true,
+          200,
+          (status, value) => retrievalErrorCode(status, value, SESSION_APPEND_ERRORS),
+        ),
+        body.expected_sequence + body.events.length,
+      ),
       fork: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/fork`, body, signal),
       archive: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/archive`, body, signal),
       authorize: async (token, id, operation, signal) => {

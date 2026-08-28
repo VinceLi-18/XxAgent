@@ -17,6 +17,13 @@ export interface XAgentSessionAppendInput {
   readonly retrieval_receipts: readonly XAgentSessionRetrievalReceiptAttachment[]
 }
 
+/** Closed acknowledgement for one committed Session append batch. */
+export interface XAgentSessionAppendResult {
+  readonly schema_version: 1
+  readonly last_event_sequence: number
+  readonly version: number
+}
+
 /** Stable error vocabulary exposed across the Host/FastAPI boundary. */
 export type XAgentBackendErrorCode =
   | 'unauthenticated'
@@ -46,7 +53,7 @@ export interface XAgentSessionBackend {
     sessionId: string,
     body: XAgentSessionAppendInput,
     signal?: AbortSignal,
-  ): Promise<unknown>
+  ): Promise<XAgentSessionAppendResult>
   fork(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   archive(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   authorize(
