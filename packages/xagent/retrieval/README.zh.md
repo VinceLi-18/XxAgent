@@ -10,9 +10,9 @@ Private Session 的检索必须显式提供规范化项目 UUID 和／或 `inclu
 
 FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。最终成功的 Native 结果把它标记为已发布；被阻止、取消、失败或已确定无法 append 的结果会确认未发布并丢弃。已发布 receipt 只在 Session、tool call 和 payload hash 同时匹配时绑定。服务释放会关闭新工作入口，丢弃已无法发布的 continuation，取消在飞请求，并等待后端完成；该等待不依赖自身的 post-execute waterfall。已绑定 sidecar 在远端确认前仍可按精确 append 窗口读取。
 
-当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务最多缓冲 64 KiB assistant 输出、32 KiB 工具参数、4,096 个 stream chunk 和 256 个不同 block。服务只接受从匹配检索 `tool/result` 事件重建的短引用 ID，并在第一个回答 chunk 放行前立即重新授权所有已使用资料。只含工具调用的 continuation 会完整缓冲，但不会用空引用集合调用授权；其工具结果必须 checkpoint 后才进入后续模型请求。任何采用证据的正文都必须在 Markdown 代码之外包含至少一个允许引用；损坏、全角、未知或仅位于代码中的引用 token 均不能通过校验。普通请求和空检索保持下游流不变。
+当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务最多缓冲 64 KiB assistant 输出、32 KiB 工具参数、4,096 个 stream chunk 和 256 个不同 block。服务只接受从匹配检索 `tool/result` 事件重建的短引用 ID，并在第一个回答 chunk 放行前立即重新授权所有已使用资料。只含工具调用的 continuation 会完整缓冲，但不会用空引用集合调用授权；其工具结果必须 checkpoint 后才进入后续模型请求。引用校验读取 CommonMark 正文 text node，排除行内、围栏和缩进代码，并拒绝损坏、全角、未知、仅位于代码中或 raw HTML 内的引用别名。普通请求和空检索保持下游流不变。
 
-第一份无效草稿会被完全抑制。log-only `xagent/citation-correction` 事件保存草稿 SHA-256、最多 8 KiB 的 UTF-8 前缀、固定原因、无效 ID 和最多 64 个允许 ID；配套的 plugin-origin `user/message` 通过普通历史把纠正指令交给模型。Agent 只为精确拥有 `CITATION_INVALID` 的请求操作重试一次。第二份无效草稿只记录 `xagent/citation-failure`，并通过持久中文 `CITATION_FAILED` turn error 结束，不生成 assistant 回答或模型可见诊断。FastAPI append 与 Host 恢复都使用关闭且有上限的引用事件 schema。取消、撤权、账号替换、Session 替换和服务释放会中止所属源 iterator、等待其结束，并且不放行缓冲的回答字节。权威草稿是硬上限终止收集前接受的有界规范内容；其前缀与 SHA-256 来自同一份内存表示。引用缓冲不会把草稿写入磁盘。
+第一份无效草稿会被完全抑制。log-only `xagent/citation-correction` 事件保存草稿 SHA-256、最多 8 KiB 的 UTF-8 前缀、固定原因、无效 ID 和最多 64 个允许 ID；配套的 plugin-origin `user/message` 通过普通历史把纠正指令交给模型。私有重试归属把精确 `CITATION_INVALID` 对象绑定到该纠正消息 ID，因此兄弟流不能消费或清除彼此的唯一一次重试。第二份无效草稿只记录 `xagent/citation-failure`，并通过持久中文 `CITATION_FAILED` turn error 结束，不生成 assistant 回答或模型可见诊断。FastAPI append 与 Host 恢复都使用关闭且有上限的引用事件 schema。取消、撤权、账号替换、Session 替换和服务释放会关闭尚未启动的 admission、中止活跃源 iterator，并等待每个已启动 iterator 的 `finally` 结束，不放行任何缓冲回答字节。权威草稿是硬上限终止收集前接受的有界规范内容；其前缀与 SHA-256 来自同一份内存表示。引用缓冲不会把草稿写入磁盘。
 
 ## Model Experience
 

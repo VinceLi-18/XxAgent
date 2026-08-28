@@ -300,5 +300,5 @@ abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promi
 abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:118`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:119`](../../packages/xagent/retrieval/src/index.ts)
 <!-- END GENERATED cordis-surface -->

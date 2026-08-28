@@ -125,6 +125,16 @@ async function settlesWithin(operation: Promise<unknown>, milliseconds = 30): Pr
   ])
 }
 
+async function* source(chunks: readonly StreamChunk[]): AsyncIterable<StreamChunk> {
+  yield* chunks
+}
+
+async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+  const chunks: StreamChunk[] = []
+  for await (const chunk of stream) chunks.push(chunk)
+  return chunks
+}
+
 describe('XAgentRetrievalService', () => {
   test('reauthorizes admitted citations in the real Agent loop before answer publication', async () => {
     const value = backend()
@@ -240,6 +250,75 @@ describe('XAgentRetrievalService', () => {
     await owner.whenIdle()
     expect(adapter.requests).toHaveLength(5)
     expect(JSON.stringify(adapter.requests.at(-1)?.messages)).not.toContain('引用校验失败，无法提供经过验证的回答。')
+  })
+
+  test('isolates concurrent retry lineages through the production retrieval service', async () => {
+    const releaseOwner = Promise.withResolvers<undefined>()
+    async function* blockedOwner(): AsyncIterable<StreamChunk> {
+      await releaseOwner.promise
+      yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'done' } } }
+    }
+    const adapter = new DeferredAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      blockedOwner,
+    ])
+    const created = await agentHarness(adapter)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(2) })
+    const protectedOptions = adapter.requests[1]
+    if (protectedOptions === undefined) throw new Error('missing protected request')
+    const invalid = (text: string) => collect(created.ctx.waterfall(created.ctx.llm, 'llm/stream', protectedOptions, () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const [draftA, draftB] = await Promise.all([invalid('concurrent-a'), invalid('concurrent-b')])
+    const failureA = draftA[0]?.type === 'finish' && draftA[0].reason.kind === 'error'
+      ? draftA[0].reason.failure : undefined
+    const failureB = draftB[0]?.type === 'finish' && draftB[0].reason.kind === 'error'
+      ? draftB[0].reason.failure : undefined
+    if (failureA === undefined || failureB === undefined) throw new Error('missing production citation failures')
+    const messagesByDraft = new Map<string, GenerateOptions['messages'][number]>()
+    for (const correction of created.owner.session.events.filter(event => event.type === 'xagent/citation-correction')) {
+      const message = created.owner.session.events.find(event => event.seq === correction.seq + 1)
+      if (message?.type === 'user/message') messagesByDraft.set(correction.data.invalidDraft, message.data)
+    }
+    const correctionA = messagesByDraft.get('concurrent-a')
+    const correctionB = messagesByDraft.get('concurrent-b')
+    if (correctionA === undefined || correctionB === undefined) throw new Error('missing production correction identities')
+    const requestError = (failure: typeof failureA) => created.ctx.waterfall(created.owner as never, 'agent/request-error', {
+      agent: created.owner, turn: 1, step: 2, provider: 'mock', failure,
+      retryPolicy: undefined, signal: new AbortController().signal,
+    }, () => Promise.resolve(undefined))
+    await expect(requestError(failureA)).resolves.toEqual({ kind: 'retry' })
+    await expect(requestError(failureB)).resolves.toEqual({ kind: 'retry' })
+
+    const retryOptions = (correction: GenerateOptions['messages'][number]): GenerateOptions => ({
+      ...protectedOptions, messages: [...protectedOptions.messages, correction],
+    })
+    const retryA = await collect(created.ctx.waterfall(created.ctx.llm, 'llm/stream', retryOptions(correctionA), () => source([
+      { type: 'text-delta', index: 0, text: 'verified-a[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(retryA.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    const retryB = await collect(created.ctx.waterfall(created.ctx.llm, 'llm/stream', retryOptions(correctionB), () => source([
+      { type: 'text-delta', index: 0, text: 'invalid-b-again' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(retryB).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED' } },
+    }])
+    const terminalB = retryB[0]?.type === 'finish' && retryB[0].reason.kind === 'error'
+      ? retryB[0].reason.failure : undefined
+    if (terminalB === undefined) throw new Error('missing production terminal failure')
+    await expect(requestError(terminalB)).resolves.toBeUndefined()
+    expect(created.value.authorizeCitations).toHaveBeenCalledOnce()
+
+    created.owner.cancel({ kind: 'user' })
+    releaseOwner.resolve(undefined)
+    await created.owner.whenIdle()
+    await created.retrieval.dispose()
   })
 
   test('disposal aborts in-flight answer authorization and releases no answer chunks', async () => {

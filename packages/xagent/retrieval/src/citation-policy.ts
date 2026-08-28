@@ -12,6 +12,8 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { XAgentCitationIdentity } from '@xagent/dsh-backend-client'
+import type { Nodes, Root } from 'mdast'
+import { fromMarkdown } from 'mdast-util-from-markdown'
 import type { XAgentCitationInvalidReason } from './events.ts'
 
 /** Maximum complete buffered assistant output in UTF-8 bytes. */
@@ -29,6 +31,7 @@ export const CITATION_ALLOWED_MAX = 64
 
 const CITATION_ID = /^\[资料([1-9][0-9]*)\]$/u
 const CITATION_TOKEN = /\[资料[1-9][0-9]*\]/gu
+const CITATION_LIKE = /[\[\]【】［］]?资料[0-9]+[\[\]【】［］]?/gu
 const HASH_PATTERN = /^[0-9a-f]{64}$/u
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u
 const CORRECTION_MESSAGE = '上一份回答未通过引用校验。请只根据已入账的资料证据重新回答；每个采用资料的事实陈述都必须使用以下允许引用，且不得编造或改写引用 ID：'
@@ -59,13 +62,21 @@ export interface XAgentCitationPolicyRequest {
    * @param signal - model generation cancellation joined with request and service lifetimes.
    * @returns an exact request operation whose settlement follows source iterator cleanup.
    */
-  begin(signal: AbortSignal | undefined): XAgentCitationPolicyOperation
+  admit(signal: AbortSignal | undefined): XAgentCitationPolicyAdmission
   /**
    * Reauthorize cited evidence immediately before answer release.
    * @param input - exact Session identities and combined operation cancellation.
    * @returns when the current permission revision admits every identity.
    */
   authorize(input: XAgentCitationReleaseInput): Promise<void>
+}
+
+/** Closeable ownership registered before a protected stream starts pulling its source. */
+export interface XAgentCitationPolicyAdmission {
+  /** Start the exact protected operation on the first iterator pull. */
+  start(): XAgentCitationPolicyOperation
+  /** Close an admission that never started without claiming source settlement. */
+  close(): void
 }
 
 /** Service-owned lifetime for one protected model stream. */
@@ -197,86 +208,88 @@ function answerText(assembler: BlockAssembler): { text: string; hasToolCall: boo
   }
 }
 
-function proseText(text: string): string {
-  const chars = text.split('')
-  const mask = (start: number, end: number): void => {
-    for (let index = start; index < end; index += 1) chars[index] = ' '
-  }
-  let fenced: { marker: '`' | '~'; length: number } | undefined
-  let offset = 0
-  for (const lineWithEnding of text.match(/.*(?:\r\n|\n|\r|$)/gu) ?? []) {
-    if (lineWithEnding.length === 0) continue
-    const line = lineWithEnding.replace(/(?:\r\n|\n|\r)$/u, '')
-    if (fenced !== undefined) {
-      mask(offset, offset + lineWithEnding.length)
-      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u.exec(line)
-      if (close?.[1]?.[0] === fenced.marker && close[1].length >= fenced.length) fenced = undefined
-      offset += lineWithEnding.length
-      continue
-    }
-    const open = /^ {0,3}(`{3,}|~{3,})/u.exec(line)
-    if (open?.[1] !== undefined && unescaped(line, open.index + line.indexOf(open[1]))) {
-      fenced = { marker: open[1][0] as '`' | '~', length: open[1].length }
-      mask(offset, offset + lineWithEnding.length)
-      offset += lineWithEnding.length
-      continue
-    }
-    if (/^(?: {4}|\t)/u.test(line)) {
-      mask(offset, offset + lineWithEnding.length)
-      offset += lineWithEnding.length
-      continue
-    }
-    let cursor = 0
-    while (cursor < line.length) {
-      if (line[cursor] !== '`' || !unescaped(line, cursor)) {
-        cursor += 1
-        continue
-      }
-      let end = cursor + 1
-      while (line[end] === '`') end += 1
-      const length = end - cursor
-      let close = end
-      while (close < line.length) {
-        if (line[close] !== '`' || !unescaped(line, close)) {
-          close += 1
-          continue
-        }
-        let closeEnd = close + 1
-        while (line[closeEnd] === '`') closeEnd += 1
-        if (closeEnd - close === length) {
-          mask(offset + cursor, offset + closeEnd)
-          cursor = closeEnd
-          break
-        }
-        close = closeEnd
-      }
-      if (cursor < end) cursor = end
-    }
-    offset += lineWithEnding.length
-  }
-  return chars.join('')
-}
-
 function unescaped(text: string, index: number): boolean {
   let slashes = 0
   for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) slashes += 1
   return slashes % 2 === 0
 }
 
-function explicitCitations(text: string): { ids: string[]; malformed: string[] } {
-  const prose = proseText(text)
-  const ids: string[] = []
-  const malformed: string[] = []
-  const validRanges: Array<[number, number]> = []
-  for (const match of prose.matchAll(CITATION_TOKEN)) {
-    if (!unescaped(prose, match.index)) continue
-    ids.push(match[0])
-    validRanges.push([match.index, match.index + match[0].length])
+interface ProseSegment {
+  readonly rendered: string
+  readonly source: string
+}
+
+function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliases: string[] } {
+  const segments: ProseSegment[] = []
+  const htmlAliases: string[] = []
+  const htmlNodes: Array<{ start: number; end: number }> = []
+  const visit = (node: Root | Nodes): void => {
+    if (node.type === 'code' || node.type === 'inlineCode') return
+    if (node.type === 'html') {
+      htmlAliases.push(...[...node.value.matchAll(CITATION_LIKE)].map(match => match[0]))
+      const start = node.position?.start.offset
+      const end = node.position?.end.offset
+      if (start !== undefined && end !== undefined) htmlNodes.push({ start, end })
+      return
+    }
+    if (node.type === 'text') {
+      const start = node.position?.start.offset
+      const end = node.position?.end.offset
+      segments.push({
+        rendered: node.value,
+        source: start === undefined || end === undefined ? node.value : markdown.slice(start, end),
+      })
+      return
+    }
+    if ('children' in node) {
+      for (const child of node.children) visit(child)
+    }
   }
-  const covered = (index: number): boolean => validRanges.some(([start, end]) => index >= start && index < end)
-  for (const match of prose.matchAll(/[\[\]【】［］]?资料[0-9]+[\[\]【】［］]?/gu)) {
-    if (covered(match.index) || !unescaped(prose, match.index)) continue
-    malformed.push(match[0])
+  visit(fromMarkdown(markdown))
+  for (let index = 1; index < htmlNodes.length; index += 1) {
+    const previous = htmlNodes[index - 1]
+    const current = htmlNodes[index]
+    if (previous === undefined || current === undefined) continue
+    htmlAliases.push(...[...markdown.slice(previous.start, current.end).matchAll(CITATION_LIKE)]
+      .map(match => match[0]))
+  }
+  return { segments, htmlAliases }
+}
+
+function explicitCitations(text: string): { ids: string[]; malformed: string[] } {
+  const ids: string[] = []
+  const prose = proseSegments(text)
+  const malformed: string[] = [...prose.htmlAliases]
+  let aggregateOffset = 0
+  const aggregateRanges = prose.segments.map((segment) => {
+    const range = [aggregateOffset, aggregateOffset + segment.rendered.length] as const
+    aggregateOffset = range[1]
+    return range
+  })
+  const aggregate = prose.segments.map(segment => segment.rendered).join('')
+  for (const match of aggregate.matchAll(CITATION_LIKE)) {
+    const end = match.index + match[0].length
+    if (!aggregateRanges.some(([start, rangeEnd]) => match.index >= start && end <= rangeEnd)) {
+      malformed.push(match[0])
+    }
+  }
+  for (const segment of prose.segments) {
+    const ignoredRanges: Array<[number, number]> = []
+    let sourceCursor = 0
+    for (const match of segment.rendered.matchAll(CITATION_TOKEN)) {
+      const sourceIndex = segment.source.indexOf(match[0], sourceCursor)
+      if (sourceIndex < 0) {
+        malformed.push(match[0])
+      } else {
+        sourceCursor = sourceIndex + match[0].length
+        if (unescaped(segment.source, sourceIndex)) ids.push(match[0])
+      }
+      ignoredRanges.push([match.index, match.index + match[0].length])
+    }
+    const covered = (index: number): boolean => ignoredRanges.some(([start, end]) => index >= start && index < end)
+    for (const match of segment.rendered.matchAll(CITATION_LIKE)) {
+      if (!covered(match.index)) malformed.push(match[0])
+    }
   }
   return { ids: [...new Set(ids)], malformed: [...new Set(malformed)].slice(0, CITATION_ALLOWED_MAX) }
 }
@@ -382,7 +395,7 @@ function appendInvalid(
   text: string,
   validation: Validation,
   allowedIds: readonly string[],
-): StreamChunk {
+): { chunk: StreamChunk; correctionMessageId?: string } {
   const reason = validation.reason ?? 'stream-invalid'
   if (!retrying) {
     request.session.append('xagent/citation-correction', {
@@ -392,11 +405,15 @@ function appendInvalid(
       invalidIds: validation.invalidIds,
       allowedIds,
     })
-    request.session.append('user/message', createUserMessage({
+    const correction = createUserMessage({
       content: [{ type: 'text', text: correctionInstruction(allowedIds) }],
       source: { kind: 'plugin', plugin: 'xagent-retrieval' },
-    }), { surfaceOp: 'append' })
-    return finishError('CITATION_INVALID', RETRY_FAILURE_MESSAGE)
+    })
+    request.session.append('user/message', correction, { surfaceOp: 'append' })
+    return {
+      chunk: finishError('CITATION_INVALID', RETRY_FAILURE_MESSAGE),
+      correctionMessageId: String(correction.id),
+    }
   }
   request.session.append('xagent/citation-failure', {
     draftSha256,
@@ -404,21 +421,22 @@ function appendInvalid(
     invalidIds: validation.invalidIds,
     allowedIds,
   })
-  return finishError('CITATION_FAILED', TERMINAL_FAILURE_MESSAGE)
+  return { chunk: finishError('CITATION_FAILED', TERMINAL_FAILURE_MESSAGE) }
 }
 
 function protectedStream(
   next: () => AsyncIterable<StreamChunk>,
   request: XAgentCitationPolicyRequest,
-  operation: XAgentCitationPolicyOperation,
+  admission: XAgentCitationPolicyAdmission,
   evidence: EvidenceSet,
   retrying: boolean,
   flush: () => Promise<void>,
-  markInvalid: (failure: object) => void,
+  markInvalid: (failure: object, correctionMessageId: string) => void,
   markTerminal: (failure: object) => void,
   clearRetry: () => void,
 ): AsyncIterable<StreamChunk> {
   return (async function* (): AsyncIterable<StreamChunk> {
+    const operation = admission.start()
     const chunks: StreamChunk[] = []
     const assembler = new BlockAssembler()
     let iterator: AsyncIterator<StreamChunk> | undefined
@@ -469,7 +487,6 @@ function protectedStream(
         if (!invalidChunk && !overflow) chunks.push(raw)
         if (raw.type === 'finish') {
           final = raw
-          sourceDone = true
           break
         }
         if (seenChunks >= CITATION_STREAM_CHUNK_MAX
@@ -508,9 +525,14 @@ function protectedStream(
       })
       if (!validation.ok) {
         const failure = appendInvalid(request, retrying, draftSha256, answer.text, validation, allowedIds)
-        if (!retrying && failure.type === 'finish' && failure.reason.kind === 'error') markInvalid(failure.reason.failure)
-        if (retrying && failure.type === 'finish' && failure.reason.kind === 'error') markTerminal(failure.reason.failure)
-        yield failure
+        if (!retrying && failure.chunk.type === 'finish' && failure.chunk.reason.kind === 'error'
+          && failure.correctionMessageId !== undefined) {
+          markInvalid(failure.chunk.reason.failure, failure.correctionMessageId)
+        }
+        if (retrying && failure.chunk.type === 'finish' && failure.chunk.reason.kind === 'error') {
+          markTerminal(failure.chunk.reason.failure)
+        }
+        yield failure.chunk
         return
       }
       if (validation.used.length > 0) {
@@ -526,9 +548,14 @@ function protectedStream(
           const failure = appendInvalid(request, retrying, draftSha256, answer.text, {
             ok: false, reason: 'citation-revoked', invalidIds: validation.used.map(item => item.id), used: [],
           }, allowedIds)
-          if (!retrying && failure.type === 'finish' && failure.reason.kind === 'error') markInvalid(failure.reason.failure)
-          if (retrying && failure.type === 'finish' && failure.reason.kind === 'error') markTerminal(failure.reason.failure)
-          yield failure
+          if (!retrying && failure.chunk.type === 'finish' && failure.chunk.reason.kind === 'error'
+            && failure.correctionMessageId !== undefined) {
+            markInvalid(failure.chunk.reason.failure, failure.correctionMessageId)
+          }
+          if (retrying && failure.chunk.type === 'finish' && failure.chunk.reason.kind === 'error') {
+            markTerminal(failure.chunk.reason.failure)
+          }
+          yield failure.chunk
           return
         }
       }
@@ -555,43 +582,94 @@ export function installXAgentCitationPolicy(
   ctx: Context,
   resolve: XAgentCitationPolicyResolver,
 ): () => void {
-  const retrying = new WeakSet<object>()
-  const eligibleRetry = new WeakMap<object, { agent: Agent; identity: object }>()
-  const terminalFailures = new WeakMap<object, { agent: Agent; identity: object }>()
+  interface RetryLineage {
+    readonly identity: object
+    readonly agent: Agent
+    readonly scopeIdentity: object
+    correctionMessageId?: string
+    retrying: boolean
+  }
+  const eligibleRetry = new WeakMap<object, RetryLineage>()
+  const terminalFailures = new WeakMap<object, RetryLineage>()
+  const pendingRetries = new WeakMap<Agent, Set<RetryLineage>>()
+
+  const claimLineage = (
+    options: GenerateOptions,
+    request: XAgentCitationPolicyRequest,
+  ): { lineage: RetryLineage; ambiguous: boolean } => {
+    const messageIds = new Set(options.messages.map(message => String(message.id)))
+    const visible = [...(pendingRetries.get(request.agent) ?? [])]
+      .filter(lineage => lineage.correctionMessageId !== undefined
+        && messageIds.has(lineage.correctionMessageId))
+    const candidates = visible.filter(lineage => lineage.scopeIdentity === request.identity)
+    if (candidates.length === 1 && visible.length === 1) {
+      const lineage = candidates[0] as RetryLineage
+      pendingRetries.get(request.agent)?.delete(lineage)
+      if (pendingRetries.get(request.agent)?.size === 0) pendingRetries.delete(request.agent)
+      return { lineage, ambiguous: false }
+    }
+    if (visible.length > 0) {
+      for (const lineage of visible) pendingRetries.get(request.agent)?.delete(lineage)
+      if (pendingRetries.get(request.agent)?.size === 0) pendingRetries.delete(request.agent)
+      return {
+        lineage: {
+          identity: Object.freeze({}), agent: request.agent,
+          scopeIdentity: request.identity, retrying: true,
+        },
+        ambiguous: true,
+      }
+    }
+    return {
+      lineage: {
+        identity: Object.freeze({}), agent: request.agent,
+        scopeIdentity: request.identity, retrying: false,
+      },
+      ambiguous: false,
+    }
+  }
   const closeStream = ctx.on('llm/stream', (options, next) => {
     const request = resolve(options)
     if (request === undefined || options.sessionId === undefined
       || String(request.session.id) !== String(options.sessionId)) return next()
     const evidence = evidenceFor(options, request.session)
     if (evidence === undefined) return next()
-    const operation = request.begin(options.signal)
+    const admission = request.admit(options.signal)
+    const { lineage, ambiguous } = claimLineage(options, request)
     return protectedStream(
       next,
       request,
-      operation,
-      evidence,
-      retrying.has(operation.identity),
+      admission,
+      ambiguous ? { ...evidence, invalid: true } : evidence,
+      lineage.retrying,
       async () => { await ctx.sessions.flush(request.session) },
-      (failure) => { eligibleRetry.set(failure, { agent: request.agent, identity: operation.identity }) },
-      (failure) => { terminalFailures.set(failure, { agent: request.agent, identity: operation.identity }) },
+      (failure, correctionMessageId) => {
+        lineage.correctionMessageId = correctionMessageId
+        eligibleRetry.set(failure, lineage)
+      },
+      (failure) => {
+        terminalFailures.set(failure, lineage)
+      },
       () => {
-        retrying.delete(operation.identity)
+        lineage.retrying = false
       },
     )
   })
   const closeError = ctx.on('agent/request-error', ({ agent, failure }, next): Promise<RequestErrorAction> => {
     if (failure.code === 'CITATION_INVALID') {
       const owner = eligibleRetry.get(failure)
-      if (owner?.agent !== agent || retrying.has(owner.identity)) return next()
+      if (owner?.agent !== agent || owner.retrying || owner.correctionMessageId === undefined) return next()
       eligibleRetry.delete(failure)
-      retrying.add(owner.identity)
+      owner.retrying = true
+      const pending = pendingRetries.get(agent) ?? new Set<RetryLineage>()
+      pending.add(owner)
+      pendingRetries.set(agent, pending)
       return Promise.resolve({ kind: 'retry' })
     }
     if (failure.code === 'CITATION_FAILED') {
       const owner = terminalFailures.get(failure)
-      if (owner?.agent !== agent || !retrying.has(owner.identity)) return next()
+      if (owner?.agent !== agent || !owner.retrying) return next()
       terminalFailures.delete(failure)
-      retrying.delete(owner.identity)
+      owner.retrying = false
       return Promise.resolve(undefined)
     }
     return next()

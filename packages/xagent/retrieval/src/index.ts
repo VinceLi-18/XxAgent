@@ -27,6 +27,7 @@ import {
 import { XAgentReceiptRegistry } from './receipt-registry.ts'
 import {
   installXAgentCitationPolicy,
+  type XAgentCitationPolicyAdmission,
   type XAgentCitationPolicyOperation,
   type XAgentCitationPolicyRequest,
 } from './citation-policy.ts'
@@ -212,8 +213,10 @@ export class XAgentRetrievalService extends XAgentRetrieval {
   private readonly controllers = new Map<AbortController, Promise<void>>()
   private readonly citationOperations = new Map<AbortController, {
     readonly agent: Agent
-    readonly identity: object
+    readonly scopeIdentity: object
+    readonly operationIdentity: object
     readonly settlement: Promise<void>
+    readonly close: () => void
   }>()
   private readonly issuer: string
   private readonly audience: string
@@ -455,7 +458,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       const protectedStreams = [...this.citationOperations.entries()]
       const receiptDisposal = this.receipts.dispose()
       for (const [controller] of active) controller.abort()
-      for (const [controller] of protectedStreams) controller.abort(new DOMException('xagent retrieval disposed', 'AbortError'))
+      for (const [, operation] of protectedStreams) operation.close()
       await Promise.allSettled(active.map(([, settlement]) => settlement))
       await Promise.allSettled(protectedStreams.map(([, operation]) => operation.settlement))
       await receiptDisposal
@@ -523,12 +526,12 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     const binding = this.activeScopes.get(agent)
     binding?.close()
     this.activeScopes.delete(agent)
-    if (binding !== undefined) this.abortCitationOperations(operation => operation.identity === binding.identity)
+    if (binding !== undefined) this.abortCitationOperations(operation => operation.scopeIdentity === binding.identity)
   }
 
-  private abortCitationOperations(predicate: (operation: { agent: Agent; identity: object }) => boolean): void {
-    for (const [controller, operation] of this.citationOperations) {
-      if (predicate(operation)) controller.abort(new DOMException('xagent request ended', 'AbortError'))
+  private abortCitationOperations(predicate: (operation: { agent: Agent; scopeIdentity: object }) => boolean): void {
+    for (const [, operation] of this.citationOperations) {
+      if (predicate(operation)) operation.close()
     }
   }
 
@@ -551,36 +554,57 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         agent,
         identity: binding.identity,
         session: agent.session,
-        begin: signal => this.beginCitationOperation(agent, binding, signal),
+        admit: signal => this.admitCitationOperation(agent, binding, signal),
         authorize: input => this.authorizeCitations(binding.scope, input.citations, input.signal),
       }
     }
     return resolved
   }
 
-  private beginCitationOperation(
+  private admitCitationOperation(
     agent: Agent,
     binding: { identity: object; scope: XAgentAuthenticatedSessionRequestScope },
     signal: AbortSignal | undefined,
-  ): XAgentCitationPolicyOperation {
+  ): XAgentCitationPolicyAdmission {
     if (!this.accepting || this.activeScopes.get(agent)?.identity !== binding.identity) {
       throw new XAgentRetrievalError('service-unavailable')
     }
     const controller = new AbortController()
+    const operationIdentity = Object.freeze({})
     const signals = [controller.signal, binding.scope.requestSignal, binding.scope.connectionSignal, signal]
       .filter((value): value is AbortSignal => value !== undefined)
     const settled = Promise.withResolvers<void>()
     let open = true
-    this.citationOperations.set(controller, { agent, identity: binding.identity, settlement: settled.promise })
+    let started = false
+    const finish = (): void => {
+      if (!open) return
+      open = false
+      this.citationOperations.delete(controller)
+      settled.resolve()
+    }
+    const close = (): void => {
+      if (!open) return
+      controller.abort(new DOMException('xagent request ended', 'AbortError'))
+      if (!started) finish()
+    }
+    this.citationOperations.set(controller, {
+      agent,
+      scopeIdentity: binding.identity,
+      operationIdentity,
+      settlement: settled.promise,
+      close,
+    })
     return {
-      identity: binding.identity,
-      signal: AbortSignal.any(signals),
-      settle: () => {
-        if (!open) return
-        open = false
-        this.citationOperations.delete(controller)
-        settled.resolve()
+      start: (): XAgentCitationPolicyOperation => {
+        if (!open || started) throw new XAgentRetrievalError('service-unavailable')
+        started = true
+        return {
+          identity: operationIdentity,
+          signal: AbortSignal.any(signals),
+          settle: finish,
+        }
       },
+      close,
     }
   }
 
