@@ -1,9 +1,14 @@
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.internal_auth import require_service_identity, require_user_token
@@ -28,7 +33,32 @@ from app.services.xagent_sessions import (
     require_protocol_version,
 )
 
-router = APIRouter(prefix="/internal/xagent/sessions", tags=["internal-sessions"])
+
+class _PrivateAppendRoute(APIRoute):
+    """Redact private append sidecars from malformed-wire responses."""
+
+    def get_route_handler(self) -> Callable[[Request], Awaitable[Response]]:
+        handler = super().get_route_handler()
+
+        async def closed_handler(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                if request.url.path.endswith("/append"):
+                    return JSONResponse(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        content={"detail": {"code": "invalid-request"}},
+                    )
+                raise
+
+        return closed_handler
+
+
+router = APIRouter(
+    prefix="/internal/xagent/sessions",
+    tags=["internal-sessions"],
+    route_class=_PrivateAppendRoute,
+)
 
 
 class VersionedRequest(BaseModel):
@@ -42,6 +72,15 @@ class EventInput(BaseModel):
     tool_call_id: str | None = Field(default=None, max_length=255)
 
 
+class RetrievalReceiptAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_sequence: StrictInt = Field(ge=0)
+    tool_call_id: str = Field(min_length=1, max_length=255)
+    receipt: str = Field(min_length=1, max_length=1024, pattern=r"^[A-Za-z0-9_-]+$")
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CreateSessionRequest(VersionedRequest):
     model_config = ConfigDict(extra="ignore")
 
@@ -53,9 +92,15 @@ class CreateSessionRequest(VersionedRequest):
 
 
 class AppendRequest(VersionedRequest):
+    model_config = ConfigDict(extra="forbid")
+
     expected_sequence: int = Field(ge=-1)
     idempotency_key: str = Field(min_length=1, max_length=255)
     events: list[EventInput] = Field(min_length=1, max_length=100)
+    retrieval_receipts: list[RetrievalReceiptAttachment] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
 
 class EventsRequest(VersionedRequest):
@@ -111,6 +156,9 @@ def _raise_http(error: SessionServiceError) -> None:
         SessionErrorCode.SEQUENCE_CONFLICT: status.HTTP_409_CONFLICT,
         SessionErrorCode.IDEMPOTENCY_CONFLICT: status.HTTP_409_CONFLICT,
         SessionErrorCode.UNSUPPORTED_VERSION: status.HTTP_400_BAD_REQUEST,
+        SessionErrorCode.EVIDENCE_EXPIRED: status.HTTP_410_GONE,
+        SessionErrorCode.EVIDENCE_CONFLICT: status.HTTP_409_CONFLICT,
+        SessionErrorCode.SERVICE_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
     }[error.code]
     raise HTTPException(status_code=status_code, detail={"code": error.code.value})
 
@@ -234,11 +282,19 @@ async def append_route(
             session_id=session_id,
             expected_sequence=request.expected_sequence,
             events=[event.model_dump(mode="json") for event in request.events],
+            retrieval_receipts=[
+                attachment.model_dump(mode="json")
+                for attachment in request.retrieval_receipts
+            ],
             idempotency_key=request.idempotency_key,
             digest=request_hash(body),
         )
     except SessionServiceError as error:
         _raise_http(error)
+    except SQLAlchemyError:
+        _raise_http(SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE))
+    except Exception:
+        _raise_http(SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE))
 
 
 @router.post("/{session_id}/fork", status_code=status.HTTP_201_CREATED)

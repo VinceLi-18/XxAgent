@@ -20,6 +20,7 @@ import {
   type SessionId as SessionIdType,
 } from '@deepseek-ai/dsh-session'
 import { XAgentBackendClient, type XAgentBackend } from '@xagent/dsh-backend-client'
+import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -149,9 +150,9 @@ export class XAgentSessionPersistence extends SessionPersistence {
   private readonly turnTokens = new Map<SessionIdType, string>()
   private readonly writes = new Map<SessionIdType, {
     pending: SessionEvent[]
+    retry: SessionEvent[] | undefined
     flushing: Promise<void> | undefined
     timer: ReturnType<typeof setTimeout> | undefined
-    failure?: unknown
   }>()
   private scopeTail: Promise<void> = Promise.resolve()
   private activeToken: string | undefined
@@ -250,6 +251,8 @@ export class XAgentSessionPersistence extends SessionPersistence {
     for (let index = 0; index < events.length; index++) {
       if (events[index]?.seq !== first.seq + index) throw new TypeError('non-contiguous XAgent session append')
     }
+    const receipts = this.receiptRegistry()
+    const attachments = receipts?.attachments(String(id), first.seq, last.seq) ?? []
     await this.backend.sessions.append(token, backendSessionId(id), {
       schema_version: 1,
       expected_sequence: first.seq - 1,
@@ -259,7 +262,14 @@ export class XAgentSessionPersistence extends SessionPersistence {
         schema_version: 1,
         payload: structuredClone(event),
       })),
+      retrieval_receipts: attachments.map(attachment => ({
+        event_sequence: attachment.eventSequence,
+        tool_call_id: attachment.toolCallId,
+        receipt: attachment.receipt,
+        payload_hash: attachment.payloadHash,
+      })),
     }, undefined)
+    receipts?.commit(String(id), last.seq)
     if (events.some(event => event.type === 'turn/end')) this.turnTokens.delete(id)
   }
 
@@ -363,6 +373,10 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return this.activeToken
   }
 
+  private receiptRegistry(): XAgentReceiptRegistryContract | undefined {
+    return this.ctx.get('xagentRetrieval')?.receipts
+  }
+
   private async readInspection(id: SessionIdType, signal?: AbortSignal): Promise<SessionInspection> {
     signal?.throwIfAborted()
     const token = this.tokenFor(id)
@@ -398,7 +412,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     this.ctx.on('session/event', (session, event) => {
       let state = this.writes.get(session.id)
       if (state === undefined) {
-        state = { pending: [], flushing: undefined, timer: undefined }
+        state = { pending: [], retry: undefined, flushing: undefined, timer: undefined }
         this.writes.set(session.id, state)
       }
       state.pending.push(structuredClone(event))
@@ -417,7 +431,6 @@ export class XAgentSessionPersistence extends SessionPersistence {
       void this.flushWrites(session.id).then(
         () => { this.releaseSession(session.id) },
         (error: unknown) => {
-          this.releaseSession(session.id)
           this.ctx.logger.warn(`xagent session persistence failed for "${session.id}": ${String(error)}`)
         },
       )
@@ -430,11 +443,6 @@ export class XAgentSessionPersistence extends SessionPersistence {
   private flushWrites(id: SessionIdType): Promise<void> {
     const state = this.writes.get(id)
     if (state === undefined) return Promise.resolve()
-    if (state.failure !== undefined) {
-      return Promise.reject(state.failure instanceof Error
-        ? state.failure
-        : new Error('session persistence write failed', { cause: state.failure }))
-    }
     if (state.timer !== undefined) {
       clearTimeout(state.timer)
       state.timer = undefined
@@ -442,13 +450,16 @@ export class XAgentSessionPersistence extends SessionPersistence {
     if (state.flushing !== undefined) return state.flushing
     state.flushing = (async () => {
       try {
-        while (state.pending.length > 0) {
-          const batch = state.pending.splice(0)
-          await this.append(id, batch)
+        while (state.retry !== undefined || state.pending.length > 0) {
+          const batch = state.retry ?? state.pending.splice(0)
+          try {
+            await this.append(id, batch)
+            state.retry = undefined
+          } catch (error) {
+            state.retry = batch
+            throw error
+          }
         }
-      } catch (error) {
-        state.failure = error
-        throw error
       } finally {
         state.flushing = undefined
       }

@@ -510,6 +510,12 @@ def upgrade() -> None:
         f"FOR UPDATE TO {application_role} USING ({receipt_visible}) WITH CHECK ({receipt_visible})"
     )
     op.execute(
+        f"CREATE POLICY xagent_session_project_ref_retrieval_insert "
+        f"ON xagent_session_project_refs FOR INSERT TO {application_role} WITH CHECK ("
+        f"session_id IN (SELECT id FROM xagent_sessions WHERE visibility = 'private' "
+        f"AND owner_id = {actor_id}) AND project_id IN (SELECT public.authorized_project_ids()))"
+    )
+    op.execute(
         f"CREATE POLICY xagent_delegation_nonce_select ON xagent_delegation_nonces "
         f"FOR SELECT TO {application_role} USING ({nonce_visible})"
     )
@@ -566,6 +572,9 @@ def upgrade() -> None:
         f"GRANT SELECT, INSERT ON xagent_retrieval_receipts TO {application_role}"
     )
     op.execute(
+        f"GRANT INSERT ON xagent_session_project_refs TO {application_role}"
+    )
+    op.execute(
         f"GRANT UPDATE (consumed_at, consumed_event_sequence, consumed_payload_sha256) "
         f"ON xagent_retrieval_receipts TO {application_role}"
     )
@@ -611,6 +620,13 @@ def downgrade() -> None:
 
     op.execute(
         f"REVOKE ALL PRIVILEGES ON xagent_delegation_nonces FROM {application_role}"
+    )
+    op.execute(
+        f"REVOKE INSERT ON xagent_session_project_refs FROM {application_role}"
+    )
+    op.execute(
+        "DROP POLICY xagent_session_project_ref_retrieval_insert "
+        "ON xagent_session_project_refs"
     )
     op.execute(
         f"REVOKE ALL PRIVILEGES ON artifact_text_indexes, artifact_text_chunks, artifact_index_jobs, "

@@ -1,6 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import type { XAgentBackend } from '@xagent/dsh-backend-client'
+import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { describe, expect, test, vi } from 'vitest'
 import * as persistenceModule from '../src/index.ts'
 import {
@@ -71,6 +72,67 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
 }
 
 describe('XAgent FastAPI Session Persistence', () => {
+  test('flush sends only the exact receipt sidecars for its event window and commits after success', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const attachments = vi.fn(() => [{
+      eventSequence: 0,
+      toolCallId: 'call-retrieval',
+      receipt: 'opaque-secret',
+      payloadHash: 'a'.repeat(64),
+    }])
+    const commit = vi.fn()
+    ctx.provide('xagentRetrieval', { receipts: {
+      attachments,
+      commit,
+    } as unknown as XAgentReceiptRegistryContract } as never)
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await persistence.append(id, [event])
+
+    expect(attachments).toHaveBeenCalledWith(String(id), 0, 0)
+    expect(value.calls.find(call => call.name === 'append')?.args[2]).toMatchObject({
+      retrieval_receipts: [{
+        event_sequence: 0,
+        tool_call_id: 'call-retrieval',
+        receipt: 'opaque-secret',
+        payload_hash: 'a'.repeat(64),
+      }],
+    })
+    expect(commit).toHaveBeenCalledWith(String(id), 0)
+  })
+
+  test('failed append retains the same owned receipt attachment for an exact retry', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const attachment = {
+      eventSequence: 0,
+      toolCallId: 'call-retry',
+      receipt: 'opaque-retry',
+      payloadHash: 'b'.repeat(64),
+    }
+    const attachments = vi.fn(() => [attachment])
+    const commit = vi.fn()
+    ctx.provide('xagentRetrieval', { receipts: {
+      attachments,
+      commit,
+    } as unknown as XAgentReceiptRegistryContract } as never)
+    const append = vi.fn()
+      .mockRejectedValueOnce(new Error('network failed'))
+      .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 0 })
+    value.sessions.append = append
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await expect(persistence.append(id, [event])).rejects.toThrow('network failed')
+    expect(commit).not.toHaveBeenCalled()
+    await expect(persistence.append(id, [event])).resolves.toBeUndefined()
+
+    expect(append.mock.calls[0]?.[2]).toEqual(append.mock.calls[1]?.[2])
+    expect(attachments).toHaveBeenCalledTimes(2)
+    expect(commit).toHaveBeenCalledOnce()
+  })
   test('模块插件入口只暴露带配置的安装函数', () => {
     expect('default' in persistenceModule).toBe(false)
     expect(typeof persistenceModule.apply).toBe('function')
@@ -511,12 +573,15 @@ describe('XAgent FastAPI Session Persistence', () => {
     }
   })
 
-  test('定时写入失败会记录并锁存 Error，dispose 仍释放 Session', async () => {
+  test('定时写入失败保留原批次，checkpoint 使用相同事件重试', async () => {
     vi.useFakeTimers()
     try {
       const ctx = new Context()
       const value = backend()
-      value.sessions.append = vi.fn(async () => { throw new Error('write failed') })
+      const append = vi.fn()
+        .mockRejectedValueOnce(new Error('write failed'))
+        .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 0 })
+      value.sessions.append = append
       const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
       const persistence = new XAgentSessionPersistence(ctx, value)
       persistence.authorizeRequest(id, undefined, 'token')
@@ -525,22 +590,46 @@ describe('XAgent FastAPI Session Persistence', () => {
       await vi.advanceTimersByTimeAsync(200)
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('write failed'))
       await expect((persistence as unknown as { flushWrites(id: SessionId): Promise<void> }).flushWrites(id))
-        .rejects.toThrow('write failed')
+        .resolves.toBeUndefined()
+      expect(append.mock.calls[0]?.[2]).toEqual(append.mock.calls[1]?.[2])
       ctx.emit('session/disposed', session)
       await Promise.resolve(); await Promise.resolve()
-      expect(warn).toHaveBeenCalledTimes(2)
+      expect(warn).toHaveBeenCalledOnce()
       await ctx.fiber.dispose()
     } finally {
       vi.useRealTimers()
     }
   })
 
-  test('非 Error 写失败转换稳定错误，并清理未触发的 timer 和同 Session 请求绑定', async () => {
+  test('Session dispose 写失败保留批次，provider dispose 重试后才完成', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const append = vi.fn()
+      .mockRejectedValueOnce(new Error('dispose write failed'))
+      .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 0 })
+    value.sessions.append = append
+    vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'token')
+    const session = { id } as Session
+    ctx.emit('session/event', session, event)
+
+    ctx.emit('session/disposed', session)
+    await vi.waitFor(() => { expect(append).toHaveBeenCalledOnce() })
+    await ctx.fiber.dispose()
+
+    expect(append).toHaveBeenCalledTimes(2)
+    expect(append.mock.calls[0]?.[2]).toEqual(append.mock.calls[1]?.[2])
+  })
+
+  test('非 Error 写失败也保留原批次，并清理未触发的 timer 和同 Session 请求绑定', async () => {
     vi.useFakeTimers()
     try {
       const ctx = new Context()
       const value = backend()
-      value.sessions.append = vi.fn(async () => { throw 'failure' })
+      value.sessions.append = vi.fn()
+        .mockRejectedValueOnce('failure')
+        .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 0 })
       vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
       const persistence = new XAgentSessionPersistence(ctx, value)
       persistence.authorizeRequest(id, 'same', 'token')
@@ -549,7 +638,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       ctx.emit('session/event', session, event)
       const internal = persistence as unknown as { flushWrites(id: SessionId): Promise<void> }
       await expect(internal.flushWrites(id)).rejects.toBe('failure')
-      await expect(internal.flushWrites(id)).rejects.toThrow('session persistence write failed')
+      await expect(internal.flushWrites(id)).resolves.toBeUndefined()
       ctx.emit('session/disposed', session)
       await Promise.resolve(); await Promise.resolve()
       vi.runOnlyPendingTimers()

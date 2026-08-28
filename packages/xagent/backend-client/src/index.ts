@@ -56,6 +56,8 @@ export type {
   XAgentAuthorizeCitationsInput,
   XAgentCitationIdentity,
   XAgentSessionBackend,
+  XAgentSessionAppendInput,
+  XAgentSessionRetrievalReceiptAttachment,
   XAgentSessionProjectRefsInput,
   XAgentSessionScopeSummary,
   XAgentWorkbenchBackend,

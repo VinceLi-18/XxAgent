@@ -1,5 +1,22 @@
 import type { XAgentPrincipal } from '@xagent/dsh-principal'
 
+/** Opaque receipt attached only to its matching Session append event. */
+export interface XAgentSessionRetrievalReceiptAttachment {
+  readonly event_sequence: number
+  readonly tool_call_id: string
+  readonly receipt: string
+  readonly payload_hash: string
+}
+
+/** Closed Session append request including its private retrieval sidecar. */
+export interface XAgentSessionAppendInput {
+  readonly schema_version: 1
+  readonly expected_sequence: number
+  readonly idempotency_key: string
+  readonly events: readonly unknown[]
+  readonly retrieval_receipts: readonly XAgentSessionRetrievalReceiptAttachment[]
+}
+
 /** Stable error vocabulary exposed across the Host/FastAPI boundary. */
 export type XAgentBackendErrorCode =
   | 'unauthenticated'
@@ -24,7 +41,12 @@ export interface XAgentSessionBackend {
   create(userToken: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   open(userToken: string, sessionId: string, signal?: AbortSignal): Promise<unknown>
   events(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
-  append(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
+  append(
+    userToken: string,
+    sessionId: string,
+    body: XAgentSessionAppendInput,
+    signal?: AbortSignal,
+  ): Promise<unknown>
   fork(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   archive(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   authorize(

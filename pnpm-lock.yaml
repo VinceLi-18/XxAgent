@@ -8578,6 +8578,9 @@ importers:
       '@xagent/dsh-backend-client':
         specifier: workspace:^
         version: link:../backend-client
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../retrieval
 
   packages/xagent/tool-retrieval:
     devDependencies:

@@ -18,6 +18,8 @@ PostgreSQL 启用 `vector` 与 `pg_trgm` 扩展，并保存 `artifact_text_index
 
 Host 在每条进入 Agent inbox 的消息上固定认证请求范围，并在该消息被领取时激活；排队、steering、账号切换、连接关闭和权限 revision 变化都不能继承另一条消息的 token。两个检索工具只进入 Native 工具路径，Code SDK 与嵌套 Code dispatch 不暴露它们。Host 组合必须提供固定 BGE tokenizer 的精确查询计数器，缺失或返回无效计数时检索失败关闭。Host 拒绝畸形 UTF-16，在发送请求前限制 8 KiB 查询 UTF-8 与最坏 JSON 转义正文，把调用方取消信号与固定超时合并，拒绝重定向，并在严格响应类型、大小、UTF-8、字段、模型与 revision 验证之后接受计数。Host 使用已有 backend origin 和服务令牌调用固定 FastAPI relay；relay 不接收用户或委托令牌，在解析前限制正文，只把合法请求转发到服务网络内的 embedding endpoint。内部 endpoint 只加载该 revision 的 tokenizer 资产，tokenizer 并发与 embedding 推理隔离，已取消的有限 tokenization 线程必须完成后才释放 owner。Host 在返回检索值前登记不透明收据，随后只在对应 `tool/result` 确认发布后允许同一 Session Event 绑定；取消、阻断和释放必须确认未发布或等待已发布结果完成绑定，不得把收据写入模型结果、metadata 或日志。
 
+Session Persistence 按每个 append 批次的首尾 sequence 取出已绑定收据，并只在私有 sidecar 中提交。FastAPI 在同一 Session 锁事务内检查 actor、权限 revision、全部项目授权、事件 sequence、tool call、公开 payload hash、返回身份和已预分配 citation ordinal，再写入私有 Session 项目引用、公开证据事件、收据消费、Session version 与幂等结果。append 不分配或改写 citation ordinal；project discovery 不分配 ordinal，过期或未消费搜索留下的缺口永不复用。只有后端成功才会删除 Host 注册表中的收据；失败批次保持相同事件与 sidecar 独立重试，并在下一次模型请求前的 checkpoint 完成。sidecar 不进入事件、读取响应、日志或审计。
+
 FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把 nonce 的 SHA-256 摘要作为全局唯一键持久化；令牌原文、nonce 原文和签名不进入数据库或日志。令牌严格绑定 actor、Session、Project Session 的 project 或 Private Session 的 null project、endpoint tool、tool call、权限 revision 和不超过六十秒的有效期。nonce 消费使用独立提交的事务，因此后续查询失败也不能重新使用同一委托。
 
 搜索在一个 serializable 授权快照内完成权限 revision、全部项目授权、向量与词法候选查询、citation ordinal 预留、收据和审计。只读项目授权通过 SECURITY DEFINER 函数预留最多八个连续 ordinal，应用角色不取得 Session 通用更新权限。模型可见 citation payload 以固定 embedding revision 的 tokenizer 计算完整 JSON framing、标识、元数据、scope 和正文，在 32 KiB 或 4096 token 首次溢出时停止，保留 RRF 前缀。
@@ -44,6 +46,7 @@ FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把
 - 四个检索 endpoint 在解析业务请求前限制实际流式 body 字节，并拒绝缺失、篡改、过期、重放或 claims 不匹配的委托令牌；数据库只保存 nonce 摘要与必要归属字段。
 - Host、FastAPI relay 与内部 token-count endpoint 对查询、请求 body、超时和响应施加固定资源限制；relay 只接受 Host 服务身份，计数只加载固定 revision 的 tokenizer 资产，不加载 embedding 推理模型。
 - 只读项目授权可并发预留唯一 citation ordinal，但不能直接更新 Session；搜索输出同时满足每 Artifact、总数、32 KiB 和 4096 token 限制。
+- Session append 使用关闭且有上限的私有 sidecar 原子消费收据、保存项目引用和公开证据；精确幂等重放不二次消费，失败重试保留相同 sidecar，预分配 ordinal 与缺口不改写。
 - 检索允许与拒绝审计包含固定结果和延迟，返回证据包含受限身份集合，任何原始查询、内容、向量或 bearer secret 均被排除。
 
 ## Risks

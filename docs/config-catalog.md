@@ -3135,7 +3135,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/session-persistence-api/src/index.ts:28`](../packages/xagent/session-persistence-api/src/index.ts)
+Source: [`packages/xagent/session-persistence-api/src/index.ts:29`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## Loadable plugins with no config
 

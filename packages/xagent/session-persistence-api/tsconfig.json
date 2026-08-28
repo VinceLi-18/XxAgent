@@ -8,6 +8,7 @@
     { "path": "../../runtime-diagnostics/invariants" },
     { "path": "../../core/session" },
     { "path": "../../session/session-persistence" },
-    { "path": "../backend-client" }
+    { "path": "../backend-client" },
+    { "path": "../retrieval" }
   ]
 }

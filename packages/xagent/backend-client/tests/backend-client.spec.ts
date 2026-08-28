@@ -765,7 +765,18 @@ describe('XAgent 后端客户端', () => {
     await client.sessions.create('token', { schema_version: 1, runtime_header: {} })
     await client.sessions.open('token', id)
     await client.sessions.events('token', id, { schema_version: 1, after_seq: 2 })
-    await client.sessions.append('token', id, { schema_version: 1, events: [] })
+    await client.sessions.append('token', id, {
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: 'append-1',
+      events: [],
+      retrieval_receipts: [{
+        event_sequence: 0,
+        tool_call_id: 'call-1',
+        receipt: 'opaque-secret',
+        payload_hash: 'a'.repeat(64),
+      }],
+    })
     await client.sessions.fork('token', id, { schema_version: 1, target_session_id: 'target' })
     await client.sessions.archive('token', id, { schema_version: 1 })
     await client.revoke('token')
@@ -781,6 +792,18 @@ describe('XAgent 后端客户端', () => {
       '/internal/xagent/auth/revoke',
     ])
     expect(calls[0]?.body).toEqual({ schema_version: 1 })
+    expect(calls[4]?.body).toEqual({
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: 'append-1',
+      events: [],
+      retrieval_receipts: [{
+        event_sequence: 0,
+        tool_call_id: 'call-1',
+        receipt: 'opaque-secret',
+        payload_hash: 'a'.repeat(64),
+      }],
+    })
   })
 
   test('内部调用缺少用户令牌时失败关闭', async () => {
