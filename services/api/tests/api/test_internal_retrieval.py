@@ -173,6 +173,80 @@ def _delegation_token(
     )
 
 
+async def _seed_search_chunk(
+    engine,
+    *,
+    base: int,
+    actor_id: UUID,
+    filename: str,
+    content: str,
+    project_id: UUID | None,
+) -> tuple[UUID, UUID, UUID]:
+    artifact_id, version_id, index_id, chunk_id = (
+        UUID(int=base + offset) for offset in range(4)
+    )
+    artifact_scope = "project_id" if project_id is not None else "owner_id"
+    scope_id = project_id or actor_id
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    f"INSERT INTO artifacts (id, filename, {artifact_scope}, created_by_id) "
+                    f"VALUES (:id, :filename, :scope_id, :actor)"
+                ),
+                {
+                    "id": artifact_id, "filename": filename,
+                    "scope_id": scope_id, "actor": actor_id,
+                },
+            )
+            await session.execute(
+                text(
+                    f"INSERT INTO artifact_versions "
+                    f"(id, artifact_id, {artifact_scope}, version_number, original_filename, "
+                    f"uploaded_by_id, declared_size, actual_size, detected_content_type, scan_status, "
+                    f"object_key, size, content_type, sha256) VALUES (:id, :artifact, :scope_id, 1, "
+                    f":filename, :actor, 1, 1, 'text/plain', 'clean', :key, 1, 'text/plain', :sha)"
+                ),
+                {
+                    "id": version_id, "artifact": artifact_id, "scope_id": scope_id,
+                    "filename": filename, "actor": actor_id,
+                    "key": f"artifacts/{artifact_id}/{version_id}", "sha": f"{base:064x}",
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_text_indexes "
+                    "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                    "embedding_model, embedding_revision, vector_dimensions, configuration_fingerprint, "
+                    "status, chunk_count) VALUES (:id, :artifact, :version, 1, :sha, 'parser', "
+                    "'BAAI/bge-m3', 'revision', 1024, :fingerprint, 'ready', 1)"
+                ),
+                {
+                    "id": index_id, "artifact": artifact_id, "version": version_id,
+                    "sha": f"{base + 1:064x}", "fingerprint": f"{base + 2:064x}",
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_text_chunks "
+                    "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                    "VALUES (:id, :index, 0, 1, 1, :content, 2, :sha, CAST(:vector AS vector))"
+                ),
+                {
+                    "id": chunk_id, "index": index_id, "content": content,
+                    "sha": f"{base + 3:064x}", "vector": "[1" + ",0" * 1023 + "]",
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+                    "VALUES (:artifact, :index, :version)"
+                ),
+                {"artifact": artifact_id, "index": index_id, "version": version_id},
+            )
+    return artifact_id, version_id, chunk_id
+
+
 @pytest.mark.anyio
 async def test_project_discovery_requires_and_atomically_consumes_delegation(
     client, seeded_database, alice, alice_private_xagent_session
@@ -330,6 +404,204 @@ async def test_read_only_project_grant_can_search_through_the_real_http_route(
             select(XAgentSession.next_citation_ordinal).where(XAgentSession.id == session_id)
         )
     assert ordinal == 1
+
+
+@pytest.mark.anyio
+async def test_private_session_http_search_returns_explicit_project_and_private_chunks(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    project_identity = await _seed_search_chunk(
+        seeded_database,
+        base=900,
+        actor_id=alice.id,
+        filename="project-mixed.txt",
+        content="mixed project evidence",
+        project_id=alice_project.id,
+    )
+    private_identity = await _seed_search_chunk(
+        seeded_database,
+        base=910,
+        actor_id=alice.id,
+        filename="private-mixed.txt",
+        content="mixed private evidence",
+        project_id=None,
+    )
+    user_token = await _login(client, seeded_database, alice)
+
+    async def fake_embed(self, texts):
+        return [[1.0, *([0.0] * 1023)]]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    tool_call_id = "mixed-project-private-search"
+    delegation = _delegation_token(
+        actor_id=alice.id,
+        session_id=alice_private_xagent_session.id,
+        tool_call_id=tool_call_id,
+        nonce="mixed-project-private-search",
+        tool_name="search_artifacts",
+    )
+
+    response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            "X-XAgent-Service-Token": SERVICE_TOKEN,
+            "X-XAgent-Delegation": delegation,
+            "Authorization": f"Bearer {user_token}",
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": 1,
+            "query": "mixed evidence",
+            "project_ids": [str(alice_project.id)],
+            "include_private": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    citations = response.json()["citations"]
+    assert {
+        (item["artifact_id"], item["version_id"], item["chunk_id"], item["scope"])
+        for item in citations
+    } == {
+        tuple(str(value) for value in project_identity) + ("project",),
+        tuple(str(value) for value in private_identity) + ("private",),
+    }
+
+
+@pytest.mark.anyio
+async def test_search_route_rejects_jwt_account_switch_from_session_and_delegation_actor(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    alice_private_xagent_session,
+) -> None:
+    bob_token = await _login(client, seeded_database, bob)
+    tool_call_id = "account-switch-search"
+    delegation = _delegation_token(
+        actor_id=alice.id,
+        session_id=alice_private_xagent_session.id,
+        tool_call_id=tool_call_id,
+        nonce="account-switch-search",
+        tool_name="search_artifacts",
+    )
+
+    response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            "X-XAgent-Service-Token": SERVICE_TOKEN,
+            "X-XAgent-Delegation": delegation,
+            "Authorization": f"Bearer {bob_token}",
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": 1,
+            "query": "must stay closed",
+            "include_private": True,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"code": "service-unavailable"}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        nonce_count = await verification.scalar(
+            select(func.count()).select_from(XAgentDelegationNonce)
+        )
+    assert nonce_count == 0
+
+
+@pytest.mark.anyio
+async def test_search_http_rejects_wrong_delegation_bindings_and_replay(
+    client,
+    seeded_database,
+    alice,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    user_token = await _login(client, seeded_database, alice)
+
+    async def fake_embed(self, texts):
+        return [[0.0] * 1024]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    body = {
+        "schema_version": 1,
+        "session_id": str(alice_private_xagent_session.id),
+        "tool_call_id": "search-binding-check",
+        "permission_revision": 1,
+        "query": "binding check",
+        "include_private": True,
+    }
+    headers = {
+        "X-XAgent-Service-Token": SERVICE_TOKEN,
+        "Authorization": f"Bearer {user_token}",
+    }
+    valid = _delegation_token(
+        actor_id=alice.id,
+        session_id=alice_private_xagent_session.id,
+        tool_call_id="search-binding-check",
+        nonce="search-binding-valid",
+        tool_name="search_artifacts",
+    )
+    first = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={**headers, "X-XAgent-Delegation": valid},
+        json=body,
+    )
+    replay = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={**headers, "X-XAgent-Delegation": valid},
+        json=body,
+    )
+    overrides = (
+        {"tool_name": "resolve_citation"},
+        {"session_id": str(UUID(int=920))},
+        {"project_id": str(UUID(int=921))},
+        {"permission_revision": 2},
+    )
+    mismatches = []
+    for index, override in enumerate(overrides):
+        token = _delegation_token(
+            actor_id=alice.id,
+            session_id=alice_private_xagent_session.id,
+            tool_call_id="search-binding-check",
+            nonce=f"search-binding-invalid-{index}",
+            tool_name="search_artifacts",
+            overrides=override,
+        )
+        mismatches.append(
+            await client.post(
+                "/internal/xagent/retrieval/search",
+                headers={**headers, "X-XAgent-Delegation": token},
+                json=body,
+            )
+        )
+
+    assert first.status_code == 200
+    assert replay.status_code == 503
+    assert [response.status_code for response in mismatches] == [503, 503, 503, 503]
+    assert all(
+        response.json() == {"detail": {"code": "service-unavailable"}}
+        for response in [replay, *mismatches]
+    )
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        nonce_count = await verification.scalar(
+            select(func.count()).select_from(XAgentDelegationNonce)
+        )
+        receipt_count = await verification.scalar(
+            select(func.count()).select_from(XAgentRetrievalReceipt)
+        )
+    assert nonce_count == 1
+    assert receipt_count == 1
 
 
 @pytest.mark.anyio
@@ -523,7 +795,7 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
         alice_private_xagent_session.id, "authorize-real", "authorize_citations",
         "authorize-real", {"citations": [citation]},
     )
-    resolved, _ = await call(
+    resolved, resolve_token = await call(
         "/internal/xagent/retrieval/citations/resolve",
         alice_private_xagent_session.id, "resolve-real", "resolve_citation",
         "resolve-real", {"citation": citation},
@@ -537,6 +809,43 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
             "citations": [citation],
         },
     )
+    resolve_replay = await client.post(
+        "/internal/xagent/retrieval/citations/resolve",
+        headers={**base_headers, "X-XAgent-Delegation": resolve_token},
+        json={
+            "schema_version": 1, "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": "resolve-real", "permission_revision": 1,
+            "citation": citation,
+        },
+    )
+    resolve_mismatches = []
+    for index, override in enumerate((
+        {"tool_name": "search_artifacts"},
+        {"session_id": str(other_session_id)},
+        {"project_id": str(UUID(int=876))},
+        {"permission_revision": 2},
+    )):
+        token = _delegation_token(
+            actor_id=alice.id,
+            session_id=alice_private_xagent_session.id,
+            tool_call_id="resolve-binding-check",
+            nonce=f"resolve-binding-invalid-{index}",
+            tool_name="resolve_citation",
+            overrides=override,
+        )
+        resolve_mismatches.append(
+            await client.post(
+                "/internal/xagent/retrieval/citations/resolve",
+                headers={**base_headers, "X-XAgent-Delegation": token},
+                json={
+                    "schema_version": 1,
+                    "session_id": str(alice_private_xagent_session.id),
+                    "tool_call_id": "resolve-binding-check",
+                    "permission_revision": 1,
+                    "citation": citation,
+                },
+            )
+        )
     cross_session, _ = await call(
         "/internal/xagent/retrieval/citations/resolve",
         other_session_id, "resolve-cross-session", "resolve_citation",
@@ -597,7 +906,12 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
     assert authorized.json()["authorized"] is True
     assert resolved.status_code == 200
     assert resolved.json()["line_start"] == 4
-    assert replay.status_code == 503
+    assert replay.status_code == resolve_replay.status_code == 503
+    assert [response.status_code for response in resolve_mismatches] == [503, 503, 503, 503]
+    assert all(
+        response.json() == {"detail": {"code": "service-unavailable"}}
+        for response in [resolve_replay, *resolve_mismatches]
+    )
     assert authorize_commit_failure.status_code == resolve_commit_failure.status_code == 503
     assert authorize_commit_failure.json() == resolve_commit_failure.json() == {
         "detail": {"code": "service-unavailable"}
@@ -606,6 +920,33 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
     assert cross_session.json() == unknown_response.json() == revoked_response.json() == {
         "detail": {"code": "citation-invalid"}
     }
+    async with AsyncSession(seeded_database, expire_on_commit=False) as verification:
+        nonce_count = await verification.scalar(
+            select(func.count()).select_from(XAgentDelegationNonce)
+        )
+        receipt_count = await verification.scalar(
+            select(func.count()).select_from(XAgentRetrievalReceipt)
+        )
+        failure_audits = (
+            await verification.execute(
+                select(AuditEvent.details["tool_call_id"].as_string(), AuditEvent.result)
+                .where(
+                    AuditEvent.details["tool_call_id"].as_string().in_((
+                        "authorize-commit-failure",
+                        "resolve-commit-failure",
+                        "resolve-revoked",
+                    ))
+                )
+                .order_by(AuditEvent.details["tool_call_id"].as_string())
+            )
+        ).all()
+    assert nonce_count == 7
+    assert receipt_count == 1
+    assert failure_audits == [
+        ("authorize-commit-failure", "service-unavailable"),
+        ("resolve-commit-failure", "service-unavailable"),
+        ("resolve-revoked", "citation-invalid"),
+    ]
 
 
 @pytest.mark.anyio
@@ -723,7 +1064,28 @@ async def test_concurrent_http_searches_allocate_unique_session_ordinals(
                 XAgentSession.id == alice_private_xagent_session.id
             )
         )
+        receipt_count = await verification.scalar(
+            select(func.count()).select_from(XAgentRetrievalReceipt)
+        )
+        nonce_count = await verification.scalar(
+            select(func.count()).select_from(XAgentDelegationNonce)
+        )
+        audits = (
+            await verification.execute(
+                select(AuditEvent.details["tool_call_id"].as_string(), AuditEvent.result)
+                .where(
+                    AuditEvent.details["tool_call_id"].as_string().in_((
+                        "concurrent-1", "concurrent-2",
+                    ))
+                )
+                .order_by(AuditEvent.result)
+            )
+        ).all()
     assert ordinal == 2
+    assert receipt_count == 1
+    assert nonce_count == 2
+    assert sorted(result for _, result in audits) == ["allowed", "retrieval-unavailable"]
+    assert {tool_call_id for tool_call_id, _ in audits} == {"concurrent-1", "concurrent-2"}
 
 
 @pytest.mark.anyio
