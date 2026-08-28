@@ -58,6 +58,10 @@ flowchart LR
   svc_xagentArtifact["ctx.xagentArtifact<br/>XAgent Artifact Remote"]
   pkg_xagent_project["xagent-project"]
   svc_xagentProject["ctx.xagentProject<br/>XAgent project workbench Remote"]
+  pkg_xagent_retrieval["xagent-retrieval"]
+  svc_xagentRetrieval["ctx.xagentRetrieval<br/>Authenticated XAgent retrieval seam"]
+  pkg_tool_retrieval["tool-retrieval"]
+  pkg_session_persistence_api["session-persistence-api"]
   pkg_settings["settings"]
   svc_settings["ctx.settings<br/>User-settings seam"]
   pkg_settings_file["settings-file"]
@@ -311,6 +315,7 @@ flowchart LR
   pkg_xagent_connection_auth --> svc_connectionRequestContextResolver
   pkg_xagent_principal --> svc_xagentPrincipal
   pkg_xagent_project --> svc_xagentProject
+  pkg_xagent_retrieval --> svc_xagentRetrieval
   svc_agentDefaultModel --> pkg_headless
   svc_agentDefaultModel --> pkg_host_apiproxy
   svc_agentLoop --> pkg_agent_spine_demo
@@ -429,6 +434,8 @@ flowchart LR
   svc_xagentArtifact --> pkg_xagent_authorization
   svc_xagentProject --> pkg_api_gateway
   svc_xagentProject --> pkg_xagent_authorization
+  svc_xagentRetrieval --> pkg_session_persistence_api
+  svc_xagentRetrieval --> pkg_tool_retrieval
   svc_fs -. event gate .-> pkg_fs_observation_policy
 ```
 
@@ -448,6 +455,7 @@ flowchart LR
 | `ctx.xagentPrincipal` | `seam` | `xagent-principal` | - | - | - | 定义不可变且经过校验的 actor 契约；浏览器 payload 和身份外观请求头不能构造 Principal。 |
 | `ctx.xagentArtifact` | `core` | `xagent-artifact` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | 只从自身当前已认证请求作用域读取用户令牌，并将八个固定 Artifact 操作转发给 FastAPI，不缓存数据或 URL。 |
 | `ctx.xagentProject` | `core` | `xagent-project` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | 只从当前连接请求作用域读取用户令牌，并将 4 个固定工作台操作转发给 FastAPI。 |
+| `ctx.xagentRetrieval` | `seam` | `xagent-retrieval` | - | `tool-retrieval`, `session-persistence-api` | - | 消费一个不可变的认证 prompt 作用域，为每次调用签发一份精确委托，并在 Session append 确认前私下保存 receipt。 |
 | `ctx.settings` | `seam` | [`settings`](../packages/settings/settings) | [`settings-file`](../packages/settings/settings-file) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | 插件注册命名空间 schema 并解析分层值；提供方存储原始文档。LLM（大语言模型）适配器在用户分区下将其入口配置注册为组合基础；Web 网关提供经过脱敏的分层描述符，并写入用户层。 |
 | `ctx.credentials` | `seam` | [`credentials`](../packages/credentials/credentials) | [`credentials-local`](../packages/credentials/credentials-local) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | 配置携带对机密信息的引用；提供方拥有实际值。消费方按操作解析，因此轮换后的凭据会在紧接着的下一次请求中生效；Web 网关提供不含实际值的视图和只写存储。 |
 | `ctx.sessionTelemetry` | `seam` | [`session-telemetry`](../packages/session/session-telemetry) | [`session-telemetry-otel`](../packages/session/session-telemetry-otel) | - | - | 该 seam 捕获会话记录、进行脱敏并交给一个后端；没有其他组件消费该服务，其输出会离开当前进程。 |

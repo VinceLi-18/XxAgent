@@ -21,3 +21,17 @@ export interface XAgentAuthenticatedRequestScope {
   readonly userToken: string
   readonly connectionId: string
 }
+
+/** Authenticated Session facts propagated from one physical prompt request into its agent turn. */
+export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestScope & (
+  | {
+    readonly sessionId: string
+    readonly visibility: 'private'
+    readonly projectId: null
+  }
+  | {
+    readonly sessionId: string
+    readonly visibility: 'project'
+    readonly projectId: string
+  }
+)

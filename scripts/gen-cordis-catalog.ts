@@ -111,6 +111,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   xagentProject: 'web-server.md',
   xagentArtifact: 'web-server.md',
   xagentPrincipal: 'web-server.md',
+  xagentRetrieval: 'web-server.md',
 }
 
 /**
@@ -539,6 +540,10 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   XAgentWorkbenchBootstrap: 'XAgent workbench response contract is owned by packages/xagent/project/architecture.md',
   XAgentWorkbenchContext: 'XAgent workbench selection contract is owned by packages/xagent/project/architecture.md',
   XAgentPrincipal: 'XAgent principal contract is owned by packages/xagent/principal/architecture.md',
+  XAgentAccessibleProjects: 'XAgent retrieval response is owned by packages/xagent/retrieval/architecture.md',
+  XAgentArtifactSearch: 'XAgent retrieval response is owned by packages/xagent/retrieval/architecture.md',
+  XAgentListAccessibleProjectsInput: 'XAgent retrieval input is owned by packages/xagent/retrieval/architecture.md',
+  XAgentSearchArtifactsInput: 'XAgent retrieval input is owned by packages/xagent/retrieval/architecture.md',
   ApprovalRequestId: 'dynamic Plugin approval identity is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisErrorDetails: 'Cordis runtime error payload is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisInspectPlatform: 'Cordis inspect platform identity is owned by packages/extensions/cordis-host-runner/src/types.ts',

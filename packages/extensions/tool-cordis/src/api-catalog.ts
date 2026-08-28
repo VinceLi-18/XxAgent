@@ -2313,6 +2313,30 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
     ],
   },
+  {
+    key: 'xagentRetrieval',
+    summary: 'Service Definition consumed by model tools and later citation policy.',
+    description: 'Service Definition consumed by model tools and later citation policy.',
+    methods: [
+      {
+        signature: 'abstract readonly receipts: XAgentReceiptRegistry',
+        description: 'Opaque receipt lifetime consumed only by XAgent Session persistence.',
+        parameters: [],
+      },
+      {
+        signature: 'abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promise<XAgentAccessibleProjects>',
+        description: 'Discover accessible projects for the exact authenticated Private Session.',
+        parameters: [{ name: 'input', description: 'immutable Session/tool identity and optional bounded name query.' }],
+        returns: 'at most twenty accessible projects and the public payload hash.',
+      },
+      {
+        signature: 'abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>',
+        description: 'Search Artifact evidence within the exact authenticated Session scope.',
+        parameters: [{ name: 'input', description: 'immutable identity, query, and explicit Private Session selectors.' }],
+        returns: 'authorized citation excerpts and the public payload hash.',
+      },
+    ],
+  },
 ]
 
 /** Every harness event, sorted by name. */
@@ -4810,16 +4834,60 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type WorkflowStopReason = \'completed\' | \'cancelled\' | \'error\';',
   },
   {
+    name: 'XAgentAccessibleProjects',
+    declaration: 'export interface XAgentAccessibleProjects {\n    readonly projects: readonly XAgentRetrievalProject[];\n    readonly payloadHash: string;\n}',
+  },
+  {
+    name: 'XAgentArtifactSearch',
+    declaration: 'export interface XAgentArtifactSearch {\n    readonly citations: readonly XAgentRetrievalCitation[];\n    readonly payloadHash: string;\n}',
+  },
+  {
     name: 'XAgentAuthenticatedRequestScope',
     declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n}',
+  },
+  {
+    name: 'XAgentCitationIdentity',
+    declaration: 'export interface XAgentCitationIdentity {\n    readonly id: string;\n    readonly artifactId: string;\n    readonly versionId: string;\n    readonly chunkId: string;\n}',
+  },
+  {
+    name: 'XAgentListAccessibleProjectsInput',
+    declaration: 'export interface XAgentListAccessibleProjectsInput extends XAgentRetrievalCall {\n    readonly query?: string;\n}',
   },
   {
     name: 'XAgentPrincipal',
     declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
   },
   {
+    name: 'XAgentReceiptRegistry',
+    declaration: 'export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    dispose(): Promise<void>;\n}',
+  },
+  {
+    name: 'XAgentReceiptRegistryContract',
+    declaration: 'export interface XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    dispose(): Promise<void>;\n}',
+  },
+  {
+    name: 'XAgentRetrievalCall',
+    declaration: 'export interface XAgentRetrievalCall {\n    readonly sessionId: SessionId;\n    readonly toolCallId: string;\n    readonly signal?: AbortSignal;\n}',
+  },
+  {
+    name: 'XAgentRetrievalCitation',
+    declaration: 'export interface XAgentRetrievalCitation extends XAgentCitationIdentity {\n    readonly displayName: string;\n    readonly versionNumber: number;\n    readonly lineStart: number;\n    readonly lineEnd: number;\n    readonly text: string;\n    readonly scope: \'private\' | \'project\';\n}',
+  },
+  {
+    name: 'XAgentRetrievalProject',
+    declaration: 'export interface XAgentRetrievalProject {\n    readonly projectId: string;\n    readonly name: string;\n}',
+  },
+  {
+    name: 'XAgentRetrievalReceiptAttachment',
+    declaration: 'export interface XAgentRetrievalReceiptAttachment {\n    readonly eventSequence: number;\n    readonly toolCallId: string;\n    readonly receipt: string;\n    readonly payloadHash: string;\n}',
+  },
+  {
     name: 'XAgentRole',
     declaration: 'export type XAgentRole = \'manager\' | \'specialist\';',
+  },
+  {
+    name: 'XAgentSearchArtifactsInput',
+    declaration: 'export interface XAgentSearchArtifactsInput extends XAgentRetrievalCall {\n    readonly query: string;\n    readonly projectIds?: readonly string[];\n    readonly includePrivate: boolean;\n}',
   },
 ]
 

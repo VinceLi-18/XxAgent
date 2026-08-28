@@ -63,6 +63,7 @@ import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
 import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
 import * as ToolWorkflow from '@deepseek-ai/dsh-tool-workflow'
+import * as XAgentToolRetrieval from '@xagent/dsh-tool-retrieval'
 import { githubSlug } from './verify-md-links.ts'
 
 /** Attachment seam marker that makes the attachments-conditional `read_image` schema harvestable. */
@@ -182,6 +183,18 @@ export interface ToolPackage {
  * guard proves it is exhaustive against the on-disk glob.
  */
 const TOOL_PACKAGES: ToolPackage[] = [
+  {
+    pkg: '@xagent/dsh-tool-retrieval',
+    dir: 'tool-retrieval',
+    source: 'packages/xagent/tool-retrieval/src/index.ts',
+    requires: ['ctx.tools', 'ctx.xagentRetrieval and an owning Agent at execution time'],
+    writes: ['tool/call', 'tool/result'],
+    async mount(ctx) {
+      await ctx.plugin(XAgentToolRetrieval)
+    },
+    note:
+      'XAgent Business project discovery and read-only Artifact evidence search; Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project.',
+  },
   {
     pkg: '@deepseek-ai/dsh-tool-ask-user',
     dir: 'tool-ask-user',

@@ -4,7 +4,10 @@ import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { XAgentBackend, XAgentSessionBackend } from '@xagent/dsh-backend-client'
 import { XAgentBackendError } from '@xagent/dsh-backend-client'
 import type { XAgentArtifactScopeRunner } from '../../artifact/src/index.ts'
-import type { XAgentAuthenticatedRequestScope } from '../../principal/src/index.ts'
+import {
+  currentXAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedRequestScope,
+} from '../../principal/src/index.ts'
 import type { XAgentProjectScopeRunner } from '../../project/src/index.ts'
 import { describe, expect, test, vi } from 'vitest'
 import * as authorizationModule from '../src/index.ts'
@@ -30,7 +33,12 @@ function backend(authorize: XAgentSessionBackend['authorize'] = vi.fn(async () =
   return {
     login: vi.fn(), introspect: vi.fn(), revoke: vi.fn(),
     sessions: {
-      list: vi.fn(async () => ({ schema_version: 1, sessions: [] })),
+      list: vi.fn(async () => ({ schema_version: 1, sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'private',
+        project_id: null,
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }] })),
       create: vi.fn(), open: vi.fn(), events: vi.fn(), append: vi.fn(), fork: vi.fn(), archive: vi.fn(),
       authorize,
     },
@@ -87,6 +95,42 @@ function artifactScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => voi
 }
 
 describe('XAgent Session 授权', () => {
+  test('prompt admission propagates one immutable physical and Session scope into detached agent work', async () => {
+    const value = backend()
+    value.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const auth = new XAgentAuthorization(value, persistence())
+    let resolveDetached!: (scope: unknown) => void
+    const detached = new Promise<unknown>((resolve) => { resolveDetached = resolve })
+
+    await auth.run(
+      'session/prompt',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      { ...context, requestId: 'rpc-1' },
+      new AbortController().signal,
+      async () => {
+        void new Promise<void>(resolve => setImmediate(resolve))
+          .then(() => { resolveDetached(currentXAgentAuthenticatedRequestScope()) })
+        return { ok: true, value: 'ok' }
+      },
+    )
+
+    await expect(detached).resolves.toMatchObject({
+      principal: context.principal,
+      userToken: 'alice-token',
+      connectionId: 'connection-1',
+      sessionId: '00000000-0000-0000-0000-000000000701',
+      visibility: 'project',
+      projectId: '00000000-0000-0000-0000-000000000401',
+    })
+  })
   test('模块插件入口只暴露带配置的安装函数', () => {
     expect('default' in authorizationModule).toBe(false)
     expect(typeof authorizationModule.apply).toBe('function')

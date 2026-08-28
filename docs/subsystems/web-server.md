@@ -226,7 +226,7 @@ XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspectio
 abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 ```
 
-Source: [`packages/xagent/principal/src/index.ts:60`](../../packages/xagent/principal/src/index.ts)
+Source: [`packages/xagent/principal/src/index.ts:86`](../../packages/xagent/principal/src/index.ts)
 
 <a id="ctxxagentproject--xagentprojectservice"></a>
 
@@ -277,4 +277,28 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 ```
 
 Source: [`packages/xagent/project/src/index.ts:67`](../../packages/xagent/project/src/index.ts)
+
+<a id="ctxxagentretrieval--xagentretrieval-abstract-seam"></a>
+
+### `ctx.xagentRetrieval` — `XAgentRetrieval` (abstract seam)
+
+Service Definition consumed by model tools and later citation policy.
+
+```ts cordis-catalog
+/**
+ * Discover accessible projects for the exact authenticated Private Session.
+ * @param input - immutable Session/tool identity and optional bounded name query.
+ * @returns at most twenty accessible projects and the public payload hash.
+ */
+abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promise<XAgentAccessibleProjects>
+
+/**
+ * Search Artifact evidence within the exact authenticated Session scope.
+ * @param input - immutable identity, query, and explicit Private Session selectors.
+ * @returns authorized citation excerpts and the public payload hash.
+ */
+abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>
+```
+
+Source: [`packages/xagent/retrieval/src/index.ts:100`](../../packages/xagent/retrieval/src/index.ts)
 <!-- END GENERATED cordis-surface -->

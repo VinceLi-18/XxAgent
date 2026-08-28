@@ -595,9 +595,8 @@ git commit -m "feat: checkpoint xagent retrieval receipts"
 
 **Files:**
 
-- Create: `packages/xagent/retrieval/src/citation-policy.ts`
-- Create: `packages/xagent/retrieval/src/events.ts`
-- Create: `packages/xagent/retrieval/tests/citation-policy.spec.ts`
+- Create: `packages/xagent/retrieval/src/{citation-policy.ts,events.ts}`
+- Create: `packages/xagent/retrieval/tests/{citation-policy.spec.ts}`
 - Modify: `packages/xagent/retrieval/src/index.ts`
 - Modify: `packages/xagent/retrieval/src/types.ts`
 - Modify: `packages/xagent/retrieval/README.md`
@@ -611,7 +610,7 @@ git commit -m "feat: checkpoint xagent retrieval receipts"
 - [ ] **Step 1: Write streaming, invalid-output, and revocation RED tests**
 
 ```bash
-CI=true corepack pnpm exec vitest run packages/xagent/retrieval/tests/citation-policy.spec.ts packages/session/session-checkpoint-policy/tests
+CI=true corepack pnpm exec vitest run packages/xagent/retrieval/tests/{citation-policy.spec.ts} packages/session/session-checkpoint-policy/tests
 ```
 
 Expected: evidence-bearing answers stream before validation and no correction/retry policy exists.
