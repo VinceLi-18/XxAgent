@@ -1,12 +1,38 @@
 /** XAgent Ed25519 短时、限域、单次委托令牌。 @module @xagent/dsh-delegation-token */
 
-import { sign, verify } from 'node:crypto'
-import type { DelegationClaims, DelegationScope, IssueDelegationOptions, VerifyDelegationOptions } from './types.ts'
+import { createHash, randomBytes, sign, verify } from 'node:crypto'
+import type {
+  DelegationClaims,
+  DelegationScope,
+  IssueDelegationOptions,
+  RetrievalDelegationScope,
+  RetrievalDelegationScopeInput,
+  VerifyDelegationOptions,
+} from './types.ts'
 
-export type { DelegationClaims, DelegationScope, IssueDelegationOptions, VerifyDelegationOptions } from './types.ts'
+export type {
+  DelegationClaims,
+  DelegationScope,
+  IssueDelegationOptions,
+  RetrievalDelegationScope,
+  RetrievalDelegationScopeInput,
+  VerifyDelegationOptions,
+} from './types.ts'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const REJECTED = 'delegation rejected'
+const CLAIM_KEYS = [
+  'actor_id', 'aud', 'exp', 'iat', 'iss', 'nonce', 'permission_revision',
+  'project_id', 'session_id', 'tool_call_id', 'tool_name',
+] as const
+
+/**
+ * Generate an unpredictable per-call nonce for FastAPI's durable single-use check.
+ * @returns a 256-bit base64url nonce.
+ */
+export function newDelegationNonce(): string {
+  return randomBytes(32).toString('base64url')
+}
 
 function encoded(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString('base64url')
@@ -26,6 +52,37 @@ function validScope(value: DelegationScope): boolean {
     && value.toolName.length > 0
     && Number.isSafeInteger(value.permissionRevision)
     && value.permissionRevision >= 1
+}
+
+/**
+ * Canonicalize the explicit Private Session retrieval scope bound by the FastAPI request.
+ * @param input - caller-selected projects and private-artifact inclusion.
+ * @returns sorted scope values and the FastAPI-compatible canonical JSON digest.
+ */
+export function canonicalizeRetrievalDelegationScope(
+  input: RetrievalDelegationScopeInput,
+): RetrievalDelegationScope {
+  const rawProjectIds: unknown = input.projectIds
+  if (!Array.isArray(rawProjectIds) || typeof input.includePrivate !== 'boolean') throw new Error(REJECTED)
+  if (rawProjectIds.some((projectId: unknown) => typeof projectId !== 'string' || !UUID_PATTERN.test(projectId))) {
+    throw new Error(REJECTED)
+  }
+  const projectIds = [...new Set(rawProjectIds.map((projectId: unknown) => (projectId as string).toLowerCase()))]
+  if (
+    projectIds.length > 20
+    || (projectIds.length === 0 && !input.includePrivate)
+  ) throw new Error(REJECTED)
+  projectIds.sort()
+  const canonical = JSON.stringify({
+    include_private: input.includePrivate,
+    kind: 'private',
+    project_ids: projectIds,
+  })
+  return Object.freeze({
+    projectIds: Object.freeze(projectIds),
+    includePrivate: input.includePrivate,
+    scopeHash: createHash('sha256').update(canonical).digest('hex'),
+  })
 }
 
 /**
@@ -81,7 +138,12 @@ export async function verifyDelegationToken(
     const payload = parsePart(payloadPart) as Record<string, unknown>
     const signature = Buffer.from(signaturePart, 'base64url')
     if (signature.toString('base64url') !== signaturePart) throw new Error(REJECTED)
-    if (header.alg !== 'EdDSA' || header.typ !== 'JWT') throw new Error(REJECTED)
+    if (
+      header.alg !== 'EdDSA'
+      || header.typ !== 'JWT'
+      || Object.keys(payload).sort().some((key, index) => key !== CLAIM_KEYS[index])
+      || Object.keys(payload).length !== CLAIM_KEYS.length
+    ) throw new Error(REJECTED)
     if (!verify(null, Buffer.from(`${headerPart}.${payloadPart}`), options.publicKey, signature)) {
       throw new Error(REJECTED)
     }

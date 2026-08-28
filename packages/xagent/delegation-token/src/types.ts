@@ -10,6 +10,19 @@ export interface DelegationScope {
   permissionRevision: number
 }
 
+/** Canonical Private Session retrieval scope kept outside compact delegation claims. */
+export interface RetrievalDelegationScope {
+  readonly projectIds: readonly string[]
+  readonly includePrivate: boolean
+  readonly scopeHash: string
+}
+
+/** Explicit Private Session retrieval scope before canonicalization. */
+export interface RetrievalDelegationScopeInput {
+  readonly projectIds: readonly string[]
+  readonly includePrivate: boolean
+}
+
 /** Signing inputs for a short-lived Ed25519 delegation token. */
 export interface IssueDelegationOptions extends DelegationScope {
   issuer: string

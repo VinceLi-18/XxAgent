@@ -4,6 +4,10 @@
 
 每次调用合并固定超时与调用方 `AbortSignal`。序列化后的请求正文和流式读取的响应正文分别执行字节上限；响应超限时立即取消读取。只有成功且符合对应固定 schema 的 JSON 才能返回；非成功响应只提取允许的稳定错误码，其余网络、重定向、超限和 schema 错误统一为 `service-unavailable`。
 
+检索调用复用同一有界读取、手动重定向和合并取消管线，并额外发送 `X-XAgent-Delegation`。Host 服务身份、用户 JWT 和委托令牌只存在于请求头。四个请求体由固定字段构造；search 的显式 `project_ids` 与 `include_private` 留在请求体，委托令牌仍只携带可空的单个 `project_id` claim。客户端不把 receipt、委托令牌、用户 JWT 或服务身份写入返回对象或异常。
+
+项目发现、资料搜索、引用授权和引用解析分别持有独立成功解析器与错误表。解析器拒绝未知字段、重复项目或引用、非 UUID 身份、非规范 SHA-256、越界整数、反向行范围、过长名称或正文，以及 receipt 中不属于 opaque base64url 字符集的值。引用解析必须返回请求中同一 Artifact、Version 和 Chunk；FastAPI 不能把另一条已授权引用替换进结果。所有 retrieval 方法只接受 `200`，并按 endpoint 校验稳定错误与 HTTP status 的精确组合。
+
 工作台方法使用独立的封闭路径表。Bootstrap、上下文操作、项目创建和项目详情分别执行严格的 snake_case 解码并返回 camelCase 业务对象。Bootstrap 的 `session_scopes` 必须使用唯一 Session ID；private 项不得带项目，project 项必须引用同一响应中的可见项目。上下文选择与项目创建先验证原子操作响应，再读取完整 Bootstrap；两次响应的账号 ID 必须一致。Session 项目引用登记只接受空成功响应。具体客户端始终提供工作台方法，而不使用工作台的认证或 Session 消费者仍可只依赖通用后端接口。
 
 Artifact 方法与认证、Session 和工作台方法共用同一个请求管线。每个响应先执行完整正文上限，再由对应闭合解析器拒绝未知或缺失字段。列表摘要校验 private/project 归属；clean latest 必须同时是 latest clean，非 clean latest 引用的 latest clean 必须更早。详情额外要求版本 ID 与版本号唯一、版本号严格降序、首项与 latest version/status 一致，并要求 latest clean 指向历史中最高的 clean 版本。版本公开字段只允许文件名、上传者、大小、MIME、SHA-256、状态和创建时间，任何对象 Key、暂存 Key、租约、内部失败码或扫描原文都会因未知字段而失败关闭。
