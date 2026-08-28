@@ -10,13 +10,17 @@ Every XAgent inbox insertion records either its authenticated scope or an invali
 
 The opaque receipt returned by FastAPI enters the in-memory registry before the public result returns. A final successful Native result marks it published; a blocked, cancelled, failed, or terminally unappendable result confirms non-publication and discards it. A published receipt binds only when Session, tool call, and payload hash all match. Disposal closes admission, discards continuations that can no longer publish, cancels active requests, and awaits backend settlement without depending on its own post-execute waterfall. Bound sidecars remain available for exact persistence append windows until remote confirmation.
 
+When a loop request contains a checkpointed non-empty Artifact search result, the service buffers at most 64 KiB of assistant output, 32 KiB of tool arguments, and 4,096 stream chunks. It accepts only short citation IDs reconstructed from matching retrieval `tool/result` events and reauthorizes every cited Artifact immediately before releasing the first answer chunk. A tool-only continuation is fully buffered but does not call authorization with an empty citation set; its tool result must checkpoint before the later model request. Any evidence-bearing text requires at least one allowed citation. Ordinary requests and empty searches retain the downstream stream unchanged.
+
+The first invalid draft is fully suppressed. A log-only `xagent/citation-correction` event retains its SHA-256, an at-most-8-KiB UTF-8 prefix, the stable reason, invalid IDs, and at most 64 allowed IDs; an associated plugin-origin `user/message` carries the correction instruction into normal history. The Agent retries that owned `CITATION_INVALID` once. A second invalid draft records `xagent/citation-failure`, adds the explicit Chinese failure message, and ends with `CITATION_FAILED` without an assistant answer. Cancellation, revocation, account replacement, Session replacement, and disposal release no buffered answer bytes.
+
 ## Model Experience
 
 ### Retrieval evidence
 
 #### What the model sees
 
-The model sees only accessible project names returned by `list_accessible_projects`, or up to eight authorized Artifact excerpts with short `[资料N]` IDs returned by `search_artifacts`. It never sees user tokens, delegation tokens, receipts, internal URLs, object keys, or backend error details.
+The model sees only accessible project names returned by `list_accessible_projects`, or up to eight authorized Artifact excerpts with short `[资料N]` IDs returned by `search_artifacts`. After an invalid evidence answer, it sees the logged correction instruction and allowed IDs on the single retry. It never sees user tokens, delegation tokens, receipts, internal URLs, object keys, or backend error details.
 
 #### Token effect
 
@@ -24,7 +28,7 @@ Project lists or Artifact excerpts add tool-result tokens only when the model ca
 
 #### KV Cache effect
 
-Tool results become Session events and therefore change the cache prefix after that tool call. Authentication scope, delegation tokens, and receipts never enter a model request.
+Tool results become Session events and therefore change the cache prefix after that tool call. A correction retry adds one plugin-origin user message and therefore changes that retry's prefix. Authentication scope, delegation tokens, receipts, invalid assistant drafts, and log-only citation events never enter a model request.
 
 ## Known Limitations and Deferred Work
 

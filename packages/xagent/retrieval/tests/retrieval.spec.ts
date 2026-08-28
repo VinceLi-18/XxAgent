@@ -82,6 +82,157 @@ function service(value = backend(), registry = new XAgentReceiptRegistry()) {
 }
 
 describe('XAgentRetrievalService', () => {
+  test('reauthorizes admitted citations in the real Agent loop before answer publication', async () => {
+    const value = backend()
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      textResponse('结论[资料1]'),
+    ])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.llm.registerAdapter(['mock'], adapter)
+    new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    await ctx.plugin(retrievalTools)
+    const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await owner.whenIdle()
+    expect(value.authorizeCitations).toHaveBeenCalledOnce()
+    expect(value.authorizeCitations).toHaveBeenCalledWith(
+      'alice-token', expect.any(String), expect.objectContaining({
+        sessionId: SESSION,
+        permissionRevision: 3,
+        citations: [expect.objectContaining({ id: '[资料1]' })],
+      }), expect.any(AbortSignal),
+    )
+    expect(owner.session.events.filter(event => event.type === 'assistant/message').at(-1)).toMatchObject({
+      data: { message: { content: [{ type: 'text', text: '结论[资料1]' }] } },
+    })
+  })
+
+  test('suppresses an uncited draft and retries exactly once through the real Agent loop', async () => {
+    const value = backend()
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      textResponse('unverified draft'),
+      textResponse('verified[资料1]'),
+    ])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.llm.registerAdapter(['mock'], adapter)
+    new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    await ctx.plugin(retrievalTools)
+    const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await owner.whenIdle()
+    expect(adapter.requests).toHaveLength(3)
+    expect(owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(1)
+    expect(owner.session.events.filter(event => event.type === 'xagent/citation-failure')).toHaveLength(0)
+    expect(owner.session.events.filter(event => event.type === 'assistant/message').at(-1)).toMatchObject({
+      data: { message: { content: [{ type: 'text', text: 'verified[资料1]' }] } },
+    })
+    expect(JSON.stringify(owner.session.events.filter(event => event.type === 'assistant/chunk'
+      || event.type === 'assistant/message'))).not.toContain('unverified draft')
+    expect(value.authorizeCitations).toHaveBeenCalledOnce()
+  })
+
+  test('ends after the second invalid draft without recording an assistant answer', async () => {
+    const value = backend()
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      textResponse('first invalid'),
+      textResponse('second invalid'),
+    ])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.llm.registerAdapter(['mock'], adapter)
+    new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    await ctx.plugin(retrievalTools)
+    const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await owner.whenIdle()
+    expect(adapter.requests).toHaveLength(3)
+    expect(owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(1)
+    expect(owner.session.events.filter(event => event.type === 'xagent/citation-failure')).toHaveLength(1)
+    expect(owner.session.events.filter(event => event.type === 'assistant/message')).toHaveLength(1)
+    expect(owner.session.deriveMessages().at(-1)).toMatchObject({
+      source: { kind: 'plugin', plugin: 'xagent-retrieval' },
+      content: [{ type: 'text', text: '引用校验失败，无法提供经过验证的回答。' }],
+    })
+    expect(JSON.stringify(owner.session.events.filter(event => event.type === 'assistant/chunk'
+      || event.type === 'assistant/message'))).not.toContain('first invalid')
+    expect(JSON.stringify(owner.session.events)).not.toContain('second invalid')
+    expect(value.authorizeCitations).not.toHaveBeenCalled()
+  })
+
+  test('disposal aborts in-flight answer authorization and releases no answer chunks', async () => {
+    const value = backend()
+    value.authorizeCitations = vi.fn(async (
+      _token: string,
+      _delegation: string,
+      _input: Parameters<XAgentRetrievalBackend['authorizeCitations']>[2],
+      signal?: AbortSignal,
+    ) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        }, { once: true })
+      })
+    })
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      textResponse('must stay hidden[资料1]'),
+    ])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const retrieval = new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    await ctx.plugin(retrievalTools)
+    const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(value.authorizeCitations).toHaveBeenCalledOnce() })
+    await retrieval.dispose()
+    await owner.whenIdle()
+    expect(JSON.stringify(owner.session.events.filter(event => event.type === 'assistant/chunk'
+      || event.type === 'assistant/message'))).not.toContain('must stay hidden')
+    expect(owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(0)
+  })
+
   test('requires the pinned BGE-M3 tokenizer identity and validates the production HTTP response', async () => {
     expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
       issuer: 'xagent-host', audience: 'xagent-api', privateKey,

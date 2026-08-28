@@ -10,13 +10,17 @@ Private Session 的检索必须显式提供规范化项目 UUID 和／或 `inclu
 
 FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。最终成功的 Native 结果把它标记为已发布；被阻止、取消、失败或已确定无法 append 的结果会确认未发布并丢弃。已发布 receipt 只在 Session、tool call 和 payload hash 同时匹配时绑定。服务释放会关闭新工作入口，丢弃已无法发布的 continuation，取消在飞请求，并等待后端完成；该等待不依赖自身的 post-execute waterfall。已绑定 sidecar 在远端确认前仍可按精确 append 窗口读取。
 
+当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务最多缓冲 64 KiB assistant 输出、32 KiB 工具参数和 4,096 个 stream chunk。服务只接受从匹配检索 `tool/result` 事件重建的短引用 ID，并在第一个回答 chunk 放行前立即重新授权所有已使用资料。只含工具调用的 continuation 会完整缓冲，但不会用空引用集合调用授权；其工具结果必须 checkpoint 后才进入后续模型请求。任何采用证据的正文都必须包含至少一个允许引用。普通请求和空检索保持下游流不变。
+
+第一份无效草稿会被完全抑制。log-only `xagent/citation-correction` 事件保存草稿 SHA-256、最多 8 KiB 的 UTF-8 前缀、固定原因、无效 ID 和最多 64 个允许 ID；配套的 plugin-origin `user/message` 通过普通历史把纠正指令交给模型。Agent 只为本策略拥有的 `CITATION_INVALID` 重试一次。第二份无效草稿记录 `xagent/citation-failure`，追加明确的中文失败消息，并以 `CITATION_FAILED` 结束，不生成 assistant 回答。取消、撤权、账号替换、Session 替换和服务释放均不放行缓冲的回答字节。
+
 ## Model Experience
 
 ### Retrieval evidence（检索证据）
 
 #### What the model sees
 
-模型只看到 `list_accessible_projects` 返回的可访问项目名称，或 `search_artifacts` 返回的当前明确范围内最多八条带 `[资料N]` 短标识的资料片段。模型看不到用户令牌、委托令牌、receipt、内部 URL、对象键或后端错误详情。
+模型只看到 `list_accessible_projects` 返回的可访问项目名称，或 `search_artifacts` 返回的当前明确范围内最多八条带 `[资料N]` 短标识的资料片段。证据回答无效后，模型会在唯一一次重试中看到已入账的纠正指令和允许 ID。模型看不到用户令牌、委托令牌、receipt、内部 URL、对象键或后端错误详情。
 
 #### Token effect
 
@@ -24,7 +28,7 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 #### KV Cache effect
 
-工具结果作为 Session 事件进入后续模型请求，因此会改变该次工具调用之后的缓存前缀。认证作用域、委托令牌和 receipt 不进入模型请求。
+工具结果作为 Session 事件进入后续模型请求，因此会改变该次工具调用之后的缓存前缀。纠正重试会新增一条 plugin-origin 用户消息，因此改变该次重试的缓存前缀。认证作用域、委托令牌、receipt、无效 assistant 草稿和 log-only 引用事件不进入模型请求。
 
 ## Known Limitations and Deferred Work
 

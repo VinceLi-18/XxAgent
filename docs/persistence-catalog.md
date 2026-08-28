@@ -942,3 +942,27 @@ Source: [`packages/core/session/src/types.ts:264`](../packages/core/session/src/
 ```
 
 Source: [`packages/web/web-search-deepseek/src/provider.ts:83`](../packages/web/web-search-deepseek/src/provider.ts)
+
+### `xagent/*`
+
+<a id="xagentcitation-correction--log-only"></a>
+
+#### `xagent/citation-correction` — log-only
+
+```ts persistence-catalog
+/** First invalid evidence-bearing draft, hidden from the ordinary transcript. */
+'xagent/citation-correction': XAgentCitationCorrectionEventData
+```
+
+Source: [`packages/xagent/retrieval/src/events.ts:32`](../packages/xagent/retrieval/src/events.ts)
+
+<a id="xagentcitation-failure--log-only"></a>
+
+#### `xagent/citation-failure` — log-only
+
+```ts persistence-catalog
+/** Second invalid evidence-bearing draft, after which the turn fails. */
+'xagent/citation-failure': XAgentCitationFailureEventData
+```
+
+Source: [`packages/xagent/retrieval/src/events.ts:34`](../packages/xagent/retrieval/src/events.ts)

@@ -7,3 +7,7 @@
 公开 `XAgentAccessibleProjects` 和 `XAgentArtifactSearch` 只含 FastAPI 已验证的数据与 payload hash。服务在返回公开结果前，把 receipt、Session、tool call 和 payload hash 写入 `XAgentReceiptRegistry`。该 owner 覆盖 backend admission、注册、post-execute、公开结果与 Session 绑定；阻止、取消、渲染失败、append 失败或 Agent／Session 终止会确认未发布并清除 secret。释放服务先关闭 admission，清除已无 publication continuation 的 owner，再取消并等待 backend；因此 reentrant post-execute 释放不会等待自身。只有已绑定 sidecar 会留给 Session 持久化按精确 append 序号窗口读取，并在远端确认后调用 `commit()`。
 
 `@xagent/dsh-tool-retrieval` 是独立 Consumer。它注册两个封闭 schema，从实际 Agent 取得 Session 与 tool call 标识，并把取消信号交给服务。工具不接受 Principal、用户令牌、委托、receipt 或任意 Session scope 字段；公开 `tool/result` metadata 只有固定 kind、payload hash 和短引用标识。
+
+引用策略只处理当前活跃 XAgent Agent 的 loop request。它从 request 内与本地 Session `tool/result` 标识相同的已入账搜索结果重建引用身份，并在检索 checkpoint 完成后构造下游模型流。非空证据请求的正文与工具 chunk 在固定字节和数量上限内缓冲；正文引用只可指向该 Session 的允许集合。只含工具调用的输出是中间 continuation，完整缓冲并校验后交给 loop，工具结果必须 checkpoint 后才会进入下一次模型请求。策略不以空引用集合调用授权接口；后续非空正文在放行第一个 chunk 前，以当前请求 token、permission revision 和新委托 nonce 调用 FastAPI 引用授权。撤权、取消、未知 chunk、超限和协议失败均不放行正文。
+
+第一次校验失败会写入 log-only 纠正事件和一条 plugin-origin 用户消息。只有该策略刚刚产生的 `CITATION_INVALID` 才能取得一次 request-error retry；第二次失败写入终止事件与中文失败消息，并返回 `CITATION_FAILED`。无效 assistant chunk 从未进入 Session，custom event 不参与模型历史，纠正用户消息通过标准 surface 投影进入唯一一次重试。Agent 回到 idle、Session 或 Agent 释放以及插件释放都会清除重试状态，账号和 Session 之间不共享缓冲区或状态。

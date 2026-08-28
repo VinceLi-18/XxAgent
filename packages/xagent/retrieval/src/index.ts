@@ -1,8 +1,10 @@
 /** Authenticated XAgent retrieval service and private receipt lifetime. @module @xagent/dsh-retrieval */
 
-import { createPrivateKey, type KeyObject } from 'node:crypto'
+import { createPrivateKey, randomUUID, type KeyObject } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
@@ -23,6 +25,7 @@ import {
   type XAgentAuthenticatedSessionRequestScope,
 } from '@xagent/dsh-principal'
 import { XAgentReceiptRegistry } from './receipt-registry.ts'
+import { installXAgentCitationPolicy, type XAgentCitationPolicyRequest } from './citation-policy.ts'
 import {
   XAgentBgeM3HttpTokenizer,
   validateBgeM3Tokenizer,
@@ -37,6 +40,8 @@ import type {
 } from './types.ts'
 
 export type * from './types.ts'
+export * from './citation-policy.ts'
+export type * from './events.ts'
 export { XAgentReceiptRegistry } from './receipt-registry.ts'
 export * from './tokenizer.ts'
 
@@ -216,7 +221,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     readonly scope?: XAgentAuthenticatedSessionRequestScope
     readonly close?: () => void
   }>()
-  private readonly activeScopes = new Map<object, XAgentAuthenticatedSessionRequestScope>()
+  private readonly activeScopes = new Map<Agent, XAgentAuthenticatedSessionRequestScope>()
   private disposal: Promise<void> | undefined
 
   constructor(
@@ -309,8 +314,10 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         ? runWithoutXAgentAuthenticatedRequestScope(next)
         : runWithXAgentAuthenticatedRequestScope(scope, next)
     })
+    const closeCitationPolicy = installXAgentCitationPolicy(ctx, options => this.citationRequest(options))
     this.closeScopeObservers = [
-      closeInserted, closeDiscarded, closeDisposed, closeAgentError, closeSessionDisposed, closePreStep, closeToolExecution,
+      closeInserted, closeDiscarded, closeDisposed, closeAgentError, closeSessionDisposed, closePreStep,
+      closeToolExecution, closeCitationPolicy,
     ]
     this.closeSessionObserver = ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/end') {
@@ -479,10 +486,49 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     return scope
   }
 
+  private citationRequest(options: GenerateOptions): XAgentCitationPolicyRequest | undefined {
+    if (!this.accepting || options.sessionId === undefined) return undefined
+    let resolved: XAgentCitationPolicyRequest | undefined
+    for (const [agent, scope] of this.activeScopes) {
+      if (String(agent.session.id) !== String(options.sessionId)) continue
+      if (resolved !== undefined) return undefined
+      resolved = {
+        agent,
+        session: agent.session,
+        authorize: input => this.authorizeCitations(scope, input.citations, input.signal),
+      }
+    }
+    return resolved
+  }
+
+  private async authorizeCitations(
+    scope: XAgentAuthenticatedSessionRequestScope,
+    citations: readonly import('@xagent/dsh-backend-client').XAgentCitationIdentity[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const toolCallId = randomUUID()
+    try {
+      await this.call(signal, operationSignal => this.backend.authorizeCitations(
+        scope.userToken,
+        this.delegation(scope, toolCallId, 'authorize_citations'),
+        {
+          sessionId: scope.sessionId,
+          toolCallId,
+          permissionRevision: scope.principal.permissionRevision,
+          citations,
+        },
+        operationSignal,
+      ))
+    } catch (error: unknown) {
+      if (!this.accepting) throw new DOMException('xagent retrieval disposed', 'AbortError')
+      throw error
+    }
+  }
+
   private delegation(
     scope: XAgentAuthenticatedSessionRequestScope,
     toolCallId: string,
-    toolName: 'list_accessible_projects' | 'search_artifacts',
+    toolName: 'list_accessible_projects' | 'search_artifacts' | 'authorize_citations',
   ): string {
     if (this.privateKey === undefined || toolCallId.length === 0) throw new XAgentRetrievalError('service-unavailable')
     try {
