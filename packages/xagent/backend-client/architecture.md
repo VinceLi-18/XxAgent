@@ -2,11 +2,11 @@
 
 客户端把配置 URL 规范化为单一 origin，丢弃输入 URL 的 path、query 和 fragment。内部路径由代码固定，资源 ID 只作为单个编码路径段使用。请求使用 `redirect: manual`，同时携带 Host 服务身份和当前用户 JWT。
 
-每次调用合并固定超时与调用方 `AbortSignal`。序列化后的请求正文和流式读取的响应正文分别执行字节上限；响应超限时立即取消读取。只有成功且符合对应固定 schema 的 JSON 才能返回；非成功响应只提取允许的稳定错误码，其余网络、重定向、超限和 schema 错误统一为 `service-unavailable`。
+每次调用合并固定超时与调用方 `AbortSignal`。序列化后的请求正文和流式读取的响应正文分别执行字节上限；响应超限时立即取消读取，畸形 UTF-8 在 JSON 解析前失败。只有成功且符合对应固定 schema 的 JSON 才能返回；非成功响应只提取允许的稳定错误码，其余网络、重定向、超限和 schema 错误统一为 `service-unavailable`。
 
-检索调用复用同一有界读取、手动重定向和合并取消管线，并额外发送 `X-XAgent-Delegation`。Host 服务身份、用户 JWT 和委托令牌只存在于请求头。四个请求体由固定字段构造；search 的显式 `project_ids` 与 `include_private` 留在请求体，委托令牌仍只携带可空的单个 `project_id` claim。客户端不把 receipt、委托令牌、用户 JWT 或服务身份写入返回对象或异常。
+检索调用复用同一有界读取、手动重定向和合并取消管线，并额外发送 `X-XAgent-Delegation`。Host 服务身份、用户 JWT 和委托令牌只存在于请求头。四个请求体由固定字段构造；search 先建立小写、排序、去重且最多 20 项的 owned Project UUID 数组，要求调用方数组与该 canonical 值完全一致，再验证本地 scope hash。显式 `project_ids` 与 `include_private` 留在请求体，委托令牌仍只携带可空的单个 `project_id` claim。客户端不把 receipt、委托令牌、用户 JWT 或服务身份写入返回对象或异常。
 
-项目发现、资料搜索、引用授权和引用解析分别持有独立成功解析器与错误表。解析器拒绝未知字段、重复项目或引用、非 UUID 身份、非规范 SHA-256、越界整数、反向行范围、过长名称或正文，以及 receipt 中不属于 opaque base64url 字符集的值。引用解析必须返回请求中同一 Artifact、Version 和 Chunk；FastAPI 不能把另一条已授权引用替换进结果。所有 retrieval 方法只接受 `200`，并按 endpoint 校验稳定错误与 HTTP status 的精确组合。
+项目发现、资料搜索、引用授权和引用解析分别持有独立成功解析器与错误表。解析器拒绝未知字段、重复项目或引用、非 UUID 身份、非规范 SHA-256、越界整数、反向行范围、过长名称或正文，以及 receipt 中不属于 opaque base64url 字符集的值。项目发现和资料搜索从已验证的 exact snake_case 字段重建模型可见 payload，按递归 key 排序的紧凑 UTF-8 JSON 重新计算 SHA-256，并在返回前比较。搜索引用 ordinal 必须是连续递增的安全正整数；批量授权允许同一 Session 中不同搜索调用产生的非连续安全 ordinal。引用解析在发起 HTTP 前复制完整 identity，响应比较和返回值只使用该 owned snapshot，因此调用方之后的对象修改不能改变请求或结果。所有 retrieval 方法只接受 `200`，并按 endpoint 校验稳定错误与 HTTP status 的精确组合。
 
 工作台方法使用独立的封闭路径表。Bootstrap、上下文操作、项目创建和项目详情分别执行严格的 snake_case 解码并返回 camelCase 业务对象。Bootstrap 的 `session_scopes` 必须使用唯一 Session ID；private 项不得带项目，project 项必须引用同一响应中的可见项目。上下文选择与项目创建先验证原子操作响应，再读取完整 Bootstrap；两次响应的账号 ID 必须一致。Session 项目引用登记只接受空成功响应。具体客户端始终提供工作台方法，而不使用工作台的认证或 Session 消费者仍可只依赖通用后端接口。
 

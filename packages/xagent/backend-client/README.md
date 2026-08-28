@@ -6,13 +6,13 @@
 
 资料接口覆盖列表、详情、新资料上传、新版本上传、上传完成、失败重试、预览和下载。上传创建只返回短期 PUT 授权；完成和重试返回包含不可变版本历史的完整详情。预览与下载只返回服务端授权后的 opaque URL，客户端不跟随该 URL，也不读取资料正文。
 
-检索接口覆盖个人 Session 项目发现、资料搜索、回答释放前的批量引用授权和单条引用解析。项目发现最多接受 20 个唯一项目；搜索最多接受 8 条唯一引用，完整模型可见 citations JSON 不超过 32 KiB。项目、资料、版本、分片和 Session 标识必须是 UUID；引用 ID 必须为 `[资料N]`；行号和版本号必须是安全正整数。项目发现和搜索返回的 receipt 只作为 opaque 值交给后续持久化，不进入模型正文。
+检索接口覆盖个人 Session 项目发现、资料搜索、回答释放前的批量引用授权和单条引用解析。个人 Session 搜索只接受已经转为小写、排序和去重的 canonical Project UUID 数组，最多 20 项；数组与本地 scope hash 不一致时不会发送请求。搜索最多接受 8 条唯一引用，完整模型可见 citations JSON 不超过 32 KiB。项目、资料、版本、分片和 Session 标识必须是 UUID；引用 ID 的 ordinal 必须是安全正整数，单次搜索响应中的 ID 必须按返回顺序连续递增；行号和版本号必须是安全正整数。项目发现和搜索返回的 receipt 只作为 opaque 值交给后续持久化，不进入模型正文。
 
-请求和响应都受字节上限约束。工作台与资料响应按固定 snake_case 字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、日期、状态、计数、大小或 URL 全部失败关闭。资料范围只接受 private 或带 UUID 的 project；列表摘要的 clean latest 必须同时是 latest clean，非 clean latest 只能引用更早的 clean 版本。详情版本号唯一且严格降序，latest 字段必须与版本历史一致，latest clean 必须指向最高 clean 版本。列表和版本历史各最多接受 1,000 项，单版本大小不超过 50 MiB。
+请求和响应都受字节上限约束，响应正文必须是严格 UTF-8。工作台与资料响应按固定 snake_case 字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、日期、状态、计数、大小或 URL 全部失败关闭。资料范围只接受 private 或带 UUID 的 project；列表摘要的 clean latest 必须同时是 latest clean，非 clean latest 只能引用更早的 clean 版本。详情版本号唯一且严格降序，latest 字段必须与版本历史一致，latest clean 必须指向最高 clean 版本。列表和版本历史各最多接受 1,000 项，单版本大小不超过 50 MiB。
 
 预览和下载 URL 只在存在完整 percent escape 时递归解码并检查；每轮保护不构成 `%XX` 的字面 `%`，其余 triplet 严格按 UTF-8 解码，非法或不完整的字节序列失败关闭。稳定值不得在 hostname、路径 segment、query key/value 或 fragment 中暴露 `xagent-private` bucket token，也不得包含暂存或最终对象 Key。资料上传创建、版本上传和完成只接受 `201`，列表、详情、重试、预览和下载只接受 `200`。资料错误要求 exact `detail.code`，401 `unauthenticated` 与 503 `service-unavailable` 为共同错误；详情只额外接受 404，新资料上传只额外接受 409，新版本上传接受 404/409，完成接受 404/409/422，重试接受 404/409/410/422，预览和下载接受 403/404。其他成功状态、其他 endpoint 的 code、额外错误字段、畸形 detail、非 JSON、重定向和超限正文统一为 `service-unavailable`。FastAPI detail、JWT、服务身份、对象 Key、暂存 Key、租约和内部扫描失败信息不会进入返回对象或异常消息。
 
-四个检索 endpoint 只接受 `200`。401 `unauthenticated`、404 `session-not-found` 和 503 `service-unavailable` 是共同失败；项目发现额外接受 400 `invalid-retrieval-scope`，搜索额外接受 400 `invalid-retrieval-scope` 与 503 `retrieval-unavailable`，引用授权和解析额外接受 422 `citation-invalid`。错误状态、code 或 endpoint 配对不匹配时统一返回 `service-unavailable`；响应中的未知字段、敏感内部字段、畸形 hash、receipt、UUID、引用、整数和文本上限同样失败关闭。
+四个检索 endpoint 只接受 `200`。401 `unauthenticated`、404 `session-not-found` 和 503 `service-unavailable` 是共同失败；项目发现额外接受 400 `invalid-retrieval-scope`，搜索额外接受 400 `invalid-retrieval-scope` 与 503 `retrieval-unavailable`，引用授权和解析额外接受 422 `citation-invalid`。项目发现和搜索会按 FastAPI 的递归 key 排序、紧凑 UTF-8 JSON 规则重新计算模型可见 payload SHA-256，摘要不一致时拒绝返回。错误状态、code 或 endpoint 配对不匹配时统一返回 `service-unavailable`；响应中的未知字段、敏感内部字段、畸形 hash、receipt、UUID、引用、整数和文本上限同样失败关闭。
 
 ## Model Experience
 

@@ -526,7 +526,7 @@ function parseArtifactList(value: unknown): readonly XAgentArtifactSummary[] {
   return artifacts
 }
 
-const CITATION_ID_PATTERN = /^\[资料[1-9][0-9]*\]$/
+const CITATION_ID_PATTERN = /^\[资料([1-9][0-9]*)\]$/
 const OPAQUE_RECEIPT_PATTERN = /^[A-Za-z0-9_-]+$/
 const MAX_RETRIEVAL_PROJECTS = 20
 const MAX_RETRIEVAL_CITATIONS = 8
@@ -543,16 +543,27 @@ function opaqueReceipt(value: unknown): string {
   return result
 }
 
+function citationOrdinal(value: unknown): number {
+  if (typeof value !== 'string') failSchema()
+  const match = CITATION_ID_PATTERN.exec(value)
+  if (match === null) failSchema()
+  const ordinal = Number(match[1])
+  if (!Number.isSafeInteger(ordinal) || ordinal < 1) failSchema()
+  return ordinal
+}
+
 function citationIdentity(value: unknown): {
   readonly id: string
+  readonly ordinal: number
   readonly artifactId: string
   readonly versionId: string
   readonly chunkId: string
 } {
   const row = exactRecord(value, ['id', 'artifact_id', 'version_id', 'chunk_id'])
-  if (typeof row.id !== 'string' || !CITATION_ID_PATTERN.test(row.id)) failSchema()
+  const ordinal = citationOrdinal(row.id)
   return {
-    id: row.id,
+    id: row.id as string,
+    ordinal,
     artifactId: requiredUuid(row.artifact_id),
     versionId: requiredUuid(row.version_id),
     chunkId: requiredUuid(row.chunk_id),
@@ -571,10 +582,12 @@ function parseProjectDiscovery(value: unknown): XAgentProjectDiscoveryResult {
   }
   const projects = row.projects.map(parseRetrievalProject)
   if (new Set(projects.map(project => project.projectId)).size !== projects.length) failSchema()
+  const hash = payloadHash(row.payload_sha256)
+  if (canonicalPayloadHash({ schema_version: 1, projects: row.projects }) !== hash) failSchema()
   return {
     projects,
     receipt: opaqueReceipt(row.receipt),
-    payloadHash: payloadHash(row.payload_sha256),
+    payloadHash: hash,
   }
 }
 
@@ -592,7 +605,10 @@ function parseRetrievalCitation(value: unknown): XAgentRetrievalCitation {
   const text = requiredString(row.text)
   if (new TextEncoder().encode(text).byteLength > MAX_RETRIEVAL_TEXT_BYTES) failSchema()
   return {
-    ...identity,
+    id: identity.id,
+    artifactId: identity.artifactId,
+    versionId: identity.versionId,
+    chunkId: identity.chunkId,
     displayName: boundedString(row.display_name, 255),
     versionNumber: positiveInteger(row.version_number),
     lineStart,
@@ -620,10 +636,17 @@ function parseArtifactSearch(value: unknown): {
     new Set(citations.map(citation => citation.id)).size !== citations.length
     || new Set(citations.map(citation => citation.chunkId)).size !== citations.length
   ) failSchema()
+  const ordinals = row.citations.map(citation => citationOrdinal(record(citation).id))
+  if (ordinals.some((ordinal, index) => {
+    const previous = ordinals[index - 1]
+    return previous !== undefined && ordinal !== previous + 1
+  })) failSchema()
+  const hash = payloadHash(row.payload_sha256)
+  if (canonicalPayloadHash({ schema_version: 1, citations: row.citations }) !== hash) failSchema()
   return {
     citations,
     receipt: opaqueReceipt(row.receipt),
-    payloadHash: payloadHash(row.payload_sha256),
+    payloadHash: hash,
   }
 }
 
@@ -646,6 +669,18 @@ function retrievalOperation(input: {
   }
 }
 
+function canonicalRetrievalProjectIds(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) failSchema()
+  const supplied = value.map(requiredUuid)
+  const canonical = [...new Set(supplied.map(projectId => projectId.toLowerCase()))].sort()
+  if (
+    canonical.length > MAX_RETRIEVAL_PROJECTS
+    || supplied.length !== canonical.length
+    || supplied.some((projectId, index) => projectId !== canonical[index])
+  ) failSchema()
+  return Object.freeze(canonical)
+}
+
 function citationRequest(value: {
   readonly id: string
   readonly artifactId: string
@@ -653,17 +688,31 @@ function citationRequest(value: {
   readonly chunkId: string
 }): Record<string, unknown> {
   if (
-    !CITATION_ID_PATTERN.test(value.id)
-    || !UUID_PATTERN.test(value.artifactId)
+    !UUID_PATTERN.test(value.artifactId)
     || !UUID_PATTERN.test(value.versionId)
     || !UUID_PATTERN.test(value.chunkId)
   ) failSchema()
+  citationOrdinal(value.id)
   return {
     id: value.id,
     artifact_id: value.artifactId,
     version_id: value.versionId,
     chunk_id: value.chunkId,
   }
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0)
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function canonicalPayloadHash(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex')
 }
 
 type RetrievalErrorPair = readonly [number, XAgentBackendErrorCode]
@@ -718,7 +767,7 @@ async function readBounded(response: Response, limit: number): Promise<string> {
     body.set(chunk, offset)
     offset += chunk.byteLength
   }
-  return new TextDecoder().decode(body)
+  return new TextDecoder('utf-8', { fatal: true }).decode(body)
 }
 
 function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
@@ -985,19 +1034,14 @@ export class XAgentBackendClient implements XAgentBackend {
         if (typeof input.includePrivate !== 'boolean') failSchema()
         let projectIds: readonly string[] | undefined
         if (input.projectIds !== undefined) {
-          if (!Array.isArray(input.projectIds) || input.projectIds.length > MAX_RETRIEVAL_PROJECTS) failSchema()
-          const normalizedProjectIds = input.projectIds.map(requiredUuid)
-          if (
-            new Set(normalizedProjectIds).size !== normalizedProjectIds.length
-            || normalizedProjectIds.some((projectId, index) => {
-              const previous = normalizedProjectIds[index - 1]
-              return previous !== undefined && previous >= projectId
-            })
-          ) failSchema()
-          projectIds = normalizedProjectIds
+          projectIds = canonicalRetrievalProjectIds(input.projectIds)
         }
         if (projectIds !== undefined) {
-          if (input.scopeHash === undefined || !SHA256_PATTERN.test(input.scopeHash)) failSchema()
+          if (
+            (projectIds.length === 0 && !input.includePrivate)
+            || input.scopeHash === undefined
+            || !SHA256_PATTERN.test(input.scopeHash)
+          ) failSchema()
           const canonicalScope = JSON.stringify({
             include_private: input.includePrivate,
             kind: 'private',
@@ -1046,6 +1090,12 @@ export class XAgentBackendClient implements XAgentBackend {
       },
       resolveCitation: async (token, delegation, input, signal): Promise<XAgentResolvedCitation> => {
         const citation = citationRequest(input.citation)
+        const identity = {
+          id: citation.id as string,
+          artifactId: citation.artifact_id as string,
+          versionId: citation.version_id as string,
+          chunkId: citation.chunk_id as string,
+        }
         const value = await this.retrievalRequest(
           token,
           delegation,
@@ -1065,11 +1115,11 @@ export class XAgentBackendClient implements XAgentBackend {
         if (
           row.schema_version !== 1
           || lineEnd < lineStart
-          || artifactId !== input.citation.artifactId
-          || versionId !== input.citation.versionId
-          || chunkId !== input.citation.chunkId
+          || artifactId !== identity.artifactId
+          || versionId !== identity.versionId
+          || chunkId !== identity.chunkId
         ) failSchema()
-        return { ...input.citation, lineStart, lineEnd }
+        return { ...identity, lineStart, lineEnd }
       },
     }
     this.retrieval = Object.freeze(retrieval)
