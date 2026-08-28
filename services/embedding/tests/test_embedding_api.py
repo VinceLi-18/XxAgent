@@ -180,6 +180,30 @@ async def test_token_count_rejects_unbounded_or_open_bodies_without_logging_text
 
 
 @pytest.mark.anyio
+async def test_token_count_accepts_worst_case_escaped_raw_limit_and_contains_surrogates() -> None:
+    app = create_app(EmbeddingModel(DeterministicBackend()), TokenizerCounter(DeterministicTokenizer()))
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
+        accepted = [
+            await client.post("/token-count", json={"text": '"' * MAX_TEXT_BYTES}),
+            await client.post("/token-count", json={"text": "\\" * MAX_TEXT_BYTES}),
+            await client.post("/token-count", json={"text": "\u0000" * MAX_TEXT_BYTES}),
+            await client.post("/token-count", json={"text": "😀" * (MAX_TEXT_BYTES // 4)}),
+        ]
+        malformed = [
+            await client.post(
+                "/token-count",
+                content=body,
+                headers={"content-type": "application/json"},
+            )
+            for body in (b'{"text":"\\ud800"}', b'{"text":"\\udc00"}')
+        ]
+
+    assert all(response.status_code == 200 for response in accepted)
+    assert all(response.status_code == 422 for response in malformed)
+
+
+@pytest.mark.anyio
 async def test_tokenizer_failures_return_a_stable_error_without_logging_text(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

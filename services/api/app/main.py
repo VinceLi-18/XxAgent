@@ -9,6 +9,7 @@ from app.api.routes.internal_artifacts import (
 )
 from app.api.routes.internal_sessions import router as internal_sessions_router
 from app.api.routes.internal_retrieval import router as internal_retrieval_router
+from app.api.routes.internal_tokenizer import router as internal_tokenizer_router
 from app.api.routes.internal_workbench import (
     projects_router as internal_projects_router,
     router as internal_workbench_router,
@@ -29,6 +30,7 @@ app.include_router(internal_artifacts_router)
 app.include_router(internal_artifact_versions_router)
 app.include_router(internal_sessions_router)
 app.include_router(internal_retrieval_router)
+app.include_router(internal_tokenizer_router)
 app.include_router(internal_workbench_router)
 app.include_router(internal_projects_router)
 app.include_router(internal_session_project_refs_router)

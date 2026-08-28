@@ -96,10 +96,16 @@ describe('XAgentRetrievalService', () => {
       revision: BGE_M3_REVISION,
       token_count: 17,
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
-    const production = new XAgentBgeM3HttpTokenizer('http://embedding.internal', fetch)
+    const production = new XAgentBgeM3HttpTokenizer('http://api.internal', 'service-secret', fetch)
     await expect(production.count('资料 with whitespace', new AbortController().signal)).resolves.toBe(17)
-    expect(fetch.mock.calls[0]?.[0]).toBe('http://embedding.internal/token-count')
-    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
+    expect(fetch.mock.calls[0]?.[0]).toBe('http://api.internal/internal/xagent/retrieval/token-count')
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-xagent-service-token': 'service-secret',
+      },
+    })
     expect(fetch.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal)
   })
   test('claims each queued prompt scope in the real Agent loop instead of inheriting the first driver token', async () => {

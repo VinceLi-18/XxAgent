@@ -3116,8 +3116,6 @@ export interface Config {
   delegationIssuer: string
   /** Exact delegation audience accepted by FastAPI. */
   delegationAudience: string
-  /** Embedding service origin serving the exact pinned BGE-M3 tokenizer. */
-  tokenizerOrigin: string
 }
 ```
 

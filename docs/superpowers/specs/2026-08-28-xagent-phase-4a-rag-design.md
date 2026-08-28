@@ -66,7 +66,7 @@ PostgreSQL 保存索引 generation、分片、向量、关键词索引、持久�
 
 索引 worker 领取 PostgreSQL 持久任务，从 MinIO 流式读取指定 `clean` Version，严格解码 UTF-8，按行和段落切分，调用本地 Embedding 服务，然后在一个未发布 generation 中写入全部分片。worker 不执行用户检索、不签发检索收据，也不决定当前 actor 的权限。
 
-Embedding 服务在内部容器网络提供批量文本到向量的窄接口，同时服务索引 worker 与 FastAPI 查询。它不暴露宿主端口，不接收用户身份，不保存正文，不记录原始文本，并固定模型名称、revision、维度和归一化方式。CPU-only 是 Compose 必选路径；GPU overlay 只能改变执行设备和批量性能。
+Embedding 服务在内部容器网络提供批量文本到向量和精确 token 计数的窄接口，同时服务索引 worker 与 FastAPI 查询。它不暴露宿主端口，不接收用户身份，不保存正文，不记录原始文本，并固定模型名称、revision、维度和归一化方式。Host 通过已有 backend origin 上只接受服务令牌的固定 FastAPI relay 请求 token 计数；relay 在解析前限制正文，只向内部 embedding endpoint 转发，不接收用户 JWT 或委托令牌。CPU-only 是 Compose 必选路径；GPU overlay 只能改变执行设备和批量性能。
 
 ### 3.3 DSH Host
 
@@ -170,7 +170,7 @@ Host 为每次工具调用签发最长 60 秒、单次 nonce 的 Ed25519 委托�
 
 ### 8.3 内部 API
 
-FastAPI 增加固定版本的项目发现、资料搜索、证据入账和引用解析接口。接口同时验证 Host 服务身份、用户 JWT 和委托令牌；请求体使用固定字节上限，响应使用严格闭合 schema，未知字段和未知稳定错误均映射为 `service-unavailable`。
+FastAPI 增加固定版本的项目发现、资料搜索、证据入账和引用解析接口。这些业务接口同时验证 Host 服务身份、用户 JWT 和委托令牌；token-count relay 只验证 Host 服务身份，因为它不执行授权或读取持久化数据。所有请求体使用固定字节上限，响应使用严格闭合 schema，未知字段和未知稳定错误均映射为 `service-unavailable`。
 
 稳定错误至少包括：
 

@@ -27,13 +27,22 @@ class EmbedRequest(BaseModel):
     texts: Annotated[list[str], Field(min_length=1, max_length=MAX_TEXTS)]
 
 
-MAX_TOKEN_COUNT_BODY_BYTES = MAX_TEXT_BYTES + 64
+# JSON may escape every one-byte control scalar as six ASCII bytes.
+MAX_TOKEN_COUNT_BODY_BYTES = MAX_TEXT_BYTES * 6 + len(b'{"text":""}')
 
 
 async def _token_count_text(request: Request) -> str:
     """Read one closed JSON field under fixed transport and text byte limits."""
     if request.headers.get("content-type") != "application/json":
         raise HTTPException(status_code=422, detail="tokenizer request rejected")
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            declared_size = int(declared)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="tokenizer request rejected") from None
+        if declared_size < 0 or declared_size > MAX_TOKEN_COUNT_BODY_BYTES:
+            raise HTTPException(status_code=422, detail="tokenizer request rejected")
     body = bytearray()
     try:
         async for chunk in request.stream():
@@ -51,7 +60,11 @@ async def _token_count_text(request: Request) -> str:
     if not isinstance(payload, dict) or set(payload) != {"text"} or not isinstance(payload["text"], str):
         raise HTTPException(status_code=422, detail="tokenizer request rejected")
     text = payload["text"]
-    if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+    try:
+        text_bytes = text.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise HTTPException(status_code=422, detail="tokenizer request rejected") from error
+    if len(text_bytes) > MAX_TEXT_BYTES:
         raise HTTPException(status_code=422, detail="tokenizer request rejected")
     return text
 

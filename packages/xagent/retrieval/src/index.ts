@@ -60,8 +60,6 @@ export interface Config {
   delegationIssuer: string
   /** Exact delegation audience accepted by FastAPI. */
   delegationAudience: string
-  /** Embedding service origin serving the exact pinned BGE-M3 tokenizer. */
-  tokenizerOrigin: string
 }
 
 export const Config: z<Config> = z.object({
@@ -70,7 +68,6 @@ export const Config: z<Config> = z.object({
   delegationPrivateKey: z.string().required(),
   delegationIssuer: z.string().required(),
   delegationAudience: z.string().required(),
-  tokenizerOrigin: z.string().required(),
 })
 
 export const name = 'xagent-retrieval'
@@ -544,6 +541,6 @@ export function apply(ctx: Context, config: Config): void {
     issuer: config.delegationIssuer,
     audience: config.delegationAudience,
     privateKey: createPrivateKey(config.delegationPrivateKey),
-    tokenizer: new XAgentBgeM3HttpTokenizer(config.tokenizerOrigin),
+    tokenizer: new XAgentBgeM3HttpTokenizer(config.backendOrigin, config.serviceToken),
   })
 }

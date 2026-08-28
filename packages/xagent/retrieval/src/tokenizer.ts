@@ -6,6 +6,8 @@ export const BGE_M3_MODEL_ID = 'BAAI/bge-m3'
 export const BGE_M3_REVISION = '5617a9f61b028005a4858fdac845db406aefb181'
 /** Maximum UTF-8 query bytes accepted before tokenizer transport. */
 export const MAX_BGE_M3_QUERY_BYTES = 8 * 1024
+/** Maximum JSON request bytes after worst-case legal scalar escaping. */
+export const MAX_BGE_M3_REQUEST_BYTES = MAX_BGE_M3_QUERY_BYTES * 6 + 11
 /** Maximum tokenizer response bytes accepted from the internal service. */
 export const MAX_BGE_M3_RESPONSE_BYTES = 512
 const TOKENIZER_TIMEOUT_MS = 5_000
@@ -31,17 +33,24 @@ function rejectResponse(): never {
   throw new TokenizerResponseError('BGE-M3 tokenizer response rejected')
 }
 
-function exceedsUtf8Limit(value: string, limit: number): boolean {
+function utf8Size(value: string, limit: number): number | undefined {
   let bytes = 0
-  for (const character of value) {
-    const firstUnit = character.charCodeAt(0)
-    const codePoint = character.length === 1
-      ? firstUnit
-      : (firstUnit - 0xd800) * 0x400 + character.charCodeAt(1) - 0xdc00 + 0x10000
+  for (let index = 0; index < value.length; index += 1) {
+    const firstUnit = value.charCodeAt(index)
+    let codePoint = firstUnit
+    if (firstUnit >= 0xd800 && firstUnit <= 0xdbff) {
+      if (index + 1 >= value.length) return undefined
+      const secondUnit = value.charCodeAt(index + 1)
+      if (secondUnit < 0xdc00 || secondUnit > 0xdfff) return undefined
+      codePoint = (firstUnit - 0xd800) * 0x400 + secondUnit - 0xdc00 + 0x10000
+      index += 1
+    } else if (firstUnit >= 0xdc00 && firstUnit <= 0xdfff) {
+      return undefined
+    }
     bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4
-    if (bytes > limit) return true
+    if (bytes > limit) return bytes
   }
-  return false
+  return bytes
 }
 
 async function readResponse(response: Response, signal: AbortSignal): Promise<unknown> {
@@ -88,16 +97,35 @@ export class XAgentBgeM3HttpTokenizer implements XAgentBgeM3Tokenizer {
   private readonly endpoint: string
 
   /**
-   * @param origin - embedding service origin.
+   * @param origin - published XAgent API origin.
+   * @param serviceToken - exact Host service identity for the internal relay.
    * @param fetchImplementation - standards-compatible HTTP transport.
    */
-  constructor(origin: string, private readonly fetchImplementation: Fetch = fetch) {
-    this.endpoint = `${origin.replace(/\/$/u, '')}/token-count`
+  constructor(
+    origin: string,
+    private readonly serviceToken: string,
+    private readonly fetchImplementation: Fetch = fetch,
+  ) {
+    let backend: URL
+    try {
+      backend = new URL(origin)
+    } catch {
+      throw new TypeError('invalid XAgent tokenizer configuration')
+    }
+    if ((backend.protocol !== 'http:' && backend.protocol !== 'https:') || serviceToken.length === 0) {
+      throw new TypeError('invalid XAgent tokenizer configuration')
+    }
+    this.endpoint = new URL('/internal/xagent/retrieval/token-count', backend.origin).href
   }
 
   /** Count exact pinned BGE-M3 tokens through the embedding service. */
   async count(value: string, signal?: AbortSignal): Promise<number> {
-    if (exceedsUtf8Limit(value, MAX_BGE_M3_QUERY_BYTES)) {
+    const rawBytes = utf8Size(value, MAX_BGE_M3_QUERY_BYTES)
+    if (rawBytes === undefined || rawBytes > MAX_BGE_M3_QUERY_BYTES) {
+      throw new Error('BGE-M3 tokenizer request rejected')
+    }
+    const requestBody = JSON.stringify({ text: value })
+    if (new TextEncoder().encode(requestBody).byteLength > MAX_BGE_M3_REQUEST_BYTES) {
       throw new Error('BGE-M3 tokenizer request rejected')
     }
     const timeout = AbortSignal.timeout(TOKENIZER_TIMEOUT_MS)
@@ -106,8 +134,11 @@ export class XAgentBgeM3HttpTokenizer implements XAgentBgeM3Tokenizer {
     try {
       response = await this.fetchImplementation(this.endpoint, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: value }),
+        headers: {
+          'content-type': 'application/json',
+          'x-xagent-service-token': this.serviceToken,
+        },
+        body: requestBody,
         redirect: 'manual',
         signal: operationSignal,
       })

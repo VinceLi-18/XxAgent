@@ -724,7 +724,7 @@ Expected: Compose lacks pgvector/embedding/index health wiring and CI has no ret
 
 - [ ] **Step 2: Add health-ordered CPU services**
 
-PostgreSQL must include pgvector; embedding health must prove model loaded and dimension 1024; worker waits for PostgreSQL, MinIO, ClamAV, migration and embedding health; API waits for embedding health but never receives worker database credentials. Keep the embedding port on the service-only network. Its `/token-count` route accepts one closed JSON text field under the same 8 KiB UTF-8 limit, uses the exact pinned tokenizer asset without loading the inference model, and owns cancelled finite tokenization through thread settlement.
+PostgreSQL must include pgvector; embedding health must prove model loaded and dimension 1024; worker waits for PostgreSQL, MinIO, ClamAV, migration and embedding health; API waits for embedding health but never receives worker database credentials. Keep the embedding port on the service-only network and give only API and worker its internal origin. The embedding `/token-count` route and API `/internal/xagent/retrieval/token-count` relay accept one closed JSON text field under the same 8 KiB raw UTF-8 and worst-case escaping body limits. The relay requires the exact Host service token, accepts no user or delegation token, uses manual redirects, bounded responses and the configured internal embedding origin, and writes no query audit or log. Embedding uses the exact pinned tokenizer asset without loading the inference model and owns cancelled finite tokenization through thread settlement.
 
 - [ ] **Step 3: Add real pipeline and recovery coverage**
 
@@ -779,11 +779,11 @@ Expected: Business dump lacks retrieval provider/tools/UI; non-Business dump ass
 
 - [ ] **Step 2: Mount in dependency order**
 
-Mount retrieval provider after auth/authorization/Session persistence, then tool retrieval, then citation UI after project/artifact UI. Supply the backend origin, service-only embedding tokenizer origin, service token and delegation signing configuration only to Host. The tokenizer origin must address Task 10's internal network endpoint; Browser gets no FastAPI token, receipt, embedding origin or model credentials.
+Mount retrieval provider after auth/authorization/Session persistence, then tool retrieval, then citation UI after project/artifact UI. Supply the existing backend origin, service token and delegation signing configuration only to Host; the retrieval provider calls the Task 10 relay on that backend origin with the service token. Browser gets no service token, receipt, embedding origin or model credentials, and Host receives no separate tokenizer origin.
 
 - [ ] **Step 3: Verify real Loader and keyless snapshots**
 
-Login through the real Host, create/open private and project Sessions, inspect registered tool schemas, prove Business exposes exactly two retrieval tools, and prove dangerous/write tools remain absent. Developer/Web/Headless dumps must contain none of the three new packages. JiaxinAgent remains a read-only manifest audit because it has no DSH profile.
+Login through the real Host, create/open private and project Sessions, inspect registered tool schemas, prove Business exposes exactly two retrieval tools, and prove dangerous/write tools remain absent. Run a real bounded Host tokenizer call through the published FastAPI origin to the Compose service-only embedding endpoint; assert exact service-token authentication, wrong and missing token denial, redirect/failure/malformed/oversize closure, cancellation/timeout, and no raw query in logs or audits. Developer/Web/Headless dumps must contain none of the three new packages. JiaxinAgent remains a read-only manifest audit because it has no DSH profile.
 
 - [ ] **Step 4: Run generators, docs gates, and commit**
 
