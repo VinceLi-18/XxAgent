@@ -338,14 +338,19 @@ describe('XAgentRetrievalService', () => {
 
   test.each(['tool-only', 'invalid-draft'] as const)('service disposal quiesces a protected %s stream', async (kind) => {
     const release = Promise.withResolvers<undefined>()
+    let finalized = false
     async function* delayed(): AsyncIterable<StreamChunk> {
-      if (kind === 'tool-only') {
-        yield { type: 'tool-call-delta', index: 0, id: CallId('follow-up'), name: 'search_artifacts', argumentsDelta: '{}' }
-      } else {
-        yield { type: 'text-delta', index: 0, text: 'late invalid draft' }
+      try {
+        if (kind === 'tool-only') {
+          yield { type: 'tool-call-delta', index: 0, id: CallId('follow-up'), name: 'search_artifacts', argumentsDelta: '{}' }
+        } else {
+          yield { type: 'text-delta', index: 0, text: 'late invalid draft' }
+        }
+        await release.promise
+        yield { type: 'finish', reason: { kind: kind === 'tool-only' ? 'tool-calls' : 'stop' } }
+      } finally {
+        finalized = true
       }
-      await release.promise
-      yield { type: 'finish', reason: { kind: kind === 'tool-only' ? 'tool-calls' : 'stop' } }
     }
     const adapter = new DeferredAdapter([
       toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
@@ -357,13 +362,43 @@ describe('XAgentRetrievalService', () => {
     })
     await vi.waitFor(() => { expect(adapter.requests).toHaveLength(2) })
     const disposal = created.retrieval.dispose()
+    const reentered = created.retrieval.dispose()
     const settled = await settlesWithin(disposal)
+    const reenteredSettled = await settlesWithin(reentered)
+    expect(settled).toBe(false)
+    expect(reenteredSettled).toBe(false)
+    expect(finalized).toBe(false)
     release.resolve(undefined)
-    await disposal
+    await Promise.all([disposal, reentered])
     await created.owner.whenIdle()
-    expect(settled).toBe(true)
+    expect(finalized).toBe(true)
     expect(JSON.stringify(created.owner.session.events)).not.toContain('late invalid draft')
     expect(JSON.stringify(created.owner.session.events)).not.toContain('follow-up')
+    expect(created.owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(0)
+  })
+
+  test('settles service ownership when a protected source throws', async () => {
+    let finalized = false
+    async function* throwing(): AsyncIterable<StreamChunk> {
+      try {
+        yield { type: 'text-delta', index: 0, text: 'must stay hidden' }
+        throw new Error('source failed')
+      } finally {
+        finalized = true
+      }
+    }
+    const adapter = new DeferredAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      throwing,
+    ])
+    const created = await agentHarness(adapter)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await created.owner.whenIdle()
+    await expect(created.retrieval.dispose()).resolves.toBeUndefined()
+    expect(finalized).toBe(true)
+    expect(JSON.stringify(created.owner.session.events)).not.toContain('must stay hidden')
     expect(created.owner.session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(0)
   })
 

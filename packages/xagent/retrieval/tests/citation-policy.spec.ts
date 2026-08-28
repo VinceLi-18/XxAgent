@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import LlmRuntime, {
@@ -84,18 +83,21 @@ async function setup() {
     meta: { kind: 'xagent-retrieval', payloadHash: 'a'.repeat(64), citations: ['[资料1]'] },
   }, { surfaceOp: 'append' })
   const agent = { ctx, session } as Agent
+  const identity = Object.freeze({ session: SESSION })
   const authorize = vi.fn(async (_input: XAgentCitationReleaseInput) => {})
   const resolve = vi.fn((request: GenerateOptions): XAgentCitationPolicyRequest | undefined => (
     request.sessionId === SESSION
       ? {
         agent,
+        identity,
         session,
+        begin: signal => ({ identity, signal: signal ?? new AbortController().signal, settle: () => {} }),
         authorize,
       }
       : undefined
   ))
   const close = installXAgentCitationPolicy(ctx, resolve)
-  return { agent, authorize, close, ctx, session }
+  return { agent, authorize, close, ctx, resolve, session }
 }
 
 afterEach(async () => {
@@ -287,6 +289,39 @@ describe('XAgent citation policy', () => {
     expect(delegated).toBe(1)
   })
 
+  test('tracks concurrent retry phases by exact request identity instead of Agent', async () => {
+    const { agent, authorize, ctx, resolve, session } = await setup()
+    const identityA = Object.freeze({ request: 'a' })
+    const identityB = Object.freeze({ request: 'b' })
+    resolve.mockImplementation((request: GenerateOptions): XAgentCitationPolicyRequest => ({
+      agent, authorize, session,
+      identity: request.provider === 'a' ? identityA : identityB,
+      begin: signal => ({
+        identity: request.provider === 'a' ? identityA : identityB,
+        signal: signal ?? new AbortController().signal,
+        settle: () => {},
+      }),
+    }))
+    const invalid = (provider: string) => collect(ctx.waterfall(ctx.llm, 'llm/stream', {
+      ...options(), provider,
+    }, () => source([
+      { type: 'text-delta', index: 0, text: `invalid-${provider}` },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const [draftA, draftB] = await Promise.all([invalid('a'), invalid('b')])
+    const failureA = draftA[0]?.type === 'finish' && draftA[0].reason.kind === 'error'
+      ? draftA[0].reason.failure : undefined
+    const failureB = draftB[0]?.type === 'finish' && draftB[0].reason.kind === 'error'
+      ? draftB[0].reason.failure : undefined
+    if (failureA === undefined || failureB === undefined) throw new Error('missing concurrent failures')
+    const requestError = (failure: typeof failureA) => ctx.waterfall(agent as never, 'agent/request-error', {
+      agent, turn: 1, step: 1, provider: 'mock', failure,
+      retryPolicy: undefined, signal: new AbortController().signal,
+    }, () => Promise.resolve(undefined))
+    await expect(requestError(failureA)).resolves.toEqual({ kind: 'retry' })
+    await expect(requestError(failureB)).resolves.toEqual({ kind: 'retry' })
+  })
+
   test.each([
     ['unknown citation', '结论[资料2]', 'citation-unknown'],
     ['malformed citation', '结论[资料01]', 'citation-malformed'],
@@ -331,6 +366,33 @@ describe('XAgent citation policy', () => {
     expect(authorize).not.toHaveBeenCalled()
     expect(session.events.find(event => event.type === 'xagent/citation-correction'))
       .toMatchObject({ data: { reason: 'citation-missing' } })
+  })
+
+  test.each([
+    ['unterminated backtick fence', '事实来自代码\n```text\n[资料1]'],
+    ['closed tilde fence', '事实来自代码\n~~~text\n[资料1]\n~~~'],
+    ['unterminated tilde fence', '事实来自代码\n~~~text\n[资料1]'],
+    ['indented code', '事实来自代码\n    [资料1]'],
+    ['multi-backtick inline code', '事实来自代码 ``示例 `[资料1]` ``'],
+  ])('masks %s through its Markdown extent', async (_name, text) => {
+    const { authorize, ctx, session } = await setup()
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-missing' } })
+  })
+
+  test('treats escaped backtick delimiters as prose', async () => {
+    const { authorize, ctx } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: String.raw`结论 \`[资料1]\`` },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledOnce()
   })
 
   test('ignores citation literals in code when prose has one allowed citation', async () => {
@@ -425,9 +487,7 @@ describe('XAgent citation policy', () => {
       yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'aborted' } } }
     }
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', request, cancelled))
-    expect(chunks).toEqual([{
-      type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'aborted' } },
-    }])
+    expect(chunks).toEqual([])
     expect(authorize).not.toHaveBeenCalled()
   })
 
@@ -441,39 +501,48 @@ describe('XAgent citation policy', () => {
     const correction = session.events.find(event => event.type === 'xagent/citation-correction')
     if (correction?.type !== 'xagent/citation-correction') throw new Error('missing correction')
     expect(Buffer.byteLength(correction.data.invalidDraft)).toBeLessThanOrEqual(CITATION_CORRECTION_DRAFT_MAX_BYTES)
-    expect(correction.data.draftSha256).toBe(createHash('sha256').update(oversized).digest('hex'))
+    const bounded = '资'.repeat(Math.floor(CITATION_ANSWER_MAX_BYTES / 3))
+    expect(correction.data.invalidDraft).toBe(bounded.slice(0, Math.floor(CITATION_CORRECTION_DRAFT_MAX_BYTES / 3)))
+    expect(correction.data.draftSha256).toBe(createHash('sha256').update(bounded).digest('hex'))
     expect(correction.data.reason).toBe('answer-too-large')
   })
 
-  test('spills only overflow to private files and removes them on cancellation', async () => {
-    const { ctx } = await setup()
+  test('stops pulling at the first hard stream cap without creating filesystem residue', async () => {
+    const { ctx, session } = await setup()
     const existing = new Set(readdirSync(tmpdir()).filter(name => name.startsWith('xagent-citation-')))
+    let pulled = 0
+    let finalized = false
+    async function* adversarial(): AsyncIterable<StreamChunk> {
+      try {
+        for (let index = 0; index < 4100; index += 1) {
+          pulled += 1
+          yield { type: 'block-start', index, blockType: 'text' }
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } finally {
+        finalized = true
+      }
+    }
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), adversarial))
+    expect(pulled).toBe(257)
+    expect(finalized).toBe(true)
+    expect(new Set(readdirSync(tmpdir()).filter(name => name.startsWith('xagent-citation-')))).toEqual(existing)
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'answer-too-large' } })
+  })
+
+  test('hashes recognized canonical text after an unknown chunk until the termination boundary', async () => {
+    const { ctx, session } = await setup()
     await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
-      { type: 'text-delta', index: 0, text: '结论[资料1]' },
+      { type: 'future-chunk' } as unknown as StreamChunk,
+      { type: 'text-delta', index: 3, text: 'later recognized text' },
       { type: 'finish', reason: { kind: 'stop' } },
     ])))
-    expect(new Set(readdirSync(tmpdir()).filter(name => name.startsWith('xagent-citation-')))).toEqual(existing)
-    const controller = new AbortController()
-    const gate = Promise.withResolvers<undefined>()
-    async function* paused(): AsyncIterable<StreamChunk> {
-      yield { type: 'text-delta', index: 0, text: '资'.repeat(Math.ceil(CITATION_ANSWER_MAX_BYTES / 3) + 1) }
-      await gate.promise
-      yield { type: 'finish', reason: { kind: 'stop' } }
-    }
-    const iterator = ctx.waterfall(ctx.llm, 'llm/stream', { ...options(), signal: controller.signal }, paused)[Symbol.asyncIterator]()
-    const pending = iterator.next()
-    let directory = ''
-    await vi.waitFor(() => {
-      directory = readdirSync(tmpdir()).find(name => name.startsWith('xagent-citation-') && !existing.has(name)) ?? ''
-      expect(directory).not.toBe('')
-    })
-    const path = join(tmpdir(), directory)
-    expect(statSync(path).mode & 0o777).toBe(0o700)
-    expect(statSync(join(path, '0')).mode & 0o777).toBe(0o600)
-    controller.abort()
-    gate.resolve(undefined)
-    await pending
-    expect(readdirSync(tmpdir())).not.toContain(directory)
+    const correction = session.events.find(event => event.type === 'xagent/citation-correction')
+    expect(correction).toMatchObject({ data: { invalidDraft: 'later recognized text' } })
+    if (correction?.type !== 'xagent/citation-correction') throw new Error('missing correction')
+    expect(correction.data.draftSha256)
+      .toBe(createHash('sha256').update('later recognized text').digest('hex'))
   })
 
   test('ignores evidence from a different Session and fails closed on unknown stream chunks', async () => {
