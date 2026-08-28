@@ -31,6 +31,30 @@ class EmbeddingBackend(Protocol):
         """Return one dense vector for each input text."""
 
 
+class TokenizerBackend(Protocol):
+    """Tokenizer-only operation used by the internal token-count endpoint."""
+
+    def encode(self, text: str, *, add_special_tokens: bool) -> Sequence[int]:
+        """Return token identifiers for exact input text."""
+
+
+class AutoTokenizerBackend:
+    """Tokenizer-only BGE-M3 asset fixed to the reviewed Hugging Face commit."""
+
+    def __init__(self) -> None:
+        from transformers import AutoTokenizer
+
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            MODEL_ID,
+            revision=MODEL_REVISION,
+            use_fast=True,
+        )
+
+    def encode(self, text: str, *, add_special_tokens: bool) -> Sequence[int]:
+        """Return token identifiers without loading the inference model."""
+        return self._tokenizer.encode(text, add_special_tokens=add_special_tokens)
+
+
 class SentenceTransformerBackend:
     """CPU-only BGE-M3 backend fixed to the reviewed Hugging Face commit."""
 
@@ -86,20 +110,46 @@ class EmbeddingModel:
                 raise EmbeddingProtocolError("backend returned an incomplete vector response")
             return [_normalize_vector(vector) for vector in vectors]
 
-    def token_count(self, text: str) -> int:
-        """Return the exact pinned tokenizer count without special tokens.
+    def _backend_or_load(self) -> EmbeddingBackend:
+        if self._backend is None:
+            self._backend = self._backend_factory()
+        return self._backend
 
-        @param text Query text whose tokens are counted verbatim.
+
+class TokenizerCounter:
+    """Serialize exact counts through a tokenizer-only lazy owner."""
+
+    def __init__(
+        self,
+        backend: TokenizerBackend | None = None,
+        backend_factory: Callable[[], TokenizerBackend] = AutoTokenizerBackend,
+    ) -> None:
+        self._backend = backend
+        self._backend_factory = backend_factory
+        self._tokenizer_lock = Lock()
+
+    def count(self, text: str) -> int:
+        """Return a bounded exact count without special tokens.
+
+        @param text Query text whose UTF-8 size is bounded before tokenization.
         @returns The non-negative BGE-M3 token count.
-        @raises EmbeddingProtocolError If the backend returns an invalid count.
+        @raises EmbeddingInputError If text exceeds the fixed byte limit.
+        @raises EmbeddingProtocolError If the tokenizer returns an invalid count.
         """
-        with self._inference_lock:
-            count = self._backend_or_load().token_count(text)
+        if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+            raise EmbeddingInputError("text exceeds the 8 KiB limit")
+        try:
+            with self._tokenizer_lock:
+                count = len(self._backend_or_load().encode(text, add_special_tokens=False))
+        except (EmbeddingInputError, EmbeddingProtocolError):
+            raise
+        except Exception as error:
+            raise EmbeddingProtocolError("tokenizer unavailable") from error
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-            raise EmbeddingProtocolError("backend returned an invalid token count")
+            raise EmbeddingProtocolError("tokenizer returned an invalid count")
         return count
 
-    def _backend_or_load(self) -> EmbeddingBackend:
+    def _backend_or_load(self) -> TokenizerBackend:
         if self._backend is None:
             self._backend = self._backend_factory()
         return self._backend

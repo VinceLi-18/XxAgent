@@ -16,7 +16,7 @@ PostgreSQL 启用 `vector` 与 `pg_trgm` 扩展，并保存 `artifact_text_index
 
 检索收据绑定 actor、Session、tool call、查询摘要、规范化范围、权限 revision、返回的项目/Index/分片集合和模型可见 payload 摘要。收据从签发时刻起固定五分钟；可选 citation ordinal 范围必须为正整数。`xagent_sessions.next_citation_ordinal` 从 1 开始递增，保留的 ordinal 不因收据过期或未消费而复用。
 
-Host 在每条进入 Agent inbox 的消息上固定认证请求范围，并在该消息被领取时激活；排队、steering、账号切换、连接关闭和权限 revision 变化都不能继承另一条消息的 token。两个检索工具只进入 Native 工具路径，Code SDK 与嵌套 Code dispatch 不暴露它们。Host 组合必须提供固定 BGE tokenizer 的精确查询计数器，缺失或返回无效计数时检索失败关闭。Host 在返回检索值前登记不透明收据，随后只在对应 `tool/result` 确认发布后允许同一 Session Event 绑定；取消、阻断和释放必须确认未发布或等待已发布结果完成绑定，不得把收据写入模型结果、metadata 或日志。
+Host 在每条进入 Agent inbox 的消息上固定认证请求范围，并在该消息被领取时激活；排队、steering、账号切换、连接关闭和权限 revision 变化都不能继承另一条消息的 token。两个检索工具只进入 Native 工具路径，Code SDK 与嵌套 Code dispatch 不暴露它们。Host 组合必须提供固定 BGE tokenizer 的精确查询计数器，缺失或返回无效计数时检索失败关闭。Host 在发送请求前限制查询 UTF-8 字节，把调用方取消信号与固定超时合并，拒绝重定向，并在严格响应类型、大小、UTF-8、字段、模型与 revision 验证之后接受计数；内部 endpoint 只加载该 revision 的 tokenizer 资产，tokenizer 并发与 embedding 推理隔离，已取消的有限 tokenization 线程必须完成后才释放 owner。Host 在返回检索值前登记不透明收据，随后只在对应 `tool/result` 确认发布后允许同一 Session Event 绑定；取消、阻断和释放必须确认未发布或等待已发布结果完成绑定，不得把收据写入模型结果、metadata 或日志。
 
 FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把 nonce 的 SHA-256 摘要作为全局唯一键持久化；令牌原文、nonce 原文和签名不进入数据库或日志。令牌严格绑定 actor、Session、Project Session 的 project 或 Private Session 的 null project、endpoint tool、tool call、权限 revision 和不超过六十秒的有效期。nonce 消费使用独立提交的事务，因此后续查询失败也不能重新使用同一委托。
 
@@ -42,6 +42,7 @@ FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把
 - 数据库拒绝错误向量维度、重复分片 ordinal、超出正文或 token 上限、无效 Index 状态跳转、未就绪 Index head、错误收据 TTL 和非正 citation ordinal。
 - RLS 只向当前 actor 暴露其私人资料或当前项目成员可见的分片；worker 不能读取账号、认证、Session、项目成员或收据；应用角色不能写入分片 embedding。
 - 四个检索 endpoint 在解析业务请求前限制实际流式 body 字节，并拒绝缺失、篡改、过期、重放或 claims 不匹配的委托令牌；数据库只保存 nonce 摘要与必要归属字段。
+- Host 与内部 token-count endpoint 对查询、请求 body、超时和响应施加固定资源限制；计数只加载固定 revision 的 tokenizer 资产，不加载 embedding 推理模型。
 - 只读项目授权可并发预留唯一 citation ordinal，但不能直接更新 Session；搜索输出同时满足每 Artifact、总数、32 KiB 和 4096 token 限制。
 - 检索允许与拒绝审计包含固定结果和延迟，返回证据包含受限身份集合，任何原始查询、内容、向量或 bearer secret 均被排除。
 

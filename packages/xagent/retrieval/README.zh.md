@@ -30,4 +30,4 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 - 本包只拥有 Host 检索、委托和 receipt 生命周期；混合排序、RLS、引用序号和 receipt 消费由 FastAPI 拥有。
 - Receipt sidecar 的远端 append 与确认由 Session 持久化提供方装配；registry 不自行写入磁盘或网络。
-- Retrieval 自带固定到 `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181` 的 HTTP tokenizer provider；模型或 revision 不一致时服务加载失败。每次搜索先调用内部 embedding `/token-count`，最多 512 个精确 token 的查询才会到达检索接口，513-token 查询不会发起检索。
+- Retrieval 自带固定到 `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181` 的 HTTP tokenizer provider；模型或 revision 不一致时服务加载失败。Provider 最多接受 8 KiB 查询 UTF-8 数据，把调用方取消信号与五秒超时合并，拒绝重定向和不完全匹配的响应，并且最多读取 512 字节响应。每次搜索先调用仅服务网络可达的 embedding `/token-count`；最多 512 个精确 token 的查询才会到达检索接口，513-token 查询不会发起检索。

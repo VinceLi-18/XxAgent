@@ -1,13 +1,21 @@
+import asyncio
 import logging
 from math import isfinite, sqrt
-from threading import Lock
+from threading import Event, Lock
 from time import sleep
 
 import httpx
 import pytest
 
-from app.main import create_app
-from app.model import EMBEDDING_DIMENSION, MODEL_ID, MODEL_REVISION, EmbeddingModel
+from app.main import MAX_TOKEN_COUNT_BODY_BYTES, create_app
+from app.model import (
+    EMBEDDING_DIMENSION,
+    MAX_TEXT_BYTES,
+    MODEL_ID,
+    MODEL_REVISION,
+    EmbeddingModel,
+    TokenizerCounter,
+)
 
 
 class DeterministicBackend:
@@ -39,6 +47,32 @@ class ColdStartBackend(DeterministicBackend):
         finally:
             with self._lock:
                 self.active_encodes -= 1
+
+
+class DeterministicTokenizer:
+    def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        assert add_special_tokens is False
+        return list(range(len(text.split())))
+
+
+class BlockingTokenizer(DeterministicTokenizer):
+    def __init__(self) -> None:
+        self.started = Event()
+        self.release = Event()
+        self.finished = Event()
+
+    def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        self.started.set()
+        self.release.wait(timeout=2)
+        try:
+            return super().encode(text, add_special_tokens=add_special_tokens)
+        finally:
+            self.finished.set()
+
+
+class FailingTokenizer(DeterministicTokenizer):
+    def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        raise RuntimeError(f"tokenizer failed for secret text: {text}")
 
 
 @pytest.mark.anyio
@@ -92,8 +126,13 @@ async def test_health_identifies_the_pinned_model_without_loading_it() -> None:
 
 @pytest.mark.anyio
 async def test_token_count_uses_the_pinned_backend_without_embedding() -> None:
-    backend = DeterministicBackend()
-    app = create_app(EmbeddingModel(backend))
+    def fail_model_load() -> DeterministicBackend:
+        raise AssertionError("token counting loaded the inference model")
+
+    app = create_app(
+        EmbeddingModel(backend_factory=fail_model_load),
+        TokenizerCounter(DeterministicTokenizer()),
+    )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
         response = await client.post("/token-count", json={"text": "Latin 中文 whitespace"})
@@ -103,6 +142,90 @@ async def test_token_count_uses_the_pinned_backend_without_embedding() -> None:
         "revision": MODEL_REVISION,
         "token_count": 3,
     }
+
+
+@pytest.mark.anyio
+async def test_token_count_rejects_unbounded_or_open_bodies_without_logging_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(EmbeddingModel(DeterministicBackend()), TokenizerCounter(DeterministicTokenizer()))
+    transport = httpx.ASGITransport(app=app)
+    caplog.set_level(logging.INFO)
+    secret = "private-tokenizer-text"
+    async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
+        responses = [
+            await client.post("/token-count", json={"text": secret, "extra": True}),
+            await client.post("/token-count", json={"text": [secret]}),
+            await client.post("/token-count", content=b"{", headers={"content-type": "application/json"}),
+            await client.post(
+                "/token-count",
+                content=b'{"text":"' + b"x" * (MAX_TEXT_BYTES + 1) + b'"}',
+                headers={"content-type": "application/json"},
+            ),
+            await client.post(
+                "/token-count",
+                content=b" " * (MAX_TOKEN_COUNT_BODY_BYTES + 1),
+                headers={"content-type": "application/json"},
+            ),
+            await client.post(
+                "/token-count",
+                content=b'{"text":"\xff"}',
+                headers={"content-type": "application/json"},
+            ),
+        ]
+
+    assert all(response.status_code == 422 for response in responses)
+    assert all(response.json() == {"detail": "tokenizer request rejected"} for response in responses)
+    assert secret not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_tokenizer_failures_return_a_stable_error_without_logging_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_app(EmbeddingModel(DeterministicBackend()), TokenizerCounter(FailingTokenizer()))
+    transport = httpx.ASGITransport(app=app)
+    caplog.set_level(logging.INFO)
+    async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
+        response = await client.post("/token-count", json={"text": "private-tokenizer-text"})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "tokenizer unavailable"}
+    assert "private-tokenizer-text" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_tokenizer_lock_is_separate_from_inference() -> None:
+    tokenizer = BlockingTokenizer()
+    app = create_app(EmbeddingModel(DeterministicBackend()), TokenizerCounter(tokenizer))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
+        counting = asyncio.create_task(client.post("/token-count", json={"text": "blocked tokenizer"}))
+        await asyncio.to_thread(tokenizer.started.wait, 1)
+        embedded = await client.post("/embed", json={"texts": ["still available"]})
+        tokenizer.release.set()
+        counted = await counting
+
+    assert embedded.status_code == counted.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_cancelled_token_count_waits_for_its_finite_thread_owner() -> None:
+    tokenizer = BlockingTokenizer()
+    app = create_app(EmbeddingModel(DeterministicBackend()), TokenizerCounter(tokenizer))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
+        counting = asyncio.create_task(client.post("/token-count", json={"text": "cancelled tokenizer"}))
+        await asyncio.to_thread(tokenizer.started.wait, 1)
+        counting.cancel()
+        await asyncio.sleep(0)
+        assert not tokenizer.finished.is_set()
+        assert not counting.done()
+        tokenizer.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await counting
+
+    assert tokenizer.finished.is_set()
 
 
 @pytest.mark.anyio

@@ -724,7 +724,7 @@ Expected: Compose lacks pgvector/embedding/index health wiring and CI has no ret
 
 - [ ] **Step 2: Add health-ordered CPU services**
 
-PostgreSQL must include pgvector; embedding health must prove model loaded and dimension 1024; worker waits for PostgreSQL, MinIO, ClamAV, migration and embedding health; API waits for embedding health but never receives worker database credentials. Do not publish the embedding port to the host.
+PostgreSQL must include pgvector; embedding health must prove model loaded and dimension 1024; worker waits for PostgreSQL, MinIO, ClamAV, migration and embedding health; API waits for embedding health but never receives worker database credentials. Keep the embedding port on the service-only network. Its `/token-count` route accepts one closed JSON text field under the same 8 KiB UTF-8 limit, uses the exact pinned tokenizer asset without loading the inference model, and owns cancelled finite tokenization through thread settlement.
 
 - [ ] **Step 3: Add real pipeline and recovery coverage**
 
@@ -779,7 +779,7 @@ Expected: Business dump lacks retrieval provider/tools/UI; non-Business dump ass
 
 - [ ] **Step 2: Mount in dependency order**
 
-Mount retrieval provider after auth/authorization/Session persistence, then tool retrieval, then citation UI after project/artifact UI. Supply the backend origin, internal embedding tokenizer origin, service token and delegation signing configuration only to Host; Browser gets no FastAPI token, receipt, embedding origin or model credentials.
+Mount retrieval provider after auth/authorization/Session persistence, then tool retrieval, then citation UI after project/artifact UI. Supply the backend origin, service-only embedding tokenizer origin, service token and delegation signing configuration only to Host. The tokenizer origin must address Task 10's internal network endpoint; Browser gets no FastAPI token, receipt, embedding origin or model credentials.
 
 - [ ] **Step 3: Verify real Loader and keyless snapshots**
 
