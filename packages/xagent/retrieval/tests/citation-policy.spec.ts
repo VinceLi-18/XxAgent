@@ -5,8 +5,10 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import LlmRuntime, {
   CallId,
+  createUserMessage,
   createToolResultMessage,
   type GenerateOptions,
+  type LlmFailure,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -68,6 +70,20 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   const chunks: StreamChunk[] = []
   for await (const chunk of stream) chunks.push(chunk)
   return chunks
+}
+
+function invalidAnswer(ctx: Context, text: string): Promise<StreamChunk[]> {
+  return collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+    { type: 'text-delta', index: 0, text },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ])))
+}
+
+function scheduleRetry(ctx: Context, agent: Agent, failure: LlmFailure) {
+  return ctx.waterfall(agent as never, 'agent/request-error', {
+    agent, turn: 1, step: 1, provider: 'mock', failure,
+    retryPolicy: undefined, signal: new AbortController().signal,
+  }, () => Promise.resolve(undefined))
 }
 
 async function setup() {
@@ -328,6 +344,152 @@ describe('XAgent citation policy', () => {
     expect(delegated).toBe(1)
   })
 
+  test('fails the scheduled retry when its correction message is omitted and forgets that lineage', async () => {
+    const { agent, authorize, ctx, session } = await setup()
+    const first = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: 'invalid' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const failure = first[0]?.type === 'finish' && first[0].reason.kind === 'error'
+      ? first[0].reason.failure : undefined
+    if (failure === undefined) throw new Error('missing retry failure')
+    await expect(ctx.waterfall(agent as never, 'agent/request-error', {
+      agent, turn: 1, step: 1, provider: 'mock', failure,
+      retryPolicy: undefined, signal: new AbortController().signal,
+    }, () => Promise.resolve(undefined))).resolves.toEqual({ kind: 'retry' })
+    const correction = session.events.findLast(event => event.type === 'user/message')
+    if (correction?.type !== 'user/message') throw new Error('missing correction message')
+
+    const omitted = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: 'must stay hidden[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(omitted).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+
+    const unrelated = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options([
+      ADMITTED_EVIDENCE_MESSAGE, correction.data,
+    ]), () => source([
+      { type: 'text-delta', index: 0, text: 'new invalid request' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(unrelated).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(session.events.filter(event => event.type === 'xagent/citation-correction')).toHaveLength(2)
+  })
+
+  test('requires the exact correction message identity and forgets a replaced lineage', async () => {
+    const { agent, authorize, ctx, session } = await setup()
+    const first = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: 'invalid' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const failure = first[0]?.type === 'finish' && first[0].reason.kind === 'error'
+      ? first[0].reason.failure : undefined
+    if (failure === undefined) throw new Error('missing retry failure')
+    await ctx.waterfall(agent as never, 'agent/request-error', {
+      agent, turn: 1, step: 1, provider: 'mock', failure,
+      retryPolicy: undefined, signal: new AbortController().signal,
+    }, () => Promise.resolve(undefined))
+    const correction = session.events.findLast(event => event.type === 'user/message')
+    if (correction?.type !== 'user/message') throw new Error('missing correction message')
+
+    const replacement = createUserMessage({
+      content: correction.data.content,
+      source: correction.data.source,
+    })
+    const replaced = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options([
+      ADMITTED_EVIDENCE_MESSAGE, replacement,
+    ]), () => source([
+      { type: 'text-delta', index: 0, text: 'must stay hidden[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(replaced).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+
+    const freshInvalid = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options([
+      ADMITTED_EVIDENCE_MESSAGE, correction.data,
+    ]), () => source([
+      { type: 'text-delta', index: 0, text: 'fresh invalid' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(freshInvalid).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+  })
+
+  test('accepts the exact correction once and clears its retry lineage after success', async () => {
+    const { agent, authorize, ctx, session } = await setup()
+    const first = await invalidAnswer(ctx, 'invalid')
+    const failure = first[0]?.type === 'finish' && first[0].reason.kind === 'error'
+      ? first[0].reason.failure : undefined
+    if (failure === undefined) throw new Error('missing retry failure')
+    await expect(scheduleRetry(ctx, agent, failure)).resolves.toEqual({ kind: 'retry' })
+    const correction = session.events.findLast(event => event.type === 'user/message')
+    if (correction?.type !== 'user/message') throw new Error('missing correction message')
+
+    const retry = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options([
+      ADMITTED_EVIDENCE_MESSAGE, correction.data,
+    ]), () => source([
+      { type: 'text-delta', index: 0, text: 'verified[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(retry.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledOnce()
+
+    const fresh = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options([
+      ADMITTED_EVIDENCE_MESSAGE, correction.data,
+    ]), () => source([
+      { type: 'text-delta', index: 0, text: 'fresh invalid' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(fresh).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).toHaveBeenCalledOnce()
+  })
+
+  test('fails only the scheduled lineage when sibling correction messages make its claim ambiguous', async () => {
+    const { agent, authorize, ctx, session } = await setup()
+    const [draftA, draftB] = await Promise.all([
+      invalidAnswer(ctx, 'invalid-a'), invalidAnswer(ctx, 'invalid-b'),
+    ])
+    const failureA = draftA[0]?.type === 'finish' && draftA[0].reason.kind === 'error'
+      ? draftA[0].reason.failure : undefined
+    const failureB = draftB[0]?.type === 'finish' && draftB[0].reason.kind === 'error'
+      ? draftB[0].reason.failure : undefined
+    if (failureA === undefined || failureB === undefined) throw new Error('missing sibling failures')
+    await scheduleRetry(ctx, agent, failureA)
+    await scheduleRetry(ctx, agent, failureB)
+    const corrections = session.events.filter(event => event.type === 'user/message')
+    const correctionA = corrections.at(-2)?.type === 'user/message' ? corrections.at(-2)?.data : undefined
+    const correctionB = corrections.at(-1)?.type === 'user/message' ? corrections.at(-1)?.data : undefined
+    if (correctionA === undefined || correctionB === undefined) throw new Error('missing sibling corrections')
+
+    const ambiguous = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options([
+      ADMITTED_EVIDENCE_MESSAGE, correctionA, correctionB,
+    ]), () => source([
+      { type: 'text-delta', index: 0, text: 'must stay hidden[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(ambiguous).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED' } },
+    }])
+    const sibling = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options([
+      ADMITTED_EVIDENCE_MESSAGE, correctionB,
+    ]), () => source([
+      { type: 'text-delta', index: 0, text: 'verified sibling[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(sibling.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledOnce()
+  })
+
   test('does not claim a terminal failure without its exact protected request identity', async () => {
     const { agent, ctx } = await setup()
     await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -379,12 +541,8 @@ describe('XAgent citation policy', () => {
     const failureB = draftB[0]?.type === 'finish' && draftB[0].reason.kind === 'error'
       ? draftB[0].reason.failure : undefined
     if (failureA === undefined || failureB === undefined) throw new Error('missing concurrent failures')
-    const requestError = (failure: typeof failureA) => ctx.waterfall(agent as never, 'agent/request-error', {
-      agent, turn: 1, step: 1, provider: 'mock', failure,
-      retryPolicy: undefined, signal: new AbortController().signal,
-    }, () => Promise.resolve(undefined))
-    await expect(requestError(failureA)).resolves.toEqual({ kind: 'retry' })
-    await expect(requestError(failureB)).resolves.toEqual({ kind: 'retry' })
+    await expect(scheduleRetry(ctx, agent, failureA)).resolves.toEqual({ kind: 'retry' })
+    await expect(scheduleRetry(ctx, agent, failureB)).resolves.toEqual({ kind: 'retry' })
 
     const corrections = session.events.filter(event => event.type === 'user/message')
     const correctionA = corrections.at(-2)?.type === 'user/message' ? corrections.at(-2)?.data : undefined
@@ -410,16 +568,14 @@ describe('XAgent citation policy', () => {
     const terminalB = retryB[0]?.type === 'finish' && retryB[0].reason.kind === 'error'
       ? retryB[0].reason.failure : undefined
     if (terminalB === undefined) throw new Error('missing second terminal failure')
-    await expect(requestError(terminalB)).resolves.toBeUndefined()
+    await expect(scheduleRetry(ctx, agent, terminalB)).resolves.toBeUndefined()
   })
 
   test('rejects an ambiguous retry lineage without creating another correction', async () => {
     const { agent, ctx, session } = await setup()
-    const invalid = (text: string) => collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
-      { type: 'text-delta', index: 0, text },
-      { type: 'finish', reason: { kind: 'stop' } },
-    ])))
-    const [draftA, draftB] = await Promise.all([invalid('invalid-a'), invalid('invalid-b')])
+    const [draftA, draftB] = await Promise.all([
+      invalidAnswer(ctx, 'invalid-a'), invalidAnswer(ctx, 'invalid-b'),
+    ])
     const failures = [draftA, draftB].map(draft => draft[0]?.type === 'finish'
       && draft[0].reason.kind === 'error' ? draft[0].reason.failure : undefined)
     if (failures.some(failure => failure === undefined)) throw new Error('missing ambiguous failures')
@@ -576,6 +732,44 @@ describe('XAgent citation policy', () => {
     expect(authorize).not.toHaveBeenCalled()
     expect(session.events.find(event => event.type === 'xagent/citation-correction'))
       .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
+    ['unmatched opener', '<span>[资料1]'],
+    ['unmatched closer', '</span>[资料1]'],
+    ['malformed opener', '<span\n[资料1]'],
+    ['malformed closer', '</span [资料1]'],
+    ['unclosed nested element', '<div><span>[资料1]</span>'],
+    ['citation attribute beside prose', '<span title="[资料2]">label</span> 结论[资料1]'],
+    ['citation comment beside prose', '<!-- [资料2] -->\n结论[资料1]'],
+    ['citation block beside prose', '<div>\n[资料2]\n</div>\n\n结论[资料1]'],
+    ['citation inside raw HTML beside prose', '<span>unsafe [资料2]</span> 结论[资料1]'],
+    ['markup-split citation inside raw HTML', '<span>**[资料1]**</span>'],
+  ])('fails closed for %s raw HTML context', async (_kind, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
+    ['inline element', '<span>label</span> 结论[资料1]'],
+    ['block element', '<div>\nlabel\n</div>\n\n结论[资料1]'],
+  ])('keeps a prose citation outside a well-closed raw HTML %s visible', async (_kind, text) => {
+    const { authorize, ctx } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ citations: [citation] }))
   })
 
   test('ignores citation literals in code when prose has one allowed citation', async () => {

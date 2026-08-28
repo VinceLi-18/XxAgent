@@ -321,6 +321,62 @@ describe('XAgentRetrievalService', () => {
     await created.retrieval.dispose()
   })
 
+  test('fails a production retry that omits its exact correction and never reclaims the old lineage', async () => {
+    const releaseOwner = Promise.withResolvers<undefined>()
+    async function* blockedOwner(): AsyncIterable<StreamChunk> {
+      await releaseOwner.promise
+      yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'done' } } }
+    }
+    const adapter = new DeferredAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      blockedOwner,
+    ])
+    const created = await agentHarness(adapter)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(2) })
+    const protectedOptions = adapter.requests[1]
+    if (protectedOptions === undefined) throw new Error('missing protected request')
+    const first = await collect(created.ctx.waterfall(created.ctx.llm, 'llm/stream', protectedOptions, () => source([
+      { type: 'text-delta', index: 0, text: 'invalid' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const failure = first[0]?.type === 'finish' && first[0].reason.kind === 'error'
+      ? first[0].reason.failure : undefined
+    if (failure === undefined) throw new Error('missing production retry failure')
+    await expect(created.ctx.waterfall(created.owner as never, 'agent/request-error', {
+      agent: created.owner, turn: 1, step: 2, provider: 'mock', failure,
+      retryPolicy: undefined, signal: new AbortController().signal,
+    }, () => Promise.resolve(undefined))).resolves.toEqual({ kind: 'retry' })
+    const correction = created.owner.session.events.findLast(event => event.type === 'user/message')
+    if (correction?.type !== 'user/message') throw new Error('missing production correction')
+
+    const omitted = await collect(created.ctx.waterfall(created.ctx.llm, 'llm/stream', protectedOptions, () => source([
+      { type: 'text-delta', index: 0, text: 'must stay hidden[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(omitted).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED' } },
+    }])
+    expect(created.value.authorizeCitations).not.toHaveBeenCalled()
+
+    const unrelated = await collect(created.ctx.waterfall(created.ctx.llm, 'llm/stream', {
+      ...protectedOptions, messages: [...protectedOptions.messages, correction.data],
+    }, () => source([
+      { type: 'text-delta', index: 0, text: 'fresh invalid' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(unrelated).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+
+    created.owner.cancel({ kind: 'user' })
+    releaseOwner.resolve(undefined)
+    await created.owner.whenIdle()
+    await created.retrieval.dispose()
+  })
+
   test('disposal aborts in-flight answer authorization and releases no answer chunks', async () => {
     const value = backend()
     value.authorizeCitations = vi.fn(async (

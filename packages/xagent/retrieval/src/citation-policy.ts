@@ -32,6 +32,7 @@ export const CITATION_ALLOWED_MAX = 64
 const CITATION_ID = /^\[资料([1-9][0-9]*)\]$/u
 const CITATION_TOKEN = /\[资料[1-9][0-9]*\]/gu
 const CITATION_LIKE = /[\[\]【】［］]?资料[0-9]+[\[\]【】［］]?/gu
+const HTML_LIKE = /<\/?[A-Za-z][A-Za-z0-9-]*/gu
 const HASH_PATTERN = /^[0-9a-f]{64}$/u
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u
 const CORRECTION_MESSAGE = '上一份回答未通过引用校验。请只根据已入账的资料证据重新回答；每个采用资料的事实陈述都必须使用以下允许引用，且不得编造或改写引用 ID：'
@@ -219,22 +220,70 @@ interface ProseSegment {
   readonly source: string
 }
 
-function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliases: string[] } {
+const HTML_VOID_ELEMENTS = new Set([
+  'area', 'base', 'basefont', 'bgsound', 'br', 'col', 'embed', 'frame', 'hr', 'img',
+  'input', 'keygen', 'link', 'meta', 'param', 'source', 'track', 'wbr',
+])
+
+interface SourceRange {
+  readonly start: number
+  readonly end: number
+}
+
+function sourceRange(node: Nodes): SourceRange | undefined {
+  const start = node.position?.start.offset
+  const end = node.position?.end.offset
+  return start === undefined || end === undefined ? undefined : { start, end }
+}
+
+function insideRange(index: number, ranges: readonly SourceRange[]): boolean {
+  return ranges.some(range => index >= range.start && index < range.end)
+}
+
+function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliases: string[]; htmlUnsafe: boolean } {
   const segments: ProseSegment[] = []
   const htmlAliases: string[] = []
-  const htmlNodes: Array<{ start: number; end: number }> = []
+  const htmlRanges: SourceRange[] = []
+  const ignoredRanges: SourceRange[] = []
+  const htmlStack: string[] = []
+  let htmlUnsafe = false
   const visit = (node: Root | Nodes): void => {
-    if (node.type === 'code' || node.type === 'inlineCode') return
+    if (node.type === 'code' || node.type === 'inlineCode') {
+      const range = sourceRange(node)
+      if (range !== undefined) ignoredRanges.push(range)
+      return
+    }
+    if (node.type === 'link') {
+      const range = sourceRange(node)
+      if (range !== undefined && markdown[range.start] === '<' && markdown[range.end - 1] === '>') {
+        ignoredRanges.push(range)
+      }
+    }
     if (node.type === 'html') {
       htmlAliases.push(...[...node.value.matchAll(CITATION_LIKE)].map(match => match[0]))
-      const start = node.position?.start.offset
-      const end = node.position?.end.offset
-      if (start !== undefined && end !== undefined) htmlNodes.push({ start, end })
+      const range = sourceRange(node)
+      if (range !== undefined) htmlRanges.push(range)
+      const closing = /^<\/([A-Za-z][A-Za-z0-9-]*)\s*>$/u.exec(node.value)
+      if (closing?.[1] !== undefined) {
+        const name = closing[1].toLowerCase()
+        if (htmlStack.at(-1) === name) htmlStack.pop()
+        else htmlUnsafe = true
+        return
+      }
+      const opening = /^<([A-Za-z][A-Za-z0-9-]*)(?:\s[\s\S]*?)?>$/u.exec(node.value)
+      if (opening?.[1] !== undefined && !/\/\s*>$/u.test(node.value)) {
+        const name = opening[1].toLowerCase()
+        if (!HTML_VOID_ELEMENTS.has(name)) htmlStack.push(name)
+      }
       return
     }
     if (node.type === 'text') {
       const start = node.position?.start.offset
       const end = node.position?.end.offset
+      if (htmlStack.length > 0) {
+        htmlAliases.push(...[...node.value.matchAll(CITATION_LIKE)].map(match => match[0]))
+        return
+      }
       segments.push({
         rendered: node.value,
         source: start === undefined || end === undefined ? node.value : markdown.slice(start, end),
@@ -246,20 +295,22 @@ function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliase
     }
   }
   visit(fromMarkdown(markdown))
-  for (let index = 1; index < htmlNodes.length; index += 1) {
-    const previous = htmlNodes[index - 1]
-    const current = htmlNodes[index]
-    if (previous === undefined || current === undefined) continue
-    htmlAliases.push(...[...markdown.slice(previous.start, current.end).matchAll(CITATION_LIKE)]
-      .map(match => match[0]))
+  if (htmlStack.length > 0) htmlUnsafe = true
+  for (const match of markdown.matchAll(HTML_LIKE)) {
+    if (unescaped(markdown, match.index)
+      && !insideRange(match.index, htmlRanges)
+      && !insideRange(match.index, ignoredRanges)) {
+      htmlUnsafe = true
+    }
   }
-  return { segments, htmlAliases }
+  return { segments, htmlAliases, htmlUnsafe }
 }
 
 function explicitCitations(text: string): { ids: string[]; malformed: string[] } {
   const ids: string[] = []
   const prose = proseSegments(text)
   const malformed: string[] = [...prose.htmlAliases]
+  if (prose.htmlUnsafe && [...text.matchAll(CITATION_LIKE)].length > 0) malformed.push('<raw-html>')
   let aggregateOffset = 0
   const aggregateRanges = prose.segments.map((segment) => {
     const range = [aggregateOffset, aggregateOffset + segment.rendered.length] as const
@@ -591,32 +642,24 @@ export function installXAgentCitationPolicy(
   }
   const eligibleRetry = new WeakMap<object, RetryLineage>()
   const terminalFailures = new WeakMap<object, RetryLineage>()
-  const pendingRetries = new WeakMap<Agent, Set<RetryLineage>>()
+  const scheduledRetries = new WeakMap<Agent, RetryLineage[]>()
 
   const claimLineage = (
     options: GenerateOptions,
     request: XAgentCitationPolicyRequest,
   ): { lineage: RetryLineage; ambiguous: boolean } => {
-    const messageIds = new Set(options.messages.map(message => String(message.id)))
-    const visible = [...(pendingRetries.get(request.agent) ?? [])]
-      .filter(lineage => lineage.correctionMessageId !== undefined
-        && messageIds.has(lineage.correctionMessageId))
-    const candidates = visible.filter(lineage => lineage.scopeIdentity === request.identity)
-    if (candidates.length === 1 && visible.length === 1) {
-      const lineage = candidates[0] as RetryLineage
-      pendingRetries.get(request.agent)?.delete(lineage)
-      if (pendingRetries.get(request.agent)?.size === 0) pendingRetries.delete(request.agent)
-      return { lineage, ambiguous: false }
-    }
-    if (visible.length > 0) {
-      for (const lineage of visible) pendingRetries.get(request.agent)?.delete(lineage)
-      if (pendingRetries.get(request.agent)?.size === 0) pendingRetries.delete(request.agent)
+    const scheduled = scheduledRetries.get(request.agent)
+    const lineage = scheduled?.shift()
+    if (scheduled?.length === 0) scheduledRetries.delete(request.agent)
+    if (lineage !== undefined) {
+      const correctionMessageId = lineage.correctionMessageId
+      const exactClaims = correctionMessageId === undefined ? 0 : options.messages
+        .filter(message => String(message.id) === correctionMessageId).length
+      const siblingClaim = (scheduled ?? []).some(sibling => sibling.correctionMessageId !== undefined
+        && options.messages.some(message => String(message.id) === sibling.correctionMessageId))
       return {
-        lineage: {
-          identity: Object.freeze({}), agent: request.agent,
-          scopeIdentity: request.identity, retrying: true,
-        },
-        ambiguous: true,
+        lineage,
+        ambiguous: lineage.scopeIdentity !== request.identity || exactClaims !== 1 || siblingClaim,
       }
     }
     return {
@@ -660,9 +703,9 @@ export function installXAgentCitationPolicy(
       if (owner?.agent !== agent || owner.retrying || owner.correctionMessageId === undefined) return next()
       eligibleRetry.delete(failure)
       owner.retrying = true
-      const pending = pendingRetries.get(agent) ?? new Set<RetryLineage>()
-      pending.add(owner)
-      pendingRetries.set(agent, pending)
+      const scheduled = scheduledRetries.get(agent) ?? []
+      scheduled.push(owner)
+      scheduledRetries.set(agent, scheduled)
       return Promise.resolve({ kind: 'retry' })
     }
     if (failure.code === 'CITATION_FAILED') {
