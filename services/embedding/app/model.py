@@ -86,6 +86,19 @@ class EmbeddingModel:
                 raise EmbeddingProtocolError("backend returned an incomplete vector response")
             return [_normalize_vector(vector) for vector in vectors]
 
+    def token_count(self, text: str) -> int:
+        """Return the exact pinned tokenizer count without special tokens.
+
+        @param text Query text whose tokens are counted verbatim.
+        @returns The non-negative BGE-M3 token count.
+        @raises EmbeddingProtocolError If the backend returns an invalid count.
+        """
+        with self._inference_lock:
+            count = self._backend_or_load().token_count(text)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise EmbeddingProtocolError("backend returned an invalid token count")
+        return count
+
     def _backend_or_load(self) -> EmbeddingBackend:
         if self._backend is None:
             self._backend = self._backend_factory()

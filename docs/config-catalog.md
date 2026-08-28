@@ -3114,12 +3114,12 @@ export interface Config {
   delegationIssuer: string
   /** Exact delegation audience accepted by FastAPI. */
   delegationAudience: string
-  /** Exact pinned BGE tokenizer counter supplied by the Host composition. */
-  countQueryTokens: (value: string) => number
+  /** Embedding service origin serving the exact pinned BGE-M3 tokenizer. */
+  tokenizerOrigin: string
 }
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:46`](../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:52`](../packages/xagent/retrieval/src/index.ts)
 
 <a id="xagentdsh-session-persistence-api"></a>
 

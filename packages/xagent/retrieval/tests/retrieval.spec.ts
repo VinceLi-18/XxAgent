@@ -16,8 +16,16 @@ import { runWithXAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
 import { describe, expect, test, vi } from 'vitest'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import * as retrievalTools from '../../tool-retrieval/src/index.ts'
+import { BGE_M3_TOKEN_VECTORS } from './bge-m3-token-vectors.ts'
 import { XAgentReceiptRegistry } from '../src/receipt-registry.ts'
-import { XAgentRetrievalError, XAgentRetrievalService } from '../src/index.ts'
+import {
+  BGE_M3_MODEL_ID,
+  BGE_M3_REVISION,
+  XAgentBgeM3HttpTokenizer,
+  XAgentRetrievalError,
+  XAgentRetrievalService,
+  type XAgentBgeM3Tokenizer,
+} from '../src/index.ts'
 
 /* oxlint-disable typescript/unbound-method -- Vitest reads backend mock functions as values for call assertions. */
 
@@ -25,6 +33,16 @@ const ACTOR = '00000000-0000-0000-0000-000000000001'
 const SESSION = '00000000-0000-0000-0000-000000000701'
 const PROJECT = '00000000-0000-0000-0000-000000000401'
 const { privateKey } = generateKeyPairSync('ed25519')
+const LIVE_REQUEST_SIGNAL = new AbortController().signal
+const LIVE_CONNECTION_SIGNAL = new AbortController().signal
+
+function tokenizer(count: (value: string) => number = value => value.trim().split(/\s+/u).length): XAgentBgeM3Tokenizer {
+  return Object.freeze({
+    modelId: BGE_M3_MODEL_ID,
+    revision: BGE_M3_REVISION,
+    count: async (value: string) => count(value),
+  })
+}
 
 function scope(visibility: 'private' | 'project' = 'private') {
   return Object.freeze({
@@ -33,6 +51,7 @@ function scope(visibility: 'private' | 'project' = 'private') {
       authSessionId: '00000000-0000-0000-0000-000000000101', connectionId: 'connection-alice',
     }),
     userToken: 'alice-token', connectionId: 'connection-alice', sessionId: SESSION,
+    requestSignal: LIVE_REQUEST_SIGNAL, connectionSignal: LIVE_CONNECTION_SIGNAL,
     visibility,
     ...visibility === 'project' ? { projectId: PROJECT } : { projectId: null },
   })
@@ -58,11 +77,31 @@ function service(value = backend(), registry = new XAgentReceiptRegistry()) {
   const ctx = new Context()
   return { backend: value, ctx, registry, value: new XAgentRetrievalService(ctx, value, registry, {
     issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
-    countQueryTokens: value => value.trim().split(/\s+/u).length,
+    tokenizer: tokenizer(),
   }) }
 }
 
 describe('XAgentRetrievalService', () => {
+  test('requires the pinned BGE-M3 tokenizer identity and validates the production HTTP response', async () => {
+    expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+    })).toThrow(/BGE-M3 tokenizer/i)
+    expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+      tokenizer: Object.freeze({ ...tokenizer(), revision: 'wrong', count: tokenizer().count }),
+    })).toThrow(/BGE-M3 tokenizer/i)
+
+    const fetch = vi.fn(async (_input: string, _init: RequestInit) => new Response(JSON.stringify({
+      model: BGE_M3_MODEL_ID,
+      revision: BGE_M3_REVISION,
+      token_count: 17,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const production = new XAgentBgeM3HttpTokenizer('http://embedding.internal', fetch)
+    await expect(production.count('资料 with whitespace', new AbortController().signal)).resolves.toBe(17)
+    expect(fetch.mock.calls[0]?.[0]).toBe('http://embedding.internal/token-count')
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
+    expect(fetch.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal)
+  })
   test('claims each queued prompt scope in the real Agent loop instead of inheriting the first driver token', async () => {
     const firstBackend = Promise.withResolvers<XAgentProjectDiscoveryResult>()
     const value = backend()
@@ -88,7 +127,7 @@ describe('XAgentRetrievalService', () => {
     ctx.llm.registerAdapter(['mock'], adapter)
     const registry = new XAgentReceiptRegistry()
     new XAgentRetrievalService(ctx, value, registry, {
-      issuer: 'xagent-host', audience: 'xagent-api', privateKey, countQueryTokens: () => 1,
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
     })
     await ctx.plugin(retrievalTools)
     const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
@@ -135,7 +174,7 @@ describe('XAgentRetrievalService', () => {
     await ctx.plugin(AgentLoop, { agents: [] })
     ctx.llm.registerAdapter(['mock'], adapter)
     new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
-      issuer: 'xagent-host', audience: 'xagent-api', privateKey, countQueryTokens: () => 1,
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
     })
     await ctx.plugin(retrievalTools)
     const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
@@ -188,7 +227,7 @@ describe('XAgentRetrievalService', () => {
     await ctx.plugin(AgentLoop, { agents: [] })
     ctx.llm.registerAdapter(['mock'], adapter)
     new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
-      issuer: 'xagent-host', audience: 'xagent-api', privateKey, countQueryTokens: () => 1,
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
     })
     await ctx.plugin(retrievalTools)
     const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
@@ -208,6 +247,126 @@ describe('XAgentRetrievalService', () => {
     })
     await owner.whenIdle()
     expect(projects.mock.calls.map(call => call[0])).toEqual(['alice-token', 'alice-token', 'bob-token'])
+  })
+
+  test('rejects unbound steering instead of reusing the running authenticated scope', async () => {
+    const firstBackend = Promise.withResolvers<XAgentProjectDiscoveryResult>()
+    const value = backend()
+    const projects = vi.fn(async () => firstBackend.promise)
+    value.projects = projects
+    const adapter = new MockAdapter([
+      toolCallResponse('call-running-unbound', 'list_accessible_projects', {}),
+      toolCallResponse('call-unbound-steer', 'list_accessible_projects', {}),
+    ])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.llm.registerAdapter(['mock'], adapter)
+    new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    await ctx.plugin(retrievalTools)
+    const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'running' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(projects).toHaveBeenCalledOnce() })
+    owner.steer(createUserMessage({ content: [{ type: 'text', text: 'unbound' }], source: { kind: 'user' } }))
+    firstBackend.resolve({
+      projects: [{ projectId: PROJECT, name: 'running' }], receipt: 'opaque-running-unbound', payloadHash: 'a'.repeat(64),
+    })
+    await owner.whenIdle()
+    expect(projects).toHaveBeenCalledOnce()
+  })
+
+  test.each(['requestSignal', 'connectionSignal'] as const)(
+    'rejects queued work after its %s aborts before claim',
+    async (signalName) => {
+      const firstBackend = Promise.withResolvers<XAgentProjectDiscoveryResult>()
+      const value = backend()
+      const projects = vi.fn(async () => firstBackend.promise)
+      value.projects = projects
+      const adapter = new MockAdapter([
+        toolCallResponse(`call-running-${signalName}`, 'list_accessible_projects', {}),
+        textResponse('running done'),
+        toolCallResponse(`call-stale-${signalName}`, 'list_accessible_projects', {}),
+      ])
+      const ctx = new Context()
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(SessionStore)
+      await ctx.plugin(SystemPrompt)
+      await ctx.plugin(ToolRuntime)
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(AgentLoop, { agents: [] })
+      ctx.llm.registerAdapter(['mock'], adapter)
+      new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+        issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+      })
+      await ctx.plugin(retrievalTools)
+      const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+      runWithXAgentAuthenticatedRequestScope(scope(), () => {
+        owner.followup(createUserMessage({ content: [{ type: 'text', text: 'running' }], source: { kind: 'user' } }))
+      })
+      await vi.waitFor(() => { expect(projects).toHaveBeenCalledOnce() })
+      const abort = new AbortController()
+      runWithXAgentAuthenticatedRequestScope(Object.freeze({ ...scope(), [signalName]: abort.signal }), () => {
+        owner.followup(createUserMessage({ content: [{ type: 'text', text: 'cancelled queued' }], source: { kind: 'user' } }))
+      })
+      abort.abort()
+      firstBackend.resolve({
+        projects: [{ projectId: PROJECT, name: 'running' }], receipt: `opaque-running-${signalName}`, payloadHash: 'a'.repeat(64),
+      })
+      await owner.whenIdle()
+      expect(projects).toHaveBeenCalledOnce()
+    },
+  )
+
+  test('does not reuse bindings after real inbox discard and replacement', async () => {
+    const firstBackend = Promise.withResolvers<XAgentProjectDiscoveryResult>()
+    const value = backend()
+    const projects = vi.fn(async () => firstBackend.promise)
+    value.projects = projects
+    const adapter = new MockAdapter([
+      toolCallResponse('call-running-mutation', 'list_accessible_projects', {}),
+      textResponse('running done'),
+      toolCallResponse('call-replaced', 'list_accessible_projects', {}),
+    ])
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.llm.registerAdapter(['mock'], adapter)
+    new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    await ctx.plugin(retrievalTools)
+    const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'running' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(projects).toHaveBeenCalledOnce() })
+    const discarded = createUserMessage({ content: [{ type: 'text', text: 'discarded' }], source: { kind: 'user' } })
+    const replaced = createUserMessage({ content: [{ type: 'text', text: 'bound before replacement' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(discarded)
+      owner.followup(replaced)
+    })
+    owner.inbox.remove(discarded.id)
+    owner.inbox.replace(replaced.id, createUserMessage({
+      content: [{ type: 'text', text: 'unbound replacement' }], source: { kind: 'user' },
+    }))
+    firstBackend.resolve({
+      projects: [{ projectId: PROJECT, name: 'running' }], receipt: 'opaque-running-mutation', payloadHash: 'a'.repeat(64),
+    })
+    await owner.whenIdle()
+    expect(projects).toHaveBeenCalledOnce()
   })
 
   test('ignores authenticated prompt scope for a non-XAgent Session identifier', () => {
@@ -257,35 +416,38 @@ describe('XAgentRetrievalService', () => {
   test('uses the required exact query counter at 511, 512, and 513 tokens without byte-based CJK rejection', async () => {
     const value = backend()
     const ctx = new Context()
-    const countQueryTokens = vi.fn((query: string) => Array.from(query).length)
+    const counts = new Map(BGE_M3_TOKEN_VECTORS.map(vector => [vector.query, vector.tokens]))
+    const countQueryTokens = vi.fn((query: string) => counts.get(query) ?? Number.NaN)
     const retrieval = new XAgentRetrievalService(ctx, value, new XAgentReceiptRegistry(), {
-      issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100, countQueryTokens,
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
+      tokenizer: tokenizer(countQueryTokens),
     })
     const call = (query: string, toolCallId: string) => runWithXAgentAuthenticatedRequestScope(scope(), () =>
       retrieval.searchArtifacts({
         sessionId: SessionId(`session-${SESSION}`), toolCallId, query, projectIds: [PROJECT], includePrivate: false,
       }))
 
-    await expect(call('资'.repeat(511), 'call-511')).resolves.toBeDefined()
-    await expect(call('a'.repeat(512), 'call-512')).resolves.toBeDefined()
-    await expect(call('资'.repeat(512), 'call-cjk-512')).resolves.toBeDefined()
-    await expect(call('a b 多字节', 'call-mixed')).resolves.toBeDefined()
-    await expect(call('a'.repeat(513), 'call-513')).rejects.toMatchObject({ code: 'invalid-retrieval-scope' })
+    for (const vector of BGE_M3_TOKEN_VECTORS.filter(value => value.tokens <= 512)) {
+      await expect(call(vector.query, `call-${vector.name}`)).resolves.toBeDefined()
+    }
+    const overLimit = BGE_M3_TOKEN_VECTORS.find(value => value.tokens === 513)
+    expect(overLimit).toBeDefined()
+    await expect(call(overLimit!.query, 'call-513')).rejects.toMatchObject({ code: 'invalid-retrieval-scope' })
     expect(value.search).toHaveBeenCalledTimes(4)
     expect(countQueryTokens).toHaveBeenCalledTimes(5)
   })
 
-  test('rejects service construction without an exact query token counter', () => {
+  test('rejects service construction without the pinned tokenizer provider', () => {
     expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
       issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
-    })).toThrow(/token counter/i)
+    })).toThrow(/tokenizer/i)
   })
 
   test.each([Number.NaN, -1, 1.5])('rejects an invalid exact token count of %s before fetch', async (count) => {
     const value = backend()
     const retrieval = new XAgentRetrievalService(new Context(), value, new XAgentReceiptRegistry(), {
       issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
-      countQueryTokens: () => count,
+      tokenizer: tokenizer(() => count),
     })
     await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => retrieval.searchArtifacts({
       sessionId: SessionId(`session-${SESSION}`), toolCallId: `call-count-${String(count)}`,
@@ -319,7 +481,7 @@ describe('XAgentRetrievalService', () => {
   test('fails closed for a missing signer or mismatched physical connection', async () => {
     const value = backend()
     const unsigned = new XAgentRetrievalService(new Context(), value, new XAgentReceiptRegistry(), {
-      issuer: 'xagent-host', audience: 'xagent-api', now: () => 100, countQueryTokens: () => 1,
+      issuer: 'xagent-host', audience: 'xagent-api', now: () => 100, tokenizer: tokenizer(() => 1),
     })
     await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => unsigned.listAccessibleProjects({
       sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-unsigned',
@@ -374,16 +536,13 @@ describe('XAgentRetrievalService', () => {
     expect(register).toHaveBeenCalledOnce()
   })
 
-  test('keeps an already published receipt bindable while dispose waits for the Session append', async () => {
+  test('preserves a published receipt for the synchronous Session append continuation during disposal', async () => {
     const created = service()
     await runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.listAccessibleProjects({
       sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-dispose-append',
     }))
     created.registry.publish(`session-${SESSION}`, 'call-dispose-append', 'a'.repeat(64))
-    let settled = false
-    const disposal = created.value.dispose().then(() => { settled = true })
-    await Promise.resolve()
-    expect(settled).toBe(false)
+    const disposal = created.value.dispose()
     const session = Session.create(SessionId(`session-${SESSION}`))
     created.ctx.emit('session/event', session, {
       seq: 8, time: 100, type: 'tool/result',
@@ -398,6 +557,54 @@ describe('XAgentRetrievalService', () => {
     })
     await disposal
     expect(created.registry.attachments(String(session.id), 8, 8)[0]?.receipt).toBe('opaque-project-receipt')
+  })
+
+  test('settles disposal without a permanent wait when a published append never arrives', async () => {
+    const created = service()
+    await runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.listAccessibleProjects({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-dispose-no-append',
+    }))
+    created.registry.publish(`session-${SESSION}`, 'call-dispose-no-append', 'a'.repeat(64))
+    const outcome = await Promise.race([
+      created.value.dispose().then(() => 'disposed'),
+      new Promise<string>((resolve) => { setTimeout(() => { resolve('timed-out') }, 50) }),
+    ])
+    expect(outcome).toBe('disposed')
+    expect(created.registry.discard(`session-${SESSION}`, 'call-dispose-no-append')).toBe(false)
+  })
+
+  test('settles reentrant disposal awaited from the real post-execute waterfall', async () => {
+    const value = backend()
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    ctx.llm.registerAdapter(['mock'], new MockAdapter([
+      toolCallResponse('call-reentrant-dispose', 'list_accessible_projects', {}),
+      textResponse('done'),
+    ]))
+    const registry = new XAgentReceiptRegistry()
+    const retrieval = new XAgentRetrievalService(ctx, value, registry, {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    await ctx.plugin(retrievalTools)
+    ctx.on('tools/post-execute', async (exec, _result, next) => {
+      const decision = await next()
+      if (exec.name === 'list_accessible_projects') await retrieval.dispose()
+      return decision
+    })
+    const owner = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      owner.followup(createUserMessage({ content: [{ type: 'text', text: 'dispose' }], source: { kind: 'user' } }))
+    })
+    await expect(Promise.race([
+      owner.whenIdle().then(() => 'idle'),
+      new Promise<string>((resolve) => { setTimeout(() => { resolve('timed-out') }, 100) }),
+    ])).resolves.toBe('idle')
+    expect(registry.discard(`session-${SESSION}`, 'call-reentrant-dispose')).toBe(false)
   })
 
   test('prevents backend settlement from registering after synchronous disposal', async () => {
@@ -437,7 +644,28 @@ describe('XAgentRetrievalService', () => {
     await created.value.dispose()
   })
 
-  test('binds only a matching public tool-result Session event', async () => {
+  test.each(['agent/error', 'agent/disposed', 'session/disposed'] as const)(
+    'discards a published receipt when %s ends the append continuation',
+    async (eventName) => {
+      const created = service()
+      await runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.listAccessibleProjects({
+        sessionId: SessionId(`session-${SESSION}`), toolCallId: `call-terminal-${eventName}`,
+      }))
+      created.registry.publish(`session-${SESSION}`, `call-terminal-${eventName}`, 'a'.repeat(64))
+      const session = Session.create(SessionId(`session-${SESSION}`))
+      const agent = { session } as Agent
+      if (eventName === 'agent/error') {
+        agentEvents(created.ctx, agent).emit(eventName, { turn: 1, step: 1, error: new Error('append failed') })
+      } else if (eventName === 'agent/disposed') {
+        agentEvents(created.ctx, agent).emit(eventName, {})
+      } else {
+        created.ctx.emit(eventName, session)
+      }
+      expect(created.registry.discard(String(session.id), `call-terminal-${eventName}`)).toBe(false)
+    },
+  )
+
+  test('binds only a matching public tool-result and discards a conflicting append', async () => {
     const created = service()
     await runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.listAccessibleProjects({
       sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-event',
@@ -466,9 +694,7 @@ describe('XAgentRetrievalService', () => {
     created.ctx.emit('session/event', session, resultEvent('f'.repeat(64)))
     expect(created.registry.attachments(String(session.id), 7, 7)).toEqual([])
     created.ctx.emit('session/event', session, resultEvent('a'.repeat(64)))
-    expect(created.registry.attachments(String(session.id), 7, 7)).toMatchObject([{
-      toolCallId: 'call-event', payloadHash: 'a'.repeat(64), receipt: 'opaque-project-receipt',
-    }])
+    expect(created.registry.attachments(String(session.id), 7, 7)).toEqual([])
   })
 
   test('dispose closes admission, aborts active fetches, and waits for their settlement', async () => {

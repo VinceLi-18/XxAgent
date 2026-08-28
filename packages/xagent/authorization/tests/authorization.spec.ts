@@ -107,14 +107,16 @@ describe('XAgent Session 授权', () => {
       }],
     }))
     const auth = new XAgentAuthorization(value, persistence())
+    const request = new AbortController()
+    const connection = new AbortController()
     let resolveDetached!: (scope: unknown) => void
     const detached = new Promise<unknown>((resolve) => { resolveDetached = resolve })
 
     await auth.run(
       'session/prompt',
       { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
-      { ...context, requestId: 'rpc-1' },
-      new AbortController().signal,
+      { ...context, requestId: 'rpc-1', lifetime: connection.signal },
+      request.signal,
       async () => {
         void new Promise<void>(resolve => setImmediate(resolve))
           .then(() => { resolveDetached(currentXAgentAuthenticatedRequestScope()) })
@@ -129,6 +131,8 @@ describe('XAgent Session 授权', () => {
       sessionId: '00000000-0000-0000-0000-000000000701',
       visibility: 'project',
       projectId: '00000000-0000-0000-0000-000000000401',
+      requestSignal: request.signal,
+      connectionSignal: connection.signal,
     })
   })
   test('模块插件入口只暴露带配置的安装函数', () => {

@@ -214,7 +214,7 @@ Cover CRLF normalization without changing reported logical line numbers, empty c
 
 - [ ] **Step 3: Implement the no-log embedding protocol**
 
-The embedding service must bind only its container interface, reject batches over 64 texts, reject any text over 8 KiB or 512 BGE tokens, never log body text, expose `/health`, and return model ID plus dimension so the client can fail closed on drift.
+The embedding service must bind only its container interface, reject batches over 64 texts, reject any text over 8 KiB or 512 BGE tokens, never log body text, expose `/health`, and return model ID plus dimension so the client can fail closed on drift. Its internal `/token-count` endpoint returns the exact no-special-token count with the same pinned model ID and revision for Host retrieval query validation.
 
 ```json
 {"model":"BAAI/bge-m3","dimension":1024,"vectors":[[0.0,0.1]]}
@@ -779,7 +779,7 @@ Expected: Business dump lacks retrieval provider/tools/UI; non-Business dump ass
 
 - [ ] **Step 2: Mount in dependency order**
 
-Mount retrieval provider after auth/authorization/Session persistence, then tool retrieval, then citation UI after project/artifact UI. Supply only backend origin, service token and delegation signing configuration to Host; Browser gets no FastAPI token, receipt, embedding origin or model credentials.
+Mount retrieval provider after auth/authorization/Session persistence, then tool retrieval, then citation UI after project/artifact UI. Supply the backend origin, internal embedding tokenizer origin, service token and delegation signing configuration only to Host; Browser gets no FastAPI token, receipt, embedding origin or model credentials.
 
 - [ ] **Step 3: Verify real Loader and keyless snapshots**
 

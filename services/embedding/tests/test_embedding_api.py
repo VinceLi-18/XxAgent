@@ -91,6 +91,21 @@ async def test_health_identifies_the_pinned_model_without_loading_it() -> None:
 
 
 @pytest.mark.anyio
+async def test_token_count_uses_the_pinned_backend_without_embedding() -> None:
+    backend = DeterministicBackend()
+    app = create_app(EmbeddingModel(backend))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://embedding") as client:
+        response = await client.post("/token-count", json={"text": "Latin 中文 whitespace"})
+
+    assert response.json() == {
+        "model": MODEL_ID,
+        "revision": MODEL_REVISION,
+        "token_count": 3,
+    }
+
+
+@pytest.mark.anyio
 async def test_concurrent_cold_requests_load_once_and_serialize_inference() -> None:
     backend = ColdStartBackend()
     factory_calls = 0

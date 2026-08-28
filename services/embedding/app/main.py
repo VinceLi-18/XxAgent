@@ -23,6 +23,12 @@ class EmbedRequest(BaseModel):
     texts: Annotated[list[str], Field(min_length=1, max_length=MAX_TEXTS)]
 
 
+class TokenCountRequest(BaseModel):
+    """Exact text accepted by the internal pinned tokenizer endpoint."""
+
+    text: str
+
+
 def create_app(model: EmbeddingModel | None = None) -> FastAPI:
     """Create an embedding API that uses model only after a request arrives.
 
@@ -61,6 +67,19 @@ def create_app(model: EmbeddingModel | None = None) -> FastAPI:
             "dimension": EMBEDDING_DIMENSION,
             "vectors": vectors,
         }
+
+    @app.post("/token-count")
+    async def token_count(payload: TokenCountRequest, request: Request) -> dict[str, str | int]:
+        """Count exact BGE-M3 query tokens without exposing request text."""
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="request disconnected")
+        try:
+            count = await anyio.to_thread.run_sync(embedding_model.token_count, payload.text, abandon_on_cancel=True)
+        except EmbeddingProtocolError as error:
+            raise HTTPException(status_code=503, detail="tokenizer unavailable") from error
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="request disconnected")
+        return {"model": MODEL_ID, "revision": MODEL_REVISION, "token_count": count}
 
     return app
 

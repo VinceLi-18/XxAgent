@@ -54,6 +54,19 @@ export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {
     return true
   }
 
+  /**
+   * Discard every unpublished operation when its Agent or Session terminates.
+   * @param sessionId - exact terminated Session identity.
+   */
+  discardSession(sessionId: string): void {
+    for (const [entryKey, entry] of this.entries) {
+      if (entry.sessionId === sessionId && entry.state !== 'bound') {
+        this.entries.delete(entryKey)
+        entry.settled.resolve()
+      }
+    }
+  }
+
   /** Bind a registered receipt to its matching durable tool-result sequence. */
   bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void {
     if (!Number.isSafeInteger(eventSequence) || eventSequence < 0) {
@@ -98,15 +111,21 @@ export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {
     }
   }
 
-  /** Close admission and await confirmation for every registered or published operation. */
+  /** Close admission and give published results one synchronous append continuation before discard. */
   async dispose(): Promise<void> {
     this.accepting = false
-    const pending: Promise<void>[] = []
-    for (const entry of this.entries.values()) {
-      if (entry.state === 'registered' || entry.state === 'published') {
-        pending.push(entry.settled.promise)
+    for (const [entryKey, entry] of this.entries) {
+      if (entry.state === 'registered') {
+        this.entries.delete(entryKey)
+        entry.settled.resolve()
       }
     }
-    await Promise.allSettled(pending)
+    await new Promise<void>((resolve) => { setImmediate(resolve) })
+    for (const [entryKey, entry] of this.entries) {
+      if (entry.state === 'published') {
+        this.entries.delete(entryKey)
+        entry.settled.resolve()
+      }
+    }
   }
 }

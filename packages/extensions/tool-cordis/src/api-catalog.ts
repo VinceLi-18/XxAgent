@@ -4843,7 +4843,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'XAgentAuthenticatedRequestScope',
-    declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n}',
+    declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n    readonly requestSignal?: AbortSignal;\n    readonly connectionSignal?: AbortSignal;\n}',
   },
   {
     name: 'XAgentCitationIdentity',
@@ -4859,7 +4859,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'XAgentReceiptRegistry',
-    declaration: 'export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    publish(sessionId: string, toolCallId: string, payloadHash: string): void;\n    discard(sessionId: string, toolCallId: string): boolean;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    async dispose(): Promise<void>;\n}',
+    declaration: 'export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    publish(sessionId: string, toolCallId: string, payloadHash: string): void;\n    discard(sessionId: string, toolCallId: string): boolean;\n    discardSession(sessionId: string): void;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    dispose(): Promise<void>;\n}',
   },
   {
     name: 'XAgentReceiptRegistryContract',

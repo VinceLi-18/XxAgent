@@ -292,7 +292,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
         if (method === 'prompt') {
           const sessionId = values?.sessionId
           if (typeof sessionId !== 'string') return unauthenticated<T>()
-          const requestScope = authenticatedScope(request)
+          const requestScope = authenticatedScope(request, signal)
           const scoped = authenticatedSessionScope(
             await this.backend.sessions.list(request.userToken, signal), sessionId, requestScope,
           )
@@ -360,11 +360,14 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
 
 function authenticatedScope(
   request: ConnectionRequestContext & { readonly principal: XAgentPrincipal; readonly userToken: string },
+  signal?: AbortSignal,
 ): XAgentAuthenticatedRequestScope {
   return Object.freeze({
     principal: request.principal,
     userToken: request.userToken,
     connectionId: request.connectionId,
+    ...signal === undefined ? {} : { requestSignal: signal },
+    ...signal === undefined ? {} : { connectionSignal: request.lifetime ?? signal },
   })
 }
 
