@@ -21,6 +21,7 @@
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^",
     "@xagent/dsh-backend-client": "workspace:^",
     "@xagent/dsh-delegation-token": "workspace:^",
     "@xagent/dsh-principal": "workspace:^"
@@ -29,6 +30,7 @@
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-tools": "workspace:^",
     "@xagent/dsh-backend-client": "workspace:^",
     "@xagent/dsh-delegation-token": "workspace:^",
     "@xagent/dsh-principal": "workspace:^"

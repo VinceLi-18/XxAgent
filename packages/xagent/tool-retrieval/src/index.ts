@@ -93,6 +93,7 @@ const SEARCH_OUTPUT = {
 export function apply(ctx: Context): void {
   ctx.tools.register(closeParameters(defineTool({
     name: 'list_accessible_projects',
+    nativeOnly: true,
     description: PROJECT_DESCRIPTION,
     parameters: {
       query: { type: 'string', description: 'Optional bounded project-name query.' },
@@ -118,6 +119,7 @@ export function apply(ctx: Context): void {
 
   ctx.tools.register(closeParameters(defineTool({
     name: 'search_artifacts',
+    nativeOnly: true,
     description: SEARCH_DESCRIPTION,
     parameters: {
       query: { type: 'string', required: true, description: 'Non-empty evidence query, at most 512 BGE tokens.' },

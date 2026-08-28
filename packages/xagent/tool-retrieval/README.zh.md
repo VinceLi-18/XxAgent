@@ -4,7 +4,7 @@
 
 `@xagent/dsh-tool-retrieval` 注册 `list_accessible_projects` 和 `search_artifacts` 两个只读模型工具。两个参数 schema 都拒绝未声明字段。项目发现接受可选名称查询；资料检索接受非空查询、可选显式项目 UUID 列表和 `include_private`。描述要求模型在项目或私人范围不明确时询问用户，不能自动选取第一个同名项目，也不能把 Private Session 默认为全部项目。
 
-工具从调用 Agent 取得 Session 和 tool call 标识，把取消信号交给 `ctx.xagentRetrieval`。工具内容和可重放 metadata 不包含 receipt；公开 metadata 固定为检索 kind、payload hash 和短引用标识。缺少 Agent、检索服务或后端能力时返回稳定失败。
+工具从调用 Agent 取得 Session 和 tool call 标识，把取消信号交给 `ctx.xagentRetrieval`。它们仅可通过 Native 调用：Code SDK 生成和嵌套 Code 执行都排除它们，包括 `both` mode 的 Code 路径。工具内容和可重放 metadata 不包含 receipt；公开 metadata 固定为检索 kind、payload hash 和短引用标识。缺少 Agent、检索服务或后端能力时返回稳定失败。
 
 ## Model Experience
 
@@ -12,7 +12,7 @@
 
 #### What the model sees
 
-模型看到 `list_accessible_projects` 和 `search_artifacts` 的封闭 schema、范围消歧说明，以及成功调用后的项目列表或带短引用标识的资料证据。空检索结果使用固定中文说明。
+在 Native mode 中，模型看到 `list_accessible_projects` 和 `search_artifacts` 的封闭 schema、范围消歧说明，以及成功调用后的项目列表或带短引用标识的资料证据。Code SDK 不会声明这两个工具。空检索结果使用固定中文说明。
 
 #### Token effect
 

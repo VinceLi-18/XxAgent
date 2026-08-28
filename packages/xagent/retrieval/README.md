@@ -6,7 +6,9 @@ English | [中文](README.zh.md)
 
 A Private Session search must explicitly provide canonical Project UUIDs and/or `includePrivate`. A Project Session uses only its Session-fixed project and rejects caller selectors. `listAccessibleProjects` is available only in Private Sessions, accepts an optional bounded project-name query, and returns at most 20 accessible projects. Missing authentication scope, Session, signer, or service fails closed. Known backend failures map to stable codes; all other failures map to `service-unavailable`.
 
-The opaque receipt returned by FastAPI enters the in-memory registry before the public result returns. Public results and `tool/result` metadata carry only the payload hash, short citation IDs, and visible content. The registry binds an event sequence only when Session, tool call, and payload hash all match; it returns detached sidecar copies for exact persistence append windows and deletes them only after remote confirmation. Disposal synchronously stops admission, clears receipts, and cancels active requests before awaiting their settlement.
+Each admitted prompt scope is captured with its inbox message and activated only when the Agent claims that message for a step. Queued prompts and steering from another connection, account, or permission revision replace the previous active scope; ambiguous mixed claims fail closed. Cancellation, discard, turn end, Agent disposal, and service disposal clear the corresponding private scope without adding Session events.
+
+The opaque receipt returned by FastAPI enters the in-memory registry before the public result returns. A final successful Native result marks it published; a blocked, cancelled, or failed result confirms non-publication and discards it. A published receipt binds only when Session, tool call, and payload hash all match. Disposal closes admission and observers for new work, cancels active requests, and awaits every admitted operation through event binding or confirmed non-publication. Detached sidecars remain available for exact persistence append windows until remote confirmation.
 
 ## Model Experience
 
@@ -28,4 +30,4 @@ Tool results become Session events and therefore change the cache prefix after t
 
 - This package owns Host retrieval, delegation, and receipt lifetime; FastAPI owns hybrid ranking, RLS, citation ordinals, and receipt consumption.
 - The Session persistence provider supplies remote append and confirmation for receipt sidecars; the registry performs no disk or network persistence.
-- The Host default preflight uses UTF-8 bytes plus BGE framing as a conservative bound, so it can reject a small number of long queries that are actually within 512 BGE tokens; FastAPI remains the final authority through its pinned BGE tokenizer.
+- The Host composition must supply the exact pinned BGE token counter; retrieval service loading fails when it is absent. Queries of at most 512 exact tokens reach FastAPI, while 513-token queries fail before the request.

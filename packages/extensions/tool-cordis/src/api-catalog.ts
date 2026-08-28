@@ -4539,7 +4539,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolDefinition',
-    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly output: ToolOutputDefinition;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n}',
+    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly output: ToolOutputDefinition;\n    readonly nativeOnly?: true;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n}',
   },
   {
     name: 'ToolDispatchExecution',
@@ -4627,7 +4627,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    readonly [TOOL_RUNTIME_CODE_SCHEMAS]: (scope?: ScopeKey) => ToolSchema[];\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',
@@ -4859,11 +4859,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'XAgentReceiptRegistry',
-    declaration: 'export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    dispose(): Promise<void>;\n}',
+    declaration: 'export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    publish(sessionId: string, toolCallId: string, payloadHash: string): void;\n    discard(sessionId: string, toolCallId: string): boolean;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    async dispose(): Promise<void>;\n}',
   },
   {
     name: 'XAgentReceiptRegistryContract',
-    declaration: 'export interface XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    dispose(): Promise<void>;\n}',
+    declaration: 'export interface XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    publish(sessionId: string, toolCallId: string, payloadHash: string): void;\n    discard(sessionId: string, toolCallId: string): boolean;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    dispose(): Promise<void>;\n}',
   },
   {
     name: 'XAgentRetrievalCall',

@@ -15,7 +15,7 @@ This table connects model-visible tool names to the plugin package and service s
 
 | Tool package | Model-visible names | Requires | Writes / affects | Shipped aliases | Deployment note |
 | --- | --- | --- | --- | --- | --- |
-| `@xagent/dsh-tool-retrieval` | `list_accessible_projects`, `search_artifacts` | `ctx.tools`, `ctx.xagentRetrieval and an owning Agent at execution time` | `tool/call`, `tool/result` | - | XAgent Business project discovery and read-only Artifact evidence search; Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project. |
+| `@xagent/dsh-tool-retrieval` | `list_accessible_projects`, `search_artifacts` | `ctx.tools`, `ctx.xagentRetrieval and an owning Agent at execution time` | `tool/call`, `tool/result` | - | Native-only XAgent Business project discovery and read-only Artifact evidence search; Code SDKs and nested Code dispatch exclude both tools. Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project. |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`, `ctx.userQuestions` | `tool/call`, `tool/result after a UI/provider answers the question` | - | ask_user_question pauses the tool call until the active UI provider returns a human answer. |
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`, `ctx.codeRuntime (execution time)`, `ctx.systemPrompt` | `tool/call`, `one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`, `tool/result` | - | Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: code` / `mode: both` (see the Code Mode Agent Note). Under `code` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result. |
 | `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`, `ctx.systemPrompt`, `ctx.userQuestions (execution time, opportunistic)` | `tool/call`, `plan/mode inactive on an approved review`, `tool/result` | - | exit_plan_mode stays in the model-facing schema while planning is inactive so transitions add no tool-catalog churn on top of the plan-policy change. Its execute path rejects calls outside plan mode; in plan mode it presents the plan over the user-questions seam (approve / keep planning with feedback), and approval logs plan mode inactive at the step boundary. |
@@ -97,7 +97,7 @@ Search authorized Artifact evidence for the current session. Private sessions re
 
 Source: [`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts)
 
-XAgent Business project discovery and read-only Artifact evidence search; Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project.
+Native-only XAgent Business project discovery and read-only Artifact evidence search; Code SDKs and nested Code dispatch exclude both tools. Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project.
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 

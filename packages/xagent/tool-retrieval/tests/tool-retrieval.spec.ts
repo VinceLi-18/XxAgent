@@ -51,6 +51,8 @@ describe('xagent retrieval tools', () => {
       additionalProperties: false,
       properties: { query: { type: 'string' }, project_ids: { type: 'array' }, include_private: { type: 'boolean' } },
     })
+    expect(ctx.tools.get('list_accessible_projects')?.nativeOnly).toBe(true)
+    expect(ctx.tools.get('search_artifacts')?.nativeOnly).toBe(true)
   })
 
   test('forwards the immutable agent Session and call identity and does not expose receipts', async () => {

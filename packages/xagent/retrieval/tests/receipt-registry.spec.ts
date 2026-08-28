@@ -7,6 +7,7 @@ describe('XAgentReceiptRegistry', () => {
   test('binds one receipt to its matching tool result and retains it until confirmed append', () => {
     const registry = new XAgentReceiptRegistry()
     registry.register({ sessionId: SESSION, toolCallId: 'call-1', receipt: 'opaque-secret', payloadHash: 'a'.repeat(64) })
+    registry.publish(SESSION, 'call-1', 'a'.repeat(64))
     registry.bindEvent(SESSION, 'call-1', 7)
 
     expect(registry.attachments(SESSION, 7, 7)).toEqual([{
@@ -26,6 +27,8 @@ describe('XAgentReceiptRegistry', () => {
     const registry = new XAgentReceiptRegistry()
     registry.register({ sessionId: SESSION, toolCallId: 'call-1', receipt: 'opaque-1', payloadHash: 'a'.repeat(64) })
     expect(() => { registry.register({ sessionId: SESSION, toolCallId: 'call-1', receipt: 'opaque-1', payloadHash: 'a'.repeat(64) }) }).toThrow()
+    expect(() => { registry.publish('session-other', 'call-1', 'a'.repeat(64)) }).toThrow()
+    registry.publish(SESSION, 'call-1', 'a'.repeat(64))
     expect(() => { registry.bindEvent('session-other', 'call-1', 1) }).toThrow()
     expect(() => { registry.bindEvent(SESSION, 'call-2', 1) }).toThrow()
     expect(() => { registry.bindEvent(SESSION, 'call-1', 1, 'b'.repeat(64)) }).toThrow()
@@ -33,13 +36,28 @@ describe('XAgentReceiptRegistry', () => {
     expect(() => { registry.bindEvent(SESSION, 'call-1', 2) }).toThrow()
   })
 
-  test('closes admission and clears every secret synchronously on dispose', async () => {
+  test('closes registration synchronously while awaiting unpublished settlement and published binding', async () => {
     const registry = new XAgentReceiptRegistry()
     registry.register({ sessionId: SESSION, toolCallId: 'call-1', receipt: 'opaque-secret', payloadHash: 'a'.repeat(64) })
-    registry.bindEvent(SESSION, 'call-1', 1)
+    registry.register({ sessionId: SESSION, toolCallId: 'call-2', receipt: 'unpublished-secret', payloadHash: 'b'.repeat(64) })
+    registry.publish(SESSION, 'call-1', 'a'.repeat(64))
     const disposing = registry.dispose()
-    expect(registry.attachments(SESSION, 1, 1)).toEqual([])
     expect(() => { registry.register({ sessionId: SESSION, toolCallId: 'call-2', receipt: 'later', payloadHash: 'b'.repeat(64) }) }).toThrow()
+    let settled = false
+    void disposing.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(registry.discard(SESSION, 'call-2')).toBe(true)
+    registry.bindEvent(SESSION, 'call-1', 1, 'a'.repeat(64))
     await disposing
+    expect(registry.attachments(SESSION, 1, 1)[0]?.receipt).toBe('opaque-secret')
+  })
+
+  test('confirms non-publication and contains repeated or reentrant settlement', async () => {
+    const registry = new XAgentReceiptRegistry()
+    registry.register({ sessionId: SESSION, toolCallId: 'call-1', receipt: 'opaque-secret', payloadHash: 'a'.repeat(64) })
+    expect(registry.discard(SESSION, 'call-1')).toBe(true)
+    expect(registry.discard(SESSION, 'call-1')).toBe(false)
+    await Promise.all([registry.dispose(), registry.dispose()])
   })
 })

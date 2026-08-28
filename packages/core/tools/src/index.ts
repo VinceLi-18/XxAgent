@@ -222,6 +222,8 @@ export interface ToolOutputDefinition {
 export interface ToolDefinition extends ToolSchema {
   /** Mandatory canonical output declaration. */
   readonly output: ToolOutputDefinition
+  /** Exclude this tool from the Code SDK and nested Code dispatch while retaining Native calls. */
+  readonly nativeOnly?: true
   /**
    * Run one accepted call and return only its canonical lossless-JSON value.
    * Async work must observe or forward `exec.signal` and settle only after its
@@ -464,6 +466,8 @@ export interface ToolRuntimeScheduler {
  * @internal
  */
 export const TOOL_RUNTIME_SCHEDULER: unique symbol = Symbol('@deepseek-ai/dsh-tools.scheduler')
+/** Internal Code Mode schema projection, kept off the public service methods. */
+export const TOOL_RUNTIME_CODE_SCHEMAS: unique symbol = Symbol('@deepseek-ai/dsh-tools.code-schemas')
 
 /** Canonical error code for cancellation after a tool body was invoked. */
 export const TOOL_ABORTED = 'ABORTED'
@@ -799,6 +803,10 @@ export class ToolRuntime extends Service {
     finalize: (exec, result) => this.finalizeScheduledExecution(exec, result),
     finish: (exec, result) => this.finishScheduledExecution(exec, result),
   }
+  readonly [TOOL_RUNTIME_CODE_SCHEMAS]: (scope?: ScopeKey) => ToolSchema[] = (scope?: ScopeKey): ToolSchema[] =>
+    [...this.view(scope).visible.values()]
+      .filter(definition => definition.name !== RUN_CODE_NAME && definition.nativeOnly !== true)
+      .map(definition => this.schemaOf(definition, true))
 
   /** Context deferred by a running tool body, keyed by its scheduler-owned execution. */
   private deferredContexts = new WeakMap<ToolRunContext, UserMessage[]>()
@@ -1221,6 +1229,7 @@ export class ToolRuntime extends Service {
   private resolveExecution(name: string, scope: ScopeKey | undefined, nested: boolean): ToolDefinition | undefined {
     const tool = this.get(name, scope)
     if (tool === undefined) return undefined
+    if (nested && tool.nativeOnly === true) return undefined
     if (this.collapses(name, scope, nested)) return undefined
     return tool
   }
@@ -1238,7 +1247,7 @@ export class ToolRuntime extends Service {
   /** Project visible callable tools onto the generated Code Mode SDK contract. */
   private sdkSchemas(scope?: ScopeKey): ToolSdkSchema[] {
     return [...this.view(scope).visible.values()]
-      .filter(definition => definition.name !== RUN_CODE_NAME)
+      .filter(definition => definition.name !== RUN_CODE_NAME && definition.nativeOnly !== true)
       .map((definition): ToolSdkSchema => {
         const output = snapshotJsonValue(definition.output.schema)
         /* v8 ignore next -- registration already validated and retained this schema as lossless JSON. */

@@ -16,6 +16,8 @@ PostgreSQL 启用 `vector` 与 `pg_trgm` 扩展，并保存 `artifact_text_index
 
 检索收据绑定 actor、Session、tool call、查询摘要、规范化范围、权限 revision、返回的项目/Index/分片集合和模型可见 payload 摘要。收据从签发时刻起固定五分钟；可选 citation ordinal 范围必须为正整数。`xagent_sessions.next_citation_ordinal` 从 1 开始递增，保留的 ordinal 不因收据过期或未消费而复用。
 
+Host 在每条进入 Agent inbox 的消息上固定认证请求范围，并在该消息被领取时激活；排队、steering、账号切换、连接关闭和权限 revision 变化都不能继承另一条消息的 token。两个检索工具只进入 Native 工具路径，Code SDK 与嵌套 Code dispatch 不暴露它们。Host 组合必须提供固定 BGE tokenizer 的精确查询计数器，缺失或返回无效计数时检索失败关闭。Host 在返回检索值前登记不透明收据，随后只在对应 `tool/result` 确认发布后允许同一 Session Event 绑定；取消、阻断和释放必须确认未发布或等待已发布结果完成绑定，不得把收据写入模型结果、metadata 或日志。
+
 FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把 nonce 的 SHA-256 摘要作为全局唯一键持久化；令牌原文、nonce 原文和签名不进入数据库或日志。令牌严格绑定 actor、Session、Project Session 的 project 或 Private Session 的 null project、endpoint tool、tool call、权限 revision 和不超过六十秒的有效期。nonce 消费使用独立提交的事务，因此后续查询失败也不能重新使用同一委托。
 
 搜索在一个 serializable 授权快照内完成权限 revision、全部项目授权、向量与词法候选查询、citation ordinal 预留、收据和审计。只读项目授权通过 SECURITY DEFINER 函数预留最多八个连续 ordinal，应用角色不取得 Session 通用更新权限。模型可见 citation payload 以固定 embedding revision 的 tokenizer 计算完整 JSON framing、标识、元数据、scope 和正文，在 32 KiB 或 4096 token 首次溢出时停止，保留 RRF 前缀。

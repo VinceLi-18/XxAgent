@@ -16,7 +16,7 @@ export type {
   XAgentRole,
 } from './types.ts'
 
-const authenticatedRequestScope = new AsyncLocalStorage<XAgentAuthenticatedRequestScope>()
+const authenticatedRequestScope = new AsyncLocalStorage<XAgentAuthenticatedRequestScope | undefined>()
 
 /**
  * Propagate one immutable physical authentication scope through work spawned by its request.
@@ -37,6 +37,15 @@ export function runWithXAgentAuthenticatedRequestScope<T>(
  */
 export function currentXAgentAuthenticatedRequestScope(): XAgentAuthenticatedRequestScope | undefined {
   return authenticatedRequestScope.getStore()
+}
+
+/**
+ * Suppress any inherited physical request while running work with no admitted prompt scope.
+ * @param operation - downstream work that must fail closed instead of inheriting an older request.
+ * @returns the operation result outside every authenticated request scope.
+ */
+export function runWithoutXAgentAuthenticatedRequestScope<T>(operation: () => T): T {
+  return authenticatedRequestScope.run(undefined, operation)
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

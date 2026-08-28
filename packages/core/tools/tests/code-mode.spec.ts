@@ -87,6 +87,24 @@ function registerEcho(ctx: Context, name = 'echo'): unknown[] {
   return calls
 }
 
+function registerNativeOnly(ctx: Context, name = 'native_evidence'): unknown[] {
+  const calls: unknown[] = []
+  ctx.tools.register({
+    ...defineTool({
+      name,
+      description: 'Native-only evidence.',
+      parameters: { value: { type: 'string', required: true } },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      execute(args) {
+        calls.push(args)
+        return Promise.resolve(args.value)
+      },
+    }),
+    nativeOnly: true,
+  })
+  return calls
+}
+
 /** A structural fake of the owning agent: captures session appends. */
 function fakeAgent(): { agent: Agent; events: { type: string; data: unknown }[] } {
   const events: { type: string; data: unknown }[] = []
@@ -116,6 +134,33 @@ async function runCode(
 }
 
 describe('mode-aware wire contribution', () => {
+  it('keeps Native-only tools out of the Code SDK and nested execution in code and both modes', async () => {
+    for (const mode of ['code', 'both'] as const) {
+      const { ctx, runtime } = await setup({ mode })
+      const calls = registerNativeOnly(ctx)
+      runtime.behavior = async (request) => {
+        const functions = request.bindings[0]?.functions ?? {}
+        expect(Object.keys(functions)).not.toContain('native_evidence')
+        return { logs: [], value: 'done' }
+      }
+      const result = await runCode(ctx, 'return "done"', { agent: fakeAgent().agent })
+      expect(result.isError).toBe(false)
+      expect(calls).toEqual([])
+      const nested = await ctx.tools.execute({
+        signal: testToolSignal, callId: CallId('nested-call'), name: 'native_evidence',
+        arguments: { value: 'hidden' }, agent: fakeAgent().agent, parent: Symbol('parent') as never,
+      })
+      expect(nested.isError).toBe(true)
+      expect(calls).toEqual([])
+      if (mode === 'both') {
+        const native = await ctx.tools.execute({
+          signal: testToolSignal, callId: CallId('native-call'), name: 'native_evidence',
+          arguments: { value: 'visible' }, agent: fakeAgent().agent,
+        })
+        expect(native.isError).toBe(false)
+      }
+    }
+  })
   it("mode 'native' contributes every schema, no run_code, no SDK section — and needs no runtime", async () => {
     const { ctx, systemPrompt } = await setup({ mode: 'native', runtime: false })
     registerEcho(ctx)

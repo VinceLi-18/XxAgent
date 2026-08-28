@@ -6,6 +6,7 @@
     { "path": "../../../vendor/cordis" },
     { "path": "../../../vendor/schemastery" },
     { "path": "../../core/session" },
+    { "path": "../../core/tools" },
     { "path": "../../runtime-diagnostics/invariants" },
     { "path": "../backend-client" },
     { "path": "../delegation-token" },

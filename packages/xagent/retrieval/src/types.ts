@@ -54,6 +54,8 @@ export interface XAgentRetrievalReceiptAttachment {
 /** Quiescent receipt lifetime used between tool materialization and confirmed append. */
 export interface XAgentReceiptRegistryContract {
   register(input: { sessionId: string; toolCallId: string; receipt: string; payloadHash: string }): void
+  publish(sessionId: string, toolCallId: string, payloadHash: string): void
+  discard(sessionId: string, toolCallId: string): boolean
   bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void
   attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[]
   commit(sessionId: string, throughSequence: number): void

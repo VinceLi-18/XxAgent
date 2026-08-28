@@ -4,6 +4,7 @@ import { createPrivateKey, type KeyObject } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   XAgentBackendClient,
   XAgentBackendError,
@@ -17,6 +18,8 @@ import {
 } from '@xagent/dsh-delegation-token'
 import {
   currentXAgentAuthenticatedRequestScope,
+  runWithoutXAgentAuthenticatedRequestScope,
+  runWithXAgentAuthenticatedRequestScope,
   type XAgentAuthenticatedSessionRequestScope,
 } from '@xagent/dsh-principal'
 import { XAgentReceiptRegistry } from './receipt-registry.ts'
@@ -51,6 +54,8 @@ export interface Config {
   delegationIssuer: string
   /** Exact delegation audience accepted by FastAPI. */
   delegationAudience: string
+  /** Exact pinned BGE tokenizer counter supplied by the Host composition. */
+  countQueryTokens: (value: string) => number
 }
 
 export const Config: z<Config> = z.object({
@@ -59,6 +64,7 @@ export const Config: z<Config> = z.object({
   delegationPrivateKey: z.string().required(),
   delegationIssuer: z.string().required(),
   delegationAudience: z.string().required(),
+  countQueryTokens: z.function().required(),
 })
 
 export const name = 'xagent-retrieval'
@@ -140,10 +146,19 @@ function backendSessionId(value: string): string {
   return match[1].toLowerCase()
 }
 
+function matchesBackendSessionId(value: string, expected: string): boolean {
+  return SESSION_ID_PATTERN.exec(value)?.[1]?.toLowerCase() === expected
+}
+
 function queryValue(value: string, countTokens: (value: string) => number): string {
-  if (value.length === 0 || value.trim() !== value || countTokens(value) > 512) {
+  if (value.length === 0 || value.trim() !== value) {
     throw new XAgentRetrievalError('invalid-retrieval-scope')
   }
+  const tokenCount = countTokens(value)
+  if (!Number.isSafeInteger(tokenCount) || tokenCount < 0) {
+    throw new XAgentRetrievalError('service-unavailable')
+  }
+  if (tokenCount > 512) throw new XAgentRetrievalError('invalid-retrieval-scope')
   return value
 }
 
@@ -161,6 +176,18 @@ function toolResultIdentity(event: SessionEvent): string | undefined {
   return String(block.toolCallId)
 }
 
+function samePhysicalScope(
+  left: XAgentAuthenticatedSessionRequestScope,
+  right: XAgentAuthenticatedSessionRequestScope,
+): boolean {
+  return left.sessionId === right.sessionId
+    && left.userToken === right.userToken
+    && left.connectionId === right.connectionId
+    && left.principal.actorId === right.principal.actorId
+    && left.principal.permissionRevision === right.principal.permissionRevision
+    && left.principal.authSessionId === right.principal.authSessionId
+}
+
 /** FastAPI provider with one operation scope and quiescent disposal. */
 export class XAgentRetrievalService extends XAgentRetrieval {
   readonly receipts: XAgentReceiptRegistry
@@ -172,6 +199,16 @@ export class XAgentRetrievalService extends XAgentRetrieval {
   private readonly now: () => number
   private readonly countQueryTokens: (value: string) => number
   private accepting = true
+  private readonly closeResultObserver: () => void
+  private readonly closePostObserver: () => void
+  private readonly closeSessionObserver: () => void
+  private readonly closeScopeObservers: readonly (() => void)[]
+  private readonly messageScopes = new Map<string, {
+    readonly agent: object
+    readonly scope?: XAgentAuthenticatedSessionRequestScope
+  }>()
+  private readonly activeScopes = new Map<object, XAgentAuthenticatedSessionRequestScope>()
+  private disposal: Promise<void> | undefined
 
   constructor(
     ctx: Context,
@@ -186,8 +223,66 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     this.audience = options.audience
     this.privateKey = options.privateKey
     this.now = options.now ?? (() => Math.floor(Date.now() / 1000))
-    this.countQueryTokens = options.countQueryTokens ?? (value => Buffer.byteLength(value, 'utf8') + 2)
-    ctx.on('session/event', (session, event) => {
+    if (options.countQueryTokens === undefined) throw new Error('xagent retrieval requires an exact BGE query token counter')
+    this.countQueryTokens = options.countQueryTokens
+    const closeInserted = ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+      const scope = currentXAgentAuthenticatedRequestScope()
+      if (!authenticatedSessionScope(scope) || !matchesBackendSessionId(String(agent.session.id), scope.sessionId)) return
+      for (const [messageId, binding] of this.messageScopes) {
+        if (binding.scope?.sessionId === scope.sessionId && !samePhysicalScope(binding.scope, scope)) {
+          this.messageScopes.set(messageId, { agent: binding.agent })
+        }
+      }
+      this.messageScopes.set(String(message.id), { agent, scope })
+    })
+    const closeDiscarded = ctx.on('agent/inbox/discarded', ({ message }) => {
+      this.messageScopes.delete(String(message.id))
+    })
+    const closeDisposed = ctx.on('agent/disposed', ({ agent }) => {
+      this.activeScopes.delete(agent)
+      for (const [messageId, binding] of this.messageScopes) {
+        if (binding.agent === agent) this.messageScopes.delete(messageId)
+      }
+    })
+    const closePreStep = ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+      const scopes: XAgentAuthenticatedSessionRequestScope[] = []
+      let invalidated = false
+      for (const message of messages) {
+        const binding = this.messageScopes.get(String(message.id))
+        this.messageScopes.delete(String(message.id))
+        if (binding === undefined || binding.agent !== agent) continue
+        const bindingScope = binding.scope
+        if (bindingScope === undefined) {
+          invalidated = true
+        } else if (!scopes.some(value => samePhysicalScope(value, bindingScope))) {
+          scopes.push(bindingScope)
+        }
+      }
+      if (invalidated || scopes.length > 1) {
+        this.activeScopes.delete(agent)
+        return { kind: 'reject' as const }
+      }
+      if (scopes[0] !== undefined) this.activeScopes.set(agent, scopes[0])
+      const decision = await next()
+      if (decision.kind === 'reject') this.activeScopes.delete(agent)
+      return decision
+    })
+    const closeToolExecution = ctx.on('tools/execute', (exec, next) => {
+      if (exec.name !== 'list_accessible_projects' && exec.name !== 'search_artifacts') return next()
+      const scope = exec.agent === undefined ? undefined : this.activeScopes.get(exec.agent)
+      return scope === undefined
+        ? runWithoutXAgentAuthenticatedRequestScope(next)
+        : runWithXAgentAuthenticatedRequestScope(scope, next)
+    })
+    this.closeScopeObservers = [closeInserted, closeDiscarded, closeDisposed, closePreStep, closeToolExecution]
+    this.closeSessionObserver = ctx.on('session/event', (session, event) => {
+      if (event.type === 'turn/end') {
+        for (const [agent] of this.activeScopes) {
+          if (String((agent as { session?: { id?: unknown } }).session?.id) === String(session.id)) {
+            this.activeScopes.delete(agent)
+          }
+        }
+      }
       const meta = event.type === 'tool/result' ? event.data.meta : undefined
       if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return
       const row = meta as Record<string, unknown>
@@ -198,6 +293,19 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         this.receipts.bindEvent(String(session.id), toolCallId, event.seq, String(row.payloadHash))
       } catch (error: unknown) {
         ctx.logger.warn(`xagent retrieval receipt binding rejected: ${error instanceof Error ? error.message : 'unknown error'}`)
+      }
+    })
+    this.closeResultObserver = ctx.on('tools/result', (exec, result) => {
+      this.observeToolResult(exec, result)
+    })
+    this.closePostObserver = ctx.on('tools/post-execute', async (exec, _result, next) => {
+      const decision = await next()
+      if (exec.name !== 'list_accessible_projects' && exec.name !== 'search_artifacts') return decision
+      if (this.accepting || decision.kind === 'block') return decision
+      this.receipts.discard(String(exec.agent?.session.id ?? ''), String(exec.callId))
+      return {
+        kind: 'block' as const,
+        feedback: [{ type: 'text' as const, text: 'Error: service-unavailable' }],
       }
     })
     ctx.effect(() => () => this.dispose(), 'xagent retrieval service')
@@ -272,16 +380,43 @@ export class XAgentRetrievalService extends XAgentRetrieval {
 
   /** Close admission synchronously, abort every active backend call, and await settlement. */
   async dispose(): Promise<void> {
-    if (!this.accepting) {
-      await Promise.allSettled([...this.controllers.values()])
+    this.disposal ??= (async () => {
+      this.accepting = false
+      for (const close of this.closeScopeObservers) close()
+      this.messageScopes.clear()
+      this.activeScopes.clear()
+      const active = [...this.controllers.entries()]
+      const receiptDisposal = this.receipts.dispose()
+      for (const [controller] of active) controller.abort()
+      await Promise.allSettled(active.map(([, settlement]) => settlement))
+      await receiptDisposal
+      this.closePostObserver()
+      this.closeResultObserver()
+      this.closeSessionObserver()
+    })()
+    await this.disposal
+  }
+
+  private observeToolResult(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): void {
+    if (exec.name !== 'list_accessible_projects' && exec.name !== 'search_artifacts') return
+    const sessionId = exec.agent === undefined ? undefined : String(exec.agent.session.id)
+    if (sessionId === undefined) return
+    const toolCallId = String(exec.callId)
+    if (result.isError || typeof result.meta !== 'object' || result.meta === null || Array.isArray(result.meta)) {
+      this.receipts.discard(sessionId, toolCallId)
       return
     }
-    this.accepting = false
-    const active = [...this.controllers.entries()]
-    const receiptDisposal = this.receipts.dispose()
-    for (const [controller] of active) controller.abort()
-    await receiptDisposal
-    await Promise.allSettled(active.map(([, settlement]) => settlement))
+    const meta = result.meta as Record<string, unknown>
+    if (meta.kind !== 'xagent-retrieval' || !HASH_PATTERN.test(String(meta.payloadHash))) {
+      this.receipts.discard(sessionId, toolCallId)
+      return
+    }
+    try {
+      this.receipts.publish(sessionId, toolCallId, String(meta.payloadHash))
+    } catch (error: unknown) {
+      this.receipts.discard(sessionId, toolCallId)
+      this.ctx.logger.warn(`xagent retrieval receipt publication rejected: ${error instanceof Error ? error.message : 'unknown error'}`)
+    }
   }
 
   private requireScope(sessionId: string): XAgentAuthenticatedSessionRequestScope {
@@ -355,5 +490,6 @@ export function apply(ctx: Context, config: Config): void {
     issuer: config.delegationIssuer,
     audience: config.delegationAudience,
     privateKey: createPrivateKey(config.delegationPrivateKey),
+    countQueryTokens: config.countQueryTokens,
   })
 }

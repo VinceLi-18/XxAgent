@@ -1,6 +1,6 @@
 # XAgent Principal
 
-`@xagent/dsh-principal` 定义 `ctx.xagentPrincipal` 服务、不可变 `XAgentPrincipal` 和共享认证请求作用域。Principal 只接受 FastAPI introspection 的账号、角色、权限版本和登录记录，再绑定 Host 为当前物理连接生成的 `connectionId`。基础作用域只组合完整 Principal、opaque 用户令牌和同一连接标识；认证 prompt 可以追加服务端解析的 Session ID、可见性和固定项目。`runWithXAgentAuthenticatedRequestScope` 让该 prompt 创建的异步工作继承同一冻结值；请求正文、查询参数、身份头和模型内容不能构造这些身份字段。
+`@xagent/dsh-principal` 定义 `ctx.xagentPrincipal` 服务、不可变 `XAgentPrincipal` 和共享认证请求作用域。Principal 只接受 FastAPI introspection 的账号、角色、权限版本和登录记录，再绑定 Host 为当前物理连接生成的 `connectionId`。基础作用域只组合完整 Principal、opaque 用户令牌和同一连接标识；认证 prompt 可以追加服务端解析的 Session ID、可见性和固定项目。`runWithXAgentAuthenticatedRequestScope` 传播一个冻结值，`runWithoutXAgentAuthenticatedRequestScope` 则显式抑制长寿命异步 driver 继承的旧值；请求正文、查询参数、身份头和模型内容不能构造这些身份字段。
 
 ## Model Experience
 

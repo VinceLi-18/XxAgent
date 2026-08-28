@@ -6,7 +6,9 @@
 
 Private Session 的检索必须显式提供规范化项目 UUID 和／或 `includePrivate`。Project Session 只使用 Session 固定项目，并拒绝调用方项目覆盖。`listAccessibleProjects` 只用于 Private Session，接受可选项目名称查询并返回最多 20 个可访问项目。缺少认证作用域、Session、签名器或服务时失败关闭；已知后端失败映射为固定错误码，其他失败映射为 `service-unavailable`。
 
-FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。公开结果和 `tool/result` metadata 只携带 payload hash、短引用标识和可见正文。registry 只在 Session、tool call 和 payload hash 同时匹配时绑定事件序号，按持久化 append 窗口提供独立 sidecar 副本，并仅在远端确认后删除。服务释放会同步关闭新调用、清除 receipt、取消在飞请求，再等待全部请求结束。
+每个获准 prompt 的作用域随 inbox 消息私下捕获，并仅在 Agent 为某个 step 认领该消息时激活。来自另一连接、账号或权限版本的排队 prompt 和 steering 会替换之前的 active scope；同一次认领混入多个不同作用域时失败关闭。取消、丢弃、turn 结束、Agent 释放和服务释放会清除对应私有作用域，不新增 Session 事件。
+
+FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。最终成功的 Native 结果把它标记为已发布；被阻止、取消或失败的结果确认未发布并将其丢弃。已发布 receipt 只在 Session、tool call 和 payload hash 同时匹配时绑定。服务释放会关闭新工作入口和 observer、取消在飞请求，并等待每个已接收操作完成事件绑定或确认未发布。独立 sidecar 在远端确认前仍可按精确 append 窗口读取。
 
 ## Model Experience
 
@@ -28,4 +30,4 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 - 本包只拥有 Host 检索、委托和 receipt 生命周期；混合排序、RLS、引用序号和 receipt 消费由 FastAPI 拥有。
 - Receipt sidecar 的远端 append 与确认由 Session 持久化提供方装配；registry 不自行写入磁盘或网络。
-- Host 的默认前置检查用 UTF-8 字节数加 BGE framing 作保守上限，因此可能拒绝少量实际未超过 512 BGE token 的长查询；FastAPI 仍以固定 BGE tokenizer 作最终判定。
+- Host 组合必须提供精确的固定 BGE token counter，缺失时检索服务加载失败。最多 512 个精确 token 的查询会到达 FastAPI，513-token 查询会在请求前失败。

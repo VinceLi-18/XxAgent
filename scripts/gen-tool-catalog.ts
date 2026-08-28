@@ -193,7 +193,7 @@ const TOOL_PACKAGES: ToolPackage[] = [
       await ctx.plugin(XAgentToolRetrieval)
     },
     note:
-      'XAgent Business project discovery and read-only Artifact evidence search; Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project.',
+      'Native-only XAgent Business project discovery and read-only Artifact evidence search; Code SDKs and nested Code dispatch exclude both tools. Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project.',
   },
   {
     pkg: '@deepseek-ai/dsh-tool-ask-user',
