@@ -661,6 +661,37 @@ describe('XAgent citation policy', () => {
   })
 
   test.each([
+    ['zero-width format character inside the keyword', '事实一[资料1]；事实二[资\u200B料2]'],
+    ['bidirectional format characters inside the brackets', '事实一[资料1]；事实二[\u2066资料2\u2069]'],
+    ['zero-width format character between ordinal digits', '事实一[资料1]；事实二[资料2\u200B3]'],
+    ['fullwidth decimal digit', '事实一[资料1]；事实二[资料２]'],
+    ['Arabic-Indic decimal digit', '事实一[资料1]；事实二[资料٢]'],
+  ])('rejects a Unicode citation lookalike using %s', async (_name, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test('keeps ordinary Unicode prose outside citation syntax eligible', async () => {
+    const { authorize, ctx } = await setup()
+    const text = '普通中文、emoji 🧭、组合字符 e\u0301 与零宽分隔\u200B保持原样。结论[资料1]'
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledOnce()
+  })
+
+  test.each([
     ['inline code', '事实来自代码 `[资料1]`'],
     ['fenced code', '事实来自代码\n```text\n[资料1]\n```'],
     ['escaped literal', String.raw`事实来自字面量 \[资料1]`],
@@ -744,6 +775,24 @@ describe('XAgent citation policy', () => {
     ['nested case-varied split', '<DIV><section>[资<EM>料</EM>2]</section></DIV>\n\n结论[资料1]'],
     ['raw-HTML-to-prose split', '<span>[资</span>料2] 结论[资料1]'],
   ])('fails closed when raw HTML visible text forms a citation through %s', async (_kind, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
+    ['entity-decoded zero-width format character', '<span>[资&#8203;料2]</span> 结论[资料1]'],
+    ['entity-decoded fullwidth decimal digit', '<span>[资料&#65298;]</span> 结论[资料1]'],
+    ['entity-decoded Arabic-Indic decimal digit', '<span>[资料&#1634;]</span> 结论[资料1]'],
+  ])('fails closed when raw HTML renders a Unicode citation lookalike through %s', async (_kind, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
       { type: 'text-delta', index: 0, text },

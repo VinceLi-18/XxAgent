@@ -32,7 +32,7 @@ export const CITATION_ALLOWED_MAX = 64
 
 const CITATION_ID = /^\[资料([1-9][0-9]*)\]$/u
 const CITATION_TOKEN = /\[资料[1-9][0-9]*\]/gu
-const CITATION_LIKE = /[\[\]【】［］]?资料[0-9]+[\[\]【】［］]?/gu
+const CITATION_LIKE = /[\[\]【】［］\p{Cf}]*资\p{Cf}*料\p{Cf}*\p{Nd}(?:\p{Cf}|\p{Nd})*[\[\]【】［］\p{Cf}]*/gu
 const HTML_LIKE = /<\/?[A-Za-z][A-Za-z0-9-]*/gu
 const HASH_PATTERN = /^[0-9a-f]{64}$/u
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u
