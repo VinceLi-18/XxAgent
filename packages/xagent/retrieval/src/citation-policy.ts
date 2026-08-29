@@ -15,6 +15,7 @@ import type { XAgentCitationIdentity } from '@xagent/dsh-backend-client'
 import { decodeHTML, decodeHTMLAttribute } from 'entities/decode'
 import type { Nodes, Root } from 'mdast'
 import { fromMarkdown } from 'mdast-util-from-markdown'
+import { scanCitationCandidates } from './citation-scanner.ts'
 import type { XAgentCitationInvalidReason } from './events.ts'
 
 /** Maximum complete buffered assistant output in UTF-8 bytes. */
@@ -31,11 +32,10 @@ export const CITATION_CORRECTION_DRAFT_MAX_BYTES = 8 * 1024
 export const CITATION_ALLOWED_MAX = 64
 
 const CITATION_ID = /^\[资料([1-9][0-9]*)\]$/u
-const CITATION_TOKEN = /\[资料[1-9][0-9]*\]/gu
-const CITATION_LIKE = /[\[\]【】［］\p{Cf}]*资\p{Cf}*料\p{Cf}*\p{Nd}(?:\p{Cf}|\p{Nd})*[\[\]【】［］\p{Cf}]*/gu
 const HTML_LIKE = /<\/?[A-Za-z][A-Za-z0-9-]*/gu
 const HASH_PATTERN = /^[0-9a-f]{64}$/u
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u
+const CITATION_SCAN_OVERFLOW = '<citation-scan-overflow>'
 const CORRECTION_MESSAGE = '上一份回答未通过引用校验。请只根据已入账的资料证据重新回答；每个采用资料的事实陈述都必须使用以下允许引用，且不得编造或改写引用 ID：'
 const RETRY_FAILURE_MESSAGE = '引用校验失败，正在重试。'
 const TERMINAL_FAILURE_MESSAGE = '引用校验失败，无法提供经过验证的回答。'
@@ -320,7 +320,17 @@ interface RawHtmlScan {
 }
 
 function citationAliases(value: string): string[] {
-  return [...value.matchAll(CITATION_LIKE)].map(match => match[0])
+  const scan = scanCitationCandidates(value)
+  return [
+    ...(scan.overflow ? [CITATION_SCAN_OVERFLOW] : []),
+    ...scan.candidates.map(candidate => citationDiagnostic(candidate.value)),
+  ]
+}
+
+function citationDiagnostic(value: string): string {
+  return Array.from(value).slice(0, 255)
+    .map(character => (character.codePointAt(0) ?? 0) < 0x20 ? '\uFFFD' : character)
+    .join('')
 }
 
 function scanRawHtml(value: string, stack: string[]): RawHtmlScan {
@@ -457,7 +467,9 @@ function explicitCitations(text: string): { ids: string[]; malformed: string[] }
   const ids: string[] = []
   const prose = proseSegments(text)
   const malformed: string[] = [...prose.htmlAliases]
-  if (prose.htmlUnsafe && [...text.matchAll(CITATION_LIKE)].length > 0) malformed.push('<raw-html>')
+  const sourceScan = scanCitationCandidates(text)
+  if (sourceScan.overflow) malformed.push(CITATION_SCAN_OVERFLOW)
+  if (prose.htmlUnsafe && sourceScan.candidates.length > 0) malformed.push('<raw-html>')
   let aggregateOffset = 0
   const aggregateRanges = prose.segments.map((segment) => {
     const range = [aggregateOffset, aggregateOffset + segment.rendered.length] as const
@@ -465,32 +477,33 @@ function explicitCitations(text: string): { ids: string[]; malformed: string[] }
     return range
   })
   const aggregate = prose.segments.map(segment => segment.rendered).join('')
-  for (const match of aggregate.matchAll(CITATION_LIKE)) {
-    const end = match.index + match[0].length
-    if (!aggregateRanges.some(([start, rangeEnd]) => match.index >= start && end <= rangeEnd)) {
-      malformed.push(match[0])
+  const aggregateScan = scanCitationCandidates(aggregate)
+  if (aggregateScan.overflow) malformed.push(CITATION_SCAN_OVERFLOW)
+  for (const candidate of aggregateScan.candidates) {
+    if (!aggregateRanges.some(([start, end]) => candidate.start >= start && candidate.end <= end)) {
+      malformed.push(citationDiagnostic(candidate.value))
     }
   }
   for (const segment of prose.segments) {
+    const scan = scanCitationCandidates(segment.rendered)
+    if (scan.overflow) malformed.push(CITATION_SCAN_OVERFLOW)
+    const { candidates } = scan
     if (segment.rawHtml) {
-      malformed.push(...citationAliases(segment.rendered))
+      malformed.push(...candidates.map(candidate => citationDiagnostic(candidate.value)))
       continue
     }
-    const ignoredRanges: Array<[number, number]> = []
     let sourceCursor = 0
-    for (const match of segment.rendered.matchAll(CITATION_TOKEN)) {
-      const sourceIndex = segment.source.indexOf(match[0], sourceCursor)
-      if (sourceIndex < 0) {
-        malformed.push(match[0])
-      } else {
-        sourceCursor = sourceIndex + match[0].length
-        if (unescaped(segment.source, sourceIndex)) ids.push(match[0])
+    for (const candidate of candidates) {
+      if (!candidate.valid) {
+        malformed.push(citationDiagnostic(candidate.value))
+        continue
       }
-      ignoredRanges.push([match.index, match.index + match[0].length])
-    }
-    const covered = (index: number): boolean => ignoredRanges.some(([start, end]) => index >= start && index < end)
-    for (const match of segment.rendered.matchAll(CITATION_LIKE)) {
-      if (!covered(match.index)) malformed.push(match[0])
+      const sourceIndex = segment.source.indexOf(candidate.value, sourceCursor)
+      if (sourceIndex < 0) malformed.push(citationDiagnostic(candidate.value))
+      else {
+        sourceCursor = sourceIndex + candidate.value.length
+        if (unescaped(segment.source, sourceIndex)) ids.push(candidate.value)
+      }
     }
   }
   return { ids: [...new Set(ids)], malformed: [...new Set(malformed)].slice(0, CITATION_ALLOWED_MAX) }

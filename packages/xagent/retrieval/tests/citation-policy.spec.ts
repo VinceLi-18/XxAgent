@@ -680,15 +680,68 @@ describe('XAgent citation policy', () => {
       .toMatchObject({ data: { reason: 'citation-malformed' } })
   })
 
+  test.each([
+    ['trailing zero-width format character', '结论[资料1]\u200B'],
+    ['trailing bidirectional control', '结论[资料1]\u2066'],
+    ['leading bidirectional control', '结论\u2066[资料1]'],
+    ['extra ASCII closing bracket', '结论[资料1]]'],
+    ['extra fullwidth closing bracket', '结论[资料1]］'],
+    ['extra compatibility closing bracket', '结论[资料1]﹈'],
+    ['format character split into a sibling text node', '结论[资料1]**\u200B**'],
+  ])('rejects a valid citation extended by %s', async (_name, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
+    ['missing ordinal', '事实一[资料1]；另见[资料]'],
+    ['spaced ordinal', '事实一[资料1]；另见[资料 2]'],
+    ['signed ordinal', '事实一[资料1]；另见[资料-2]'],
+    ['small compatibility brackets', '事实一[资料1]；另见﹇资料2﹈'],
+  ])('rejects a damaged citation with %s beside a valid citation', async (_name, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
   test('keeps ordinary Unicode prose outside citation syntax eligible', async () => {
     const { authorize, ctx } = await setup()
-    const text = '普通中文、emoji 🧭、组合字符 e\u0301 与零宽分隔\u200B保持原样。结论[资料1]'
+    const text = '普通中文、RTL نص、emoji 🧭、组合字符 e\u0301 与零宽分隔\u200B保持原样。结论[资料1]'
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
       { type: 'text-delta', index: 0, text },
       { type: 'finish', reason: { kind: 'stop' } },
     ])))
     expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
     expect(authorize).toHaveBeenCalledOnce()
+  })
+
+  test('bounds a long malformed citation diagnostic independently of the answer limit', async () => {
+    const { ctx, session } = await setup()
+    const text = `${'\u200B'.repeat(300)}[资料1]`
+    await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    const correction = session.events.find(event => event.type === 'xagent/citation-correction')
+    if (correction?.type !== 'xagent/citation-correction') throw new Error('missing correction')
+    expect(Array.from(correction.data.invalidIds[0] ?? '')).toHaveLength(255)
   })
 
   test.each([
