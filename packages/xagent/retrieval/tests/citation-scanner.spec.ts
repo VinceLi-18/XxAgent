@@ -57,6 +57,12 @@ describe('citation syntax scanner', () => {
     '[参考资料]',
     '[相关资料]',
     '[资料库]',
+    '[投资材料2]',
+    '[融资材料2]',
+    '[物资材料2]',
+    '[资产材料2]',
+    '[资x料2]',
+    '[资abc料2]',
     '[料2]',
     '[资2]',
     '[x料2]',
@@ -68,17 +74,27 @@ describe('citation syntax scanner', () => {
   )
 
   test.each([
+    '[资料①]',
+    '[资料Ⅰ]',
+    '[资料²]',
+    '[资料A]',
+    '[资料O]',
+  ])('classifies non-ASCII citation ordinal %s as malformed', (text) => {
+    expect(scanCitationCandidates(text).candidates).toEqual([
+      { start: 0, end: text.length, value: text, valid: false },
+    ])
+  })
+
+  test.each([
     ['ASCII punctuation', '[资/料2]'],
     ['ASCII whitespace', '[资 料2]'],
     ['fullwidth punctuation', '[资：料2]'],
     ['fullwidth symbol', '[资＋料2]'],
     ['combining mark', '[资\u0301料2]'],
-    ['ASCII letter', '[资x料2]'],
     ['control character', '[资\u0001料2]'],
     ['astral symbol', '[资🧭料2]'],
     ['repeated zi', '[资资料2]'],
     ['repeated liao', '[资料料2]'],
-    ['multiple inserted characters', '[资abc料2]'],
   ])('retains a bracketed citation candidate damaged by %s', (_name, text) => {
     const scan = scanCitationCandidates(text)
     expect(scan.candidates).toEqual([{ start: 0, end: text.length, value: text, valid: false }])

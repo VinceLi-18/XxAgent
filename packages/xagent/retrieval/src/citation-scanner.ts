@@ -1,8 +1,9 @@
 /** Linear lexer for exact and damaged XAgent short citations. */
 
 const FORMAT_CHARACTER = /^\p{Cf}$/u
-const DECIMAL_DIGIT = /^\p{Nd}$/u
-const WORD_CHARACTER = /^[\p{L}\p{N}]$/u
+const LETTER_CHARACTER = /^\p{L}$/u
+const NUMBER_CHARACTER = /^\p{N}$/u
+const HAN_CHARACTER = /^\p{Script=Han}$/u
 const OPEN_BRACKETS = new Set(['[', '【', '［', '﹇'])
 const CLOSE_BRACKETS = new Set([']', '】', '］', '﹈'])
 const EXACT_CITATION = /^\[资料[1-9][0-9]*\]$/u
@@ -67,10 +68,20 @@ interface Character {
 }
 
 interface CitationShape {
-  sawZi: boolean
-  sawOrderedKeyword: boolean
-  sawOrdinalAfterKeyword: boolean
-  sawForeignWordCharacter: boolean
+  characters: number
+  naturalHanSeen: boolean
+  pendingZi?: {
+    damaged: boolean
+    naturalHanBefore: boolean
+    position: number
+  }
+  keyword?: {
+    damaged: boolean
+    naturalHanBefore: boolean
+    position: number
+    suffixHasHan: boolean
+  }
+  citationEvidence: boolean
 }
 
 interface BracketCandidate {
@@ -97,39 +108,61 @@ function isFormat(value: string): boolean {
   return FORMAT_CHARACTER.test(value)
 }
 
-function isDecimal(value: string): boolean {
-  return DECIMAL_DIGIT.test(value)
-}
-
 function createShape(): CitationShape {
   return {
-    sawZi: false,
-    sawOrderedKeyword: false,
-    sawOrdinalAfterKeyword: false,
-    sawForeignWordCharacter: false,
+    characters: 0,
+    naturalHanSeen: false,
+    citationEvidence: false,
   }
 }
 
 function updateShape(shape: CitationShape, value: string): void {
+  const position = shape.characters
+  shape.characters += 1
+
+  if (value === '料' && shape.pendingZi !== undefined) {
+    shape.keyword = {
+      damaged: shape.pendingZi.damaged,
+      naturalHanBefore: shape.pendingZi.naturalHanBefore,
+      position: shape.pendingZi.position,
+      suffixHasHan: false,
+    }
+    if (shape.pendingZi.damaged) shape.citationEvidence = true
+    delete shape.pendingZi
+    return
+  }
+
+  if (shape.keyword !== undefined) {
+    if (HAN_CHARACTER.test(value)) shape.keyword.suffixHasHan = true
+    else shape.citationEvidence = true
+  }
+
   if (value === '资') {
-    shape.sawZi = true
+    shape.pendingZi = {
+      damaged: false,
+      naturalHanBefore: shape.naturalHanSeen,
+      position,
+    }
     return
   }
-  if (value === '料') {
-    if (shape.sawZi) shape.sawOrderedKeyword = true
+
+  if (shape.pendingZi !== undefined) {
+    if (LETTER_CHARACTER.test(value) || NUMBER_CHARACTER.test(value)) delete shape.pendingZi
+    else shape.pendingZi.damaged = true
+  }
+
+  if (HAN_CHARACTER.test(value) && value !== '料') {
+    shape.naturalHanSeen = true
     return
   }
-  if (isDecimal(value)) {
-    if (shape.sawOrderedKeyword) shape.sawOrdinalAfterKeyword = true
-    else shape.sawForeignWordCharacter = true
-    return
-  }
-  if (WORD_CHARACTER.test(value)) shape.sawForeignWordCharacter = true
 }
 
 function hasCitationShape(shape: CitationShape): boolean {
-  return shape.sawOrderedKeyword
-    && (shape.sawOrdinalAfterKeyword || !shape.sawForeignWordCharacter)
+  if (shape.citationEvidence) return true
+  const keyword = shape.keyword
+  return keyword !== undefined
+    && !keyword.suffixHasHan
+    && (keyword.damaged || !keyword.naturalHanBefore || keyword.position === 0)
 }
 
 /**

@@ -667,6 +667,10 @@ describe('XAgent citation policy', () => {
     ['zero-width format character between ordinal digits', '事实一[资料1]；事实二[资料2\u200B3]'],
     ['fullwidth decimal digit', '事实一[资料1]；事实二[资料２]'],
     ['Arabic-Indic decimal digit', '事实一[资料1]；事实二[资料٢]'],
+    ['circled numeric ordinal', '事实一[资料1]；事实二[资料①]'],
+    ['letter-number ordinal', '事实一[资料1]；事实二[资料Ⅰ]'],
+    ['superscript numeric ordinal', '事实一[资料1]；事实二[资料²]'],
+    ['ASCII letter ordinal', '事实一[资料1]；事实二[资料A]'],
   ])('rejects a Unicode citation lookalike using %s', async (_name, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -737,12 +741,10 @@ describe('XAgent citation policy', () => {
     ['fullwidth punctuation', '事实一[资料1]；另见[资：料2]'],
     ['fullwidth symbol', '事实一[资料1]；另见[资＋料2]'],
     ['combining mark', '事实一[资料1]；另见[资\u0301料2]'],
-    ['letter', '事实一[资料1]；另见[资x料2]'],
     ['control character', '事实一[资料1]；另见[资\u0001料2]'],
     ['astral symbol', '事实一[资料1]；另见[资🧭料2]'],
     ['repeated zi', '事实一[资料1]；另见[资资料2]'],
     ['repeated liao', '事实一[资料1]；另见[资料料2]'],
-    ['multiple inserted characters', '事实一[资料1]；另见[资abc料2]'],
     ['prefix letter', '事实一[资料1]；另见[x资料2]'],
     ['prefix whitespace', '事实一[资料1]；另见[ 资料2]'],
     ['prefix punctuation', '事实一[资料1]；另见[/资料2]'],
@@ -803,6 +805,12 @@ describe('XAgent citation policy', () => {
     '[参考资料]',
     '[相关资料]',
     '[资料库]',
+    '[投资材料2]',
+    '[融资材料2]',
+    '[物资材料2]',
+    '[资产材料2]',
+    '[资x料2]',
+    '[资abc料2]',
     '[料2]',
     '[资2]',
     '[x料2]',
@@ -943,6 +951,10 @@ describe('XAgent citation policy', () => {
     ['entity-decoded zero-width format character', '<span>[资&#8203;料2]</span> 结论[资料1]'],
     ['entity-decoded fullwidth decimal digit', '<span>[资料&#65298;]</span> 结论[资料1]'],
     ['entity-decoded Arabic-Indic decimal digit', '<span>[资料&#1634;]</span> 结论[资料1]'],
+    ['entity-decoded circled numeric ordinal', '<span>[资料&#9312;]</span> 结论[资料1]'],
+    ['entity-decoded letter-number ordinal', '<span>[资料&#8544;]</span> 结论[资料1]'],
+    ['entity-decoded superscript numeric ordinal', '<span>[资料&#178;]</span> 结论[资料1]'],
+    ['entity-decoded ASCII letter ordinal', '<span>[资料&#65;]</span> 结论[资料1]'],
   ])('fails closed when raw HTML renders a Unicode citation lookalike through %s', async (_kind, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
