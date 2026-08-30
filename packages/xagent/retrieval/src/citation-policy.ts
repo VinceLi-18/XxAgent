@@ -565,11 +565,12 @@ function explicitCitations(text: string): { ids: string[]; malformed: string[] }
         continue
       }
       const sourceIndex = segment.source.indexOf(candidate.value, sourceCursor)
-      if (sourceIndex < 0) malformed.push(citationDiagnostic(candidate.value))
-      else {
-        sourceCursor = sourceIndex + candidate.value.length
-        if (unescaped(segment.source, sourceIndex)) ids.push(candidate.value)
+      if (sourceIndex < 0) {
+        malformed.push(citationDiagnostic(candidate.value))
+        break
       }
+      sourceCursor = sourceIndex + candidate.value.length
+      if (unescaped(segment.source, sourceIndex)) ids.push(candidate.value)
     }
   }
   return { ids: [...new Set(ids)], malformed: [...new Set(malformed)].slice(0, CITATION_ALLOWED_MAX) }

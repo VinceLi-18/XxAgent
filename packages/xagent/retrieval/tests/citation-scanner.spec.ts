@@ -85,6 +85,24 @@ describe('citation syntax scanner', () => {
     ])
   })
 
+  test.each(Array.from('零〇一二两兩三四五六七八九十百千万萬亿億兆壹贰貳叁參肆伍陆陸柒捌玖拾佰仟廿卅卌'))(
+    'classifies Han citation ordinal %s as malformed',
+    (ordinal) => {
+      const text = `[资料${ordinal}]`
+      expect(scanCitationCandidates(text).candidates).toEqual([
+        { start: 0, end: text.length, value: text, valid: false },
+      ])
+    },
+  )
+
+  test.each([
+    '[资料库2]',
+    '[资料馆A]',
+    '[资料夹2026]',
+  ])('keeps natural compound %s outside citation syntax', (text) => {
+    expect(scanCitationCandidates(text).candidates).toEqual([])
+  })
+
   test.each([
     ['ASCII punctuation', '[资/料2]'],
     ['ASCII whitespace', '[资 料2]'],

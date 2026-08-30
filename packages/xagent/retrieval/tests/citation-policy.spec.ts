@@ -671,6 +671,8 @@ describe('XAgent citation policy', () => {
     ['letter-number ordinal', '事实一[资料1]；事实二[资料Ⅰ]'],
     ['superscript numeric ordinal', '事实一[资料1]；事实二[资料²]'],
     ['ASCII letter ordinal', '事实一[资料1]；事实二[资料A]'],
+    ['common Han numeral ordinal', '事实一[资料1]；事实二[资料一]'],
+    ['financial Han numeral ordinal', '事实一[资料1]；事实二[资料壹]'],
   ])('rejects a Unicode citation lookalike using %s', async (_name, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -805,6 +807,9 @@ describe('XAgent citation policy', () => {
     '[参考资料]',
     '[相关资料]',
     '[资料库]',
+    '[资料库2]',
+    '[资料馆A]',
+    '[资料夹2026]',
     '[投资材料2]',
     '[融资材料2]',
     '[物资材料2]',
@@ -955,6 +960,8 @@ describe('XAgent citation policy', () => {
     ['entity-decoded letter-number ordinal', '<span>[资料&#8544;]</span> 结论[资料1]'],
     ['entity-decoded superscript numeric ordinal', '<span>[资料&#178;]</span> 结论[资料1]'],
     ['entity-decoded ASCII letter ordinal', '<span>[资料&#65;]</span> 结论[资料1]'],
+    ['entity-decoded common Han numeral ordinal', '<span>[资料&#19968;]</span> 结论[资料1]'],
+    ['entity-decoded financial Han numeral ordinal', '<span>[资料&#x58F9;]</span> 结论[资料1]'],
   ])('fails closed when raw HTML renders a Unicode citation lookalike through %s', async (_kind, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -1087,6 +1094,77 @@ describe('XAgent citation policy', () => {
     ])))
     expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
     expect(authorize).toHaveBeenCalledOnce()
+  })
+
+  test('stops literal source searches after the first entity-decoded candidate mismatch', async () => {
+    const encoded = '&lbrack;资料1&rbrack;'
+    const text = encoded.repeat(2500)
+    let searchStarts: number[] = []
+    const indexOf = vi.spyOn(String.prototype, 'indexOf')
+    try {
+      const { authorize, ctx, session } = await setup()
+      const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+        { type: 'text-delta', index: 0, text },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ])))
+      expect(chunks).toMatchObject([{
+        type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+      }])
+      expect(authorize).not.toHaveBeenCalled()
+      expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+        .toMatchObject({ data: { reason: 'citation-malformed' } })
+    } finally {
+      searchStarts = indexOf.mock.calls.flatMap((arguments_, index) => (
+        String(indexOf.mock.contexts[index]) === text && arguments_[0] === '[资料1]'
+          ? [arguments_[1] ?? 0]
+          : []
+      ))
+      indexOf.mockRestore()
+    }
+    expect(searchStarts).toEqual([0])
+  })
+
+  test.each([
+    ['literal then entity', '[资料1]&lbrack;资料1&rbrack;'],
+    ['entity then literal', '&lbrack;资料1&rbrack;[资料1]'],
+    ['decimal and hexadecimal entities', '&#91;资料1&#93;&#x5B;资料1&#x5D;'],
+  ])('fails closed for %s in one CommonMark text node', async (_kind, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test('advances the literal source cursor across repeated identical citations', async () => {
+    const count = 2500
+    const text = '[资料1]'.repeat(count)
+    let searchStarts: number[] = []
+    const indexOf = vi.spyOn(String.prototype, 'indexOf')
+    try {
+      const { authorize, ctx } = await setup()
+      const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+        { type: 'text-delta', index: 0, text },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ])))
+      expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+      expect(authorize).toHaveBeenCalledOnce()
+    } finally {
+      searchStarts = indexOf.mock.calls.flatMap((arguments_, index) => (
+        String(indexOf.mock.contexts[index]) === text && arguments_[0] === '[资料1]'
+          ? [arguments_[1] ?? 0]
+          : []
+      ))
+      indexOf.mockRestore()
+    }
+    expect(searchStarts).toHaveLength(count)
+    expect(searchStarts.every((start, index) => start === index * '[资料1]'.length)).toBe(true)
   })
 
   test('ignores citation literals in code when prose has one allowed citation', async () => {

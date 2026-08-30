@@ -4,6 +4,9 @@ const FORMAT_CHARACTER = /^\p{Cf}$/u
 const LETTER_CHARACTER = /^\p{L}$/u
 const NUMBER_CHARACTER = /^\p{N}$/u
 const HAN_CHARACTER = /^\p{Script=Han}$/u
+const HAN_NUMERAL_CHARACTERS = new Set(Array.from(
+  '零〇一二两兩三四五六七八九十百千万萬亿億兆壹贰貳叁參肆伍陆陸柒捌玖拾佰仟廿卅卌',
+))
 const OPEN_BRACKETS = new Set(['[', '【', '［', '﹇'])
 const CLOSE_BRACKETS = new Set([']', '】', '］', '﹈'])
 const EXACT_CITATION = /^\[资料[1-9][0-9]*\]$/u
@@ -133,8 +136,14 @@ function updateShape(shape: CitationShape, value: string): void {
   }
 
   if (shape.keyword !== undefined) {
-    if (HAN_CHARACTER.test(value)) shape.keyword.suffixHasHan = true
-    else shape.citationEvidence = true
+    if (!shape.keyword.suffixHasHan
+      && (value === '资' || value === '料' || HAN_NUMERAL_CHARACTERS.has(value))) {
+      shape.citationEvidence = true
+    } else if (HAN_CHARACTER.test(value)) {
+      shape.keyword.suffixHasHan = true
+    } else if (!shape.keyword.suffixHasHan) {
+      shape.citationEvidence = true
+    }
   }
 
   if (value === '资') {
