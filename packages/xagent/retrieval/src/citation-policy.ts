@@ -236,14 +236,55 @@ interface SourceRange {
   readonly end: number
 }
 
+/** Deterministic membership results for ordered source offsets and source ranges. */
+export interface SourceOffsetRangeOwnership {
+  readonly contained: readonly boolean[]
+  readonly steps: number
+}
+
+/**
+ * Locate ordered source offsets in ordered source ranges with one monotonic cursor.
+ * @param offsets - Source offsets in ascending order.
+ * @param ranges - Half-open source ranges in ascending order; overlaps and adjacency are merged.
+ * @returns One membership result per offset and the number of range predicates evaluated.
+ */
+export function locateSourceOffsetsInRanges(
+  offsets: readonly number[],
+  ranges: readonly SourceRange[],
+): SourceOffsetRangeOwnership {
+  const merged: { start: number; end: number }[] = []
+  for (const range of ranges) {
+    const previous = merged.at(-1)
+    if (previous === undefined || range.start > previous.end) {
+      merged.push({ start: range.start, end: range.end })
+    } else if (range.end > previous.end) {
+      previous.end = range.end
+    }
+  }
+
+  const contained: boolean[] = []
+  let rangeCursor = 0
+  let steps = 0
+  for (const offset of offsets) {
+    while (rangeCursor < merged.length) {
+      const range = merged[rangeCursor]
+      if (range === undefined) break
+      steps += 1
+      if (offset < range.end) {
+        contained.push(offset >= range.start)
+        break
+      }
+      rangeCursor += 1
+    }
+    if (rangeCursor >= merged.length) contained.push(false)
+  }
+  return { contained, steps }
+}
+
 function sourceRange(node: Nodes): SourceRange | undefined {
   const start = node.position?.start.offset
   const end = node.position?.end.offset
   return start === undefined || end === undefined ? undefined : { start, end }
-}
-
-function insideRange(index: number, ranges: readonly SourceRange[]): boolean {
-  return ranges.some(range => index >= range.start && index < range.end)
 }
 
 interface RawHtmlTag {
@@ -456,11 +497,16 @@ function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliase
   }
   visit(fromMarkdown(markdown))
   if (htmlStack.length > 0) htmlUnsafe = true
+  const htmlLikeOffsets: number[] = []
   for (const match of markdown.matchAll(HTML_LIKE)) {
-    if (unescaped(markdown, match.index)
-      && !insideRange(match.index, htmlRanges)
-      && !insideRange(match.index, ignoredRanges)) {
+    if (unescaped(markdown, match.index)) htmlLikeOffsets.push(match.index)
+  }
+  const htmlOwnership = locateSourceOffsetsInRanges(htmlLikeOffsets, htmlRanges)
+  const ignoredOwnership = locateSourceOffsetsInRanges(htmlLikeOffsets, ignoredRanges)
+  for (const [index] of htmlLikeOffsets.entries()) {
+    if (htmlOwnership.contained[index] !== true && ignoredOwnership.contained[index] !== true) {
       htmlUnsafe = true
+      break
     }
   }
   return { segments, htmlAliases, htmlUnsafe }

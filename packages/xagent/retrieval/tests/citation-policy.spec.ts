@@ -17,6 +17,7 @@ import {
   CITATION_ANSWER_MAX_BYTES,
   CITATION_CORRECTION_DRAFT_MAX_BYTES,
   installXAgentCitationPolicy,
+  locateSourceOffsetsInRanges,
   type XAgentCitationReleaseInput,
   type XAgentCitationPolicyRequest,
 } from '../src/citation-policy.ts'
@@ -743,6 +744,14 @@ describe('XAgent citation policy', () => {
     ['repeated zi', '事实一[资料1]；另见[资资料2]'],
     ['repeated liao', '事实一[资料1]；另见[资料料2]'],
     ['multiple inserted characters', '事实一[资料1]；另见[资abc料2]'],
+    ['prefix letter', '事实一[资料1]；另见[x资料2]'],
+    ['prefix whitespace', '事实一[资料1]；另见[ 资料2]'],
+    ['prefix punctuation', '事实一[资料1]；另见[/资料2]'],
+    ['prefix combining mark', '事实一[资料1]；另见[\u0301资料2]'],
+    ['prefix format character', '事实一[资料1]；另见[\u200B资料2]'],
+    ['prefix astral symbol', '事实一[资料1]；另见[🧭资料2]'],
+    ['multiple prefix characters', '事实一[资料1]；另见[ab资料2]'],
+    ['first keyword substitution', '事实一[资料1]；另见[x料2]'],
   ])('rejects a bracketed citation with a keyword damaged by %s', async (_name, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -761,7 +770,6 @@ describe('XAgent citation policy', () => {
     ['bare singular ordinal', '资料2，结论[资料1]'],
     ['bare multi-digit ordinal', '资料2026版本，结论[资料1]'],
     ['counted prose', '共有资料2份，结论[资料1]'],
-    ['orphan closer without an opener', '资料2]是普通正文，结论[资料1]'],
   ])('keeps %s outside an opening citation bracket eligible', async (_name, text) => {
     const { authorize, ctx } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -771,6 +779,33 @@ describe('XAgent citation policy', () => {
     expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
     expect(authorize).toHaveBeenCalledOnce()
   })
+
+  test('rejects a missing opening bracket beside a valid citation', async () => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: '资料2]是损坏引用，结论[资料1]' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each(['[项目2]', '[附录A]', '[重要]', '[x]'])(
+    'keeps ordinary bracketed prose %s beside a valid citation eligible',
+    async (bracketed) => {
+      const { authorize, ctx } = await setup()
+      const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+        { type: 'text-delta', index: 0, text: `${bracketed}，结论[资料1]` },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ])))
+      expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+      expect(authorize).toHaveBeenCalledOnce()
+    },
+  )
 
   test('keeps ordinary Unicode prose outside citation syntax eligible', async () => {
     const { authorize, ctx } = await setup()
@@ -985,6 +1020,30 @@ describe('XAgent citation policy', () => {
     ])))
     expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
     expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ citations: [citation] }))
+  })
+
+  test('keeps raw HTML source-range ownership linear at the answer limit', async () => {
+    const tag = '<i></i>'
+    const count = Math.floor((63 * 1024) / tag.length)
+    const markup = tag.repeat(count)
+    const offsets: number[] = []
+    const ranges: { start: number; end: number }[] = []
+    for (let index = 0; index < count; index += 1) {
+      const start = index * tag.length
+      offsets.push(start, start + 3)
+      ranges.push({ start, end: start + 3 }, { start: start + 3, end: start + tag.length })
+    }
+    const ownership = locateSourceOffsetsInRanges(offsets, ranges)
+    expect(ownership.contained).toEqual(offsets.map(() => true))
+    expect(ownership.steps).toBeLessThanOrEqual(offsets.length + ranges.length)
+
+    const { authorize, ctx } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: `${markup}结论[资料1]` },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledOnce()
   })
 
   test('ignores citation literals in code when prose has one allowed citation', async () => {

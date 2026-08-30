@@ -28,15 +28,31 @@ describe('citation syntax scanner', () => {
     ['[资料２]', false],
     ['﹇资料2﹈', false],
     ['[资料2', false],
+    ['[x资料2]', false],
+    ['[ 资料2]', false],
+    ['[/资料2]', false],
+    ['[\u0301资料2]', false],
+    ['[\u200B资料2]', false],
+    ['[🧭资料2]', false],
+    ['[ab资料2]', false],
+    ['[x料2]', false],
+    ['资料2]', false],
   ])('classifies %s without normalizing aliases', (text, valid) => {
     const scan = scanCitationCandidates(text)
     expect(scan.candidates).toEqual([{ start: 0, end: text.length, value: text, valid }])
   })
 
   test('leaves ordinary Unicode prose outside citation syntax alone', () => {
-    const text = '普通资料、资料2、资料2026版本、共有资料2份、资料2]、资料/2、RTL نص،emoji 🧭、组合字符 e\u0301 与分隔\u200B保持原样'
+    const text = '普通资料、资料2、资料2026版本、共有资料2份、资料/2、RTL نص،emoji 🧭、组合字符 e\u0301 与分隔\u200B保持原样'
     expect(scanCitationCandidates(text).candidates).toEqual([])
   })
+
+  test.each(['[项目2]', '[附录A]', '[重要]', '[x]'])(
+    'does not classify ordinary bracketed prose %s as a citation',
+    (text) => {
+      expect(scanCitationCandidates(text).candidates).toEqual([])
+    },
+  )
 
   test.each([
     ['ASCII punctuation', '[资/料2]'],

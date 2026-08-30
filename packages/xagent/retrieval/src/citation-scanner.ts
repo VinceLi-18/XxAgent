@@ -2,10 +2,9 @@
 
 const FORMAT_CHARACTER = /^\p{Cf}$/u
 const DECIMAL_DIGIT = /^\p{Nd}$/u
-const ASCII_DIGIT = /^[0-9]$/u
 const OPEN_BRACKETS = new Set(['[', '【', '［', '﹇'])
 const CLOSE_BRACKETS = new Set([']', '】', '］', '﹈'])
-const BRACKETS = new Set([...OPEN_BRACKETS, ...CLOSE_BRACKETS])
+const EXACT_CITATION = /^\[资料[1-9][0-9]*\]$/u
 
 /** Maximum UTF-16 code units accepted by one citation scan. */
 export const CITATION_SCAN_MAX_CODE_UNITS = 64 * 1024
@@ -66,22 +65,24 @@ interface Character {
   readonly end: number
 }
 
-type BracketKind = 'open' | 'close'
-type LexerState = 'search' | 'after-zi' | 'after-liao' | 'before-ordinal' | 'ordinal' | 'after-ordinal-separator' | 'suffix'
+interface CitationShape {
+  sawZi: boolean
+  sawLiao: boolean
+  sawOrderedKeyword: boolean
+  sawDecimal: boolean
+}
 
-interface CandidateBuilder {
+interface BracketCandidate {
   readonly start: number
-  readonly prefixExact: boolean
-  readonly hasOpeningBracket: boolean
   end: number
-  keywordExact: boolean
-  digitCount: number
-  asciiOrdinal: boolean
-  firstDigit: string
-  separatedOrdinal: boolean
-  suffixCount: number
-  suffix: string
-  hasClosingSuffix: boolean
+  closed: boolean
+  readonly shape: CitationShape
+}
+
+interface BareCandidate {
+  readonly start: number
+  end: number
+  readonly shape: CitationShape
 }
 
 function readCharacter(text: string, index: number): Character {
@@ -99,10 +100,21 @@ function isDecimal(value: string): boolean {
   return DECIMAL_DIGIT.test(value)
 }
 
-function bracketKind(value: string): BracketKind | undefined {
-  if (OPEN_BRACKETS.has(value)) return 'open'
-  if (CLOSE_BRACKETS.has(value)) return 'close'
-  return undefined
+function createShape(): CitationShape {
+  return { sawZi: false, sawLiao: false, sawOrderedKeyword: false, sawDecimal: false }
+}
+
+function updateShape(shape: CitationShape, value: string): void {
+  if (value === '资') shape.sawZi = true
+  if (value === '料') {
+    shape.sawLiao = true
+    if (shape.sawZi) shape.sawOrderedKeyword = true
+  }
+  if (isDecimal(value)) shape.sawDecimal = true
+}
+
+function hasCitationShape(shape: CitationShape): boolean {
+  return shape.sawOrderedKeyword || ((shape.sawZi || shape.sawLiao) && shape.sawDecimal)
 }
 
 /**
@@ -117,87 +129,51 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
 
   const candidates: CitationSyntaxCandidate[] = []
   let steps = 0
-  let state: LexerState = 'search'
-  let builder: CandidateBuilder | undefined
+  let bracketed: BracketCandidate | undefined
+  let bare: BareCandidate | undefined
   let prefixStart: number | undefined
-  let prefixHasOpening = false
 
   const resetPrefix = (): void => {
     prefixStart = undefined
-    prefixHasOpening = false
   }
 
-  const hasOpeningPrefix = (): boolean => prefixHasOpening
-
-  const rememberPrefix = (character: Character): void => {
-    if (isFormat(character.value)) {
-      prefixStart ??= character.start
-      return
-    }
-    const kind = bracketKind(character.value)
-    if (kind === undefined) {
-      resetPrefix()
-      return
-    }
-    prefixStart ??= character.start
-    prefixHasOpening ||= kind === 'open'
-  }
-
-  const beginCandidate = (character: Character): void => {
-    builder = {
+  const beginBracketed = (character: Character): void => {
+    bracketed = {
       start: prefixStart ?? character.start,
-      prefixExact: prefixStart === character.start - 1 && text[prefixStart] === '[',
-      hasOpeningBracket: prefixHasOpening,
       end: character.end,
-      keywordExact: true,
-      digitCount: 0,
-      asciiOrdinal: true,
-      firstDigit: '',
-      separatedOrdinal: false,
-      suffixCount: 0,
-      suffix: '',
-      hasClosingSuffix: false,
+      closed: false,
+      shape: createShape(),
     }
+    bare = undefined
     resetPrefix()
   }
 
-  const finishCandidate = (): void => {
-    if (builder === undefined) throw new Error('citation scanner lost its candidate')
-    const ordinalExact = builder.digitCount > 0
-      && builder.asciiOrdinal
-      && builder.firstDigit >= '1'
-      && builder.firstDigit <= '9'
-      && !builder.separatedOrdinal
-    const suffixExact = builder.suffixCount === 1 && builder.suffix === ']'
+  const finishBracketed = (): void => {
+    if (bracketed === undefined) throw new Error('citation scanner lost its bracketed candidate')
+    if (!hasCitationShape(bracketed.shape)) {
+      bracketed = undefined
+      return
+    }
+    const value = text.slice(bracketed.start, bracketed.end)
     candidates.push({
-      start: builder.start,
-      end: builder.end,
-      value: text.slice(builder.start, builder.end),
-      valid: builder.prefixExact && builder.keywordExact && ordinalExact && suffixExact,
+      start: bracketed.start,
+      end: bracketed.end,
+      value,
+      valid: EXACT_CITATION.test(value),
     })
-    builder = undefined
-    state = 'search'
+    bracketed = undefined
   }
 
-  const discardCandidate = (): void => {
-    builder = undefined
-    state = 'search'
-  }
-
-  const recordDigit = (character: Character): void => {
-    if (builder === undefined) throw new Error('citation scanner lost its ordinal')
-    if (builder.digitCount === 0) builder.firstDigit = character.value
-    builder.digitCount += 1
-    builder.asciiOrdinal &&= ASCII_DIGIT.test(character.value)
-    builder.end = character.end
-  }
-
-  const recordSuffix = (character: Character): void => {
-    if (builder === undefined) throw new Error('citation scanner lost its suffix')
-    builder.suffixCount += 1
-    builder.suffix = character.value
-    builder.hasClosingSuffix ||= CLOSE_BRACKETS.has(character.value)
-    builder.end = character.end
+  const finishBare = (character: Character): void => {
+    if (bare === undefined) throw new Error('citation scanner lost its bare candidate')
+    candidates.push({
+      start: bare.start,
+      end: character.end,
+      value: text.slice(bare.start, character.end),
+      valid: false,
+    })
+    bare = undefined
+    resetPrefix()
   }
 
   let cursor = 0
@@ -208,130 +184,70 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
     let reprocess = true
     while (reprocess) {
       reprocess = false
-      switch (state) {
-        case 'search':
-          if (hasOpeningPrefix() && character.value === '资') {
-            beginCandidate(character)
-            state = 'after-zi'
-          } else if (hasOpeningPrefix() && character.value === '料') {
-            beginCandidate(character)
-            if (builder === undefined) throw new Error('citation scanner lost its keyword')
-            builder.keywordExact = false
-            state = 'after-liao'
-          } else rememberPrefix(character)
-          break
-        case 'after-zi':
-          if (isFormat(character.value)) {
-            if (builder === undefined) throw new Error('citation scanner lost its keyword')
-            builder.keywordExact = false
-            builder.end = character.end
-          } else if (character.value === '料') {
-            if (builder === undefined) throw new Error('citation scanner lost its keyword')
-            builder.end = character.end
-            state = 'after-liao'
-          } else if (builder?.hasOpeningBracket) {
-            builder.keywordExact = false
-            if (isDecimal(character.value)) {
-              recordDigit(character)
-              state = 'ordinal'
-            } else if (BRACKETS.has(character.value)) {
-              recordSuffix(character)
-              state = 'suffix'
-            } else {
-              builder.end = character.end
-            }
+      if (bracketed !== undefined) {
+        if (bracketed.closed) {
+          if (OPEN_BRACKETS.has(character.value)) {
+            finishBracketed()
+            beginBracketed(character)
+          } else if (CLOSE_BRACKETS.has(character.value) || isFormat(character.value)) {
+            bracketed.end = character.end
           } else {
-            discardCandidate()
+            finishBracketed()
             reprocess = true
           }
-          break
-        case 'after-liao':
-          if (builder === undefined) throw new Error('citation scanner lost its keyword')
-          if (isFormat(character.value)) {
-            builder.keywordExact = false
-            builder.end = character.end
-          } else if (isDecimal(character.value)) {
-            recordDigit(character)
-            state = 'ordinal'
-          } else if (builder.hasOpeningBracket && BRACKETS.has(character.value)) {
-            recordSuffix(character)
-            state = 'suffix'
-          } else if (builder.hasOpeningBracket) {
-            builder.separatedOrdinal = true
-            builder.end = character.end
-            state = 'before-ordinal'
-          } else {
-            discardCandidate()
-            reprocess = true
-          }
-          break
-        case 'before-ordinal':
-          if (builder === undefined) throw new Error('citation scanner lost its separated ordinal')
-          if (!BRACKETS.has(character.value) && !isDecimal(character.value)) {
-            builder.separatedOrdinal = true
-            builder.end = character.end
-          } else if (isDecimal(character.value)) {
-            recordDigit(character)
-            state = 'ordinal'
-          } else if (BRACKETS.has(character.value)) {
-            recordSuffix(character)
-            state = 'suffix'
-          } else {
-            discardCandidate()
-            reprocess = true
-          }
-          break
-        case 'ordinal':
-          if (builder === undefined) throw new Error('citation scanner lost its ordinal')
-          if (isDecimal(character.value)) {
-            recordDigit(character)
-          } else if (isFormat(character.value)) {
-            builder.separatedOrdinal = true
-            builder.end = character.end
-          } else if (BRACKETS.has(character.value)) {
-            recordSuffix(character)
-            state = 'suffix'
-          } else if (builder.hasOpeningBracket) {
-            builder.separatedOrdinal = true
-            builder.end = character.end
-            state = 'after-ordinal-separator'
-          } else {
-            finishCandidate()
-            reprocess = true
-          }
-          break
-        case 'after-ordinal-separator':
-          if (builder === undefined) throw new Error('citation scanner lost its ordinal suffix')
-          if (!BRACKETS.has(character.value)) {
-            builder.end = character.end
-          } else if (BRACKETS.has(character.value)) {
-            recordSuffix(character)
-            state = 'suffix'
-          } else {
-            finishCandidate()
-            reprocess = true
-          }
-          break
-        case 'suffix':
-          if (builder === undefined) throw new Error('citation scanner lost its suffix')
-          if ((!BRACKETS.has(character.value) && !isFormat(character.value))
-            || (builder.hasClosingSuffix && OPEN_BRACKETS.has(character.value))) {
-            finishCandidate()
-            reprocess = true
-          } else {
-            recordSuffix(character)
-            state = 'suffix'
-          }
-          break
-        default:
-          state satisfies never
+        } else if (CLOSE_BRACKETS.has(character.value)) {
+          bracketed.end = character.end
+          bracketed.closed = true
+        } else {
+          bracketed.end = character.end
+          updateShape(bracketed.shape, character.value)
+        }
+        continue
+      }
+
+      if (OPEN_BRACKETS.has(character.value)) {
+        beginBracketed(character)
+        continue
+      }
+      if (CLOSE_BRACKETS.has(character.value)) {
+        if (bare !== undefined && hasCitationShape(bare.shape)) finishBare(character)
+        else {
+          bare = undefined
+          prefixStart ??= character.start
+        }
+        continue
+      }
+      if (isFormat(character.value)) {
+        if (bare !== undefined) {
+          bare.end = character.end
+          updateShape(bare.shape, character.value)
+        } else prefixStart ??= character.start
+        continue
+      }
+
+      resetPrefix()
+      if (bare === undefined && (character.value === '资' || character.value === '料')) {
+        bare = { start: character.start, end: character.end, shape: createShape() }
+      }
+      if (bare !== undefined) {
+        bare.end = character.end
+        updateShape(bare.shape, character.value)
       }
     }
   }
 
-  if (((state === 'after-zi' || state === 'after-liao') && builder?.hasOpeningBracket)
-    || state === 'before-ordinal' || state === 'ordinal'
-    || state === 'after-ordinal-separator' || state === 'suffix') finishCandidate()
+  if (bracketed !== undefined) {
+    const trailing = candidates.at(-1)
+    if (hasCitationShape(bracketed.shape)) finishBracketed()
+    else if (trailing?.end === bracketed.start) {
+      candidates[candidates.length - 1] = {
+        start: trailing.start,
+        end: bracketed.end,
+        value: text.slice(trailing.start, bracketed.end),
+        valid: false,
+      }
+    }
+  }
 
   const trailing = candidates.at(-1)
   if (prefixStart !== undefined && trailing?.end === prefixStart) {
