@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   CITATION_SCAN_MAX_CODE_UNITS,
+  locateCitationCandidateRanges,
   scanCitationCandidates,
 } from '../src/citation-scanner.ts'
 
@@ -10,11 +11,20 @@ describe('citation syntax scanner', () => {
     ['[资料12]', true],
     ['[资料1]\u200B', false],
     ['\u2066[资料1]', false],
+    ['][资料1]', false],
+    ['】[资料1]', false],
+    ['[资料1][', false],
+    ['[资料1]［', false],
     ['[资料1]]', false],
     ['[资料1]﹈', false],
     ['[资料]', false],
     ['[资料 2]', false],
     ['[资料-2]', false],
+    ['[资料/2]', false],
+    ['[资料#2]', false],
+    ['[资料：2]', false],
+    ['[资料＋2]', false],
+    ['[资料.2]', false],
     ['[资料２]', false],
     ['﹇资料2﹈', false],
     ['资料2]', false],
@@ -25,7 +35,7 @@ describe('citation syntax scanner', () => {
   })
 
   test('leaves ordinary Unicode prose outside citation syntax alone', () => {
-    const text = '普通资料、RTL نص،emoji 🧭、组合字符 e\u0301 与分隔\u200B保持原样'
+    const text = '普通资料、资料/2、RTL نص،emoji 🧭、组合字符 e\u0301 与分隔\u200B保持原样'
     expect(scanCitationCandidates(text).candidates).toEqual([])
   })
 
@@ -34,6 +44,27 @@ describe('citation syntax scanner', () => {
       { start: 0, end: 5, value: '[资料1]', valid: true },
       { start: 5, end: 10, value: '[资料2]', valid: true },
     ])
+  })
+
+  test.each([
+    ['many adjacent legal tokens', 2048],
+    ['a maximum-size adversarial answer', Math.floor(CITATION_SCAN_MAX_CODE_UNITS / 5)],
+  ])('locates %s with one monotonic range cursor', (_name, count) => {
+    const text = '[资料1]'.repeat(count)
+    const candidates = scanCitationCandidates(text).candidates
+    const ranges = candidates.map(candidate => [candidate.start, candidate.end] as const)
+    const ownership = locateCitationCandidateRanges(candidates, ranges)
+    expect(ownership.contained).toEqual(candidates.map(() => true))
+    expect(ownership.steps).toBeLessThanOrEqual(candidates.length + ranges.length)
+  })
+
+  test('locates candidates across alternating containing and crossing ranges linearly', () => {
+    const text = '[资料1][资料2][资料3][资料4]'
+    const candidates = scanCitationCandidates(text).candidates
+    const ranges = [[0, 5], [5, 8], [8, 12], [12, 15], [15, 20]] as const
+    const ownership = locateCitationCandidateRanges(candidates, ranges)
+    expect(ownership.contained).toEqual([true, false, false, true])
+    expect(ownership.steps).toBeLessThanOrEqual(candidates.length + ranges.length)
   })
 
   test.each(['\u00AD', '\u061C', '\u200B', '\u202E', '\u2066', '\uFEFF'])(

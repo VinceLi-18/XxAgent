@@ -3,7 +3,6 @@
 const FORMAT_CHARACTER = /^\p{Cf}$/u
 const DECIMAL_DIGIT = /^\p{Nd}$/u
 const ASCII_DIGIT = /^[0-9]$/u
-const SEPARATOR = /^[\s+\-\u2212\u2013\u2014]$/u
 const OPEN_BRACKETS = new Set(['[', '【', '［', '﹇'])
 const CLOSE_BRACKETS = new Set([']', '】', '］', '﹈'])
 const BRACKETS = new Set([...OPEN_BRACKETS, ...CLOSE_BRACKETS])
@@ -24,6 +23,41 @@ export interface CitationSyntaxScan {
   readonly candidates: readonly CitationSyntaxCandidate[]
   readonly overflow: boolean
   readonly steps: number
+}
+
+/** Deterministic ownership results for ordered citation candidates and rendered-text ranges. */
+export interface CitationCandidateRangeOwnership {
+  readonly contained: readonly boolean[]
+  readonly steps: number
+}
+
+/**
+ * Locate ordered citation candidates in ordered, non-overlapping rendered-text ranges.
+ * @param candidates - Candidates in ascending source order.
+ * @param ranges - Half-open ranges in ascending source order.
+ * @returns One containment result per candidate and the number of range predicates evaluated.
+ */
+export function locateCitationCandidateRanges(
+  candidates: readonly CitationSyntaxCandidate[],
+  ranges: readonly (readonly [number, number])[],
+): CitationCandidateRangeOwnership {
+  const contained: boolean[] = []
+  let rangeCursor = 0
+  let steps = 0
+  for (const candidate of candidates) {
+    while (rangeCursor < ranges.length) {
+      const range = ranges[rangeCursor]
+      if (range === undefined) break
+      steps += 1
+      if (candidate.start < range[1]) {
+        contained.push(candidate.start >= range[0] && candidate.end <= range[1])
+        break
+      }
+      rangeCursor += 1
+    }
+    if (rangeCursor >= ranges.length) contained.push(false)
+  }
+  return { contained, steps }
 }
 
 interface Character {
@@ -86,19 +120,16 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
   let state: LexerState = 'search'
   let builder: CandidateBuilder | undefined
   let prefixStart: number | undefined
-  let prefixKind: BracketKind | undefined
-  let trailingFormatStart: number | undefined
+  let prefixHasOpening = false
 
   const resetPrefix = (): void => {
     prefixStart = undefined
-    prefixKind = undefined
-    trailingFormatStart = undefined
+    prefixHasOpening = false
   }
 
   const rememberPrefix = (character: Character): void => {
     if (isFormat(character.value)) {
       prefixStart ??= character.start
-      trailingFormatStart ??= character.start
       return
     }
     const kind = bracketKind(character.value)
@@ -106,20 +137,15 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
       resetPrefix()
       return
     }
-    if (prefixKind !== undefined && prefixKind !== kind) {
-      prefixStart = trailingFormatStart ?? character.start
-    } else {
-      prefixStart ??= character.start
-    }
-    prefixKind = kind
-    trailingFormatStart = undefined
+    prefixStart ??= character.start
+    prefixHasOpening ||= kind === 'open'
   }
 
   const beginCandidate = (character: Character): void => {
     builder = {
       start: prefixStart ?? character.start,
       prefixExact: prefixStart === character.start - 1 && text[prefixStart] === '[',
-      hasOpeningBracket: prefixKind === 'open',
+      hasOpeningBracket: prefixHasOpening,
       end: character.end,
       keywordExact: true,
       digitCount: 0,
@@ -209,13 +235,13 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
           } else if (isDecimal(character.value)) {
             recordDigit(character)
             state = 'ordinal'
-          } else if (builder.hasOpeningBracket && SEPARATOR.test(character.value)) {
-            builder.separatedOrdinal = true
-            builder.end = character.end
-            state = 'before-ordinal'
           } else if (builder.hasOpeningBracket && BRACKETS.has(character.value)) {
             recordSuffix(character)
             state = 'suffix'
+          } else if (builder.hasOpeningBracket) {
+            builder.separatedOrdinal = true
+            builder.end = character.end
+            state = 'before-ordinal'
           } else {
             discardCandidate()
             reprocess = true
@@ -223,7 +249,7 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
           break
         case 'before-ordinal':
           if (builder === undefined) throw new Error('citation scanner lost its separated ordinal')
-          if (isFormat(character.value) || SEPARATOR.test(character.value)) {
+          if (!BRACKETS.has(character.value) && !isDecimal(character.value)) {
             builder.separatedOrdinal = true
             builder.end = character.end
           } else if (isDecimal(character.value)) {
@@ -244,13 +270,13 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
           } else if (isFormat(character.value)) {
             builder.separatedOrdinal = true
             builder.end = character.end
-          } else if (SEPARATOR.test(character.value)) {
-            builder.separatedOrdinal = true
-            builder.end = character.end
-            state = 'after-ordinal-separator'
           } else if (BRACKETS.has(character.value)) {
             recordSuffix(character)
             state = 'suffix'
+          } else if (builder.hasOpeningBracket) {
+            builder.separatedOrdinal = true
+            builder.end = character.end
+            state = 'after-ordinal-separator'
           } else {
             finishCandidate()
             reprocess = true
@@ -258,7 +284,7 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
           break
         case 'after-ordinal-separator':
           if (builder === undefined) throw new Error('citation scanner lost its ordinal suffix')
-          if (isFormat(character.value) || SEPARATOR.test(character.value)) {
+          if (!BRACKETS.has(character.value)) {
             builder.end = character.end
           } else if (BRACKETS.has(character.value)) {
             recordSuffix(character)
@@ -288,6 +314,16 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
   if ((state === 'after-liao' && builder?.hasOpeningBracket)
     || state === 'before-ordinal' || state === 'ordinal'
     || state === 'after-ordinal-separator' || state === 'suffix') finishCandidate()
+
+  const trailing = candidates.at(-1)
+  if (prefixStart !== undefined && trailing?.end === prefixStart) {
+    candidates[candidates.length - 1] = {
+      start: trailing.start,
+      end: text.length,
+      value: text.slice(trailing.start),
+      valid: false,
+    }
+  }
 
   return { candidates, overflow: false, steps }
 }

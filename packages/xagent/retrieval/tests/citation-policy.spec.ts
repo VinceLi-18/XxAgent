@@ -688,6 +688,10 @@ describe('XAgent citation policy', () => {
     ['extra fullwidth closing bracket', '结论[资料1]］'],
     ['extra compatibility closing bracket', '结论[资料1]﹈'],
     ['format character split into a sibling text node', '结论[资料1]**\u200B**'],
+    ['orphan ASCII closer before the token', '结论][资料1]'],
+    ['orphan fullwidth closer before the token', '结论】[资料1]'],
+    ['orphan ASCII opener after the token', '结论[资料1]['],
+    ['orphan fullwidth opener after the token', '结论[资料1]［'],
   ])('rejects a valid citation extended by %s', async (_name, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -707,6 +711,11 @@ describe('XAgent citation policy', () => {
     ['spaced ordinal', '事实一[资料1]；另见[资料 2]'],
     ['signed ordinal', '事实一[资料1]；另见[资料-2]'],
     ['small compatibility brackets', '事实一[资料1]；另见﹇资料2﹈'],
+    ['slash ordinal separator', '事实一[资料1]；另见[资料/2]'],
+    ['hash ordinal separator', '事实一[资料1]；另见[资料#2]'],
+    ['fullwidth punctuation ordinal separator', '事实一[资料1]；另见[资料：2]'],
+    ['fullwidth symbol ordinal separator', '事实一[资料1]；另见[资料＋2]'],
+    ['period ordinal separator', '事实一[资料1]；另见[资料.2]'],
   ])('rejects a damaged citation with %s beside a valid citation', async (_name, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([

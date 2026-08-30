@@ -15,7 +15,10 @@ import type { XAgentCitationIdentity } from '@xagent/dsh-backend-client'
 import { decodeHTML, decodeHTMLAttribute } from 'entities/decode'
 import type { Nodes, Root } from 'mdast'
 import { fromMarkdown } from 'mdast-util-from-markdown'
-import { scanCitationCandidates } from './citation-scanner.ts'
+import {
+  locateCitationCandidateRanges,
+  scanCitationCandidates,
+} from './citation-scanner.ts'
 import type { XAgentCitationInvalidReason } from './events.ts'
 
 /** Maximum complete buffered assistant output in UTF-8 bytes. */
@@ -479,8 +482,9 @@ function explicitCitations(text: string): { ids: string[]; malformed: string[] }
   const aggregate = prose.segments.map(segment => segment.rendered).join('')
   const aggregateScan = scanCitationCandidates(aggregate)
   if (aggregateScan.overflow) malformed.push(CITATION_SCAN_OVERFLOW)
-  for (const candidate of aggregateScan.candidates) {
-    if (!aggregateRanges.some(([start, end]) => candidate.start >= start && candidate.end <= end)) {
+  const ownership = locateCitationCandidateRanges(aggregateScan.candidates, aggregateRanges)
+  for (const [index, candidate] of aggregateScan.candidates.entries()) {
+    if (ownership.contained[index] !== true) {
       malformed.push(citationDiagnostic(candidate.value))
     }
   }
