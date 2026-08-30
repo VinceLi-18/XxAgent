@@ -2,6 +2,7 @@
 
 const FORMAT_CHARACTER = /^\p{Cf}$/u
 const DECIMAL_DIGIT = /^\p{Nd}$/u
+const WORD_CHARACTER = /^[\p{L}\p{N}]$/u
 const OPEN_BRACKETS = new Set(['[', '【', '［', '﹇'])
 const CLOSE_BRACKETS = new Set([']', '】', '］', '﹈'])
 const EXACT_CITATION = /^\[资料[1-9][0-9]*\]$/u
@@ -67,9 +68,9 @@ interface Character {
 
 interface CitationShape {
   sawZi: boolean
-  sawLiao: boolean
   sawOrderedKeyword: boolean
-  sawDecimal: boolean
+  sawOrdinalAfterKeyword: boolean
+  sawForeignWordCharacter: boolean
 }
 
 interface BracketCandidate {
@@ -101,20 +102,34 @@ function isDecimal(value: string): boolean {
 }
 
 function createShape(): CitationShape {
-  return { sawZi: false, sawLiao: false, sawOrderedKeyword: false, sawDecimal: false }
+  return {
+    sawZi: false,
+    sawOrderedKeyword: false,
+    sawOrdinalAfterKeyword: false,
+    sawForeignWordCharacter: false,
+  }
 }
 
 function updateShape(shape: CitationShape, value: string): void {
-  if (value === '资') shape.sawZi = true
-  if (value === '料') {
-    shape.sawLiao = true
-    if (shape.sawZi) shape.sawOrderedKeyword = true
+  if (value === '资') {
+    shape.sawZi = true
+    return
   }
-  if (isDecimal(value)) shape.sawDecimal = true
+  if (value === '料') {
+    if (shape.sawZi) shape.sawOrderedKeyword = true
+    return
+  }
+  if (isDecimal(value)) {
+    if (shape.sawOrderedKeyword) shape.sawOrdinalAfterKeyword = true
+    else shape.sawForeignWordCharacter = true
+    return
+  }
+  if (WORD_CHARACTER.test(value)) shape.sawForeignWordCharacter = true
 }
 
 function hasCitationShape(shape: CitationShape): boolean {
-  return shape.sawOrderedKeyword || ((shape.sawZi || shape.sawLiao) && shape.sawDecimal)
+  return shape.sawOrderedKeyword
+    && (shape.sawOrdinalAfterKeyword || !shape.sawForeignWordCharacter)
 }
 
 /**

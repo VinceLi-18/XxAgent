@@ -346,21 +346,28 @@ function rawHtmlTagAt(value: string, start: number): RawHtmlTag | undefined {
   return undefined
 }
 
-function rawTextClosingTag(value: string, start: number, name: string): RawHtmlTag | undefined {
-  const lower = value.toLowerCase()
-  let candidate = lower.indexOf(`</${name}`, start)
-  while (candidate >= 0) {
-    const tag = rawHtmlTagAt(value, candidate)
-    if (tag?.closing === true && tag.name === name) return tag
-    candidate = lower.indexOf(`</${name}`, candidate + 2)
-  }
-  return undefined
+interface RawTextClosingSearch {
+  readonly tag?: RawHtmlTag
+  readonly steps: number
 }
 
-interface RawHtmlScan {
+function rawTextClosingTag(value: string, start: number, name: string): RawTextClosingSearch {
+  let steps = 0
+  for (let cursor = start; cursor < value.length; cursor += 1) {
+    steps += 1
+    if (value[cursor] !== '<' || value[cursor + 1] !== '/') continue
+    const tag = rawHtmlTagAt(value, cursor)
+    if (tag?.closing === true && tag.name === name) return { tag, steps }
+  }
+  return { steps }
+}
+
+/** Citation-relevant projection and deterministic work accounting for one raw HTML node. */
+export interface RawHtmlScan {
   readonly visible: string
   readonly hiddenAliases: readonly string[]
   readonly unsafe: boolean
+  readonly steps: number
 }
 
 function citationAliases(value: string): string[] {
@@ -377,19 +384,28 @@ function citationDiagnostic(value: string): string {
     .join('')
 }
 
-function scanRawHtml(value: string, stack: string[]): RawHtmlScan {
+/**
+ * Scan one raw HTML node while preserving the tag stack shared with adjacent nodes.
+ * @param value - Raw CommonMark HTML node source.
+ * @param stack - Mutable normalized tag stack owned by the complete Markdown answer scan.
+ * @returns Visible text, hidden aliases, malformed state, and forward-scan step count.
+ */
+export function scanRawHtml(value: string, stack: string[]): RawHtmlScan {
   const visible: string[] = []
   const hiddenAliases: string[] = []
   let unsafe = false
+  let steps = 0
   let cursor = 0
   while (cursor < value.length) {
+    steps += 1
     const rawTextElement = stack.at(-1)
     if (rawTextElement !== undefined && HTML_RAW_TEXT_ELEMENTS.has(rawTextElement)) {
       const closing = rawTextClosingTag(value, cursor, rawTextElement)
-      if (closing === undefined) break
-      hiddenAliases.push(...citationAliases(decodeHTML(value.slice(cursor, closing.start))))
+      steps += closing.steps
+      if (closing.tag === undefined) break
+      hiddenAliases.push(...citationAliases(decodeHTML(value.slice(cursor, closing.tag.start))))
       stack.pop()
-      cursor = closing.end
+      cursor = closing.tag.end
       continue
     }
     const start = value.indexOf('<', cursor)
@@ -398,28 +414,28 @@ function scanRawHtml(value: string, stack: string[]): RawHtmlScan {
     if (start < 0) break
     if (value.startsWith('<!--', start)) {
       const end = value.indexOf('-->', start + 4)
-      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true, steps }
       hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 4, end))))
       cursor = end + 3
       continue
     }
     if (value.startsWith('<![CDATA[', start)) {
       const end = value.indexOf(']]>', start + 9)
-      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true, steps }
       hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 9, end))))
       cursor = end + 3
       continue
     }
     if (value.startsWith('<?', start)) {
       const end = value.indexOf('?>', start + 2)
-      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true, steps }
       hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 2, end))))
       cursor = end + 2
       continue
     }
     if (value.startsWith('<!', start)) {
       const end = value.indexOf('>', start + 2)
-      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true }
+      if (end < 0) return { visible: visible.join(''), hiddenAliases, unsafe: true, steps }
       hiddenAliases.push(...citationAliases(decodeHTML(value.slice(start + 2, end))))
       cursor = end + 1
       continue
@@ -444,7 +460,7 @@ function scanRawHtml(value: string, stack: string[]): RawHtmlScan {
     }
     cursor = tag.end
   }
-  return { visible: visible.join(''), hiddenAliases, unsafe }
+  return { visible: visible.join(''), hiddenAliases, unsafe, steps }
 }
 
 function proseSegments(markdown: string): { segments: ProseSegment[]; htmlAliases: string[]; htmlUnsafe: boolean } {

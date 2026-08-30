@@ -18,6 +18,7 @@ import {
   CITATION_CORRECTION_DRAFT_MAX_BYTES,
   installXAgentCitationPolicy,
   locateSourceOffsetsInRanges,
+  scanRawHtml,
   type XAgentCitationReleaseInput,
   type XAgentCitationPolicyRequest,
 } from '../src/citation-policy.ts'
@@ -739,8 +740,6 @@ describe('XAgent citation policy', () => {
     ['letter', '事实一[资料1]；另见[资x料2]'],
     ['control character', '事实一[资料1]；另见[资\u0001料2]'],
     ['astral symbol', '事实一[资料1]；另见[资🧭料2]'],
-    ['missing zi', '事实一[资料1]；另见[料2]'],
-    ['missing liao', '事实一[资料1]；另见[资2]'],
     ['repeated zi', '事实一[资料1]；另见[资资料2]'],
     ['repeated liao', '事实一[资料1]；另见[资料料2]'],
     ['multiple inserted characters', '事实一[资料1]；另见[资abc料2]'],
@@ -751,7 +750,6 @@ describe('XAgent citation policy', () => {
     ['prefix format character', '事实一[资料1]；另见[\u200B资料2]'],
     ['prefix astral symbol', '事实一[资料1]；另见[🧭资料2]'],
     ['multiple prefix characters', '事实一[资料1]；另见[ab资料2]'],
-    ['first keyword substitution', '事实一[资料1]；另见[x料2]'],
   ])('rejects a bracketed citation with a keyword damaged by %s', async (_name, text) => {
     const { authorize, ctx, session } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
@@ -794,7 +792,21 @@ describe('XAgent citation policy', () => {
       .toMatchObject({ data: { reason: 'citation-malformed' } })
   })
 
-  test.each(['[项目2]', '[附录A]', '[重要]', '[x]'])(
+  test.each([
+    '[项目2]',
+    '[附录A]',
+    '[重要]',
+    '[x]',
+    '[材料2]',
+    '[资产2]',
+    '[肥料2]',
+    '[参考资料]',
+    '[相关资料]',
+    '[资料库]',
+    '[料2]',
+    '[资2]',
+    '[x料2]',
+  ])(
     'keeps ordinary bracketed prose %s beside a valid citation eligible',
     async (bracketed) => {
       const { authorize, ctx } = await setup()
@@ -1040,6 +1052,25 @@ describe('XAgent citation policy', () => {
     const { authorize, ctx } = await setup()
     const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
       { type: 'text-delta', index: 0, text: `${markup}结论[资料1]` },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledOnce()
+  })
+
+  test('scans repeated raw-text elements once through an answer-limit raw HTML node', async () => {
+    const elements = '<ScRiPt></sCrIpT><StYlE></sTyLe><TeXtArEa></tExTaReA><TiTlE></tItLe>'
+    const count = Math.floor((CITATION_ANSWER_MAX_BYTES - 128) / elements.length)
+    const markup = `<div>${elements.repeat(count)}</div>`
+    const stack: string[] = []
+    const scan = scanRawHtml(markup, stack)
+    expect(scan).toMatchObject({ visible: '', hiddenAliases: [], unsafe: false })
+    expect(stack).toEqual([])
+    expect(scan.steps).toBeLessThanOrEqual(markup.length)
+
+    const { authorize, ctx } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text: `${markup}\n\n结论[资料1]` },
       { type: 'finish', reason: { kind: 'stop' } },
     ])))
     expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)

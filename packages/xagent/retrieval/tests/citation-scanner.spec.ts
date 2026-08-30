@@ -35,7 +35,6 @@ describe('citation syntax scanner', () => {
     ['[\u200B资料2]', false],
     ['[🧭资料2]', false],
     ['[ab资料2]', false],
-    ['[x料2]', false],
     ['资料2]', false],
   ])('classifies %s without normalizing aliases', (text, valid) => {
     const scan = scanCitationCandidates(text)
@@ -47,7 +46,21 @@ describe('citation syntax scanner', () => {
     expect(scanCitationCandidates(text).candidates).toEqual([])
   })
 
-  test.each(['[项目2]', '[附录A]', '[重要]', '[x]'])(
+  test.each([
+    '[项目2]',
+    '[附录A]',
+    '[重要]',
+    '[x]',
+    '[材料2]',
+    '[资产2]',
+    '[肥料2]',
+    '[参考资料]',
+    '[相关资料]',
+    '[资料库]',
+    '[料2]',
+    '[资2]',
+    '[x料2]',
+  ])(
     'does not classify ordinary bracketed prose %s as a citation',
     (text) => {
       expect(scanCitationCandidates(text).candidates).toEqual([])
@@ -63,8 +76,6 @@ describe('citation syntax scanner', () => {
     ['ASCII letter', '[资x料2]'],
     ['control character', '[资\u0001料2]'],
     ['astral symbol', '[资🧭料2]'],
-    ['missing zi', '[料2]'],
-    ['missing liao', '[资2]'],
     ['repeated zi', '[资资料2]'],
     ['repeated liao', '[资料料2]'],
     ['multiple inserted characters', '[资abc料2]'],
