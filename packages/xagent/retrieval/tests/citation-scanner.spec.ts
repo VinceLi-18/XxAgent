@@ -27,7 +27,6 @@ describe('citation syntax scanner', () => {
     ['[资料.2]', false],
     ['[资料２]', false],
     ['﹇资料2﹈', false],
-    ['资料2]', false],
     ['[资料2', false],
   ])('classifies %s without normalizing aliases', (text, valid) => {
     const scan = scanCitationCandidates(text)
@@ -35,8 +34,28 @@ describe('citation syntax scanner', () => {
   })
 
   test('leaves ordinary Unicode prose outside citation syntax alone', () => {
-    const text = '普通资料、资料/2、RTL نص،emoji 🧭、组合字符 e\u0301 与分隔\u200B保持原样'
+    const text = '普通资料、资料2、资料2026版本、共有资料2份、资料2]、资料/2、RTL نص،emoji 🧭、组合字符 e\u0301 与分隔\u200B保持原样'
     expect(scanCitationCandidates(text).candidates).toEqual([])
+  })
+
+  test.each([
+    ['ASCII punctuation', '[资/料2]'],
+    ['ASCII whitespace', '[资 料2]'],
+    ['fullwidth punctuation', '[资：料2]'],
+    ['fullwidth symbol', '[资＋料2]'],
+    ['combining mark', '[资\u0301料2]'],
+    ['ASCII letter', '[资x料2]'],
+    ['control character', '[资\u0001料2]'],
+    ['astral symbol', '[资🧭料2]'],
+    ['missing zi', '[料2]'],
+    ['missing liao', '[资2]'],
+    ['repeated zi', '[资资料2]'],
+    ['repeated liao', '[资料料2]'],
+    ['multiple inserted characters', '[资abc料2]'],
+  ])('retains a bracketed citation candidate damaged by %s', (_name, text) => {
+    const scan = scanCitationCandidates(text)
+    expect(scan.candidates).toEqual([{ start: 0, end: text.length, value: text, valid: false }])
+    expect(scan.steps).toBe(Array.from(text).length)
   })
 
   test('keeps adjacent exact ASCII citations as separate valid tokens', () => {

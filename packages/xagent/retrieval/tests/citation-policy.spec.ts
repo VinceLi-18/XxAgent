@@ -644,7 +644,6 @@ describe('XAgent citation policy', () => {
 
   test.each([
     ['missing closing bracket', '事实一[资料1]；事实二[资料2'],
-    ['missing opening bracket', '事实一[资料1]；事实二资料2]'],
     ['corner bracket alias', '事实一[资料1]；事实二【资料2】'],
     ['fullwidth bracket alias', '事实一[资料1]；事实二［资料2］'],
     ['unknown beside valid', '事实一[资料1]；事实二[资料2]'],
@@ -728,6 +727,49 @@ describe('XAgent citation policy', () => {
     expect(authorize).not.toHaveBeenCalled()
     expect(session.events.find(event => event.type === 'xagent/citation-correction'))
       .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
+    ['ASCII whitespace', '事实一[资料1]；另见[资 料2]'],
+    ['ASCII punctuation', '事实一[资料1]；另见[资/料2]'],
+    ['fullwidth punctuation', '事实一[资料1]；另见[资：料2]'],
+    ['fullwidth symbol', '事实一[资料1]；另见[资＋料2]'],
+    ['combining mark', '事实一[资料1]；另见[资\u0301料2]'],
+    ['letter', '事实一[资料1]；另见[资x料2]'],
+    ['control character', '事实一[资料1]；另见[资\u0001料2]'],
+    ['astral symbol', '事实一[资料1]；另见[资🧭料2]'],
+    ['missing zi', '事实一[资料1]；另见[料2]'],
+    ['missing liao', '事实一[资料1]；另见[资2]'],
+    ['repeated zi', '事实一[资料1]；另见[资资料2]'],
+    ['repeated liao', '事实一[资料1]；另见[资料料2]'],
+    ['multiple inserted characters', '事实一[资料1]；另见[资abc料2]'],
+  ])('rejects a bracketed citation with a keyword damaged by %s', async (_name, text) => {
+    const { authorize, ctx, session } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks).toMatchObject([{
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_INVALID' } },
+    }])
+    expect(authorize).not.toHaveBeenCalled()
+    expect(session.events.find(event => event.type === 'xagent/citation-correction'))
+      .toMatchObject({ data: { reason: 'citation-malformed' } })
+  })
+
+  test.each([
+    ['bare singular ordinal', '资料2，结论[资料1]'],
+    ['bare multi-digit ordinal', '资料2026版本，结论[资料1]'],
+    ['counted prose', '共有资料2份，结论[资料1]'],
+    ['orphan closer without an opener', '资料2]是普通正文，结论[资料1]'],
+  ])('keeps %s outside an opening citation bracket eligible', async (_name, text) => {
+    const { authorize, ctx } = await setup()
+    const chunks = await collect(ctx.waterfall(ctx.llm, 'llm/stream', options(), () => source([
+      { type: 'text-delta', index: 0, text },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ])))
+    expect(chunks.some(chunk => chunk.type === 'text-delta')).toBe(true)
+    expect(authorize).toHaveBeenCalledOnce()
   })
 
   test('keeps ordinary Unicode prose outside citation syntax eligible', async () => {

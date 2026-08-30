@@ -127,6 +127,8 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
     prefixHasOpening = false
   }
 
+  const hasOpeningPrefix = (): boolean => prefixHasOpening
+
   const rememberPrefix = (character: Character): void => {
     if (isFormat(character.value)) {
       prefixStart ??= character.start
@@ -208,9 +210,14 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
       reprocess = false
       switch (state) {
         case 'search':
-          if (character.value === '资') {
+          if (hasOpeningPrefix() && character.value === '资') {
             beginCandidate(character)
             state = 'after-zi'
+          } else if (hasOpeningPrefix() && character.value === '料') {
+            beginCandidate(character)
+            if (builder === undefined) throw new Error('citation scanner lost its keyword')
+            builder.keywordExact = false
+            state = 'after-liao'
           } else rememberPrefix(character)
           break
         case 'after-zi':
@@ -222,6 +229,17 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
             if (builder === undefined) throw new Error('citation scanner lost its keyword')
             builder.end = character.end
             state = 'after-liao'
+          } else if (builder?.hasOpeningBracket) {
+            builder.keywordExact = false
+            if (isDecimal(character.value)) {
+              recordDigit(character)
+              state = 'ordinal'
+            } else if (BRACKETS.has(character.value)) {
+              recordSuffix(character)
+              state = 'suffix'
+            } else {
+              builder.end = character.end
+            }
           } else {
             discardCandidate()
             reprocess = true
@@ -311,7 +329,7 @@ export function scanCitationCandidates(text: string): CitationSyntaxScan {
     }
   }
 
-  if ((state === 'after-liao' && builder?.hasOpeningBracket)
+  if (((state === 'after-zi' || state === 'after-liao') && builder?.hasOpeningBracket)
     || state === 'before-ordinal' || state === 'ordinal'
     || state === 'after-ordinal-separator' || state === 'suffix') finishCandidate()
 
