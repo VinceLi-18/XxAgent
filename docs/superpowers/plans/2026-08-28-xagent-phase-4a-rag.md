@@ -10,6 +10,8 @@
 
 **Spec:** [Phase 4A RAG 检索与引用设计](../specs/2026-08-28-xagent-phase-4a-rag-design.md)
 
+> Task 8 及其后续引用任务已由[结构化引用终稿设计](../specs/2026-09-01-xagent-structured-citation-output-design.md)覆盖，不得继续执行下列旧步骤。该设计经书面确认后使用独立实施计划替换本段。
+
 ## Global Constraints
 
 - Phase 4A 只实现读取、检索、引用和项目发现；资料写工具、审批、写幂等与写任务恢复留给 Phase 4B。
@@ -592,6 +594,8 @@ git commit -m "feat: checkpoint xagent retrieval receipts"
 ```
 
 ### Task 8: Buffer and Validate Evidence-Bearing Answers
+
+> Superseded：不得执行本任务及其引用输出假设；权威替代方案见[结构化引用终稿设计](../specs/2026-09-01-xagent-structured-citation-output-design.md)。
 
 **Files:**
 

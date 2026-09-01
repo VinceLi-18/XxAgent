@@ -10,6 +10,8 @@ Phase 4A 为 `xagent-business` 交付只读的 RAG（检索增强生成）基础
 
 本设计建立在 [Phase 3A 项目工作台](2026-08-25-xagent-phase-3a-project-workbench-design.md)和 [Phase 3B 资料生命周期](2026-08-25-xagent-phase-3b-artifact-lifecycle-design.md)之上，并细化[整体集成设计](2026-08-20-xagent-dsh-fork-integration-design.md)中的 Phase 4。Phase 4A 只实现读取、检索、引用和最小 DeepSeek 上下文；Phase 4B 再实现写工具、业务幂等、写操作审计、人工审批以及写任务的取消、重试、恢复和撤权处理。
 
+回答引用采用[结构化引用终稿协议](2026-09-01-xagent-structured-citation-output-design.md)。该协议覆盖本文关于自由 Markdown 引用扫描、草稿纠正事件和内联引用解析的规则；索引、检索、收据、证据入账、重授权和不可变定位仍以本文为准。
+
 ### 1.1 目标
 
 1. 扫描通过的 UTF-8 文本资料通过独立持久任务建立混合检索索引，API 或 worker 重启后能够继续处理。
@@ -37,8 +39,8 @@ Phase 4A 为 `xagent-business` 交付只读的 RAG（检索增强生成）基础
 5. 项目会话由 Session Header 的单一 Project ID 固定范围；个人会话的每次跨项目检索必须携带显式 Project ID 集合。
 6. 私人资料只允许个人会话通过显式 `include_private=true` 检索，默认值为 `false`。
 7. 首版不提供项目多选器。模型先调用 `list_accessible_projects` 解析 Project ID，再调用 `search_artifacts`；同名或模糊名称必须向用户澄清。
-8. 检索工具返回会话内唯一的短引用 ID `[资料N]`。模型采用证据时必须输出这些 ID；未知、跨会话或已撤权引用均无效。
-9. 证据型最终回答先缓冲并校验。第一次无效回答不展示，系统持久化纠正事件并重试一次；第二次无效则明确失败。
+8. 检索工具返回会话内唯一的短引用 ID `[资料N]`。模型只能在结构化终稿工具的引用块中采用这些 ID；Markdown 正文中的相似文本不产生引用权限。
+9. 证据型最终回答只由 Native-only 结构化终稿工具发布。第一次无效提交允许一次纠正，第二次无效则明确失败；未验证 assistant 文本不进入用户可见终稿。
 10. 点击引用时重新授权，不持久化或复用签名读取 URL。引用定位到不可变 Version、Chunk 和行范围。
 
 ## 3. 架构与职责
@@ -78,7 +80,7 @@ Embedding 服务在内部容器网络提供批量文本到向量和精确 token 
 
 ### 3.4 组合范围
 
-只有 `xagent-business` 装配 Retrieval Service、两个工具、引用校验和引用 UI。`xagent-developer`、普通 Web、Headless 与 JiaxinAgent 不获得 FastAPI RAG 地址、Embedding 配置、检索工具或引用 UI。
+只有 `xagent-business` 装配 Retrieval Service、两个检索工具、结构化终稿工具和引用 UI。`xagent-developer`、普通 Web、Headless 与 JiaxinAgent 不获得 FastAPI RAG 地址、Embedding 配置、检索工具或引用 UI。
 
 ## 4. 索引数据模型
 
@@ -199,17 +201,15 @@ Session append 在一个事务中完成以下操作：锁定 Session；验证 ac
 
 工具按 Session 内预留的单调 ordinal 分配 `[资料1]`、`[资料2]` 等短 ID。ID 只在绑定的 Session 和持久化证据事件内有效；同一文本在另一个工具调用中获得的新 ID 不与旧 ID 等价。
 
-当当前模型请求包含检索证据时，XAgent LLM 中间件缓冲最终 assistant 文本，不向 Browser 流式发送。回答引用必须全部属于该请求从 Session 日志重建的允许集合，并至少在采用证据的事实陈述中出现一个有效引用；未知 ID、跨 Session ID、格式损坏或授权复核失败均判为无效。
+当当前模型请求包含检索证据时，XAgent 注册 Native-only `submit_cited_answer`。模型用关闭的 Markdown 块与引用块提交终稿；只有引用块参与授权，Markdown、raw HTML、字符实体和 Unicode 文本均不产生引用身份。工具成功结果调用 `concludeTurn()`，成为该 turn 唯一的用户可见终稿。
 
-第一次无效回答不进入用户 transcript。系统在 Session 中写入不对普通 UI 展示的 `xagent/citation-correction` 事件，保存有界的无效草稿、无效 ID、允许 ID 和稳定原因，使纠正请求可以从事件日志重建；随后只重试一次模型调用。
+第一次 schema、范围、引用集合或重授权失败不发布正文，模型只获得有界工具错误并可再提交一次。第二次仍无效或模型没有成功提交终稿工具时，系统持久化稳定失败并向用户显示引用校验失败。没有检索证据的普通对话继续使用现有流式输出；空检索结果不注册终稿工具。
 
-第二次仍无效时，系统持久化稳定失败事件并向用户显示引用校验失败，不展示未验证回答。没有检索证据的普通对话继续使用现有流式输出；空检索结果也不强制引用。
-
-在回答释放前，FastAPI 再次验证 Session、permission revision、项目集合、私人范围和全部引用 Version。撤权、账号切换、Session 取消或引用失效会抑制已缓冲文本并返回稳定失败。
+在工具成功前，FastAPI 再次验证 Session、permission revision、项目集合、私人范围和全部引用 Version。撤权、账号切换、Session 取消或引用失效会抑制整个候选结果并返回稳定失败。完整参数、持久化、展示、重试和生命周期规则见[结构化引用终稿设计](2026-09-01-xagent-structured-citation-output-design.md)。
 
 ## 11. 引用 UI
 
-有效回答保留内联 `[资料N]`，并在消息下方渲染资料名、版本号和行范围组成的来源条。引用展示只读取已持久化证据事件，不从模型文本解析文件名、URL 或权限。
+有效回答把结构化 Markdown 块渲染为正文，把结构化引用块渲染为 Host 生成的可交互 chip，并在消息下方按首次使用顺序渲染资料名、版本号和行范围组成的来源条。引用展示读取权威 `tool/result.meta` 和已持久化证据事件，不从模型文本或原始工具参数解析 ID、文件名、URL 或权限。
 
 点击引用时，Browser 经 Host 调用引用解析接口。FastAPI 重新授权 actor、Session 和 Version，返回 Artifact 详情定位与短期预览能力；`ui-artifact` 打开既有资料详情并高亮对应行范围。短期读取 URL 只存在于当前授权读取流程，不写入 Session、缓存、日志或 citation 事件。
 
@@ -217,17 +217,17 @@ Session append 在一个事务中完成以下操作：锁定 Session；验证 ac
 
 ## 12. 撤权、失败与取消
 
-授权在检索、证据入账和回答释放三个时点复核。账号停用、成员关系变化、临时 grant 变化或 permission revision 递增会使旧委托令牌失效；回答生成期间撤权会阻止缓冲文本释放。
+授权在检索、证据入账和终稿工具提交三个时点复核。账号停用、成员关系变化、临时 grant 变化或 permission revision 递增会使旧委托令牌失效；回答生成期间撤权会阻止候选终稿提交。
 
 索引失败不改变 Artifact 的 `clean` 状态，也不影响人工读取。新索引失败时继续使用旧 head；首次索引失败时搜索不返回该 Artifact。UI 可以显示“尚未建立检索索引”，但不把内部重试次数、Embedding 错误或对象信息暴露给用户。
 
-查询 Embedding 失败不回退关键词；多项目授权失败不返回可访问子集；证据入账失败不继续模型调用；引用校验失败不展示未验证文本。所有这些路径保持明确错误，不生成看似完整的部分答案。
+查询 Embedding 失败不回退关键词；多项目授权失败不返回可访问子集；证据入账失败不继续模型调用；终稿验证失败不展示候选正文。所有这些路径保持明确错误，不生成看似完整的部分答案。
 
 Browser 取消、Session 取消、Connection 断开和插件 dispose 必须贯穿工具、FastAPI、Embedding 查询和数据库操作。拥有资源的组件先拒绝新工作，再中止在途工作并等待全部任务结算；迟到结果不得写入新 Session、账号或项目范围。
 
 ## 13. 审计与敏感数据
 
-审计覆盖索引创建、索引成功、索引失败、搜索、证据入账、引用解析、回答引用通过、纠正重试、最终引用失败和撤权拒绝。记录 actor ID、Session ID、tool call ID、Artifact/Version/Index ID、项目集合摘要、查询 SHA-256、候选与返回数量、generation、稳定结果和时延。
+审计覆盖索引创建、索引成功、索引失败、搜索、证据入账、引用解析、终稿提交通过、一次纠正、最终提交失败和撤权拒绝。记录 actor ID、Session ID、tool call ID、Artifact/Version/Index ID、项目集合摘要、查询 SHA-256、候选与返回数量、generation、稳定结果和时延。
 
 审计、应用日志和 worker 日志不得保存原始查询、分片正文、Embedding 向量、完整模型提示词、完整模型回答、用户 JWT、服务令牌、委托令牌、收据、签名 URL、MinIO Bucket 或对象 Key。诊断 URL 必须移除 query；异常只暴露稳定错误和关联 ID。
 
@@ -250,14 +250,14 @@ Browser 取消、Session 取消、Connection 断开和插件 dispose 必须贯�
 ### 14.3 Session、工具与引用
 
 - 真实工具流水线覆盖短期委托令牌、nonce 重放、checkpoint、检索收据、幂等 append、`xagent_session_project_refs` 和模型可见结果可回放。
-- 引用测试覆盖有效 ID、未知 ID、同一 Session 的跨 tool call 引用、跨 Session 伪造、第一次纠正、第二次失败、空证据、取消和回答释放前撤权。
-- 生命周期测试覆盖在途 HTTP、Embedding、Session append、模型缓冲和引用解析的取消、迟到结果隔离与 dispose 等待。
+- 引用测试覆盖关闭的终稿 schema、有效与未知 ID、同一 Session 的跨 tool call 引用、跨 Session 伪造、一次纠正、第二次失败、空证据、取消和提交前撤权；任意 Markdown/HTML/Unicode 文本不产生引用权限。
+- 生命周期测试覆盖在途 HTTP、Embedding、Session append、终稿工具、结果投影和引用解析的取消、迟到结果隔离与 dispose 等待。
 - Backend Client、Service、Remote 和 UI 使用严格响应解析、闭合错误集合、响应上限和安全 URL 测试。
 
 ### 14.4 组合与真实系统
 
 - 真实 Loader 证明两个工具和引用 UI 只在 Business Profile 装配，危险开发工具保持不可见，Developer/Web/Headless/JiaxinAgent 不装配。
-- keyless snapshot 通过真实可运行组合锁定项目发现、检索结果、引用纠正和稳定失败 transcript；没有模型密钥时不伪造真实模型成功。
+- keyless snapshot 通过真实可运行组合锁定项目发现、检索结果、结构化终稿验证和稳定失败 transcript；没有模型密钥时不伪造真实模型成功。
 - Docker e2e 使用 PostgreSQL+pgvector、MinIO、ClamAV、正式扫描 worker、正式索引 worker和 CPU Embedding 服务，完成文本上传、扫描、索引、项目问答、个人跨项目问答、私人范围、引用点击、账号隔离和撤权。
 - 构建版 Host/Web/Browser 录制登录、两个项目文本资料、个人跨项目检索、带引用回答、引用打开和换账号隔离 GIF；provenance 明确模型密钥与模型回合事实。
 
@@ -267,9 +267,9 @@ Browser 取消、Session 取消、Connection 断开和插件 dispose 必须贯�
 
 ## 15. 实施边界
 
-Phase 4A 从已合并 Phase 3B 的 `origin/main` 建立独立 worktree。实施按数据库与任务、Embedding 服务、索引 worker、检索 API、DSH Service 与工具、Session 证据事务、引用校验、引用 UI、组合和真实 e2e 拆成可独立验证的任务；每项行为先写失败测试，再完成最小实现。
+Phase 4A 从已合并 Phase 3B 的 `origin/main` 建立独立 worktree。实施按数据库与任务、Embedding 服务、索引 worker、检索 API、DSH Service 与工具、Session 证据事务、结构化终稿、引用 UI、组合和真实 e2e 拆成可独立验证的任务；每项行为先写失败测试，再完成最小实现。
 
-本阶段不得修改 JiaxinAgent，不得把 XAgent 项目或资料语义写入通用 Agent Loop。若通用 DSH 缺少必要的模型输出缓冲或 Session 事件扩展点，只能增加无 registrant 时行为不变的可选扩展点，并以普通 Profile 回归测试证明非装配路径不变。
+本阶段不得修改 JiaxinAgent，不得把 XAgent 项目或资料语义写入通用 Agent Loop。结构化终稿复用通用 Native 工具、`concludeTurn()` 与持久化工具结果，不增加主 Agent 的通用结构化输出协议；确需通用扩展点时必须保持无 registrant 行为不变，并以普通 Profile 回归测试证明。
 
 非平凡实现必须更新拥有决策的 Agent Note、受影响包 README、架构文档、部署配置、生成目录和最终进度记录。设计规格批准后另写逐任务实施计划；本文件不作为直接执行脚本。
 
@@ -295,6 +295,6 @@ HNSW 可以降低大规模向量扫描延迟，但授权和项目过滤会影响
 
 自动搜索所有可访问项目操作简单，但会扩大模型读取范围、让权限变化难以解释，并使用户无法确认分析集合。个人会话采用“先发现、再显式提交项目集合”；模糊名称由用户澄清。
 
-### 16.6 边生成边校验引用
+### 16.6 从自由文本解析引用
 
-流式显示后再发现无效引用会把未验证内容暴露给用户，且无法可靠撤回。Phase 4A 只对证据型最终回答缓冲，普通对话继续流式，从而把延迟成本限制在 RAG 回答。
+Markdown、HTML 和 Unicode 文本不能提供关闭的权限语义；维护语法树与视觉近似扫描器仍无法可靠区分自然语言和模型伪造。Phase 4A 让证据型回答通过结构化终稿工具提交，普通对话继续流式，从而把严格验证限制在 RAG 回答。

@@ -20,9 +20,9 @@ Host 在每条进入 Agent inbox 的消息上固定认证请求范围，并在�
 
 Session Persistence 按每个 append 批次的首尾 sequence 取出已绑定收据，并只在私有 sidecar 中提交。FastAPI 先锁定 Session，再由数据库 finalizer 串行化当前权限 revision 并重新检查 Session、既有项目引用和收据项目并集；随后验证关闭的事件、tool call、公开 payload hash、返回身份和已预分配 citation ordinal。FastAPI 从已验证结果构造关闭的公开证据事件，并在同一事务写入脱敏证据审计、私有 Session 项目引用、收据消费、Session version 与幂等结果。append 不分配或改写 citation ordinal；project discovery 不分配 ordinal，过期或未消费搜索留下的缺口永不复用。只有关闭的后端成功响应携带精确末事件 sequence 和有效 Session version 时，Host 才会删除注册表中的收据；失败批次保持相同事件与 sidecar 独立重试，并在下一次模型请求前的 checkpoint 完成。sidecar 不进入事件、读取响应、日志或审计。
 
-Host 只在当前模型 request 包含与 Session 中已 checkpoint 检索结果相同的非空证据时启用引用策略。策略在固定 64 KiB 回答、32 KiB 工具参数、4,096 chunk、256 个 block 和 64 个允许引用上限内缓冲，并从已入账公开结果重建引用身份；普通对话和空检索直接保留下游流。维护中的 CommonMark parser 只遍历正文 text node，排除行内、围栏和缩进代码。raw HTML 扫描器在保守标签栈内解码字符引用，跨注释与普通元素标签拼接可见 data text，并独立检查不可见的属性、注释和 raw-text 内容；raw-text 闭合标签只扫描 node 尚未消费的 source，HTML 与代码 source range 合并后分别用单调游标判断 HTML-like match，因此不会反复规范化或回扫整个 node。字面 source 匹配也只向前推进，并在第一个解码候选无法匹配 source 时停止该 segment。引用词法器按 Unicode 码点单调推进，不执行规范化。开括号取得区间直到闭合边界或回答上限；局部连续 `资料` 或仅由非文字、非数字字符分隔的局部 `资…料` 才建立引用前缀，扫描器不跨自然词拼接关键词。引用前缀建立后只有非零 ASCII 十进制序号与精确 ASCII 括号合法；序号缺失，序号槽中的非 ASCII 数字、汉字数词、字母、空白、标点、符号或格式字符均产出损坏候选。不是数词的汉字后缀先建立自然复合词，其后字母或数字不产出候选。闭括号跟在裸 `资料N` 后产出损坏候选，无闭括号的相同正文仍是普通正文。引用在回答第一个 chunk 放行前使用当前请求 token、permission revision 和新委托 nonce 交给 FastAPI 重新授权，任何撤权、无引用证据正文、超限、取消或未知 chunk 均不放行回答字节。
+Host 只在当前模型 request 包含与 Session 中已 checkpoint 检索结果相同的非空证据时注册 Native-only `submit_cited_answer`。模型用关闭的 Markdown 块与引用块提交终稿；Host 在固定 64 KiB JSON、256 个 block 和 64 个引用上限内验证并规范化，只从引用块重建待授权身份。Markdown、raw HTML、字符实体和 Unicode 文本均不产生引用权限。工具使用当前请求 token、permission revision 和新委托 nonce 交给 FastAPI 重授权，成功后持久化规范 `tool/result`、投影 replayable metadata 并结束 turn；普通对话和空检索保留原流式路径。
 
-第一次无效回答只保存 SHA-256、最多 8 KiB 草稿前缀、稳定原因、无效 ID 和允许 ID 的 log-only 事件，并追加一条 plugin-origin 用户消息，使唯一一次纠正重试可从标准历史重建。无效 assistant chunk 不进入 Session；custom event 不进入模型历史。精确 `CITATION_INVALID` 对象经 request-error 认领后把私有 lineage 调度给下一个受保护请求；该请求必须唯一携带已持久化纠正消息 ID，缺失、替换或歧义认领会终止并移除该 lineage，兄弟流保持独立。没有已调度 lineage 时才建立新请求，旧纠正消息不能再次认领。第二次失败只保存终止事件，以持久中文 `CITATION_FAILED` turn error 结束，不生成 assistant 回答或模型可见诊断。FastAPI append 与 Host 恢复使用相同的关闭有界事件字段。权威草稿是达到硬上限前接受的有界规范内容，前缀和摘要来自同一份内存表示，且不写入磁盘。每个受保护流在调用模型源之前登记可关闭 admission，并在首次 iterator pull 时启动独立 owner；未启动 admission 在释放时同步关闭，已启动源必须等到 iterator `finally` 结束后才能报告静默。
+同一受保护请求最多接受两次终稿提交。第一次 schema、范围、引用集合或重授权失败只向模型返回有界工具错误，不发布候选正文；第二次失败或没有成功终稿结果时以持久中文 `CITATION_FAILED` turn error 结束。每次提交在验证前登记独立 owner，request、connection、Session 和 service 取消会关闭 admission 并等待授权、结果投影与权威结果观察结算。Browser 只把结构化引用块渲染为已验证资料 chip；普通文本中的相似字符串不进入来源条或点击能力。完整协议由[结构化引用终稿设计](../../../../docs/superpowers/specs/2026-09-01-xagent-structured-citation-output-design.md)定义。
 
 FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把 nonce 的 SHA-256 摘要作为全局唯一键持久化；令牌原文、nonce 原文和签名不进入数据库或日志。令牌严格绑定 actor、Session、Project Session 的 project 或 Private Session 的 null project、endpoint tool、tool call、权限 revision 和不超过六十秒的有效期。nonce 消费使用独立提交的事务，因此后续查询失败也不能重新使用同一委托。
 
@@ -42,6 +42,8 @@ FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把
 
 **以近似 HNSW 索引作为首版检索路径。** RLS 过滤与项目范围会影响近似召回。首版采用 RLS 后精确向量搜索建立正确性基线。
 
+**从自由 Markdown 解析引用。** CommonMark 与 HTML parser 能恢复语法结构，但不能同时判断 Unicode 视觉近似、自然中文和权限意图。关闭的终稿工具让模型显式提交引用节点，Host 只为这些节点授予资料能力。
+
 ## Acceptance criteria
 
 - 迁移启用 `vector` 与 `pg_trgm`，创建五张表、`next_citation_ordinal`、约束、触发器、RLS 和精确角色授权，并支持 `upgrade → downgrade → upgrade`。
@@ -51,7 +53,7 @@ FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把
 - Host、FastAPI relay 与内部 token-count endpoint 对查询、请求 body、超时和响应施加固定资源限制；relay 只接受 Host 服务身份，计数只加载固定 revision 的 tokenizer 资产，不加载 embedding 推理模型。
 - 只读项目授权可并发预留唯一 citation ordinal，但不能直接更新 Session；搜索输出同时满足每 Artifact、总数、32 KiB 和 4096 token 限制。
 - Session append 使用关闭且有上限的私有 sidecar 原子消费收据、保存项目引用和公开证据；精确幂等重放不二次消费，失败重试保留相同 sidecar，预分配 ordinal 与缺口不改写。
-- 已入账证据回答在放行前缓冲并重新授权；第一份无效草稿只产生可重建纠正对，第二份无效草稿稳定失败，普通对话、并发 Session、取消与撤权路径不泄漏任何缓冲字节。
+- 已入账证据回答只通过关闭的结构化终稿工具发布并在成功前重新授权；第一次无效提交允许一次纠正，第二次稳定失败，普通对话、并发 Session、取消与撤权路径不泄漏任何候选正文。
 - 检索允许与拒绝审计包含固定结果和延迟，返回证据包含受限身份集合，任何原始查询、内容、向量或 bearer secret 均被排除。
 
 ## Risks
