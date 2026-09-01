@@ -77,6 +77,7 @@
   - `docs/superpowers/specs/2026-08-25-xagent-phase-3b-artifact-lifecycle-design.md`
   - `docs/superpowers/specs/2026-08-28-xagent-phase-4a-rag-design.md`
   - `docs/superpowers/specs/2026-09-01-xagent-structured-citation-output-design.md`
+  - `docs/superpowers/plans/2026-09-01-xagent-structured-citation-output.md`
   - `docs/upstream/dsh-baseline.md`
   - `docs/upstream/jiaxin-api-baseline.md`
   - `packages/bundle/xagent-business/README.md`
