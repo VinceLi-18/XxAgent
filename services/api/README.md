@@ -42,7 +42,17 @@ API 进程同时接收最低权限业务连接 `DATABASE_URL` 和受信管理连
 
 `xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 
-检索栈使用固定镜像摘要的 PostgreSQL 16 + pgvector 和从锁定依赖构建的 CPU embedding 容器。embedding 不发布主机端口，只接收 API 和 worker 通过 Compose 服务网络发送的请求；健康检查必须真实加载 `BAAI/bge-m3` 的固定修订并返回 1024 维向量。`XAGENT_EMBEDDING_CACHE_DIR` 指向 embedding 可写且 API 和 worker 只读的共享模型和 tokenizer 缓存；首次启动前可执行 `install -d -m 0777 services/api/.cache/huggingface`，恢复外部缓存后还须执行 `chmod -R a+rwX services/api/.cache/huggingface`。`HF_HUB_OFFLINE=true` 只适用于已按固定修订和上游发布内容摘要验证完整的缓存；默认值 `false` 仍从官方源获取缺失文件，不信任或默认使用代理镜像。日常 worker 使用代码中的租约、心跳和轮询默认值；`--lease-seconds`、`--heartbeat-seconds` 与 `--poll-seconds` 只用于可销毁恢复测试和受控调试。
+检索栈使用固定镜像摘要的 PostgreSQL 16 + pgvector 和 CPU embedding 容器。embedding 的 Python 与 uv 基础镜像也按摘要固定，依赖来自冻结的 `services/embedding/uv.lock`。embedding 不发布主机端口，只接收 API 和 worker 通过 Compose 服务网络发送的请求；健康检查必须真实加载 `BAAI/bge-m3` 的固定修订并返回 1024 维向量。`services/embedding/bge-m3-snapshot.json` 记录官方 Hugging Face 不可变修订 API 和全部运行时文件的大小、SHA-256 与 blob ID；`verify_model_snapshot.py` 在真实验收前检查该清单，缺失、部分存在、损坏或元数据漂移都会失败关闭。
+
+`XAGENT_EMBEDDING_CACHE_DIR` 指向 embedding 可写且 API 和 worker 只读的共享模型与 tokenizer 缓存。Linux CI 或部署主机以 embedding 的 UID/GID `65532:65532` 持有该目录，并只给组和其他用户读取与遍历权限：
+
+```bash
+sudo install -d -o 65532 -g 65532 -m 0755 services/api/.cache/huggingface
+sudo chown -R 65532:65532 services/api/.cache/huggingface
+sudo chmod -R u=rwX,go=rX services/api/.cache/huggingface
+```
+
+`HF_HUB_OFFLINE=true` 只适用于通过清单完整验证的缓存；默认值 `false` 仍从官方 Hugging Face 获取缺失文件，不信任或默认使用代理镜像。日常 worker 使用代码中的租约、心跳和轮询默认值；`--lease-seconds`、`--heartbeat-seconds` 与 `--poll-seconds` 只用于可销毁恢复测试和受控调试。
 
 MinIO 最终 bucket 默认为 `xagent-private` 且必须启用版本化；API 只为自己新建的 bucket 启用版本化，既有 Off 或 Suspended bucket 会失败关闭。固定最终 key 的补偿清理只能删除本次复制返回的非空目标版本 ID，禁止无条件删除该 key。即时删除失败时，独立 `artifact_object_cleanup_jobs` 队列持久保存严格匹配小写 UUID 形式 `artifacts/{artifact_id}/{version_id}` 的 object key 与非空 MinIO 版本 ID；正式 worker 以自己的租约有限重试，达到第五次后保留身份并进入 `dead`，供运维处置。`worker --once` 按每轮正文和 cleanup 最多各一项的顺序处理，直到首次没有到期任务；停止信号会阻止领取下一项任务，并等待已经开始的处理收敛。Compose 为 worker 提供两分钟停止宽限期。
 
@@ -105,4 +115,21 @@ pnpm run api:dev:down
 
 ## 真实检索验收
 
-检索 E2E 使用 `compose.test.yml` 的可销毁数据库、对象存储、扫描器和真实 CPU BGE-M3，不会以 mock 代替 embedding 或检索路径。先执行 `docker compose -f services/api/compose.test.yml up -d --build --wait`，再在仓库根目录执行 `pnpm run api:test:retrieval`。无论测试结果如何，最后都要执行 `docker compose -f services/api/compose.test.yml down --volumes --remove-orphans`；CI 还会按 `com.docker.compose.project=xagent-api-test` 精确查询容器、数据卷和网络，任一残留都使验收失败。
+检索 E2E 使用 `compose.test.yml` 的可销毁数据库、对象存储、扫描器和真实 CPU BGE-M3，不会以 mock 代替 embedding 或检索路径。冷缓存先以 `verify_model_snapshot.py --allow-absent` 确认缓存完全不存在，再以默认在线模式从官方源启动 Compose；服务健康后必须执行严格验证。已有完整缓存则先执行严格验证并设置 `HF_HUB_OFFLINE=true`，再启动 Compose。两条路径都在仓库根目录执行 `pnpm run api:test:retrieval`，该命令也会在 pytest 前严格验证缓存。
+
+```bash
+python3 services/embedding/verify_model_snapshot.py \
+  --cache-dir services/api/.cache/huggingface
+export HF_HUB_OFFLINE=true
+docker compose -f services/api/compose.test.yml up -d --build --wait
+pnpm run api:test:retrieval
+```
+
+无论测试结果如何，最后都要清理具名测试 worker 和 Compose 资源：
+
+```bash
+docker rm --force xagent-stale-worker 2>/dev/null || true
+docker compose -f services/api/compose.test.yml down --volumes --remove-orphans
+```
+
+CI 还会按测试 worker 名称与 `com.docker.compose.project=xagent-api-test` 精确查询容器、数据卷和网络，任一残留都使验收失败。

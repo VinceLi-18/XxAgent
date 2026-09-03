@@ -474,7 +474,30 @@ describe('CI workflow', () => {
     expect(e2eStep.run).toContain('tests/e2e/test_compose_upgrade.py')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml logs')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --allow-absent')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --cache-dir')
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --cache-dir')).toBeLessThan(
+      e2eStep.run.indexOf('pytest tests/e2e/test_artifact_pipeline.py'),
+    )
     expect(aggregate.needs).toContain('xagent-artifact-e2e')
+
+    const restoreCache: unknown = (artifactE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Restore pinned BGE-M3 cache',
+    )
+    const prepareCache: unknown = (artifactE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Prepare private model cache',
+    )
+    if (!isRecord(restoreCache) || !isRecord(restoreCache.with)
+      || !isRecord(prepareCache) || typeof prepareCache.run !== 'string') {
+      throw new TypeError('Artifact E2E must restore and prepare the private model cache')
+    }
+    expect(restoreCache.with.key).toBe(
+      "bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}",
+    )
+    expect(prepareCache.run).toContain('install -d -o 65532 -g 65532 -m 0755')
+    expect(prepareCache.run).toContain('chmod -R u=rwX,go=rX')
+    expect(prepareCache.run).not.toContain('0777')
+    expect(prepareCache.run).not.toContain('a+rwX')
   })
 
   it('assembles a health-ordered private CPU retrieval topology', () => {
@@ -548,12 +571,57 @@ describe('CI workflow', () => {
     }
 
     expect(packageJson.scripts['api:test:retrieval']).toBe(
-      'JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes XAGENT_RETRIEVAL_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_retrieval_pipeline.py tests/e2e/test_retrieval_worker_recovery.py',
+      'python3 services/embedding/verify_model_snapshot.py --cache-dir "${XAGENT_EMBEDDING_CACHE_DIR:-services/api/.cache/huggingface}" && JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes XAGENT_RETRIEVAL_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_retrieval_pipeline.py tests/e2e/test_retrieval_worker_recovery.py',
     )
     expect(readFileSync(resolve(root, 'services/api/.dockerignore'), 'utf8').split('\n')).toContain('.cache/')
     expect(readFileSync(resolve(root, 'services/api/pyproject.toml'), 'utf8')).toContain(
       'exclude = ["/.cache"]',
     )
+
+    const embeddingDockerfile = readFileSync(
+      resolve(root, 'services/embedding/Dockerfile'),
+      'utf8',
+    )
+    const baseImages = embeddingDockerfile.match(/^(?:FROM\s+|COPY --from=)\S+/gm) ?? []
+    expect(baseImages).toHaveLength(2)
+    expect(baseImages).toEqual([
+      'FROM python:3.11-slim@sha256:9c900dea9e8fb7e16277c179b555cc72d29a352dbc33cff48ad5a0412fd5bfc7',
+      'COPY --from=ghcr.io/astral-sh/uv:0.8.15@sha256:a5727064a0de127bdb7c9d3c1383f3a9ac307d9f2d8a391edc7896c54289ced0',
+    ])
+    expect(readFileSync(resolve(root, 'services/embedding/.dockerignore'), 'utf8').split('\n')).toEqual(
+      expect.arrayContaining(['.venv/', '.pytest_cache/', '**/__pycache__/', 'tests/']),
+    )
+
+    const modelManifest = loadWorkflow('services/embedding/bge-m3-snapshot.json')
+    expect(modelManifest).toMatchObject({
+      schema_version: 1,
+      model_id: 'BAAI/bge-m3',
+      revision: '5617a9f61b028005a4858fdac845db406aefb181',
+      source: 'https://huggingface.co/api/models/BAAI/bge-m3/revision/5617a9f61b028005a4858fdac845db406aefb181?blobs=true',
+    })
+    if (!Array.isArray(modelManifest.files)) {
+      throw new TypeError('BGE-M3 manifest must define the complete runtime file set')
+    }
+    const manifestFiles = modelManifest.files as unknown[]
+    expect(manifestFiles.map(file => isRecord(file) ? file.path : undefined)).toEqual([
+      '1_Pooling/config.json',
+      'config.json',
+      'config_sentence_transformers.json',
+      'modules.json',
+      'pytorch_model.bin',
+      'sentence_bert_config.json',
+      'sentencepiece.bpe.model',
+      'special_tokens_map.json',
+      'tokenizer.json',
+      'tokenizer_config.json',
+    ])
+    for (const file of manifestFiles) {
+      if (!isRecord(file)) throw new TypeError('BGE-M3 manifest entries must be objects')
+      expect(typeof file.path).toBe('string')
+      expect(typeof file.size).toBe('number')
+      expect(file.sha256).toMatch(/^[0-9a-f]{64}$/)
+      expect(file.huggingface_blob_id).toMatch(/^[0-9a-f]{40}$/)
+    }
   })
 
   it('runs a bounded retrieval lane and proves exact Compose cleanup', () => {
@@ -581,10 +649,16 @@ describe('CI workflow', () => {
       throw new TypeError('Retrieval E2E job must run the real pipeline')
     }
     expect(e2eStep.run).toContain('trap cleanup EXIT')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --allow-absent')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml up -d --build --wait')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --cache-dir')
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --cache-dir')).toBeLessThan(
+      e2eStep.run.indexOf('pytest tests/e2e/test_retrieval_pipeline.py'),
+    )
     expect(e2eStep.run).toContain('tests/e2e/test_retrieval_pipeline.py')
     expect(e2eStep.run).toContain('tests/e2e/test_retrieval_worker_recovery.py')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
+    expect(e2eStep.run).toContain('docker rm --force xagent-stale-worker')
     expect(e2eStep.run).toContain(
       'docker container ls --all -q --filter label=com.docker.compose.project=xagent-api-test',
     )
@@ -595,6 +669,50 @@ describe('CI workflow', () => {
       'docker network ls -q --filter label=com.docker.compose.project=xagent-api-test',
     )
     expect(aggregate.needs).toContain('xagent-retrieval-e2e')
+
+    const prepareCache: unknown = (retrievalE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Prepare private model cache',
+    )
+    if (!isRecord(prepareCache) || typeof prepareCache.run !== 'string') {
+      throw new TypeError('Retrieval E2E must prepare the private model cache')
+    }
+    expect(prepareCache.run).toContain('install -d -o 65532 -g 65532 -m 0755')
+    expect(prepareCache.run).toContain('chmod -R u=rwX,go=rX')
+    expect(prepareCache.run).not.toContain('0777')
+    expect(prepareCache.run).not.toContain('a+rwX')
+
+    const restoreCache: unknown = (retrievalE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Restore pinned BGE-M3 cache',
+    )
+    if (!isRecord(restoreCache) || !isRecord(restoreCache.with)) {
+      throw new TypeError('Retrieval E2E must restore the pinned model cache')
+    }
+    expect(restoreCache.with.key).toBe(
+      "bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}",
+    )
+  })
+
+  it('keeps the real retrieval acceptance adversarial and branch-observable', () => {
+    const pipeline = readFileSync(
+      resolve(root, 'services/api/tests/e2e/test_retrieval_pipeline.py'),
+      'utf8',
+    )
+    const recovery = readFileSync(
+      resolve(root, 'services/api/tests/e2e/test_retrieval_worker_recovery.py'),
+      'utf8',
+    )
+
+    expect(pipeline).toContain('test_real_hybrid_branches_and_final_domain_tie_break')
+    expect(pipeline).toContain('vector_top_40')
+    expect(pipeline).toContain('lexical_rank')
+    expect(pipeline).toContain('trigram_score')
+    expect(pipeline).toContain('candidate_count')
+    expect(recovery).toContain('xagent-stale-worker')
+    expect(recovery).toContain('active-replacement')
+    expect(recovery).toContain('superseded')
+    expect(recovery).toContain('stale-owner-resumed')
+    expect(recovery).toContain('failed:invalid-utf8:dead:invalid-utf8')
+    expect(recovery).not.toContain('{"failed:invalid-utf8", "none"}')
   })
 
   it('keeps every Vitest project process-isolated on native Windows', () => {

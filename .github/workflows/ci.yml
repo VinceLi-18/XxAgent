@@ -384,12 +384,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/xagent-huggingface
-          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock') }}
+          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}
 
       - name: Prepare private model cache
         run: |
-          install -d -m 0777 "${{ runner.temp }}/xagent-huggingface"
-          chmod -R a+rwX "${{ runner.temp }}/xagent-huggingface"
+          sudo install -d -o 65532 -g 65532 -m 0755 "${{ runner.temp }}/xagent-huggingface"
+          sudo chown -R 65532:65532 "${{ runner.temp }}/xagent-huggingface"
+          sudo chmod -R u=rwX,go=rX "${{ runner.temp }}/xagent-huggingface"
           echo "XAGENT_EMBEDDING_CACHE_DIR=${{ runner.temp }}/xagent-huggingface" >> "$GITHUB_ENV"
 
       - name: Run real artifact pipeline
@@ -414,9 +415,11 @@ jobs:
           trap cleanup EXIT
           docker compose -f services/api/compose.test.yml down --volumes --remove-orphans
           docker compose --project-name xagent-api-upgrade -f services/api/compose.test.yml down --volumes --remove-orphans
+          python3 services/embedding/verify_model_snapshot.py --allow-absent --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
           docker compose -f services/api/compose.test.yml build api
           XAGENT_COMPOSE_UPGRADE_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_compose_upgrade.py
           docker compose -f services/api/compose.test.yml up -d --build --wait
+          python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
           uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_artifact_pipeline.py
 
   xagent-retrieval-e2e:
@@ -449,12 +452,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/xagent-huggingface
-          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock') }}
+          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}
 
       - name: Prepare private model cache
         run: |
-          install -d -m 0777 "${{ runner.temp }}/xagent-huggingface"
-          chmod -R a+rwX "${{ runner.temp }}/xagent-huggingface"
+          sudo install -d -o 65532 -g 65532 -m 0755 "${{ runner.temp }}/xagent-huggingface"
+          sudo chown -R 65532:65532 "${{ runner.temp }}/xagent-huggingface"
+          sudo chmod -R u=rwX,go=rX "${{ runner.temp }}/xagent-huggingface"
           echo "XAGENT_EMBEDDING_CACHE_DIR=${{ runner.temp }}/xagent-huggingface" >> "$GITHUB_ENV"
 
       - name: Run real retrieval pipeline
@@ -469,12 +473,14 @@ jobs:
               docker compose -f services/api/compose.test.yml logs --no-color --tail 200 || true
             fi
             cleanup_status=0
+            docker rm --force xagent-stale-worker 2>/dev/null || true
             docker compose -f services/api/compose.test.yml down --volumes --remove-orphans || cleanup_status=$?
+            stale_worker=$(docker container ls --all -q --filter 'name=^/xagent-stale-worker$')
             containers=$(docker container ls --all -q --filter label=com.docker.compose.project=xagent-api-test)
             volumes=$(docker volume ls -q --filter label=com.docker.compose.project=xagent-api-test)
             networks=$(docker network ls -q --filter label=com.docker.compose.project=xagent-api-test)
-            if [ -n "$containers" ] || [ -n "$volumes" ] || [ -n "$networks" ]; then
-              echo "::error::Compose cleanup left containers='$containers' volumes='$volumes' networks='$networks'"
+            if [ -n "$stale_worker" ] || [ -n "$containers" ] || [ -n "$volumes" ] || [ -n "$networks" ]; then
+              echo "::error::Compose cleanup left stale_worker='$stale_worker' containers='$containers' volumes='$volumes' networks='$networks'"
               cleanup_status=1
             fi
             if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
@@ -483,8 +489,11 @@ jobs:
             exit "$status"
           }
           trap cleanup EXIT
+          docker rm --force xagent-stale-worker 2>/dev/null || true
           docker compose -f services/api/compose.test.yml down --volumes --remove-orphans
+          python3 services/embedding/verify_model_snapshot.py --allow-absent --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
           docker compose -f services/api/compose.test.yml up -d --build --wait
+          python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
           uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_retrieval_pipeline.py tests/e2e/test_retrieval_worker_recovery.py
 
   # One native target makes the complete release-shaped Python path required

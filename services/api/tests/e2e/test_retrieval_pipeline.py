@@ -254,6 +254,71 @@ def _search(session: RetrievalSession, query: str, tool_call_id: str) -> dict[st
     return response.json()
 
 
+def _embedding(text: str) -> str:
+    encoded = base64.b64encode(text.encode()).decode()
+    return _compose(
+        "exec",
+        "-T",
+        "embedding",
+        "python",
+        "-c",
+        (
+            "import base64,json,urllib.request;"
+            f"text=base64.b64decode('{encoded}').decode();"
+            "payload=json.dumps({'texts':[text]}).encode();"
+            "request=urllib.request.Request('http://127.0.0.1:8000/embed',data=payload,"
+            "headers={'Content-Type':'application/json'});"
+            "print(json.dumps(json.load(urllib.request.urlopen(request,timeout=120))"
+            "['vectors'][0],separators=(',',':')))"
+        ),
+    ).stdout.strip()
+
+
+def _seed_ready_artifact(
+    session: RetrievalSession,
+    *,
+    artifact_id: str,
+    version_id: str,
+    index_id: str,
+    filename: str,
+    chunks: list[tuple[str, int, str, str]],
+) -> None:
+    values = []
+    for chunk_id, ordinal, text, vector in chunks:
+        text_literal = text.replace("'", "''")
+        values.append(
+            f"('{chunk_id}', '{index_id}', {ordinal}, 1, 1, '{text_literal}', 1, "
+            f"repeat('c',64), CAST('{vector}' AS vector))"
+        )
+    filename_literal = filename.replace("'", "''")
+    _psql(
+        "BEGIN;\n"
+        "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
+        f"VALUES ('{artifact_id}', '{filename_literal}', '{session.actor_id}', "
+        f"'{session.actor_id}');\n"
+        "INSERT INTO artifact_versions (id, artifact_id, owner_id, version_number, "
+        "original_filename, uploaded_by_id, declared_size, actual_size, "
+        "detected_content_type, scan_status, object_key, size, content_type, sha256) "
+        f"VALUES ('{version_id}', '{artifact_id}', '{session.actor_id}', 1, "
+        f"'{filename_literal}', '{session.actor_id}', 1, 1, 'text/plain', 'clean', "
+        f"'artifacts/{artifact_id}/{version_id}', 1, 'text/plain', repeat('a',64));\n"
+        "INSERT INTO artifact_text_indexes (id, artifact_id, version_id, generation, "
+        "content_sha256, parser_revision, embedding_model, embedding_revision, "
+        "vector_dimensions, configuration_fingerprint, status, chunk_count) "
+        f"VALUES ('{index_id}', '{artifact_id}', '{version_id}', 1, repeat('a',64), "
+        "'xagent-text-v1', 'BAAI/bge-m3', "
+        "'5617a9f61b028005a4858fdac845db406aefb181', 1024, repeat('b',64), "
+        f"'ready', {len(chunks)});\n"
+        "INSERT INTO artifact_text_chunks (id, index_id, ordinal, line_start, line_end, "
+        "text, token_count, text_sha256, embedding) VALUES "
+        + ",".join(values)
+        + ";\n"
+        "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+        f"VALUES ('{artifact_id}', '{index_id}', '{version_id}');\n"
+        "COMMIT;\n"
+    )
+
+
 def _tool_result(tool_call_id: str, search: dict[str, object]) -> dict[str, object]:
     citations = search["citations"]
     return {
@@ -434,77 +499,163 @@ def test_real_bilingual_index_replacement_and_structured_citation_flow(
     }
 
 
-def test_real_hybrid_candidates_stop_at_40_and_break_ties_deterministically(
+def test_real_hybrid_branches_and_final_domain_tie_break(
     retrieval_session: RetrievalSession,
 ) -> None:
-    query = "deterministicretrievaltie"
-    encoded_query = base64.b64encode(query.encode()).decode()
-    vector = _compose(
-        "exec",
-        "-T",
-        "embedding",
-        "python",
-        "-c",
-        (
-            "import base64,json,urllib.request;"
-            f"text=base64.b64decode('{encoded_query}').decode();"
-            "payload=json.dumps({'texts':[text]}).encode();"
-            "request=urllib.request.Request('http://127.0.0.1:8000/embed',data=payload,"
-            "headers={'Content-Type':'application/json'});"
-            "print(json.dumps(json.load(urllib.request.urlopen(request,timeout=120))['vectors'][0],"
-            "separators=(',',':')))"
-        ),
-    ).stdout.strip()
-    actor = retrieval_session.actor_id
-    query_literal = query.replace("'", "''")
-    _psql(
-        "BEGIN;\n"
-        "WITH generated AS (SELECT n, md5('artifact-' || n)::uuid id "
-        "FROM generate_series(1,45) n) "
-        "INSERT INTO artifacts (id, filename, owner_id, created_by_id) "
-        f"SELECT id, 'tie-' || n || '.txt', '{actor}', '{actor}' FROM generated;\n"
-        "WITH generated AS (SELECT n, md5('artifact-' || n)::uuid artifact_id, "
-        "md5('version-' || n)::uuid version_id FROM generate_series(1,45) n) "
-        "INSERT INTO artifact_versions (id, artifact_id, owner_id, version_number, "
-        "original_filename, uploaded_by_id, declared_size, actual_size, detected_content_type, "
-        "scan_status, object_key, size, content_type, sha256) "
-        f"SELECT version_id, artifact_id, '{actor}', 1, 'tie-' || n || '.txt', '{actor}', "
-        f"{len(query)}, {len(query)}, 'text/plain', 'clean', "
-        "'artifacts/' || artifact_id || '/' || version_id, "
-        f"{len(query)}, 'text/plain', repeat('a',64) FROM generated;\n"
-        "WITH generated AS (SELECT n, md5('artifact-' || n)::uuid artifact_id, "
-        "md5('version-' || n)::uuid version_id, md5('index-' || n)::uuid index_id "
-        "FROM generate_series(1,45) n) "
-        "INSERT INTO artifact_text_indexes (id, artifact_id, version_id, generation, "
-        "content_sha256, parser_revision, embedding_model, embedding_revision, vector_dimensions, "
-        "configuration_fingerprint, status, chunk_count) "
-        "SELECT index_id, artifact_id, version_id, 1, repeat('a',64), 'xagent-text-v1', "
-        "'BAAI/bge-m3', '5617a9f61b028005a4858fdac845db406aefb181', 1024, "
-        "repeat('b',64), 'ready', 1 FROM generated;\n"
-        "WITH generated AS (SELECT n, md5('index-' || n)::uuid index_id, "
-        "md5('chunk-' || n)::uuid chunk_id FROM generate_series(1,45) n) "
-        "INSERT INTO artifact_text_chunks (id, index_id, ordinal, line_start, line_end, text, "
-        "token_count, text_sha256, embedding) "
-        f"SELECT chunk_id, index_id, 0, 1, 1, '{query_literal}', 1, repeat('c',64), "
-        f"CAST('{vector}' AS vector) FROM generated;\n"
-        "WITH generated AS (SELECT n, md5('artifact-' || n)::uuid artifact_id, "
-        "md5('version-' || n)::uuid version_id, md5('index-' || n)::uuid index_id "
-        "FROM generate_series(1,45) n) "
-        "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
-        "SELECT artifact_id, index_id, version_id FROM generated;\n"
-        "COMMIT;\n"
+    query = "zzqxvkjwpmgfh"
+    query_vector = _embedding(query)
+    unrelated_vector = _embedding("astronomy geology unrelated phrase")
+    lexical_chunk = "ffffffff-ffff-ffff-ffff-ffffffff0001"
+    dense_chunk = "00000000-0000-0000-0000-000000000001"
+    lexical_artifact = "10000000-0000-0000-0000-000000000001"
+    dense_artifact = "10000000-0000-0000-0000-000000000002"
+    distractor_artifact = "10000000-0000-0000-0000-000000000003"
+    _seed_ready_artifact(
+        retrieval_session,
+        artifact_id=lexical_artifact,
+        version_id="11000000-0000-0000-0000-000000000001",
+        index_id="12000000-0000-0000-0000-000000000001",
+        filename="lexical-only.txt",
+        chunks=[(lexical_chunk, 2, query, unrelated_vector)],
     )
+    _seed_ready_artifact(
+        retrieval_session,
+        artifact_id=dense_artifact,
+        version_id="11000000-0000-0000-0000-000000000002",
+        index_id="12000000-0000-0000-0000-000000000002",
+        filename="dense-only.txt",
+        chunks=[(dense_chunk, 9, "annual capital allocation protocol", query_vector)],
+    )
+    _seed_ready_artifact(
+        retrieval_session,
+        artifact_id=distractor_artifact,
+        version_id="11000000-0000-0000-0000-000000000003",
+        index_id="12000000-0000-0000-0000-000000000003",
+        filename="vector-cutoff.txt",
+        chunks=[
+            (
+                str(
+                    UUID(
+                        bytes=hashlib.md5(
+                            f"tie-{number}".encode(),
+                            usedforsecurity=False,
+                        ).digest()
+                    )
+                ),
+                number,
+                "annual capital allocation protocol",
+                query_vector,
+            )
+            for number in range(40)
+        ],
+    )
+
+    vector_top_40 = _psql(
+        "SELECT count(*) FROM (SELECT c.id FROM artifact_text_chunks c "
+        "JOIN artifact_text_indexes i ON i.id = c.index_id "
+        "JOIN artifact_search_heads h ON h.index_id = i.id "
+        f"ORDER BY c.embedding <=> CAST('{query_vector}' AS vector), c.id LIMIT 40) ranked "
+        f"WHERE id = '{lexical_chunk}';\n"
+    )
+    lexical_rank = _psql(
+        "SELECT count(*) FROM artifact_text_chunks c WHERE greatest("
+        "ts_rank_cd(c.lexical_document, plainto_tsquery('simple'::regconfig, "
+        f"'{query}')), similarity(c.normalized_text, '{query}')) > 0;\n"
+    )
+    dense_vector_rank = _psql(
+        "SELECT vector_rank FROM (SELECT c.id, row_number() OVER (ORDER BY "
+        f"c.embedding <=> CAST('{query_vector}' AS vector), c.id) AS vector_rank "
+        "FROM artifact_text_chunks c JOIN artifact_text_indexes i ON i.id = c.index_id "
+        "JOIN artifact_search_heads h ON h.index_id = i.id) ranked "
+        f"WHERE id = '{dense_chunk}';\n"
+    )
+    dense_lexical_rank = _psql(
+        "SELECT greatest(ts_rank_cd(c.lexical_document, "
+        f"plainto_tsquery('simple'::regconfig, '{query}')), "
+        f"similarity(c.normalized_text, '{query}')) FROM artifact_text_chunks c "
+        f"WHERE c.id = '{dense_chunk}';\n"
+    )
+    assert vector_top_40 == "0"
+    assert lexical_rank == "1"
+    assert dense_vector_rank == "1"
+    assert float(dense_lexical_rank) == 0
+
     tool_call_id = f"top-forty-{uuid4()}"
     result = _search(retrieval_session, query, tool_call_id)
-    expected = _psql(
-        "SELECT c.id FROM artifact_text_chunks c "
-        "JOIN artifact_text_indexes i ON i.id = c.index_id "
-        "JOIN artifacts a ON a.id = i.artifact_id "
-        "WHERE a.filename LIKE 'tie-%' ORDER BY c.id LIMIT 8;\n"
-    ).splitlines()
-    assert [item["chunk_id"] for item in result["citations"]] == expected
+    assert [item["chunk_id"] for item in result["citations"][:2]] == [
+        lexical_chunk,
+        dense_chunk,
+    ]
     assert _psql(
         "SELECT details->>'candidate_count' FROM audit_events "
         f"WHERE action = 'retrieval.search' AND details->>'tool_call_id' = '{tool_call_id}' "
         "ORDER BY created_at DESC LIMIT 1;\n"
-    ) == "40"
+    ) == "41"
+
+    chinese_query = "甲乙丙丁戊己庚辛壬癸甲乙丙丁戊庚"
+    chinese_text = "甲乙丙丁戊己庚辛壬癸甲乙丙丁戊己"
+    chinese_vector = _embedding(chinese_query)
+    chinese_chunk = "ffffffff-ffff-ffff-ffff-ffffffff0002"
+    _seed_ready_artifact(
+        retrieval_session,
+        artifact_id="20000000-0000-0000-0000-000000000001",
+        version_id="21000000-0000-0000-0000-000000000001",
+        index_id="22000000-0000-0000-0000-000000000001",
+        filename="chinese-trigram-only.txt",
+        chunks=[(chinese_chunk, 4, chinese_text, unrelated_vector)],
+    )
+    _seed_ready_artifact(
+        retrieval_session,
+        artifact_id="20000000-0000-0000-0000-000000000002",
+        version_id="21000000-0000-0000-0000-000000000002",
+        index_id="22000000-0000-0000-0000-000000000002",
+        filename="chinese-vector-cutoff.txt",
+        chunks=[
+            (
+                str(
+                    UUID(
+                        bytes=hashlib.md5(
+                            f"chinese-{number}".encode(),
+                            usedforsecurity=False,
+                        ).digest()
+                    )
+                ),
+                number,
+                f"unrelated filler {number}",
+                chinese_vector,
+            )
+            for number in range(40)
+        ],
+    )
+    chinese_vector_top_40 = _psql(
+        "SELECT count(*) FROM (SELECT c.id FROM artifact_text_chunks c "
+        "JOIN artifact_text_indexes i ON i.id = c.index_id "
+        "JOIN artifact_search_heads h ON h.index_id = i.id "
+        f"ORDER BY c.embedding <=> CAST('{chinese_vector}' AS vector), c.id LIMIT 40) ranked "
+        f"WHERE id = '{chinese_chunk}';\n"
+    )
+    ts_rank = float(
+        _psql(
+            "SELECT ts_rank_cd(c.lexical_document, "
+            f"plainto_tsquery('simple'::regconfig, '{chinese_query}')) "
+            f"FROM artifact_text_chunks c WHERE c.id = '{chinese_chunk}';\n"
+        )
+    )
+    trigram_score = float(
+        _psql(
+            "SELECT similarity(c.normalized_text, "
+            f"'{chinese_query}') FROM artifact_text_chunks c "
+            f"WHERE c.id = '{chinese_chunk}';\n"
+        )
+    )
+    chinese_lexical_rank = _psql(
+        "SELECT count(*) FROM artifact_text_chunks c WHERE greatest("
+        "ts_rank_cd(c.lexical_document, plainto_tsquery('simple'::regconfig, "
+        f"'{chinese_query}')), similarity(c.normalized_text, '{chinese_query}')) > 0;\n"
+    )
+    chinese = _search(retrieval_session, chinese_query, f"chinese-trigram-{uuid4()}")
+    assert chinese_vector_top_40 == "0"
+    assert ts_rank == 0
+    assert trigram_score > 0
+    assert chinese_lexical_rank == "1"
+    assert chinese["citations"][0]["chunk_id"] == chinese_chunk
