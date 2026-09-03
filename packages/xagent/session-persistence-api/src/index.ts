@@ -20,7 +20,7 @@ import {
   type SessionId as SessionIdType,
 } from '@deepseek-ai/dsh-session'
 import { XAgentBackendClient, type XAgentBackend } from '@xagent/dsh-backend-client'
-import { validateXAgentCitationEvent, type XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
+import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -80,8 +80,6 @@ function headerFrom(value: unknown): SessionHeader {
 
 function eventFrom(value: unknown): SessionEvent {
   const row = object(value)
-  if ((row.type === 'xagent/citation-correction' || row.type === 'xagent/citation-failure')
-    && !validateXAgentCitationEvent(row)) throw new TypeError('invalid XAgent citation event')
   if (
     typeof row.type !== 'string'
     || row.type.length === 0

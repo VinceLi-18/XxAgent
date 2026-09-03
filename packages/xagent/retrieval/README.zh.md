@@ -2,17 +2,19 @@
 
 [English](README.md) | 中文
 
-`@xagent/dsh-retrieval` 是 XAgent Host 的只读资料检索服务。每次调用只接受当前认证 prompt 建立的物理请求作用域，从中读取 Principal、用户令牌、连接、Session 可见性、固定项目和 tool call 标识。服务为该次调用签发最长 60 秒的委托令牌，并只调用一次 FastAPI；不缓存授权、项目或证据，也不在后端失败时返回部分结果。
+`@xagent/dsh-retrieval` 是 XAgent Host 的只读资料检索服务。每次调用只接受当前认证 prompt 建立的物理请求作用域，从中读取 Principal、用户令牌、连接、Session 可见性、固定项目和 tool call 标识。服务为该次调用签发委托令牌，并只调用一次 FastAPI；它不缓存授权、项目或证据，也不在后端失败时返回部分结果。
 
-Private Session 的检索必须显式提供规范化项目 UUID 和／或 `includePrivate`。Project Session 只使用 Session 固定项目，并拒绝调用方项目覆盖。`listAccessibleProjects` 只用于 Private Session，接受可选项目名称查询并返回最多 20 个可访问项目。缺少认证作用域、Session、签名器或服务时失败关闭；已知后端失败映射为固定错误码，其他失败映射为 `service-unavailable`。
+Private Session 的检索必须显式提供规范 Project UUID 和／或 `includePrivate`。Project Session 只使用 Session 固定项目，并拒绝调用方选择器。`listAccessibleProjects` 只用于 Private Session，接受可选且有界的项目名称查询，返回最多 20 个可访问项目。缺少认证作用域、Session、签名器或服务时失败关闭；已知后端失败映射为固定错误码，其他失败映射为 `service-unavailable`。
 
-每次 XAgent inbox 插入都会记录认证作用域或显式无效标记。有效绑定同时包含 prompt 请求与物理连接的生命周期，并仅在 Agent 认领该消息时激活。缺失、过期、已取消、已断连或混合的认领绑定会拒绝该 step；只有不含用户消息的内部 continuation 可以保留正在运行的作用域。取消、丢弃、替换、turn 结束、Agent 释放和服务释放都会清除对应私有作用域，不新增 Session 事件。
+每次 XAgent inbox 插入都会记录认证作用域或显式无效标记。有效绑定同时包含 prompt 请求与物理连接的生命周期，并仅在 Agent 认领该消息时激活。缺失、过期、已取消、已断连或混合的认领绑定会拒绝该 step；只有空的内部 continuation 可以保留正在运行的作用域。取消、丢弃、替换、turn 结束、Agent 释放和服务释放会清除对应私有作用域，不新增 Session 事件。
 
-FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。最终成功的 Native 结果把它标记为已发布；被阻止、取消、失败或已确定无法 append 的结果会确认未发布并丢弃。已发布 receipt 只在 Session、tool call 和 payload hash 同时匹配时绑定。服务释放会关闭新工作入口，丢弃已无法发布的 continuation，取消在飞请求，并等待后端完成；该等待不依赖自身的 post-execute waterfall。已绑定 sidecar 在远端确认前仍可按精确 append 窗口读取。
+FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。最终成功的 Native 结果把它标记为已发布；被阻止、取消、失败或确定无法 append 的结果会确认未发布并丢弃。已发布 receipt 只在 Session、tool call 和 payload hash 同时匹配时绑定。服务释放会关闭新工作入口，丢弃已无法发布的 continuation，取消在飞请求并等待后端完成；该等待不依赖自身 post-execute waterfall。已绑定 sidecar 在远端确认前仍可按精确 append 窗口读取。
 
-当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务最多缓冲 64 KiB assistant 输出、32 KiB 工具参数、4,096 个 stream chunk 和 256 个不同 block。服务只接受从匹配检索 `tool/result` 事件重建的短引用 ID，并在第一个回答 chunk 放行前立即重新授权所有已使用资料。只含工具调用的 continuation 会完整缓冲，但不会用空引用集合调用授权；其工具结果必须 checkpoint 后才进入后续模型请求。引用校验读取 CommonMark 正文 text node，并排除行内、围栏和缩进代码。有界 raw HTML 投影会解码字符引用，并跨注释和普通元素标签拼接可见文本；该投影以及属性、注释和 raw-text 元素中的引用样式内容都会失败关闭。raw-text 闭合标签只在每个 node 尚未消费的后缀中向前查找，因此重复 raw-text 元素不会反复规范化或回扫整个 node。raw HTML 和代码 source range 只合并一次，单调游标按顺序判断 source match，不回扫既有 range。字面 source 匹配也只向前推进，并在第一个 rendered/source 不一致处停止，因此重复的实体解码候选不会重新从头搜索完整 source。有界单遍词法器只接受未经规范化的 ASCII 字面量 `[资料N]`。开括号会保留到对应闭合边界之间的字符。词法器识别局部连续的 `资料` 前缀，也识别只由非文字、非数字字符分隔的局部损坏 `资…料` 前缀；它不会跨自然词拼接两个关键词字符。引用意图建立后，只有非零 ASCII 十进制序号和精确 ASCII 括号合法；序号缺失，序号槽使用非 ASCII 数字、汉字数词、字母、空白、标点、符号或格式字符均标为损坏。紧跟 `资料` 且不是数词的汉字后缀会先建立自然复合词，后续字母或数字不会把它改成引用。因此 `[资料]` 与 `[资/料2]` 保持损坏，`[投资材料2]`、`[参考资料]`、`[资料库2]` 和 `[资料馆A]` 保持普通正文，而 `[资料一]`、`[资料①]` 与 `[资料A]` 会被拒绝。可识别闭括号跟在无开括号的 `资料N` 后会产出损坏候选；相同裸文本没有闭括号时仍是普通正文。额外或兼容括号、未知 ID、仅位于代码中的引用，以及紧邻未闭合或畸形 HTML 的别名也会失败关闭。位于正确闭合 raw markup 之后的普通正文引用仍可使用。普通请求和空检索保持下游流不变。
+当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务会从该请求的精确消息与匹配的 Session `tool/result` metadata 重建短引用身份，然后只在该 Agent 作用域注册 Native-only `submit_cited_answer` 和 order-190 指令。受保护的模型流不缓冲普通 assistant 文本与 reasoning，而是丢弃它们并保留工具与协议 chunk。普通请求和空检索保持下游流不变。
 
-第一份无效草稿会被完全抑制。log-only `xagent/citation-correction` 事件保存草稿 SHA-256、最多 8 KiB 的 UTF-8 前缀、固定原因、无效 ID 和最多 64 个允许 ID；配套的 plugin-origin `user/message` 通过普通历史把纠正指令交给模型。精确 `CITATION_INVALID` 对象被认领后，其私有 lineage 会调度给下一个受保护请求，该请求必须恰好一次携带对应纠正消息 ID。缺失、替换或歧义认领会终止并只消费该 lineage，因此兄弟流保持独立，旧纠正消息也不能认领后续请求。第二份无效草稿只记录 `xagent/citation-failure`，并通过持久中文 `CITATION_FAILED` turn error 结束，不生成 assistant 回答或模型可见诊断。FastAPI append 与 Host 恢复都使用关闭且有上限的引用事件 schema。取消、撤权、账号替换、Session 替换和服务释放会关闭尚未启动的 admission、中止活跃源 iterator，并等待每个已启动 iterator 的 `finally` 结束，不放行任何缓冲回答字节。权威草稿是硬上限终止收集前接受的有界规范内容；其前缀与 SHA-256 来自同一份内存表示。引用缓冲不会把草稿写入磁盘。
+终结工具接受 Markdown 块与引用块组成的关闭有序联合。完整 JSON 值最多 64 KiB UTF-8，包含 1 至 256 个块，至少一个非空 Markdown 块和一个引用块，且引用块最多 64 个。Markdown 按模型原文保留，不产生引用权限；服务不解析 markup、raw HTML、字符实体或 Unicode 近似字符。引用块只能命名当前请求已入账的短 ID；相邻重复引用会合并，非相邻位置保持不变，`citationIds` 按首次使用排列。每次提交都使用当前认证作用域和新委托 nonce 对这些身份精确重新授权。
+
+请求 owner 按精确 `ToolExecution` 暂存合法答案，调用 `concludeTurn()`，并只把其权威且成功的 `tools/result` 视为发布。第一次无效提交可在同一请求中返回有界 `CITATION_INVALID` 工具错误并立即重试；第二次无效提交或响应结束时未成功调用终结工具，均返回固定 `CITATION_FAILED`。终结工具之前的工具正常完成，并行终结调度和其后调用不能重开已完成请求。请求或连接取消、账号或 Session 替换、Agent 或 Session 释放以及 Retrieval 释放会关闭 admission、中止活跃授权、在失败时不发布 cited-answer metadata，并等待 owner 结算。
 
 ## Model Experience
 
@@ -20,7 +22,7 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 #### What the model sees
 
-模型只看到 `list_accessible_projects` 返回的可访问项目名称，或 `search_artifacts` 返回的当前明确范围内最多八条带 `[资料N]` 短标识的资料片段。证据回答无效后，模型会在唯一一次重试中看到已入账的纠正指令和允许 ID。模型看不到用户令牌、委托令牌、receipt、内部 URL、对象键或后端错误详情。
+模型只看到 `list_accessible_projects` 返回的可访问项目名称，或 `search_artifacts` 返回的当前明确范围内最多八条带 `[资料N]` 短标识的资料片段。含证据的请求还会看到 `submit_cited_answer` 及其终结指令；第一次无效提交只会为同一请求的重试收到有界工具错误。模型看不到用户令牌、委托令牌、receipt、内部 URL、对象键或后端错误详情。
 
 #### Token effect
 
@@ -28,10 +30,10 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 #### KV Cache effect
 
-工具结果作为 Session 事件进入后续模型请求，因此会改变该次工具调用之后的缓存前缀。纠正重试会新增一条 plugin-origin 用户消息，因此改变该次重试的缓存前缀。认证作用域、委托令牌、receipt、无效 assistant 草稿和 log-only 引用事件不进入模型请求。
+工具结果作为 Session 事件进入后续模型请求，因此会改变该次工具调用之后的缓存前缀。认证作用域、委托令牌、receipt 和已抑制的 assistant 文本或 reasoning 不进入模型请求。
 
 ## Known Limitations and Deferred Work
 
-- 本包只拥有 Host 检索、委托和 receipt 生命周期；混合排序、RLS、引用序号和 receipt 消费由 FastAPI 拥有。
+- 本包拥有 Host 检索、委托、receipt 生命周期和终结引用回答发布；混合排序、RLS、引用序号和 receipt 消费由 FastAPI 拥有。
 - Receipt sidecar 的远端 append 与确认由 Session 持久化提供方装配；registry 不自行写入磁盘或网络。
 - Retrieval 自带固定到 `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181` 的 HTTP tokenizer provider；模型或 revision 不一致时服务加载失败。Provider 拒绝畸形 UTF-16，最多接受 8 KiB 查询 UTF-8 数据，限制最坏 JSON 转义大小，把调用方取消信号与五秒超时合并，拒绝重定向和不完全匹配的响应，并且最多读取 512 字节响应。它只把 Host 服务令牌发送到 `backendOrigin` 上有正文上限的 FastAPI token-count relay；FastAPI 不使用用户或委托令牌，把请求转发到仅服务网络可达的 embedding endpoint。最多 512 个精确 token 的查询才会到达检索接口，513-token 查询不会发起检索。

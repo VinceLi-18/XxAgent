@@ -26,11 +26,11 @@ import {
 } from '@xagent/dsh-principal'
 import { XAgentReceiptRegistry } from './receipt-registry.ts'
 import {
-  installXAgentCitationPolicy,
-  type XAgentCitationPolicyAdmission,
-  type XAgentCitationPolicyOperation,
-  type XAgentCitationPolicyRequest,
-} from './citation-policy.ts'
+  installXAgentCitedAnswerPolicy,
+  openCitedAnswerRequest,
+  reconstructCitedAnswerEvidence,
+  type CitedAnswerRequestOwner,
+} from './cited-answer-policy.ts'
 import {
   XAgentBgeM3HttpTokenizer,
   validateBgeM3Tokenizer,
@@ -45,8 +45,8 @@ import type {
 } from './types.ts'
 
 export type * from './types.ts'
-export * from './citation-policy.ts'
-export * from './events.ts'
+export * from './cited-answer.ts'
+export * from './cited-answer-policy.ts'
 export { XAgentReceiptRegistry } from './receipt-registry.ts'
 export * from './tokenizer.ts'
 
@@ -115,7 +115,7 @@ function registerReceipt(
   }
 }
 
-/** Service Definition consumed by model tools and later citation policy. */
+/** Service Definition consumed by model tools and the terminal cited-answer runtime. */
 export abstract class XAgentRetrieval extends Service {
   /** Opaque receipt lifetime consumed only by XAgent Session persistence. */
   abstract readonly receipts: XAgentReceiptRegistry
@@ -211,12 +211,9 @@ export class XAgentRetrievalService extends XAgentRetrieval {
   readonly receipts: XAgentReceiptRegistry
   private readonly backend: XAgentRetrievalBackend
   private readonly controllers = new Map<AbortController, Promise<void>>()
-  private readonly citationOperations = new Map<AbortController, {
-    readonly agent: Agent
+  private readonly citedAnswerOwners = new Map<Agent, {
     readonly scopeIdentity: object
-    readonly operationIdentity: object
-    readonly settlement: Promise<void>
-    readonly close: () => void
+    readonly owner: CitedAnswerRequestOwner
   }>()
   private readonly issuer: string
   private readonly audience: string
@@ -236,6 +233,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
   private readonly activeScopes = new Map<Agent, {
     readonly identity: object
     readonly scope: XAgentAuthenticatedSessionRequestScope
+    readonly signal: AbortSignal
     readonly close: () => void
   }>()
   private disposal: Promise<void> | undefined
@@ -283,6 +281,14 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     const closeDiscarded = ctx.on('agent/inbox/discarded', ({ message }) => {
       this.deleteMessageScope(String(message.id))
     })
+    const closeClaimed = ctx.on('agent/inbox/claimed', ({ agent, message }) => {
+      const binding = this.messageScopes.get(String(message.id))
+      const scope = binding?.scope
+      if (binding?.agent !== agent || scope === undefined || scope.requestSignal === undefined
+        || scope.connectionSignal === undefined || scope.requestSignal.aborted || scope.connectionSignal.aborted) return
+      this.setActiveScope(agent, scope, scope.requestSignal, true)
+      this.openCitedAnswerForSession(agent.session)
+    })
     const closeDisposed = ctx.on('agent/disposed', ({ agent }) => {
       this.deleteActiveScope(agent)
       this.receipts.discardSession(String(agent.session.id))
@@ -295,10 +301,10 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       this.receipts.discardSession(String(agent.session.id))
     })
     const closeSessionDisposed = ctx.on('session/disposed', (session) => {
-      this.abortCitationOperations(operation => String(operation.agent.session.id) === String(session.id))
+      this.closeCitedAnswerOwners(agent => String(agent.session.id) === String(session.id))
       this.receipts.discardSession(String(session.id))
     })
-    const closePreStep = ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+    const closePreStep = ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
       const scopes: XAgentAuthenticatedSessionRequestScope[] = []
       let invalidated = false
       for (const message of messages) {
@@ -320,7 +326,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         this.deleteActiveScope(agent)
         return { kind: 'reject' as const }
       }
-      if (scopes[0] !== undefined) this.setActiveScope(agent, scopes[0])
+      if (scopes[0] !== undefined) this.setActiveScope(agent, scopes[0], signal)
       const decision = await next()
       if (decision.kind === 'reject') this.deleteActiveScope(agent)
       return decision
@@ -332,9 +338,9 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         ? runWithoutXAgentAuthenticatedRequestScope(next)
         : runWithXAgentAuthenticatedRequestScope(scope, next)
     })
-    const closeCitationPolicy = installXAgentCitationPolicy(ctx, options => this.citationRequest(options))
+    const closeCitationPolicy = installXAgentCitedAnswerPolicy(ctx, options => this.citedAnswerRequest(options))
     this.closeScopeObservers = [
-      closeInserted, closeDiscarded, closeDisposed, closeAgentError, closeSessionDisposed, closePreStep,
+      closeInserted, closeDiscarded, closeClaimed, closeDisposed, closeAgentError, closeSessionDisposed, closePreStep,
       closeToolExecution, closeCitationPolicy,
     ]
     this.closeSessionObserver = ctx.on('session/event', (session, event) => {
@@ -356,6 +362,9 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       } catch (error: unknown) {
         this.receipts.discard(String(session.id), toolCallId)
         ctx.logger.warn(`xagent retrieval receipt binding rejected: ${error instanceof Error ? error.message : 'unknown error'}`)
+      }
+      if (Array.isArray(row.citations) && row.citations.length > 0) {
+        this.openCitedAnswerForSession(session)
       }
     })
     this.closeResultObserver = ctx.on('tools/result', (exec, result) => {
@@ -450,17 +459,17 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       this.accepting = false
       for (const close of this.closeScopeObservers) close()
       for (const messageId of this.messageScopes.keys()) this.deleteMessageScope(messageId)
+      const answerOwners = [...this.citedAnswerOwners.values()].map(entry => entry.owner)
       for (const agent of this.activeScopes.keys()) {
         agent.cancel({ kind: 'user' })
         this.deleteActiveScope(agent)
       }
       const active = [...this.controllers.entries()]
-      const protectedStreams = [...this.citationOperations.entries()]
       const receiptDisposal = this.receipts.dispose()
       for (const [controller] of active) controller.abort()
-      for (const [, operation] of protectedStreams) operation.close()
+      for (const owner of answerOwners) owner.close()
       await Promise.allSettled(active.map(([, settlement]) => settlement))
-      await Promise.allSettled(protectedStreams.map(([, operation]) => operation.settlement))
+      await Promise.allSettled(answerOwners.map(owner => owner.settlement))
       await receiptDisposal
       this.closePostObserver()
       this.closeResultObserver()
@@ -504,7 +513,14 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     this.messageScopes.set(messageId, { agent: binding.agent })
   }
 
-  private setActiveScope(agent: Agent, scope: XAgentAuthenticatedSessionRequestScope): void {
+  private setActiveScope(
+    agent: Agent,
+    scope: XAgentAuthenticatedSessionRequestScope,
+    signal: AbortSignal,
+    replace = false,
+  ): void {
+    const current = this.activeScopes.get(agent)
+    if (!replace && current !== undefined && samePhysicalScope(current.scope, scope)) return
     this.deleteActiveScope(agent)
     const abort = (): void => {
       this.deleteActiveScope(agent)
@@ -515,6 +531,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     this.activeScopes.set(agent, {
       identity: Object.freeze({}),
       scope,
+      signal,
       close: () => {
         scope.requestSignal?.removeEventListener('abort', abort)
         scope.connectionSignal?.removeEventListener('abort', abort)
@@ -526,12 +543,14 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     const binding = this.activeScopes.get(agent)
     binding?.close()
     this.activeScopes.delete(agent)
-    if (binding !== undefined) this.abortCitationOperations(operation => operation.scopeIdentity === binding.identity)
+    if (binding !== undefined) this.closeCitedAnswerOwners(candidate => candidate === agent)
   }
 
-  private abortCitationOperations(predicate: (operation: { agent: Agent; scopeIdentity: object }) => boolean): void {
-    for (const [, operation] of this.citationOperations) {
-      if (predicate(operation)) operation.close()
+  private closeCitedAnswerOwners(predicate: (agent: Agent) => boolean): void {
+    for (const [agent, entry] of this.citedAnswerOwners) {
+      if (!predicate(agent)) continue
+      this.citedAnswerOwners.delete(agent)
+      entry.owner.close()
     }
   }
 
@@ -544,67 +563,52 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     return scope
   }
 
-  private citationRequest(options: GenerateOptions): XAgentCitationPolicyRequest | undefined {
+  private citedAnswerRequest(options: GenerateOptions): CitedAnswerRequestOwner | undefined {
     if (!this.accepting || options.sessionId === undefined) return undefined
-    let resolved: XAgentCitationPolicyRequest | undefined
-    for (const [agent, binding] of this.activeScopes) {
+    let resolved: CitedAnswerRequestOwner | undefined
+    for (const [agent, entry] of this.citedAnswerOwners) {
       if (String(agent.session.id) !== String(options.sessionId)) continue
       if (resolved !== undefined) return undefined
-      resolved = {
-        agent,
-        identity: binding.identity,
-        session: agent.session,
-        admit: signal => this.admitCitationOperation(agent, binding, signal),
-        authorize: input => this.authorizeCitations(binding.scope, input.citations, input.signal),
-      }
+      if (this.activeScopes.get(agent)?.identity !== entry.scopeIdentity
+        || entry.owner.identity !== entry.scopeIdentity) return undefined
+      const evidence = reconstructCitedAnswerEvidence(options.messages, agent.session)
+      if (evidence === undefined || !this.sameEvidence(evidence, entry.owner.allowed)) return undefined
+      resolved = entry.owner
     }
     return resolved
   }
 
-  private admitCitationOperation(
-    agent: Agent,
-    binding: { identity: object; scope: XAgentAuthenticatedSessionRequestScope },
-    signal: AbortSignal | undefined,
-  ): XAgentCitationPolicyAdmission {
-    if (!this.accepting || this.activeScopes.get(agent)?.identity !== binding.identity) {
-      throw new XAgentRetrievalError('service-unavailable')
+  private sameEvidence(left: ReadonlyMap<string, object>, right: ReadonlyMap<string, object>): boolean {
+    if (left.size !== right.size) return false
+    for (const [id, identity] of left) {
+      const other = right.get(id)
+      if (other === undefined) return false
+      const a = identity as import('@xagent/dsh-backend-client').XAgentCitationIdentity
+      const b = other as import('@xagent/dsh-backend-client').XAgentCitationIdentity
+      if (a.artifactId !== b.artifactId || a.versionId !== b.versionId || a.chunkId !== b.chunkId) return false
     }
-    const controller = new AbortController()
-    const operationIdentity = Object.freeze({})
-    const signals = [controller.signal, binding.scope.requestSignal, binding.scope.connectionSignal, signal]
-      .filter((value): value is AbortSignal => value !== undefined)
-    const settled = Promise.withResolvers<void>()
-    let open = true
-    let started = false
-    const finish = (): void => {
-      if (!open) return
-      open = false
-      this.citationOperations.delete(controller)
-      settled.resolve()
-    }
-    const close = (): void => {
-      if (!open) return
-      controller.abort(new DOMException('xagent request ended', 'AbortError'))
-      if (!started) finish()
-    }
-    this.citationOperations.set(controller, {
-      agent,
-      scopeIdentity: binding.identity,
-      operationIdentity,
-      settlement: settled.promise,
-      close,
-    })
-    return {
-      start: (): XAgentCitationPolicyOperation => {
-        if (!open || started) throw new XAgentRetrievalError('service-unavailable')
-        started = true
-        return {
-          identity: operationIdentity,
-          signal: AbortSignal.any(signals),
-          settle: finish,
-        }
-      },
-      close,
+    return true
+  }
+
+  private openCitedAnswerForSession(session: import('@deepseek-ai/dsh-session').Session): void {
+    for (const [agent, binding] of this.activeScopes) {
+      if (String(agent.session.id) !== String(session.id)) continue
+      const allowed = reconstructCitedAnswerEvidence(session.deriveMessages(), session)
+      if (allowed === undefined) return
+      const requestSignal = binding.scope.requestSignal
+      const connectionSignal = binding.scope.connectionSignal
+      if (requestSignal === undefined || connectionSignal === undefined) return
+      const previous = this.citedAnswerOwners.get(agent)
+      previous?.owner.close()
+      const owner = openCitedAnswerRequest({
+        agent,
+        identity: binding.identity,
+        allowed,
+        signal: AbortSignal.any([binding.signal, requestSignal, connectionSignal]),
+        authorize: (citations, signal) => this.authorizeCitations(binding.scope, citations, signal),
+      })
+      this.citedAnswerOwners.set(agent, { scopeIdentity: binding.identity, owner })
+      return
     }
   }
 

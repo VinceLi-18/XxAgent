@@ -282,7 +282,7 @@ Source: [`packages/xagent/project/src/index.ts:67`](../../packages/xagent/projec
 
 ### `ctx.xagentRetrieval` — `XAgentRetrieval` (abstract seam)
 
-Service Definition consumed by model tools and later citation policy.
+Service Definition consumed by model tools and the terminal cited-answer runtime.
 
 ```ts cordis-catalog
 /**

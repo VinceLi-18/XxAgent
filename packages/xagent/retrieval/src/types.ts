@@ -1,6 +1,37 @@
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { XAgentRetrievalCitation, XAgentRetrievalProject } from '@xagent/dsh-backend-client'
 
+/** One canonical cited-answer block. Markdown never carries citation authority. */
+export type XAgentCitedAnswerBlock =
+  | { readonly type: 'markdown'; readonly text: string }
+  | { readonly type: 'citation'; readonly id: string }
+
+/** Canonical terminal answer persisted as the authoritative tool value. */
+export interface XAgentCitedAnswer {
+  readonly schemaVersion: 1
+  readonly blocks: readonly XAgentCitedAnswerBlock[]
+  readonly citationIds: readonly string[]
+}
+
+/** Replayable presentation metadata derived only from a canonical answer. */
+export interface XAgentCitedAnswerMeta {
+  readonly kind: 'xagent-cited-answer'
+  readonly schemaVersion: 1
+  readonly blocks: readonly XAgentCitedAnswerBlock[]
+  readonly citationIds: readonly string[]
+}
+
+/** Bounded validation reasons that never retain rejected model content. */
+export type XAgentCitedAnswerErrorReason =
+  | 'invalid-json'
+  | 'answer-too-large'
+  | 'invalid-schema'
+  | 'blocks-out-of-range'
+  | 'markdown-required'
+  | 'citation-required'
+  | 'too-many-citations'
+  | 'citation-not-allowed'
+
 /** Stable retrieval failures surfaced by the Host consumer. */
 export type XAgentRetrievalErrorCode =
   | 'unauthenticated'

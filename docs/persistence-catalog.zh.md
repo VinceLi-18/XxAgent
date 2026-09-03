@@ -944,27 +944,3 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 ```
 
 来源：[`packages/web/web-search-deepseek/src/provider.ts:83`](../packages/web/web-search-deepseek/src/provider.ts)
-
-### `xagent/*`
-
-<a id="xagentcitation-correction--log-only"></a>
-
-#### `xagent/citation-correction` — log-only
-
-```ts persistence-catalog
-/** First invalid evidence-bearing draft, hidden from the ordinary transcript. */
-'xagent/citation-correction': XAgentCitationCorrectionEventData
-```
-
-来源：[`packages/xagent/retrieval/src/events.ts:90`](../packages/xagent/retrieval/src/events.ts)
-
-<a id="xagentcitation-failure--log-only"></a>
-
-#### `xagent/citation-failure` — log-only
-
-```ts persistence-catalog
-/** Second invalid evidence-bearing draft, after which the turn fails. */
-'xagent/citation-failure': XAgentCitationFailureEventData
-```
-
-来源：[`packages/xagent/retrieval/src/events.ts:92`](../packages/xagent/retrieval/src/events.ts)

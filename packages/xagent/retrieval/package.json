@@ -17,10 +17,7 @@
   "files": ["lib/index.js", "lib/invariant.js", "lib/types/**/*.js", "lib/types/**/*.d.ts"],
   "license": "MIT",
   "dependencies": {
-    "@deepseek-ai/schemastery": "workspace:^",
-    "@types/mdast": "^4.0.4",
-    "entities": "^8.0.0",
-    "mdast-util-from-markdown": "^2.0.3"
+    "@deepseek-ai/schemastery": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "workspace:^",

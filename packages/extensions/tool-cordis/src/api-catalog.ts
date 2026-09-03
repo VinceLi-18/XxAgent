@@ -2315,8 +2315,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   },
   {
     key: 'xagentRetrieval',
-    summary: 'Service Definition consumed by model tools and later citation policy.',
-    description: 'Service Definition consumed by model tools and later citation policy.',
+    summary: 'Service Definition consumed by model tools and the terminal cited-answer runtime.',
+    description: 'Service Definition consumed by model tools and the terminal cited-answer runtime.',
     methods: [
       {
         signature: 'abstract readonly receipts: XAgentReceiptRegistry',

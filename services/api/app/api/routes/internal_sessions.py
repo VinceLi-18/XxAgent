@@ -1,5 +1,4 @@
 from collections.abc import Awaitable, Callable
-import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -7,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,103 +66,11 @@ class VersionedRequest(BaseModel):
     schema_version: int
 
 
-class _CitationEventData(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    draftSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    reason: Literal[
-        "citation-missing", "citation-malformed", "citation-unknown",
-        "citation-revoked", "answer-too-large", "stream-invalid",
-    ]
-    invalidIds: list[str] = Field(max_length=64)
-    allowedIds: list[str] = Field(max_length=64)
-
-    @field_validator("invalidIds")
-    @classmethod
-    def validate_invalid_ids(cls, value: list[str]) -> list[str]:
-        if len(set(value)) != len(value) or any(
-            not item or len(item) > 255 or any(ord(char) < 32 for char in item)
-            for item in value
-        ):
-            raise ValueError("invalid citation diagnostic")
-        return value
-
-    @field_validator("allowedIds")
-    @classmethod
-    def validate_allowed_ids(cls, value: list[str]) -> list[str]:
-        if len(set(value)) != len(value):
-            raise ValueError("duplicate citation id")
-        for item in value:
-            match = re.fullmatch(r"\[资料([1-9][0-9]*)\]", item)
-            if match is None or int(match.group(1)) > 9007199254740991:
-                raise ValueError("invalid citation id")
-        return value
-
-
-class CitationCorrectionData(_CitationEventData):
-    invalidDraft: str
-
-    @field_validator("invalidDraft")
-    @classmethod
-    def validate_draft(cls, value: str) -> str:
-        try:
-            size = len(value.encode("utf-8"))
-        except UnicodeEncodeError as error:
-            raise ValueError("invalid citation draft") from error
-        if size > 8192:
-            raise ValueError("citation draft too large")
-        return value
-
-
-class CitationFailureData(_CitationEventData):
-    pass
-
-
 class EventInput(BaseModel):
     event_type: str = Field(min_length=1, max_length=100)
     schema_version: int = Field(ge=1)
     payload: dict[str, Any]
     tool_call_id: str | None = Field(default=None, max_length=255)
-
-    @model_validator(mode="before")
-    @classmethod
-    def validate_citation_input(cls, value: Any) -> Any:
-        if isinstance(value, dict) and value.get("event_type") in {
-            "xagent/citation-correction", "xagent/citation-failure",
-        }:
-            keys = set(value)
-            if keys not in (
-                {"event_type", "schema_version", "payload"},
-                {"event_type", "schema_version", "payload", "tool_call_id"},
-            ):
-                raise ValueError("invalid citation event input")
-        return value
-
-    @model_validator(mode="after")
-    def validate_citation_event(self) -> "EventInput":
-        models = {
-            "xagent/citation-correction": CitationCorrectionData,
-            "xagent/citation-failure": CitationFailureData,
-        }
-        model = models.get(self.event_type)
-        if model is None:
-            return self
-        if self.schema_version != 1 or self.tool_call_id is not None:
-            raise ValueError("invalid citation event envelope")
-        envelope = self.payload
-        if set(envelope) != {"type", "seq", "time", "data"}:
-            raise ValueError("invalid citation event payload")
-        if envelope.get("type") != self.event_type:
-            raise ValueError("citation event type mismatch")
-        seq = envelope.get("seq")
-        time = envelope.get("time")
-        if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
-            raise ValueError("invalid citation event sequence")
-        if isinstance(time, bool) or not isinstance(time, int) or time < 0:
-            raise ValueError("invalid citation event time")
-        model.model_validate(envelope.get("data"))
-        return self
-
 
 class RetrievalReceiptAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid")

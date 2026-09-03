@@ -445,19 +445,6 @@ describe('XAgent FastAPI Session Persistence', () => {
       .rejects.toThrow(/invalid XAgent|non-contiguous/)
   })
 
-  test.each([
-    { extra: true },
-    { type: 'xagent/citation-correction', seq: 0, time: 1, data: { draftSha256: 'a'.repeat(64), invalidDraft: 'draft', reason: 'citation-missing', invalidIds: [], allowedIds: ['[资料1]'], secret: 'token' } },
-    { type: 'xagent/citation-correction', seq: 0, time: 1, data: { draftSha256: 'bad', invalidDraft: 'draft', reason: 'citation-missing', invalidIds: [], allowedIds: ['[资料1]'] } },
-    { type: 'xagent/citation-correction', seq: 0, time: 1, data: { draftSha256: 'a'.repeat(64), invalidDraft: 'draft', reason: 'citation-missing', invalidIds: [], allowedIds: Array.from({ length: 65 }, (_, index) => `[资料${String(index + 1)}]`) } },
-  ])('范围读取拒绝畸形引用事件 %#', async (payload) => {
-    const value = backend()
-    value.sessions.events = vi.fn(async () => ({ events: [{ sequence: 0, payload }] }) as never)
-    const persistence = new XAgentSessionPersistence(new Context(), value)
-    await expect(persistence.withUserToken('token', () => persistence.readFrom(id, 0)))
-      .rejects.toThrow(/invalid XAgent/)
-  })
-
   test('open 响应校验容器、连续序列和 Session 身份', async () => {
     for (const response of [
       null,

@@ -27,4 +27,61 @@ describe('xagent retrieval invariant', () => {
     }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })).toThrow()
     warn.mockRestore()
   })
+
+  test('rejects cited-answer metadata whose citation ids disagree with its canonical blocks', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(Invariants)
+    await ctx.plugin(invariant)
+    const session = ctx.sessions.create(SessionId('session-cited-answer-invariant'))
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
+    session.append('turn/start', { turn: 0 })
+    session.append('step/start', { turn: 0, step: 0 })
+    const call = session.append('tool/call', { turn: 0, step: 0, callId: 'call-1' as never, name: 'submit_cited_answer', arguments: '{}' })
+    expect(() => session.append('tool/result', {
+      turn: 0, step: 0,
+      message: {
+        id: 'm' as never,
+        role: 'user',
+        source: { kind: 'tool', callId: 'call-1' as never },
+        content: [{ type: 'tool-result', toolCallId: 'call-1' as never, isError: false, content: [{ type: 'text', text: 'answer' }] }],
+      },
+      meta: {
+        kind: 'xagent-cited-answer',
+        schemaVersion: 1,
+        blocks: [{ type: 'markdown', text: 'answer' }, { type: 'citation', id: '[资料1]' }],
+        citationIds: ['[资料2]'],
+      },
+    }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })).toThrow()
+    warn.mockRestore()
+  })
+
+  test('rejects cited-answer metadata with an unbounded citation ordinal', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(Invariants)
+    await ctx.plugin(invariant)
+    const session = ctx.sessions.create(SessionId('session-cited-answer-id-invariant'))
+    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => {})
+    session.append('turn/start', { turn: 0 })
+    session.append('step/start', { turn: 0, step: 0 })
+    const call = session.append('tool/call', { turn: 0, step: 0, callId: 'call-1' as never, name: 'submit_cited_answer', arguments: '{}' })
+    const citationId = '[资料999999999999999999999999999999]'
+    expect(() => session.append('tool/result', {
+      turn: 0, step: 0,
+      message: {
+        id: 'm' as never,
+        role: 'user',
+        source: { kind: 'tool', callId: 'call-1' as never },
+        content: [{ type: 'tool-result', toolCallId: 'call-1' as never, isError: false, content: [{ type: 'text', text: 'answer' }] }],
+      },
+      meta: {
+        kind: 'xagent-cited-answer',
+        schemaVersion: 1,
+        blocks: [{ type: 'markdown', text: 'answer' }, { type: 'citation', id: citationId }],
+        citationIds: [citationId],
+      },
+    }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })).toThrow()
+    warn.mockRestore()
+  })
 })

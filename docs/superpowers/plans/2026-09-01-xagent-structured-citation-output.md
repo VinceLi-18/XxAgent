@@ -29,11 +29,8 @@
 
 - Create under `packages/xagent/retrieval/src/`: `cited-answer.ts`, `cited-answer-policy.ts`
 - Create under `packages/xagent/retrieval/tests/`: `cited-answer.spec.ts`, `cited-answer-policy.spec.ts`
-- Delete: `packages/xagent/retrieval/src/citation-scanner.ts`
-- Delete: `packages/xagent/retrieval/src/citation-policy.ts`
-- Delete: `packages/xagent/retrieval/src/events.ts`
-- Delete: `packages/xagent/retrieval/tests/citation-scanner.spec.ts`
-- Delete: `packages/xagent/retrieval/tests/citation-policy.spec.ts`
+- Delete the retrieval citation scanner, free-text policy, and custom-event source modules.
+- Delete their scanner and policy unit-test modules.
 - Modify: `packages/xagent/retrieval/src/index.ts`
 - Modify: `packages/xagent/retrieval/src/types.ts`
 - Modify: `packages/xagent/retrieval/src/invariant.ts`
@@ -47,7 +44,7 @@
 - Modify: `packages/xagent/session-persistence-api/tests/session-persistence-api.spec.ts`
 - Modify: `packages/core/session/src/known-event-types.ts`
 - Modify: `services/api/app/api/routes/internal_sessions.py`
-- Modify: `services/api/tests/test_internal_sessions.py`
+- Modify: `services/api/tests/api/test_internal_sessions.py`
 - Modify: `.agents/notes/proposed/architecture/2026-08-28-xagent-rag-retrieval.md`
 - Modify generated citation/event/config documentation and pairing records selected by `doc-sync`
 - Modify: `pnpm-lock.yaml`

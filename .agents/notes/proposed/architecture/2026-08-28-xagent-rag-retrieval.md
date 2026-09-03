@@ -22,7 +22,7 @@ Session Persistence 按每个 append 批次的首尾 sequence 取出已绑定收
 
 Host 只在当前模型 request 包含与 Session 中已 checkpoint 检索结果相同的非空证据时注册 Native-only `submit_cited_answer`。模型用关闭的 Markdown 块与引用块提交终稿；Host 在固定 64 KiB JSON、256 个 block 和 64 个引用上限内验证并规范化，只从引用块重建待授权身份。Markdown、raw HTML、字符实体和 Unicode 文本均不产生引用权限。工具使用当前请求 token、permission revision 和新委托 nonce 交给 FastAPI 重授权，成功后持久化规范 `tool/result`、投影 replayable metadata 并结束 turn；普通对话和空检索保留原流式路径。
 
-同一受保护请求最多接受两次终稿提交。第一次 schema、范围、引用集合或重授权失败只向模型返回有界工具错误，不发布候选正文；第二次失败或没有成功终稿结果时以持久中文 `CITATION_FAILED` turn error 结束。每次提交在验证前登记独立 owner，request、connection、Session 和 service 取消会关闭 admission 并等待授权、结果投影与权威结果观察结算。Browser 只把结构化引用块渲染为已验证资料 chip；普通文本中的相似字符串不进入来源条或点击能力。完整协议由[结构化引用终稿设计](../../../../docs/superpowers/specs/2026-09-01-xagent-structured-citation-output-design.md)定义。
+同一受保护请求最多接受两次终稿提交。第一次 schema、范围、引用集合或重授权失败只向模型返回有界工具错误，不发布候选正文；第二次失败或没有成功终稿结果时以持久中文 `CITATION_FAILED` turn error 结束。每个受保护请求在证据 checkpoint 完成后登记独立 owner；每次提交按精确 ToolExecution 暂存，request、connection、Session 和 service 取消会关闭 admission 并等待授权、结果投影与权威结果观察结算。Browser 只把结构化引用块渲染为已验证资料 chip；普通文本中的相似字符串不进入来源条或点击能力。完整协议由[结构化引用终稿设计](../../../../docs/superpowers/specs/2026-09-01-xagent-structured-citation-output-design.md)定义。
 
 FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把 nonce 的 SHA-256 摘要作为全局唯一键持久化；令牌原文、nonce 原文和签名不进入数据库或日志。令牌严格绑定 actor、Session、Project Session 的 project 或 Private Session 的 null project、endpoint tool、tool call、权限 revision 和不超过六十秒的有效期。nonce 消费使用独立提交的事务，因此后续查询失败也不能重新使用同一委托。
 
