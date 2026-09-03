@@ -476,6 +476,9 @@ describe('CI workflow', () => {
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
     expect(e2eStep.run).toContain('verify_model_snapshot.py --allow-absent')
     expect(e2eStep.run).toContain('verify_model_snapshot.py --cache-dir')
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --allow-absent')).toBeLessThan(
+      e2eStep.run.indexOf('docker compose -f services/api/compose.test.yml up -d --build --wait'),
+    )
     expect(e2eStep.run.indexOf('verify_model_snapshot.py --cache-dir')).toBeLessThan(
       e2eStep.run.indexOf('pytest tests/e2e/test_artifact_pipeline.py'),
     )
@@ -652,6 +655,9 @@ describe('CI workflow', () => {
     expect(e2eStep.run).toContain('verify_model_snapshot.py --allow-absent')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml up -d --build --wait')
     expect(e2eStep.run).toContain('verify_model_snapshot.py --cache-dir')
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --allow-absent')).toBeLessThan(
+      e2eStep.run.indexOf('docker compose -f services/api/compose.test.yml up -d --build --wait'),
+    )
     expect(e2eStep.run.indexOf('verify_model_snapshot.py --cache-dir')).toBeLessThan(
       e2eStep.run.indexOf('pytest tests/e2e/test_retrieval_pipeline.py'),
     )

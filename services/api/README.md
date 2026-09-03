@@ -115,7 +115,7 @@ pnpm run api:dev:down
 
 ## 真实检索验收
 
-检索 E2E 使用 `compose.test.yml` 的可销毁数据库、对象存储、扫描器和真实 CPU BGE-M3，不会以 mock 代替 embedding 或检索路径。冷缓存先以 `verify_model_snapshot.py --allow-absent` 确认缓存完全不存在，再以默认在线模式从官方源启动 Compose；服务健康后必须执行严格验证。已有完整缓存则先执行严格验证并设置 `HF_HUB_OFFLINE=true`，再启动 Compose。两条路径都在仓库根目录执行 `pnpm run api:test:retrieval`，该命令也会在 pytest 前严格验证缓存。
+检索 E2E 使用 `compose.test.yml` 的可销毁数据库、对象存储、扫描器和真实 CPU BGE-M3，不会以 mock 代替 embedding 或检索路径。冷缓存先以 `verify_model_snapshot.py --allow-absent` 确认 BGE-M3 模型仓库路径及其专用 lock 路径在文件系统中均不存在，再以默认在线模式从官方源启动 Compose；任一路径上存在文件、空目录或有效／失效符号链接都会失败，其他模型的仓库与 lock 元数据不受影响。服务健康后必须执行严格验证。已有完整缓存则先执行严格验证并设置 `HF_HUB_OFFLINE=true`，再启动 Compose。两条路径都在仓库根目录执行 `pnpm run api:test:retrieval`，该命令也会在 pytest 前严格验证缓存。
 
 ```bash
 python3 services/embedding/verify_model_snapshot.py \

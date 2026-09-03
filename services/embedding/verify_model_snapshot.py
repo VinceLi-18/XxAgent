@@ -134,6 +134,19 @@ def _snapshot_entries(snapshot: Path) -> set[str]:
     return entries
 
 
+def _require_cold_model_cache(repository: Path, locks: Path) -> None:
+    for path in (repository, locks):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise SnapshotVerificationError(
+                "cannot inspect model repository cache"
+            ) from error
+        raise SnapshotVerificationError("model repository cache is not cold")
+
+
 def verify_snapshot(
     cache_dir: Path,
     manifest_path: Path,
@@ -144,22 +157,20 @@ def verify_snapshot(
 
     @param cache_dir Hugging Face cache root mounted into all retrieval services.
     @param manifest_path Reviewed immutable revision and per-file digest manifest.
-    @param allow_absent Permit only a wholly absent snapshot so an official download can start.
+    @param allow_absent Permit an absent snapshot only when its repository and lock paths are absent.
     @returns A stable human-readable verification result.
     @raises SnapshotVerificationError If metadata or any present snapshot content is invalid.
     """
     model_id, revision, entries = _load_manifest(manifest_path)
-    snapshot = (
-        cache_dir
-        / "hub"
-        / "models--BAAI--bge-m3"
-        / "snapshots"
-        / revision
-    )
+    hub = cache_dir / "hub"
+    repository = hub / "models--BAAI--bge-m3"
+    locks = hub / ".locks" / "models--BAAI--bge-m3"
+    snapshot = repository / "snapshots" / revision
     if snapshot.is_symlink() and not snapshot.exists():
         raise SnapshotVerificationError("snapshot path is invalid")
     if not snapshot.exists():
         if allow_absent:
+            _require_cold_model_cache(repository, locks)
             return "snapshot absent; immutable download required"
         raise SnapshotVerificationError("snapshot is absent")
     if not snapshot.is_dir():
