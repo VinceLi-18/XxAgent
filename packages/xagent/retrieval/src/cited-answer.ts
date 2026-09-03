@@ -52,15 +52,6 @@ function record(value: unknown): Record<string, unknown> | undefined {
  * @returns an immutable canonical answer whose citation IDs follow first use.
  */
 export function normalizeCitedAnswer(value: unknown, allowedIds: ReadonlySet<string>): XAgentCitedAnswer {
-  let serialized: unknown
-  try {
-    serialized = Reflect.apply(JSON.stringify, JSON, [value])
-  } catch {
-    reject('invalid-json')
-  }
-  if (typeof serialized !== 'string') reject('invalid-json')
-  if (Buffer.byteLength(serialized) > CITED_ANSWER_MAX_BYTES) reject('answer-too-large')
-
   const root = record(value)
   if (root === undefined || !exactKeys(root, ['blocks']) || !Array.isArray(root.blocks)) {
     reject('invalid-schema')
@@ -69,6 +60,15 @@ export function normalizeCitedAnswer(value: unknown, allowedIds: ReadonlySet<str
   if (inputBlocks.length < 1 || inputBlocks.length > CITED_ANSWER_MAX_BLOCKS) {
     reject('blocks-out-of-range')
   }
+
+  let serialized: unknown
+  try {
+    serialized = Reflect.apply(JSON.stringify, JSON, [value])
+  } catch {
+    reject('invalid-json')
+  }
+  if (typeof serialized !== 'string') reject('invalid-json')
+  if (Buffer.byteLength(serialized) > CITED_ANSWER_MAX_BYTES) reject('answer-too-large')
 
   const blocks: XAgentCitedAnswerBlock[] = []
   const citationIds: string[] = []

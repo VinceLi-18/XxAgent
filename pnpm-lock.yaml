@@ -761,6 +761,15 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:*
         version: link:../packages/workflow/workflow-worker-thread
+      '@xagent/dsh-principal':
+        specifier: workspace:*
+        version: link:../packages/xagent/principal
+      '@xagent/dsh-retrieval':
+        specifier: workspace:*
+        version: link:../packages/xagent/retrieval
+      '@xagent/dsh-tool-retrieval':
+        specifier: workspace:*
+        version: link:../packages/xagent/tool-retrieval
 
   native/landlock-run:
     devDependencies:

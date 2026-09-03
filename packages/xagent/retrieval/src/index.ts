@@ -215,6 +215,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     readonly scopeIdentity: object
     readonly owner: CitedAnswerRequestOwner
   }>()
+  private readonly drainingCitedAnswerOwners = new Set<CitedAnswerRequestOwner>()
   private readonly issuer: string
   private readonly audience: string
   private readonly privateKey: KeyObject | undefined
@@ -263,6 +264,11 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         || requestSignal.aborted || connectionSignal.aborted) {
         this.messageScopes.set(messageId, { agent })
         return
+      }
+      const active = this.activeScopes.get(agent)
+      if (active !== undefined && !samePhysicalScope(active.scope, scope) && this.citedAnswerOwners.has(agent)) {
+        this.deleteActiveScope(agent)
+        agent.cancel({ kind: 'user' })
       }
       for (const [messageId, binding] of this.messageScopes) {
         if (binding.scope?.sessionId === scope.sessionId && !samePhysicalScope(binding.scope, scope)) {
@@ -459,15 +465,15 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       this.accepting = false
       for (const close of this.closeScopeObservers) close()
       for (const messageId of this.messageScopes.keys()) this.deleteMessageScope(messageId)
-      const answerOwners = [...this.citedAnswerOwners.values()].map(entry => entry.owner)
       for (const agent of this.activeScopes.keys()) {
         agent.cancel({ kind: 'user' })
         this.deleteActiveScope(agent)
       }
+      this.closeCitedAnswerOwners(() => true)
+      const answerOwners = [...this.drainingCitedAnswerOwners]
       const active = [...this.controllers.entries()]
       const receiptDisposal = this.receipts.dispose()
       for (const [controller] of active) controller.abort()
-      for (const owner of answerOwners) owner.close()
       await Promise.allSettled(active.map(([, settlement]) => settlement))
       await Promise.allSettled(answerOwners.map(owner => owner.settlement))
       await receiptDisposal
@@ -550,8 +556,14 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     for (const [agent, entry] of this.citedAnswerOwners) {
       if (!predicate(agent)) continue
       this.citedAnswerOwners.delete(agent)
-      entry.owner.close()
+      this.drainCitedAnswerOwner(entry.owner)
     }
+  }
+
+  private drainCitedAnswerOwner(owner: CitedAnswerRequestOwner): void {
+    owner.close()
+    this.drainingCitedAnswerOwners.add(owner)
+    void owner.settlement.then(() => { this.drainingCitedAnswerOwners.delete(owner) })
   }
 
   private requireScope(sessionId: string): XAgentAuthenticatedSessionRequestScope {
@@ -599,7 +611,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       const connectionSignal = binding.scope.connectionSignal
       if (requestSignal === undefined || connectionSignal === undefined) return
       const previous = this.citedAnswerOwners.get(agent)
-      previous?.owner.close()
+      if (previous !== undefined) this.drainCitedAnswerOwner(previous.owner)
       const owner = openCitedAnswerRequest({
         agent,
         identity: binding.identity,

@@ -10,11 +10,11 @@ Private Session 的检索必须显式提供规范 Project UUID 和／或 `includ
 
 FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。最终成功的 Native 结果把它标记为已发布；被阻止、取消、失败或确定无法 append 的结果会确认未发布并丢弃。已发布 receipt 只在 Session、tool call 和 payload hash 同时匹配时绑定。服务释放会关闭新工作入口，丢弃已无法发布的 continuation，取消在飞请求并等待后端完成；该等待不依赖自身 post-execute waterfall。已绑定 sidecar 在远端确认前仍可按精确 append 窗口读取。
 
-当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务会从该请求的精确消息与匹配的 Session `tool/result` metadata 重建短引用身份，然后只在该 Agent 作用域注册 Native-only `submit_cited_answer` 和 order-190 指令。受保护的模型流不缓冲普通 assistant 文本与 reasoning，而是丢弃它们并保留工具与协议 chunk。普通请求和空检索保持下游流不变。
+当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务会从该请求的精确消息与匹配的 Session `tool/result` metadata 重建短引用身份，然后只在该 Agent 作用域注册 Native-only `submit_cited_answer` 和 order-190 指令。受保护的模型流不缓冲普通 assistant 文本与 reasoning，而是丢弃它们并保留工具与协议 chunk；超限的终结参数 delta 会在转发给 Agent assembler 前被拒绝。普通请求和空检索保持下游流不变。
 
-终结工具接受 Markdown 块与引用块组成的关闭有序联合。完整 JSON 值最多 64 KiB UTF-8，包含 1 至 256 个块，至少一个非空 Markdown 块和一个引用块，且引用块最多 64 个。Markdown 按模型原文保留，不产生引用权限；服务不解析 markup、raw HTML、字符实体或 Unicode 近似字符。引用块只能命名当前请求已入账的短 ID；相邻重复引用会合并，非相邻位置保持不变，`citationIds` 按首次使用排列。每次提交都使用当前认证作用域和新委托 nonce 对这些身份精确重新授权。
+终结工具接受 Markdown 块与引用块组成的关闭有序联合。根对象关闭性和 1 至 256 个块的数量限制会在完整序列化前检查；流式参数和完整 JSON 值各自最多 64 KiB UTF-8。回答必须至少包含一个非空 Markdown 块和一个引用块，且引用块最多 64 个。Markdown 按模型原文保留，不产生引用权限；服务不解析 markup、raw HTML、字符实体或 Unicode 近似字符。引用块只能命名当前请求已入账的短 ID；相邻重复引用会合并，非相邻位置保持不变，`citationIds` 按首次使用排列。每次提交都使用当前认证作用域和新委托 nonce 对这些身份精确重新授权。
 
-请求 owner 按精确 `ToolExecution` 暂存合法答案，调用 `concludeTurn()`，并只把其权威且成功的 `tools/result` 视为发布。第一次无效提交可在同一请求中返回有界 `CITATION_INVALID` 工具错误并立即重试；第二次无效提交或响应结束时未成功调用终结工具，均返回固定 `CITATION_FAILED`。终结工具之前的工具正常完成，并行终结调度和其后调用不能重开已完成请求。请求或连接取消、账号或 Session 替换、Agent 或 Session 释放以及 Retrieval 释放会关闭 admission、中止活跃授权、在失败时不发布 cited-answer metadata，并等待 owner 结算。
+请求 owner 按精确 `ToolExecution` 暂存合法答案，调用 `concludeTurn()`，并只把其权威且成功的 `tools/result` 视为发布。第一次无效提交可在同一请求中返回有界 `CITATION_INVALID` 工具错误并立即重试；第二次无效提交或响应结束时未成功调用终结工具，均返回固定 `CITATION_FAILED`。终结工具之前的工具正常完成；单调 guard 会持续到 turn boundary，拒绝并行终结调度和之后的所有调用。请求或连接取消、账号或 Session 替换、Agent 或 Session 释放以及 Retrieval 释放会关闭 admission、中止活跃授权、在失败时不发布 cited-answer metadata，并保留 draining owner 直至其受保护 iterator 完成。
 
 ## Model Experience
 

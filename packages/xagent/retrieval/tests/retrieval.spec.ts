@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import LlmRuntime, { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createUserMessage, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -100,6 +100,22 @@ async function agentHarness(adapter: LlmAdapter, value = backend()) {
   return { ctx, owner, retrieval, value }
 }
 
+function terminalThenToolResponse(): StreamChunk[] {
+  const answer = JSON.stringify({
+    blocks: [{ type: 'markdown', text: 'final' }, { type: 'citation', id: '[资料1]' }],
+  })
+  return [
+    { type: 'block-start', index: 0, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 0, id: CallId('call-answer'), name: CITED_ANSWER_TOOL, argumentsDelta: answer },
+    { type: 'block-end', index: 0, block: { type: 'tool-call', id: CallId('call-answer'), name: CITED_ANSWER_TOOL, arguments: answer } },
+    { type: 'block-start', index: 1, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 1, id: CallId('call-after-answer'), name: 'list_accessible_projects', argumentsDelta: '{}' },
+    { type: 'block-end', index: 1, block: { type: 'tool-call', id: CallId('call-after-answer'), name: 'list_accessible_projects', arguments: '{}' } },
+    { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } },
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ]
+}
+
 
 describe('XAgentRetrievalService', () => {
   test('publishes one canonical cited-answer result through the real Agent loop', async () => {
@@ -131,6 +147,25 @@ describe('XAgentRetrievalService', () => {
     })
     expect(created.owner.session.events.findLast(event => event.type === 'turn/end')).toMatchObject({
       data: { reason: { kind: 'completed' } },
+    })
+    await created.retrieval.dispose()
+  })
+
+  test('denies an ordinary tool after the terminal answer in the same model response', async () => {
+    const value = backend()
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      terminalThenToolResponse(),
+    ])
+    const created = await agentHarness(adapter, value)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await created.owner.whenIdle()
+    expect(value.projects).not.toHaveBeenCalled()
+    expect(created.owner.session.events.find(event => event.type === 'tool/result'
+      && event.data.message.source.callId === 'call-after-answer')).toMatchObject({
+      data: { message: { content: [{ type: 'tool-result', isError: true }] } },
     })
     await created.retrieval.dispose()
   })
@@ -239,6 +274,49 @@ describe('XAgentRetrievalService', () => {
     expect(JSON.stringify(created.owner.session.events.filter(event => event.type === 'tool/result'))).not.toContain('must-not-publish')
   })
 
+  test('a cited-answer Session append failure publishes no terminal result', async () => {
+    const value = backend()
+    const authorization = Promise.withResolvers<undefined>()
+    value.authorizeCitations = vi.fn(() => authorization.promise)
+    const created = await agentHarness(new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      toolCallResponse('call-answer', CITED_ANSWER_TOOL, {
+        blocks: [{ type: 'markdown', text: 'must not publish' }, { type: 'citation', id: '[资料1]' }],
+      }),
+    ]), value)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(value.authorizeCitations).toHaveBeenCalledOnce() })
+    const append = created.owner.session.append.bind(created.owner.session)
+    let appendAttempted = false
+    vi.spyOn(created.owner.session, 'append').mockImplementation((
+      type: string,
+      data: unknown,
+      ...options: unknown[]
+    ) => {
+      const row = typeof data === 'object' && data !== null ? data as Record<string, unknown> : undefined
+      const message = typeof row?.message === 'object' && row.message !== null
+        ? row.message as Record<string, unknown>
+        : undefined
+      const source = typeof message?.source === 'object' && message.source !== null
+        ? message.source as Record<string, unknown>
+        : undefined
+      if (type === 'tool/result' && source?.callId === 'call-answer') {
+        appendAttempted = true
+        throw new Error('append failed')
+      }
+      return Reflect.apply(append, undefined, [type, data, ...options]) as never
+    })
+    authorization.resolve(undefined)
+    await created.owner.whenIdle()
+    expect(appendAttempted).toBe(true)
+    expect(created.owner.session.events.filter(event => event.type === 'tool/result'
+      && typeof event.data.meta === 'object' && event.data.meta !== null && !Array.isArray(event.data.meta)
+      && event.data.meta.kind === 'xagent-cited-answer')).toHaveLength(0)
+    await created.retrieval.dispose()
+  })
+
   test.each(['requestSignal', 'connectionSignal'] as const)(
     '%s cancellation aborts terminal authorization without publishing an answer',
     async (signalName) => {
@@ -276,6 +354,147 @@ describe('XAgentRetrievalService', () => {
       await created.retrieval.dispose()
     },
   )
+
+  test('account revision replacement cancels the cited owner before a replacement answer can publish', async () => {
+    const value = backend()
+    const authorization = Promise.withResolvers<undefined>()
+    let firstAuthorizationAborted = false
+    const authorizeCitations = vi.fn(async (
+      _token: string,
+      _delegation: string,
+      _input: Parameters<XAgentRetrievalBackend['authorizeCitations']>[2],
+      signal?: AbortSignal,
+    ) => {
+      if (authorizeCitations.mock.calls.length > 1) return
+      await new Promise<void>((resolve, reject) => {
+        const abort = (): void => {
+          firstAuthorizationAborted = true
+          reject(new DOMException('aborted', 'AbortError'))
+        }
+        if (signal?.aborted === true) abort()
+        else {
+          signal?.addEventListener('abort', abort, { once: true })
+          void authorization.promise.then(resolve)
+        }
+      })
+    })
+    value.authorizeCitations = authorizeCitations
+    const adapter = new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      toolCallResponse('call-alice-answer', CITED_ANSWER_TOOL, {
+        blocks: [{ type: 'markdown', text: 'alice answer' }, { type: 'citation', id: '[资料1]' }],
+      }),
+      toolCallResponse('call-bob-answer', CITED_ANSWER_TOOL, {
+        blocks: [{ type: 'markdown', text: 'bob answer' }, { type: 'citation', id: '[资料1]' }],
+      }),
+    ])
+    const created = await agentHarness(adapter, value)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'alice' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(value.authorizeCitations).toHaveBeenCalledOnce() })
+    const changedScope = Object.freeze({
+      ...scope(), userToken: 'bob-token', connectionId: 'connection-bob',
+      principal: Object.freeze({ ...scope().principal, permissionRevision: 4, connectionId: 'connection-bob' }),
+    })
+    runWithXAgentAuthenticatedRequestScope(changedScope, () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'bob' }], source: { kind: 'user' } }))
+    })
+    await new Promise<undefined>((resolve) => { setImmediate(resolve, undefined) })
+    const observedAbort = firstAuthorizationAborted
+    authorization.resolve(undefined)
+    await created.owner.whenIdle()
+    expect(observedAbort).toBe(true)
+    expect(authorizeCitations.mock.calls.map(call => call[0])).toEqual(['alice-token'])
+    expect(created.owner.session.events.find(event => event.type === 'tool/result'
+      && event.data.message.source.callId === 'call-alice-answer')).toMatchObject({
+      data: { message: { content: [{ type: 'tool-result', isError: true }] } },
+    })
+    expect(created.owner.session.events.filter(event => event.type === 'tool/result'
+      && typeof event.data.meta === 'object' && event.data.meta !== null && !Array.isArray(event.data.meta)
+      && event.data.meta.kind === 'xagent-cited-answer')).toHaveLength(0)
+    await created.retrieval.dispose()
+  })
+
+  test('Session disposal aborts a cited owner and publishes no answer', async () => {
+    const value = backend()
+    let authorizationAborted = false
+    value.authorizeCitations = vi.fn(async (
+      _token: string,
+      _delegation: string,
+      _input: Parameters<XAgentRetrievalBackend['authorizeCitations']>[2],
+      signal?: AbortSignal,
+    ) => {
+      await new Promise<void>((_resolve, reject) => {
+        const abort = (): void => {
+          authorizationAborted = true
+          reject(new DOMException('aborted', 'AbortError'))
+        }
+        if (signal?.aborted === true) abort()
+        else signal?.addEventListener('abort', abort, { once: true })
+      })
+    })
+    const created = await agentHarness(new MockAdapter([
+      toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] }),
+      toolCallResponse('call-answer', CITED_ANSWER_TOOL, {
+        blocks: [{ type: 'markdown', text: 'must not publish' }, { type: 'citation', id: '[资料1]' }],
+      }),
+    ]), value)
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await vi.waitFor(() => { expect(value.authorizeCitations).toHaveBeenCalledOnce() })
+    created.ctx.emit('session/disposed', created.owner.session)
+    await created.owner.whenIdle()
+    expect(authorizationAborted).toBe(true)
+    expect(created.owner.session.events.filter(event => event.type === 'tool/result'
+      && typeof event.data.meta === 'object' && event.data.meta !== null && !Array.isArray(event.data.meta)
+      && event.data.meta.kind === 'xagent-cited-answer')).toHaveLength(0)
+    await created.retrieval.dispose()
+  })
+
+  test('retrieval disposal waits for a request-cancelled protected source to return', async () => {
+    const protectedStarted = Promise.withResolvers<undefined>()
+    const releaseSource = Promise.withResolvers<undefined>()
+    let sourceReturned = false
+    const adapter = new class extends MockAdapter {
+      private calls = 0
+
+      constructor() { super([]) }
+
+      override async * stream(): AsyncIterable<StreamChunk> {
+        this.calls += 1
+        if (this.calls === 1) {
+          yield* toolCallResponse('call-search', 'search_artifacts', { query: 'evidence', project_ids: [PROJECT] })
+          return
+        }
+        try {
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          protectedStarted.resolve(undefined)
+          await releaseSource.promise
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        } finally {
+          sourceReturned = true
+        }
+      }
+    }()
+    const created = await agentHarness(adapter)
+    const request = new AbortController()
+    runWithXAgentAuthenticatedRequestScope(Object.freeze({ ...scope(), requestSignal: request.signal }), () => {
+      created.owner.followup(createUserMessage({ content: [{ type: 'text', text: 'search' }], source: { kind: 'user' } }))
+    })
+    await protectedStarted.promise
+    request.abort()
+    let disposalSettled = false
+    const disposal = created.retrieval.dispose().then(() => { disposalSettled = true })
+    await new Promise<undefined>((resolve) => { setImmediate(resolve, undefined) })
+    const settledBeforeSource = disposalSettled
+    releaseSource.resolve(undefined)
+    await disposal
+    await created.owner.whenIdle()
+    expect(settledBeforeSource).toBe(false)
+    expect(sourceReturned).toBe(true)
+  })
 
   test('requires the pinned BGE-M3 tokenizer identity and validates the production HTTP response', async () => {
     expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {

@@ -159,7 +159,7 @@ CI=true corepack pnpm exec vitest run \
   packages/core/agent-loop/tests \
   packages/core/tools/tests
 JX_TEST_DATABASE_URL="$JX_TEST_DATABASE_URL" services/api/.venv/bin/pytest -q \
-  services/api/tests/test_internal_sessions.py
+  services/api/tests/api/test_internal_sessions.py
 corepack pnpm install --lockfile-only --offline
 CI=true corepack pnpm run typecheck
 CI=true corepack pnpm run lint:contracts-ready

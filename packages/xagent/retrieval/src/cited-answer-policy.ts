@@ -11,6 +11,8 @@ import type {
 } from '@deepseek-ai/dsh-tools'
 import type { XAgentCitationIdentity } from '@xagent/dsh-backend-client'
 import {
+  CITED_ANSWER_MAX_BLOCKS,
+  CITED_ANSWER_MAX_BYTES,
   XAgentCitedAnswerError,
   normalizeCitedAnswer,
   renderCitedAnswer,
@@ -60,6 +62,7 @@ interface OwnerState {
   readonly settle: () => void
   active: number
   closed: boolean
+  committed: boolean
   running: ToolExecution | undefined
 }
 
@@ -176,7 +179,9 @@ const BLOCK_SCHEMA: JsonSchemaNode = {
 
 const PARAMETERS: Record<string, unknown> = {
   type: 'object', additionalProperties: false,
-  properties: { blocks: { type: 'array', items: BLOCK_SCHEMA } },
+  properties: {
+    blocks: { type: 'array', minItems: 1, maxItems: CITED_ANSWER_MAX_BLOCKS, items: BLOCK_SCHEMA },
+  },
   required: ['blocks'],
 }
 
@@ -203,7 +208,7 @@ function stateFor(owner: CitedAnswerRequestOwner): OwnerState {
 }
 
 function maybeSettle(state: OwnerState): void {
-  if (state.closed && state.active === 0) state.settle()
+  if ((state.closed || state.committed) && state.active === 0) state.settle()
 }
 
 async function ownedOperation<T>(owner: CitedAnswerRequestOwner, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -236,34 +241,31 @@ function toolDefinition(owner: CitedAnswerRequestOwner): ToolDefinition {
     },
     async execute(args: unknown, exec: ToolRunContext): Promise<JsonValue> {
       const state = stateFor(owner)
-      if (state.closed || exec.agent !== owner.agent || exec.parent !== undefined || owner.attempts >= 2) {
+      if (state.closed || state.committed || exec.agent !== owner.agent
+        || exec.parent !== undefined || owner.attempts >= 2) {
         throw new CitedAnswerTerminalError()
       }
-      owner.attempts = (owner.attempts + 1) as 1 | 2
       if (state.running !== undefined) throw new XAgentCitedAnswerError('invalid-schema')
+      owner.attempts = (owner.attempts + 1) as 1 | 2
       state.running = exec
+      const answer = normalizeCitedAnswer(args, new Set(owner.allowed.keys()))
+      state.staged.set(exec, answer)
+      const identities = answer.citationIds.map((id) => {
+        const identity = owner.allowed.get(id)
+        if (identity === undefined) throw new XAgentCitedAnswerError('citation-not-allowed')
+        return identity as XAgentCitationIdentity
+      })
       try {
-        const answer = normalizeCitedAnswer(args, new Set(owner.allowed.keys()))
-        state.staged.set(exec, answer)
-        const identities = answer.citationIds.map((id) => {
-          const identity = owner.allowed.get(id)
-          if (identity === undefined) throw new XAgentCitedAnswerError('citation-not-allowed')
-          return identity as XAgentCitationIdentity
-        })
-        try {
-          await ownedOperation(owner, signal => state.authorize(identities, AbortSignal.any([signal, exec.signal])))
-        } catch (error: unknown) {
-          if (owner.signal.aborted || exec.signal.aborted
-            || error instanceof DOMException && error.name === 'AbortError') throw error
-          throw new XAgentCitedAnswerError('citation-not-allowed')
-        }
-        owner.signal.throwIfAborted()
-        exec.signal.throwIfAborted()
-        exec.concludeTurn()
-        return answer as unknown as JsonValue
-      } finally {
-        if (state.running === exec) state.running = undefined
+        await ownedOperation(owner, signal => state.authorize(identities, AbortSignal.any([signal, exec.signal])))
+      } catch (error: unknown) {
+        if (owner.signal.aborted || exec.signal.aborted
+          || error instanceof DOMException && error.name === 'AbortError') throw error
+        throw new XAgentCitedAnswerError('citation-not-allowed')
       }
+      owner.signal.throwIfAborted()
+      exec.signal.throwIfAborted()
+      exec.concludeTurn()
+      return answer as unknown as JsonValue
     },
   }
 }
@@ -303,6 +305,7 @@ export function openCitedAnswerRequest(options: OpenCitedAnswerRequestOptions): 
     settle: settled.resolve,
     active: 0,
     closed: false,
+    committed: false,
     running: undefined,
   }
   ownerStates.set(owner, state)
@@ -313,16 +316,20 @@ export function openCitedAnswerRequest(options: OpenCitedAnswerRequestOptions): 
     text: CITED_ANSWER_INSTRUCTION,
   }))
   state.disposers.push(options.agent.ctx.tools.guard(exec =>
-    exec.agent === options.agent && exec.name !== CITED_ANSWER_TOOL
-      && state.running !== undefined && state.staged.has(state.running)
+    exec.agent === options.agent
+      && (state.committed || state.running !== undefined)
       ? 'cited answer submission is terminal'
       : undefined))
   state.disposers.push(options.agent.ctx.on('tools/result', (exec, result) => {
     if (exec.name !== CITED_ANSWER_TOOL) return
     const staged = state.staged.get(exec)
+    if (state.running === exec) state.running = undefined
     if (staged === undefined) return
     state.staged.delete(exec)
-    if (!result.isError) owner.close()
+    if (!result.isError) {
+      state.committed = true
+      maybeSettle(state)
+    }
   }))
   const abort = (): void => { owner.close() }
   options.signal.addEventListener('abort', abort, { once: true })
@@ -378,6 +385,7 @@ export function protectCitedAnswerStream(
     let done = false
     let sawTerminal = false
     let sawOtherTool = false
+    const argumentBytes = new Map<number, number>()
     try {
       iterator = next()[Symbol.asyncIterator]()
       while (!done) {
@@ -388,6 +396,27 @@ export function protectCitedAnswerStream(
         }
         owner.signal.throwIfAborted()
         const chunk = item.value
+        if (chunk.type === 'tool-call-delta') {
+          if (chunk.name !== undefined && chunk.name !== CITED_ANSWER_TOOL) {
+            argumentBytes.delete(chunk.index)
+          } else {
+            const current = argumentBytes.get(chunk.index) ?? 0
+            const delta = Buffer.byteLength(chunk.argumentsDelta)
+            if (delta > CITED_ANSWER_MAX_BYTES - current) {
+              yield terminalFailure()
+              owner.close()
+              return
+            }
+            argumentBytes.set(chunk.index, current + delta)
+          }
+        }
+        if (chunk.type === 'block-end' && chunk.block.type === 'tool-call'
+          && chunk.block.name === CITED_ANSWER_TOOL
+          && Buffer.byteLength(chunk.block.arguments) > CITED_ANSWER_MAX_BYTES) {
+          yield terminalFailure()
+          owner.close()
+          return
+        }
         if (chunk.type === 'tool-call-delta' && chunk.name !== undefined) {
           if (chunk.name === CITED_ANSWER_TOOL) sawTerminal = true
           else sawOtherTool = true

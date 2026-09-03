@@ -12,6 +12,7 @@ import {
   openCitedAnswerRequest,
   protectCitedAnswerStream,
 } from '../src/cited-answer-policy.ts'
+import { CITED_ANSWER_MAX_BYTES } from '../src/cited-answer.ts'
 
 const CITATION = Object.freeze({
   id: '[资料1]',
@@ -49,7 +50,11 @@ describe('cited-answer request runtime', () => {
       authorize: () => Promise.resolve(),
     })
     expect(ctx.tools.get(CITED_ANSWER_TOOL)).toBeUndefined()
-    expect(agent.ctx.tools.get(CITED_ANSWER_TOOL, agent)?.nativeOnly).toBe(true)
+    const definition = agent.ctx.tools.get(CITED_ANSWER_TOOL, agent)
+    expect(definition?.nativeOnly).toBe(true)
+    expect(definition?.parameters).toMatchObject({
+      properties: { blocks: { minItems: 1, maxItems: 256 } },
+    })
     const assembly = await ctx.systemPrompt.assemble({ scope: agent })
     expect(assembly.tools.map(tool => tool.name)).toContain(CITED_ANSWER_TOOL)
     expect(assembly.sections).toContainEqual({ name: `tool:${CITED_ANSWER_TOOL}`, text: CITED_ANSWER_INSTRUCTION })
@@ -175,9 +180,42 @@ describe('cited-answer request runtime', () => {
     const first = ctx.tools.execute({ ...input, callId: CallId('parallel-first') })
     await vi.waitFor(() => { expect(authorize).toHaveBeenCalledOnce() })
     const denied = await ctx.tools.execute({ ...input, callId: CallId('parallel-second') })
-    expect(denied).toMatchObject({ isError: true, error: { info: { code: 'CITATION_INVALID' } } })
+    expect(denied).toMatchObject({ isError: true, error: { message: 'cited answer submission is terminal' } })
+    expect(owner.attempts).toBe(1)
     authorization.resolve(undefined)
     await expect(first).resolves.toMatchObject({ isError: false })
+    await owner.settlement
+  })
+
+  test('does not consume the retry when a concurrent terminal call is denied', async () => {
+    const { agent, ctx } = await setup()
+    const firstAuthorization = Promise.withResolvers<undefined>()
+    const authorize = vi.fn()
+      .mockImplementationOnce(() => firstAuthorization.promise)
+      .mockResolvedValueOnce(undefined)
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize,
+    })
+    const input = {
+      name: CITED_ANSWER_TOOL,
+      arguments: { blocks: [{ type: 'markdown', text: '正文' }, { type: 'citation', id: CITATION.id }] },
+      agent,
+      signal: new AbortController().signal,
+    }
+    const first = ctx.tools.execute({ ...input, callId: CallId('parallel-failing') })
+    await vi.waitFor(() => { expect(authorize).toHaveBeenCalledOnce() })
+    const denied = await ctx.tools.execute({ ...input, callId: CallId('parallel-denied') })
+    expect(denied.isError).toBe(true)
+    expect(owner.attempts).toBe(1)
+    firstAuthorization.reject(new Error('authorization failed'))
+    await expect(first).resolves.toMatchObject({ isError: true })
+    const retry = await ctx.tools.execute({ ...input, callId: CallId('retry-after-parallel') })
+    expect(retry.isError).toBe(false)
+    expect(authorize).toHaveBeenCalledTimes(2)
     await owner.settlement
   })
 
@@ -243,6 +281,67 @@ describe('cited-answer request runtime', () => {
     expect(JSON.stringify(chunks)).not.toContain('rejected prose')
     expect(chunks).toEqual([
       { type: 'usage', usage: { inputTokens: 1, outputTokens: 2 } },
+      { type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED', message: 'cited answer was not submitted' } } },
+    ])
+    await owner.settlement
+  })
+
+  test('stops an oversized terminal argument delta before forwarding it to the Agent assembler', async () => {
+    const { agent } = await setup()
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize: () => Promise.resolve(),
+    })
+    let sourceClosed = false
+    const chunks = await collect(protectCitedAnswerStream({
+      provider: 'mock', model: 'mock', messages: [], sessionId: agent.session.id,
+    }, owner, () => (async function* () {
+      try {
+        yield { type: 'block-start', index: 0, blockType: 'tool-call' } as const
+        yield {
+          type: 'tool-call-delta', index: 0, id: CallId('oversized'), name: CITED_ANSWER_TOOL,
+          argumentsDelta: 'x'.repeat(CITED_ANSWER_MAX_BYTES + 1),
+        } as const
+        yield { type: 'finish', reason: { kind: 'tool-calls' } } as const
+      } finally {
+        sourceClosed = true
+      }
+    })()))
+    expect(chunks).toEqual([
+      { type: 'block-start', index: 0, blockType: 'tool-call' },
+      { type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED', message: 'cited answer was not submitted' } } },
+    ])
+    expect(sourceClosed).toBe(true)
+    await owner.settlement
+  })
+
+  test('stops an oversized terminal block before forwarding it to the Agent assembler', async () => {
+    const { agent } = await setup()
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize: () => Promise.resolve(),
+    })
+    const chunks = await collect(protectCitedAnswerStream({
+      provider: 'mock', model: 'mock', messages: [], sessionId: agent.session.id,
+    }, owner, () => (async function* () {
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' } as const
+      yield {
+        type: 'block-end', index: 0,
+        block: {
+          type: 'tool-call', id: CallId('oversized-block'), name: CITED_ANSWER_TOOL,
+          arguments: 'x'.repeat(CITED_ANSWER_MAX_BYTES + 1),
+        },
+      } as const
+      yield { type: 'finish', reason: { kind: 'tool-calls' } } as const
+    })()))
+    expect(chunks).toEqual([
+      { type: 'block-start', index: 0, blockType: 'tool-call' },
       { type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED', message: 'cited answer was not submitted' } } },
     ])
     await owner.settlement

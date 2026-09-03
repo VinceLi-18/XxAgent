@@ -112,6 +112,9 @@
     "@deepseek-ai/dsh-web": "workspace:*",
     "@deepseek-ai/dsh-web-fetch-http": "workspace:*",
     "@deepseek-ai/dsh-workflow-worker-thread": "workspace:*",
-    "@deepseek-ai/dsh-agent-instructions": "workspace:*"
+    "@deepseek-ai/dsh-agent-instructions": "workspace:*",
+    "@xagent/dsh-principal": "workspace:*",
+    "@xagent/dsh-retrieval": "workspace:*",
+    "@xagent/dsh-tool-retrieval": "workspace:*"
   }
 }

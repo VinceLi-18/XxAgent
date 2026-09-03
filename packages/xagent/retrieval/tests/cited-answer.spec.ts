@@ -84,6 +84,24 @@ describe('normalizeCitedAnswer', () => {
     ]), IDS).blocks).toHaveLength(CITED_ANSWER_MAX_BLOCKS)
   })
 
+  test('rejects an oversized block array before serializing any block', () => {
+    let serialized = false
+    const block = {
+      toJSON(): never {
+        serialized = true
+        throw new Error('must not serialize')
+      },
+    }
+    try {
+      normalizeCitedAnswer(answer(Array.from({ length: CITED_ANSWER_MAX_BLOCKS + 1 }, () => block)), IDS)
+    } catch (error: unknown) {
+      expect(error).toMatchObject({ reason: 'blocks-out-of-range' })
+      expect(serialized).toBe(false)
+      return
+    }
+    throw new Error('expected block-count rejection')
+  })
+
   test('limits citation blocks and requires exact allowed-ID membership', () => {
     expectInvalid(answer([
       { type: 'markdown', text: 'valid' },
