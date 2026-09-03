@@ -10,7 +10,7 @@ Private Session 的检索必须显式提供规范 Project UUID 和／或 `includ
 
 FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registry。最终成功的 Native 结果把它标记为已发布；被阻止、取消、失败或确定无法 append 的结果会确认未发布并丢弃。已发布 receipt 只在 Session、tool call 和 payload hash 同时匹配时绑定。服务释放会关闭新工作入口，丢弃已无法发布的 continuation，取消在飞请求并等待后端完成；该等待不依赖自身 post-execute waterfall。已绑定 sidecar 在远端确认前仍可按精确 append 窗口读取。
 
-当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务会从该请求的精确消息与匹配的 Session `tool/result` metadata 重建短引用身份，然后只在该 Agent 作用域注册 Native-only `submit_cited_answer` 和 order-190 指令。受保护的模型流不缓冲普通 assistant 文本与 reasoning，而是丢弃它们并保留工具与协议 chunk；超限的终结参数 delta 会在转发给 Agent assembler 前被拒绝。普通请求和空检索保持下游流不变。
+当 loop request 包含已 checkpoint 且非空的资料检索结果时，服务会从该请求的精确消息与匹配的 Session `tool/result` metadata 重建短引用身份，然后只在该 Agent 作用域注册 Native-only `submit_cited_answer` 和 order-190 指令。受保护的模型流不缓冲普通 assistant 文本与 reasoning，而是丢弃它们并保留工具与协议 chunk。每个 tool-call index 保留首次披露的身份：省略名称的 continuation 继承该身份，普通工具参数不受引用上限限制，终结参数超过 64 KiB 时会在转发前被拒绝，矛盾身份则关闭失败。普通请求和空检索保持下游流不变。
 
 终结工具接受 Markdown 块与引用块组成的关闭有序联合。根对象关闭性和 1 至 256 个块的数量限制会在完整序列化前检查；流式参数和完整 JSON 值各自最多 64 KiB UTF-8。回答必须至少包含一个非空 Markdown 块和一个引用块，且引用块最多 64 个。Markdown 按模型原文保留，不产生引用权限；服务不解析 markup、raw HTML、字符实体或 Unicode 近似字符。引用块只能命名当前请求已入账的短 ID；相邻重复引用会合并，非相邻位置保持不变，`citationIds` 按首次使用排列。每次提交都使用当前认证作用域和新委托 nonce 对这些身份精确重新授权。
 

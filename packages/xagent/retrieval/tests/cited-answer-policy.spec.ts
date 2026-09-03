@@ -347,6 +347,145 @@ describe('cited-answer request runtime', () => {
     await owner.settlement
   })
 
+  test('leaves an identified ordinary tool and its unnamed continuations unbounded', async () => {
+    const { agent } = await setup()
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize: () => Promise.resolve(),
+    })
+    const continuation = 'x'.repeat(CITED_ANSWER_MAX_BYTES + 1)
+    const chunks = await collect(protectCitedAnswerStream({
+      provider: 'mock', model: 'mock', messages: [], sessionId: agent.session.id,
+    }, owner, () => (async function* () {
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' } as const
+      yield {
+        type: 'tool-call-delta', index: 0, id: CallId('ordinary'),
+        name: 'list_accessible_projects', argumentsDelta: '{',
+      } as const
+      yield {
+        type: 'tool-call-delta', index: 0, id: CallId('ordinary'), argumentsDelta: continuation,
+      } as const
+      yield {
+        type: 'block-end', index: 0,
+        block: {
+          type: 'tool-call', id: CallId('ordinary'), name: 'list_accessible_projects',
+          arguments: `{${continuation}`,
+        },
+      } as const
+      yield { type: 'finish', reason: { kind: 'tool-calls' } } as const
+    })()))
+    expect(chunks).toHaveLength(5)
+    expect(chunks[2]).toMatchObject({ type: 'tool-call-delta', argumentsDelta: continuation })
+    expect(chunks[2]).not.toHaveProperty('name')
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
+    owner.close()
+    await owner.settlement
+  })
+
+  test('counts unnamed continuations after a terminal tool identity is established', async () => {
+    const { agent } = await setup()
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize: () => Promise.resolve(),
+    })
+    const chunks = await collect(protectCitedAnswerStream({
+      provider: 'mock', model: 'mock', messages: [], sessionId: agent.session.id,
+    }, owner, () => (async function* () {
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' } as const
+      yield {
+        type: 'tool-call-delta', index: 0, id: CallId('terminal-continuation'),
+        name: CITED_ANSWER_TOOL, argumentsDelta: 'x',
+      } as const
+      yield {
+        type: 'tool-call-delta', index: 0, id: CallId('terminal-continuation'),
+        argumentsDelta: 'x'.repeat(CITED_ANSWER_MAX_BYTES),
+      } as const
+      yield { type: 'finish', reason: { kind: 'tool-calls' } } as const
+    })()))
+    expect(chunks).toEqual([
+      { type: 'block-start', index: 0, blockType: 'tool-call' },
+      {
+        type: 'tool-call-delta', index: 0, id: CallId('terminal-continuation'),
+        name: CITED_ANSWER_TOOL, argumentsDelta: 'x',
+      },
+      { type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED', message: 'cited answer was not submitted' } } },
+    ])
+    await owner.settlement
+  })
+
+  test('fails closed when an ordinary tool index closes with the terminal identity', async () => {
+    const { agent } = await setup()
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize: () => Promise.resolve(),
+    })
+    const chunks = await collect(protectCitedAnswerStream({
+      provider: 'mock', model: 'mock', messages: [], sessionId: agent.session.id,
+    }, owner, () => (async function* () {
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' } as const
+      yield {
+        type: 'tool-call-delta', index: 0, id: CallId('contradictory-ordinary'),
+        name: 'list_accessible_projects', argumentsDelta: 'x'.repeat(CITED_ANSWER_MAX_BYTES + 1),
+      } as const
+      yield {
+        type: 'block-end', index: 0,
+        block: {
+          type: 'tool-call', id: CallId('contradictory-ordinary'), name: CITED_ANSWER_TOOL, arguments: '{}',
+        },
+      } as const
+      yield { type: 'finish', reason: { kind: 'tool-calls' } } as const
+    })()))
+    expect(chunks).toHaveLength(3)
+    expect(chunks[1]).toMatchObject({ type: 'tool-call-delta', name: 'list_accessible_projects' })
+    expect(chunks[2]).toEqual({
+      type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED', message: 'cited answer was not submitted' } },
+    })
+    await owner.settlement
+  })
+
+  test('fails closed when a terminal tool index later claims an ordinary identity', async () => {
+    const { agent } = await setup()
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize: () => Promise.resolve(),
+    })
+    const chunks = await collect(protectCitedAnswerStream({
+      provider: 'mock', model: 'mock', messages: [], sessionId: agent.session.id,
+    }, owner, () => (async function* () {
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' } as const
+      yield {
+        type: 'tool-call-delta', index: 0, id: CallId('contradictory-terminal'),
+        name: CITED_ANSWER_TOOL, argumentsDelta: '{',
+      } as const
+      yield {
+        type: 'tool-call-delta', index: 0, id: CallId('contradictory-terminal'),
+        name: 'list_accessible_projects', argumentsDelta: '}',
+      } as const
+      yield { type: 'finish', reason: { kind: 'tool-calls' } } as const
+    })()))
+    expect(chunks).toEqual([
+      { type: 'block-start', index: 0, blockType: 'tool-call' },
+      {
+        type: 'tool-call-delta', index: 0, id: CallId('contradictory-terminal'),
+        name: CITED_ANSWER_TOOL, argumentsDelta: '{',
+      },
+      { type: 'finish', reason: { kind: 'error', failure: { code: 'CITATION_FAILED', message: 'cited answer was not submitted' } } },
+    ])
+    await owner.settlement
+  })
+
   test('closes immediately when request or model admission is already aborted', async () => {
     const { agent } = await setup()
     const request = new AbortController()

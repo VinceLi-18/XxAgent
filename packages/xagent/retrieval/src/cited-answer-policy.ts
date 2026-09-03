@@ -385,7 +385,7 @@ export function protectCitedAnswerStream(
     let done = false
     let sawTerminal = false
     let sawOtherTool = false
-    const argumentBytes = new Map<number, number>()
+    const toolBlocks = new Map<number, { name: string | undefined; terminalArgumentBytes: number }>()
     try {
       iterator = next()[Symbol.asyncIterator]()
       while (!done) {
@@ -397,25 +397,46 @@ export function protectCitedAnswerStream(
         owner.signal.throwIfAborted()
         const chunk = item.value
         if (chunk.type === 'tool-call-delta') {
-          if (chunk.name !== undefined && chunk.name !== CITED_ANSWER_TOOL) {
-            argumentBytes.delete(chunk.index)
-          } else {
-            const current = argumentBytes.get(chunk.index) ?? 0
-            const delta = Buffer.byteLength(chunk.argumentsDelta)
-            if (delta > CITED_ANSWER_MAX_BYTES - current) {
+          let block = toolBlocks.get(chunk.index)
+          if (block === undefined) {
+            block = { name: chunk.name, terminalArgumentBytes: 0 }
+            toolBlocks.set(chunk.index, block)
+          } else if (chunk.name !== undefined) {
+            if (block.name !== undefined && block.name !== chunk.name) {
               yield terminalFailure()
               owner.close()
               return
             }
-            argumentBytes.set(chunk.index, current + delta)
+            block.name = chunk.name
+          }
+          if (block.name === undefined || block.name === CITED_ANSWER_TOOL) {
+            const delta = Buffer.byteLength(chunk.argumentsDelta)
+            if (delta > CITED_ANSWER_MAX_BYTES - block.terminalArgumentBytes) {
+              yield terminalFailure()
+              owner.close()
+              return
+            }
+            block.terminalArgumentBytes += delta
           }
         }
-        if (chunk.type === 'block-end' && chunk.block.type === 'tool-call'
-          && chunk.block.name === CITED_ANSWER_TOOL
-          && Buffer.byteLength(chunk.block.arguments) > CITED_ANSWER_MAX_BYTES) {
-          yield terminalFailure()
-          owner.close()
-          return
+        if (chunk.type === 'block-end' && chunk.block.type === 'tool-call') {
+          const streamed = toolBlocks.get(chunk.index)
+          if (streamed?.name !== undefined && streamed.name !== chunk.block.name) {
+            yield terminalFailure()
+            owner.close()
+            return
+          }
+          if (streamed === undefined) {
+            toolBlocks.set(chunk.index, { name: chunk.block.name, terminalArgumentBytes: 0 })
+          } else {
+            streamed.name = chunk.block.name
+          }
+          if (chunk.block.name === CITED_ANSWER_TOOL
+            && Buffer.byteLength(chunk.block.arguments) > CITED_ANSWER_MAX_BYTES) {
+            yield terminalFailure()
+            owner.close()
+            return
+          }
         }
         if (chunk.type === 'tool-call-delta' && chunk.name !== undefined) {
           if (chunk.name === CITED_ANSWER_TOOL) sawTerminal = true
