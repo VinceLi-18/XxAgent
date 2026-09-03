@@ -344,6 +344,7 @@ describe('CI workflow', () => {
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
       clamav: { condition: 'service_healthy' },
+      embedding: { condition: 'service_healthy' },
     })
     expect(durationSeconds(worker.stop_grace_period)).toBeGreaterThanOrEqual(90)
     expect(minio.healthcheck.test).toEqual(['CMD', 'mc', 'ready', 'local'])
@@ -380,6 +381,7 @@ describe('CI workflow', () => {
     expect(composeServiceNames(compose).sort()).toEqual([
       'api',
       'clamav',
+      'embedding',
       'migrate',
       'minio',
       'postgres',
@@ -394,7 +396,12 @@ describe('CI workflow', () => {
       POSTGRES_APP_PASSWORD: 'p@ss:word/%-e2e-app',
       POSTGRES_PASSWORD: 'xagent-api-test',
     })
-    expect(worker.command).toEqual(['xagent-api', 'worker'])
+    expect(worker.command).toEqual([
+      'xagent-api', 'worker',
+      '--lease-seconds', '8',
+      '--heartbeat-seconds', '2',
+      '--poll-seconds', '0.2',
+    ])
     expect(worker.environment).toMatchObject({
       DATABASE_WORKER_URL: 'postgresql+asyncpg://xagent_e2e_worker@postgres:5432/xagent_api_test',
       POSTGRES_WORKER_PASSWORD: 'p@ss:word/%-e2e-worker',
@@ -430,10 +437,12 @@ describe('CI workflow', () => {
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
       clamav: { condition: 'service_healthy' },
+      embedding: { condition: 'service_healthy' },
     })
     expect(api.depends_on).toMatchObject({
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
+      embedding: { condition: 'service_healthy' },
     })
     expect(minio.healthcheck.test).toEqual(['CMD', 'mc', 'ready', 'local'])
     expect(clamav.image).toMatch(/^clamav\/clamav-debian:1\.4(?:$|\.)/)
@@ -451,7 +460,7 @@ describe('CI workflow', () => {
     expect(artifactE2e).toMatchObject({
       if: "github.event_name == 'pull_request'",
       name: 'python 3.11 / xagent artifact docker e2e',
-      'timeout-minutes': 20,
+      'timeout-minutes': 45,
     })
     const e2eStep = (artifactE2e.steps as unknown[]).find(
       step => isRecord(step) && step.name === 'Run real artifact pipeline',
@@ -466,6 +475,126 @@ describe('CI workflow', () => {
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml logs')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
     expect(aggregate.needs).toContain('xagent-artifact-e2e')
+  })
+
+  it('assembles a health-ordered private CPU retrieval topology', () => {
+    const production = loadWorkflow('services/api/compose.yml')
+    const test = loadWorkflow('services/api/compose.test.yml')
+    const packageJson = loadWorkflow('package.json')
+    if (!isRecord(packageJson.scripts)) {
+      throw new TypeError('package.json must define retrieval test scripts')
+    }
+
+    for (const [name, compose] of [['production', production], ['test', test]] as const) {
+      const api = composeService(compose, 'api')
+      const worker = composeService(compose, 'worker')
+      const postgres = composeService(compose, 'postgres')
+      const embedding = composeService(compose, 'embedding')
+      if (!isRecord(api.environment)
+        || !isRecord(worker.environment)
+        || !isRecord(api.depends_on)
+        || !isRecord(worker.depends_on)
+        || !isRecord(embedding.build)
+        || !isRecord(embedding.environment)
+        || !isRecord(embedding.healthcheck)
+        || !isRecord(embedding.deploy)
+        || !isRecord(embedding.deploy.resources)
+        || !isRecord(embedding.deploy.resources.limits)) {
+        throw new TypeError(`${name} retrieval deployment must define bounded service wiring`)
+      }
+
+      expect(postgres.image).toMatch(/^pgvector\/pgvector:pg16@sha256:[0-9a-f]{64}$/)
+      expect(embedding.build.context).toBe('../embedding')
+      expect(embedding).not.toHaveProperty('ports')
+      expect(embedding.environment).toMatchObject({
+        HF_HUB_OFFLINE: '${HF_HUB_OFFLINE:-false}',
+        OMP_NUM_THREADS: '2',
+        MKL_NUM_THREADS: '2',
+        TOKENIZERS_PARALLELISM: 'false',
+      })
+      expect(embedding.deploy.resources.limits).toMatchObject({ cpus: '2', memory: '6G' })
+      expect(embedding.healthcheck.test).toEqual([
+        'CMD',
+        'python',
+        '-c',
+        expect.stringContaining("assert len(body['vectors'][0]) == 1024"),
+      ])
+      expect(durationSeconds(embedding.healthcheck.timeout)).toBeLessThanOrEqual(120)
+      expect(durationSeconds(embedding.healthcheck.interval)).toBeLessThanOrEqual(15)
+      expect(embedding.healthcheck.retries).toBeLessThanOrEqual(20)
+      expect(durationSeconds(embedding.healthcheck.start_period)).toBeLessThanOrEqual(600)
+      expect(api.environment.EMBEDDING_URL).toBe('http://embedding:8000')
+      expect(api.environment.HF_HOME).toBe('/tmp/xagent-huggingface')
+      expect(api.environment.HF_HUB_OFFLINE).toBe('${HF_HUB_OFFLINE:-false}')
+      expect(api.volumes).toEqual([
+        '${XAGENT_EMBEDDING_CACHE_DIR:-./.cache/huggingface}:/tmp/xagent-huggingface:ro',
+      ])
+      expect(worker.environment.EMBEDDING_URL).toBe('http://embedding:8000')
+      expect(worker.environment.HF_HOME).toBe('/tmp/xagent-huggingface')
+      expect(worker.environment.HF_HUB_OFFLINE).toBe('${HF_HUB_OFFLINE:-false}')
+      expect(worker.volumes).toEqual([
+        '${XAGENT_EMBEDDING_CACHE_DIR:-./.cache/huggingface}:/tmp/xagent-huggingface:ro',
+      ])
+      expect(api.environment).not.toHaveProperty('DATABASE_WORKER_URL')
+      expect(api.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
+      expect(api.depends_on).toMatchObject({ embedding: { condition: 'service_healthy' } })
+      expect(worker.depends_on).toMatchObject({
+        postgres: { condition: 'service_healthy' },
+        migrate: { condition: 'service_completed_successfully' },
+        minio: { condition: 'service_healthy' },
+        clamav: { condition: 'service_healthy' },
+        embedding: { condition: 'service_healthy' },
+      })
+    }
+
+    expect(packageJson.scripts['api:test:retrieval']).toBe(
+      'JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes XAGENT_RETRIEVAL_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_retrieval_pipeline.py tests/e2e/test_retrieval_worker_recovery.py',
+    )
+    expect(readFileSync(resolve(root, 'services/api/.dockerignore'), 'utf8').split('\n')).toContain('.cache/')
+    expect(readFileSync(resolve(root, 'services/api/pyproject.toml'), 'utf8')).toContain(
+      'exclude = ["/.cache"]',
+    )
+  })
+
+  it('runs a bounded retrieval lane and proves exact Compose cleanup', () => {
+    const workflow = loadWorkflow('.github/workflows/ci.yml')
+    const retrievalE2e = workflowJob(workflow, 'xagent-retrieval-e2e')
+    const aggregate = workflowJob(workflow, 'all-checks-passed')
+    if (!Array.isArray(retrievalE2e.steps) || !Array.isArray(aggregate.needs)) {
+      throw new TypeError('Retrieval E2E and aggregate jobs must define steps and dependencies')
+    }
+
+    expect(retrievalE2e).toMatchObject({
+      if: "github.event_name == 'pull_request'",
+      name: 'python 3.11 / xagent retrieval docker e2e',
+      'timeout-minutes': 45,
+      env: {
+        XAGENT_RETRIEVAL_E2E: '1',
+        XAGENT_RETRIEVAL_E2E_URL: 'http://127.0.0.1:58000',
+        XAGENT_RETRIEVAL_E2E_SERVICE_TOKEN: 'xagent-e2e-service-token-test-only-0001',
+      },
+    })
+    const e2eStep = (retrievalE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Run real retrieval pipeline',
+    )
+    if (!isRecord(e2eStep) || typeof e2eStep.run !== 'string') {
+      throw new TypeError('Retrieval E2E job must run the real pipeline')
+    }
+    expect(e2eStep.run).toContain('trap cleanup EXIT')
+    expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml up -d --build --wait')
+    expect(e2eStep.run).toContain('tests/e2e/test_retrieval_pipeline.py')
+    expect(e2eStep.run).toContain('tests/e2e/test_retrieval_worker_recovery.py')
+    expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
+    expect(e2eStep.run).toContain(
+      'docker container ls --all -q --filter label=com.docker.compose.project=xagent-api-test',
+    )
+    expect(e2eStep.run).toContain(
+      'docker volume ls -q --filter label=com.docker.compose.project=xagent-api-test',
+    )
+    expect(e2eStep.run).toContain(
+      'docker network ls -q --filter label=com.docker.compose.project=xagent-api-test',
+    )
+    expect(aggregate.needs).toContain('xagent-retrieval-e2e')
   })
 
   it('keeps every Vitest project process-isolated on native Windows', () => {

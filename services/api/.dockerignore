@@ -1,6 +1,7 @@
 .env
 .pytest_cache/
 .venv/
+.cache/
 **/__pycache__/
 dist/
 tests/

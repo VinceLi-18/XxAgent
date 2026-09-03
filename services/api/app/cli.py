@@ -56,6 +56,13 @@ def _read_password() -> str:
     return password
 
 
+def _positive_seconds(value: str) -> float:
+    seconds = float(value)
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("秒数必须大于零")
+    return seconds
+
+
 async def _create_account(
     sessions: async_sessionmaker[AsyncSession],
     email: str,
@@ -182,6 +189,9 @@ def _parser() -> argparse.ArgumentParser:
         help="处理扫描、对象清理与资料索引持久任务",
     )
     worker.add_argument("--once", action="store_true", help="处理当前可领取任务后退出")
+    worker.add_argument("--lease-seconds", type=_positive_seconds)
+    worker.add_argument("--heartbeat-seconds", type=_positive_seconds)
+    worker.add_argument("--poll-seconds", type=_positive_seconds)
     roles = commands.add_parser("roles")
     roles_commands = roles.add_subparsers(dest="operation", required=True)
     roles_commands.add_parser("ensure")
@@ -250,7 +260,16 @@ def main() -> None:
     if args.domain == "worker":
         from app.worker import run_worker
 
-        asyncio.run(run_worker(once=args.once))
+        timing = {
+            name: value
+            for name, value in (
+                ("lease_seconds", args.lease_seconds),
+                ("heartbeat_seconds", args.heartbeat_seconds),
+                ("poll_seconds", args.poll_seconds),
+            )
+            if value is not None
+        }
+        asyncio.run(run_worker(once=args.once, **timing))
         return
     if args.domain == "roles":
         from app.roles import ensure_database_roles

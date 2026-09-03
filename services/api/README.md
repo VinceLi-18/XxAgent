@@ -42,6 +42,8 @@ API 进程同时接收最低权限业务连接 `DATABASE_URL` 和受信管理连
 
 `xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 
+检索栈使用固定镜像摘要的 PostgreSQL 16 + pgvector 和从锁定依赖构建的 CPU embedding 容器。embedding 不发布主机端口，只接收 API 和 worker 通过 Compose 服务网络发送的请求；健康检查必须真实加载 `BAAI/bge-m3` 的固定修订并返回 1024 维向量。`XAGENT_EMBEDDING_CACHE_DIR` 指向 embedding 可写且 API 和 worker 只读的共享模型和 tokenizer 缓存；首次启动前可执行 `install -d -m 0777 services/api/.cache/huggingface`，恢复外部缓存后还须执行 `chmod -R a+rwX services/api/.cache/huggingface`。`HF_HUB_OFFLINE=true` 只适用于已按固定修订和上游发布内容摘要验证完整的缓存；默认值 `false` 仍从官方源获取缺失文件，不信任或默认使用代理镜像。日常 worker 使用代码中的租约、心跳和轮询默认值；`--lease-seconds`、`--heartbeat-seconds` 与 `--poll-seconds` 只用于可销毁恢复测试和受控调试。
+
 MinIO 最终 bucket 默认为 `xagent-private` 且必须启用版本化；API 只为自己新建的 bucket 启用版本化，既有 Off 或 Suspended bucket 会失败关闭。固定最终 key 的补偿清理只能删除本次复制返回的非空目标版本 ID，禁止无条件删除该 key。即时删除失败时，独立 `artifact_object_cleanup_jobs` 队列持久保存严格匹配小写 UUID 形式 `artifacts/{artifact_id}/{version_id}` 的 object key 与非空 MinIO 版本 ID；正式 worker 以自己的租约有限重试，达到第五次后保留身份并进入 `dead`，供运维处置。`worker --once` 按每轮正文和 cleanup 最多各一项的顺序处理，直到首次没有到期任务；停止信号会阻止领取下一项任务，并等待已经开始的处理收敛。Compose 为 worker 提供两分钟停止宽限期。
 
 ## 账号管理
@@ -72,7 +74,7 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 ## 工作台与 Session 内部接口
 
-`/internal/xagent/*` 业务路由同时要求 `X-XAgent-Service-Token` 服务身份和当前账号的 Bearer token。服务端 introspection 生成 Principal，并在同一数据库事务设置 actor context；浏览器不得提交 actor、role、owner 或权限版本。固定的 `/internal/xagent/retrieval/token-count` 是纯内部 tokenizer relay，只接受服务令牌，不接收用户 JWT 或委托令牌；它在解析前限制最坏 JSON 转义正文，把合法原始查询限制为 8 KiB UTF-8，只向 `EMBEDDING_URL` 的 `/token-count` 转发，并对重定向、超时、超限或畸形响应失败关闭。该路径不写检索审计，API 与 embedding 日志均不得记录原始查询。
+`/internal/xagent/*` 业务路由同时要求 `X-XAgent-Service-Token` 服务身份和当前账号的 Bearer token。服务端 introspection 生成 Principal，并在同一数据库事务设置 actor context；浏览器不得提交 actor、role、owner 或权限版本。固定的 `/internal/xagent/retrieval/token-count` 是纯内部 tokenizer relay，只接受服务令牌，不接收用户 JWT 或委托令牌；它在解析前把最坏 JSON 转义正文限制为 49,163 bytes，把合法原始查询限制为 8 KiB UTF-8，只向 `EMBEDDING_URL` 的 `/token-count` 转发，并把 embedding 响应限制为 512 bytes。relay 手动处理重定向，并对重定向、超时、请求取消、超限或畸形响应失败关闭。该路径不写检索审计，API 与 embedding 日志均不得记录原始查询。
 
 `POST /internal/xagent/session-project-refs` 只为当前账号拥有的私有 Session 登记项目引用。请求包含 `schema_version: 1`、`session_id`、非空 `project_ids`、`idempotency_key`；全部新旧引用必须在同一事务对当前账号可见，成功返回 204。项目不可见或 Session 不可登记统一隐藏具体项目，幂等键对应不同请求时返回 `idempotency-conflict`。
 
@@ -100,3 +102,7 @@ pnpm run api:dev:down
 ```
 
 停止命令默认保留本地开发数据卷。只有确认其中数据可以删除时，才应单独执行带 `--volumes` 的 Compose 停止命令。
+
+## 真实检索验收
+
+检索 E2E 使用 `compose.test.yml` 的可销毁数据库、对象存储、扫描器和真实 CPU BGE-M3，不会以 mock 代替 embedding 或检索路径。先执行 `docker compose -f services/api/compose.test.yml up -d --build --wait`，再在仓库根目录执行 `pnpm run api:test:retrieval`。无论测试结果如何，最后都要执行 `docker compose -f services/api/compose.test.yml down --volumes --remove-orphans`；CI 还会按 `com.docker.compose.project=xagent-api-test` 精确查询容器、数据卷和网络，任一残留都使验收失败。

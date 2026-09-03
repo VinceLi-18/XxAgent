@@ -508,7 +508,13 @@ async def _run_worker_loop(
             await _wait_for_stop(resolved_stop_event, poll_seconds)
 
 
-async def run_worker(*, once: bool = False) -> None:
+async def run_worker(
+    *,
+    once: bool = False,
+    lease_seconds: float = DEFAULT_LEASE_SECONDS,
+    heartbeat_seconds: float = DEFAULT_HEARTBEAT_SECONDS,
+    poll_seconds: float = DEFAULT_POLL_SECONDS,
+) -> None:
     """Run the artifact worker with its isolated database engine until stopped."""
 
     settings = ArtifactWorkerSettings()
@@ -524,7 +530,14 @@ async def run_worker(*, once: bool = False) -> None:
             continue
         installed_signals.append(shutdown_signal)
     try:
-        await _run_worker_loop(sessions, once=once, stop_event=stop_event)
+        await _run_worker_loop(
+            sessions,
+            once=once,
+            stop_event=stop_event,
+            lease_seconds=lease_seconds,
+            heartbeat_seconds=heartbeat_seconds,
+            poll_seconds=poll_seconds,
+        )
     finally:
         for shutdown_signal in installed_signals:
             loop.remove_signal_handler(shutdown_signal)

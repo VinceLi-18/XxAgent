@@ -34,6 +34,9 @@ xagent-api = "app.cli:main"
 requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+exclude = ["/.cache"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 

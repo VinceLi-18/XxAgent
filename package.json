@@ -42,6 +42,7 @@
     "api:test": "uv run --python 3.11 --directory services/api --extra dev pytest",
     "api:test:db:up": "docker compose -f services/api/compose.test.yml up -d postgres --wait",
     "api:test:db:down": "docker compose -f services/api/compose.test.yml down --volumes --remove-orphans",
+    "api:test:retrieval": "JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes XAGENT_RETRIEVAL_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_retrieval_pipeline.py tests/e2e/test_retrieval_worker_recovery.py",
     "api:dev:up": "docker compose --env-file services/api/.env -f services/api/compose.yml up -d --build --wait",
     "api:dev:down": "docker compose --env-file services/api/.env -f services/api/compose.yml down",
     "api:migrate": "uv run --python 3.11 --directory services/api alembic upgrade head",

@@ -15,6 +15,7 @@ services:
       JWT_ISSUER: xagent-e2e
       JWT_AUDIENCE: xagent-e2e-api
       XAGENT_SERVICE_TOKEN: xagent-e2e-service-token-test-only-0001
+      XAGENT_DELEGATION_PUBLIC_KEY: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
       MINIO_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: 127.0.0.1:59000
       MINIO_REGION: us-east-1
@@ -26,14 +27,22 @@ services:
       MAX_ARTIFACT_SIZE_BYTES: "52428800"
       STAGING_EXPIRY_DAYS: "1"
       CLAMAV_TIMEOUT: "10"
+      EMBEDDING_URL: http://embedding:8000
+      EMBEDDING_TIMEOUT: "120"
+      HF_HOME: /tmp/xagent-huggingface
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-false}
     ports:
       - "127.0.0.1:58000:8000"
+    volumes:
+      - ${XAGENT_EMBEDDING_CACHE_DIR:-./.cache/huggingface}:/tmp/xagent-huggingface:ro
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
       minio:
+        condition: service_healthy
+      embedding:
         condition: service_healthy
     healthcheck:
       test:
@@ -61,8 +70,24 @@ services:
       CLAMAV_HOST: clamav
       CLAMAV_PORT: "3310"
       CLAMAV_TIMEOUT: "10"
-    command: ["xagent-api", "worker"]
+      EMBEDDING_URL: http://embedding:8000
+      EMBEDDING_TIMEOUT: "120"
+      HF_HOME: /tmp/xagent-huggingface
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-false}
+    command:
+      [
+        "xagent-api",
+        "worker",
+        "--lease-seconds",
+        "8",
+        "--heartbeat-seconds",
+        "2",
+        "--poll-seconds",
+        "0.2",
+      ]
     stop_grace_period: 2m
+    volumes:
+      - ${XAGENT_EMBEDDING_CACHE_DIR:-./.cache/huggingface}:/tmp/xagent-huggingface:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,9 +97,11 @@ services:
         condition: service_healthy
       clamav:
         condition: service_healthy
+      embedding:
+        condition: service_healthy
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     environment:
       POSTGRES_DB: xagent_api_test
       POSTGRES_PASSWORD: xagent-api-test
@@ -139,6 +166,35 @@ services:
     image: clamav/clamav-debian:1.4
     volumes:
       - xagent-api-test-clamav:/var/lib/clamav
+
+  embedding:
+    build:
+      context: ../embedding
+    image: xagent-embedding:test
+    environment:
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-false}
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      TOKENIZERS_PARALLELISM: "false"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json; from urllib.request import Request, urlopen; request = Request('http://127.0.0.1:8000/embed', data=b'{\"texts\":[\"health\"]}', headers={'Content-Type':'application/json'}); body = json.load(urlopen(request, timeout=110)); assert body['model'] == 'BAAI/bge-m3'; assert body['revision'] == '5617a9f61b028005a4858fdac845db406aefb181'; assert body['dimension'] == 1024; assert len(body['vectors']) == 1; assert len(body['vectors'][0]) == 1024",
+        ]
+      interval: 10s
+      timeout: 120s
+      retries: 12
+      start_period: 10m
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 6G
+    volumes:
+      - ${XAGENT_EMBEDDING_CACHE_DIR:-./.cache/huggingface}:/tmp/xagent-huggingface
 
 volumes:
   xagent-api-test-clamav:
