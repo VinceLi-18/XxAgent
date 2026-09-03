@@ -168,6 +168,7 @@ export class XAgentArtifactController {
   private pollOperation: AbortController | undefined
   private pollHandle: number | undefined
   private selectionGeneration = 0
+  private citationSelectionGeneration: number | undefined
   private artifactOperationGeneration = 0
   private readonly activeTasks = new Set<Promise<void>>()
   private disposal: Promise<void> | undefined
@@ -263,6 +264,7 @@ export class XAgentArtifactController {
     const selectionGeneration = this.invalidateSelection()
     const operation = this.begin('detail')
     if (operation === undefined) return
+    this.citationSelectionGeneration = selectionGeneration
     this.snapshot.replaceReady({
       selectedId: target.artifactId, detail: undefined, detailLoading: true, detailError: undefined,
       preview: undefined, citation: undefined,
@@ -273,7 +275,7 @@ export class XAgentArtifactController {
       const version = result.ok && result.value.id === target.artifactId
         ? result.value.versions.find(item => item.id === target.versionId)
         : undefined
-      if (!result.ok || version?.status !== 'clean' || previewKind(version.contentType) === undefined) {
+      if (!result.ok || version?.status !== 'clean' || previewKind(version.contentType) !== 'text') {
         this.snapshot.replaceReady({
           selectedId: target.artifactId, detail: undefined, detailLoading: false,
           detailError: '引用资料暂时不可用', preview: undefined, citation: undefined,
@@ -285,6 +287,8 @@ export class XAgentArtifactController {
         citation: { versionId: target.versionId, lineStart: target.lineStart, lineEnd: target.lineEnd },
       })
       await this.loadPreview(target.versionId)
+      if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, target.artifactId)
+        || this.citationSelectionGeneration !== selectionGeneration) return
       const current = this.snapshot.getSnapshot()
       if (current.phase === 'ready' && current.citation?.versionId === target.versionId
         && current.preview?.versionId !== target.versionId) {
@@ -334,11 +338,16 @@ export class XAgentArtifactController {
 
   /** Session citation 范围变化时取消 handoff 并丢弃 locator 与短期 URL。 */
   cancelCitation(): void {
+    const generation = this.citationSelectionGeneration
+    if (generation === undefined) return
+    this.citationSelectionGeneration = undefined
+    if (generation !== this.selectionGeneration) return
     this.invalidateSelection()
     this.snapshot.replaceReady({
       selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined,
       preview: undefined, citation: undefined,
     })
+    this.armPollIfNeeded()
   }
 
   /**
@@ -666,6 +675,7 @@ export class XAgentArtifactController {
   }
 
   private invalidateSelection(): number {
+    this.citationSelectionGeneration = undefined
     ++this.selectionGeneration
     this.detailOperation?.abort()
     this.readOperation?.abort()

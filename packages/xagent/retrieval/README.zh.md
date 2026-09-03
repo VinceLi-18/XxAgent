@@ -2,9 +2,11 @@
 
 [English](README.md) | 中文
 
-`@xagent/dsh-retrieval` 是 XAgent Host 的只读资料检索服务。每次调用只接受当前认证 prompt 建立的物理请求作用域，从中读取 Principal、用户令牌、连接、Session 可见性、固定项目和 tool call 标识。服务为该次调用签发委托令牌，并只调用一次 FastAPI；它不缓存授权、项目或证据，也不在后端失败时返回部分结果。
+`@xagent/dsh-retrieval` 是 XAgent Host 的只读资料检索服务。模型检索调用只接受当前认证 prompt 建立的物理请求作用域，从中读取 Principal、用户令牌、连接、Session 可见性、固定项目和 tool call 标识。服务为每次调用签发委托令牌，并只调用一次 FastAPI；它不缓存授权、项目或证据，也不在后端失败时返回部分结果。
 
 Private Session 的检索必须显式提供规范 Project UUID 和／或 `includePrivate`。Project Session 只使用 Session 固定项目，并拒绝调用方选择器。`listAccessibleProjects` 只用于 Private Session，接受可选且有界的项目名称查询，返回最多 20 个可访问项目。缺少认证作用域、Session、签名器或服务时失败关闭；已知后端失败映射为固定错误码，其他失败映射为 `service-unavailable`。
+
+请求作用域内的 Browser Remote `xagentCitation/resolve` 只接受当前 Session ID 与一个已持久化的 `[资料N]` ID。Typert gateway 提供认证 actor、账号、权限 revision、用户令牌、物理连接和请求取消；匿名、嵌套、不匹配、被替换、已取消和已释放的作用域都会关闭式失败。Remote 在签发新的精确委托前，会从 live Session 的规范持久 Tool result 重建 citation 的 Artifact、Version 与 Chunk 身份。它只返回不可变的 Artifact、Version、Chunk 和行身份，绝不返回存储 URL，也不保留 locator 或 URL 缓存。公开失败只包括 `unauthenticated`、`session-not-found`、`citation-invalid` 和 `service-unavailable`；集合外的后端错误码统一收敛为 `service-unavailable`。
 
 每次 XAgent inbox 插入都会记录认证作用域或显式无效标记。有效绑定同时包含 prompt 请求与物理连接的生命周期，并仅在 Agent 认领该消息时激活。缺失、过期、已取消、已断连或混合的认领绑定会拒绝该 step；只有空的内部 continuation 可以保留正在运行的作用域。取消、丢弃、替换、turn 结束、Agent 释放和服务释放会清除对应私有作用域，不新增 Session 事件。
 

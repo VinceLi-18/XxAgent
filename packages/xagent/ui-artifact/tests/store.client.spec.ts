@@ -118,6 +118,10 @@ function file(name = '季度报告.pdf', size = 16, type = 'application/pdf'): F
 describe('XAgent 资料控制器', () => {
   it('按 citation immutable identity 重读详情和精确版本预览', async () => {
     const { client, artifactDetail, preview } = remote([cleanSummary])
+    artifactDetail.mockImplementationOnce(() => ok({
+      ...detail('clean'),
+      versions: detail('clean').versions.map(version => ({ ...version, contentType: 'text/plain' })),
+    }))
     const controller = new XAgentArtifactController(client, undefined, {
       readText: vi.fn(async () => '第一行\n第二行\n第三行'),
     })
@@ -131,6 +135,84 @@ describe('XAgent 资料控制器', () => {
       selectedId: ARTIFACT_A,
       citation: { versionId: VERSION_CLEAN, lineStart: 2, lineEnd: 3 },
       preview: { versionId: VERSION_CLEAN },
+    })
+  })
+
+  it.each(['application/pdf', 'image/png'])('不能逐行高亮的 %s citation fail closed', async (contentType) => {
+    const { client, artifactDetail, preview } = remote([cleanSummary])
+    artifactDetail.mockImplementationOnce(() => ok(detail('clean', contentType)))
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.openCitation({ artifactId: ARTIFACT_A, versionId: VERSION_CLEAN, lineStart: 1, lineEnd: 2 })
+
+    expect(preview).not.toHaveBeenCalled()
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      selectedId: ARTIFACT_A, detailError: '引用资料暂时不可用', preview: undefined, citation: undefined,
+    })
+  })
+
+  it('忽略 abort 的旧同版本预览不能清除 replacement citation locator', async () => {
+    const oldText = Promise.withResolvers<string>()
+    const newPreview = Promise.withResolvers<RemoteResult<{ readonly url: string }>>()
+    const { client, artifactDetail, preview } = remote([cleanSummary])
+    const textDetail = {
+      ...detail('clean'),
+      versions: detail('clean').versions.map(version => ({ ...version, contentType: 'text/plain' })),
+    }
+    artifactDetail.mockImplementation(() => ok(textDetail))
+    preview.mockResolvedValueOnce({ ok: true, value: { url: '/preview/old' } })
+      .mockImplementationOnce(() => newPreview.promise)
+    const readText = vi.fn((url: string) => url === '/preview/old' ? oldText.promise : Promise.resolve('新正文'))
+    const controller = new XAgentArtifactController(client, undefined, { readText })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+
+    const oldOpening = controller.openCitation({
+      artifactId: ARTIFACT_A, versionId: VERSION_CLEAN, lineStart: 1, lineEnd: 1,
+    })
+    await vi.waitFor(() => { expect(readText).toHaveBeenCalledWith('/preview/old', expect.any(AbortSignal)) })
+    const replacement = controller.openCitation({
+      artifactId: ARTIFACT_A, versionId: VERSION_CLEAN, lineStart: 2, lineEnd: 3,
+    })
+    await vi.waitFor(() => {
+      expect(preview).toHaveBeenCalledTimes(2)
+      expect(controller.snapshot.getSnapshot()).toMatchObject({
+        citation: { versionId: VERSION_CLEAN, lineStart: 2, lineEnd: 3 },
+      })
+    })
+
+    oldText.resolve('旧正文')
+    await oldOpening
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      citation: { versionId: VERSION_CLEAN, lineStart: 2, lineEnd: 3 },
+    })
+
+    newPreview.resolve({ ok: true, value: { url: '/preview/new' } })
+    await replacement
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      citation: { versionId: VERSION_CLEAN, lineStart: 2, lineEnd: 3 },
+      preview: { versionId: VERSION_CLEAN, text: '新正文' },
+    })
+  })
+
+  it('Session cancellation leaves ordinary Artifact selection and polling owned by browsing', async () => {
+    const pendingSummary = { ...cleanSummary, latestVersion: 2, latestStatus: 'pending' as const }
+    const cancelSchedule = vi.fn()
+    const { client, artifactDetail } = remote([pendingSummary])
+    artifactDetail.mockImplementationOnce(() => ok(detail('pending')))
+    const controller = new XAgentArtifactController(client, undefined, {
+      schedule: () => 7,
+      cancelSchedule,
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.selectArtifact(ARTIFACT_A)
+    cancelSchedule.mockClear()
+
+    controller.cancelCitation()
+
+    expect(cancelSchedule).not.toHaveBeenCalled()
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      selectedId: ARTIFACT_A,
+      detail: { id: ARTIFACT_A, latestStatus: 'pending' },
     })
   })
 

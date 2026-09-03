@@ -60,20 +60,21 @@ function scope(visibility: 'private' | 'project' = 'private'): XAgentAuthenticat
     : Object.freeze({ ...base, visibility, projectId: null })
 }
 
-function backend(): XAgentRetrievalBackend {
+function backend() {
   return {
-    projects: vi.fn(async () => ({
+    projects: vi.fn<XAgentRetrievalBackend['projects']>(async () => ({
       projects: [{ projectId: PROJECT, name: 'Alpha' }], receipt: 'opaque-project-receipt', payloadHash: 'a'.repeat(64),
     })),
-    search: vi.fn(async () => ({
+    search: vi.fn<XAgentRetrievalBackend['search']>(async () => ({
       citations: [{
         id: '[资料1]', artifactId: '00000000-0000-0000-0000-000000000501',
         versionId: '00000000-0000-0000-0000-000000000601', chunkId: '00000000-0000-0000-0000-000000000801',
         displayName: 'brief.md', versionNumber: 1, lineStart: 1, lineEnd: 2, text: 'evidence', scope: 'project' as const,
       }], receipt: 'opaque-search-receipt', payloadHash: 'b'.repeat(64),
     })),
-    authorizeCitations: vi.fn(async () => {}), resolveCitation: vi.fn<XAgentRetrievalBackend['resolveCitation']>(),
-  }
+    authorizeCitations: vi.fn<XAgentRetrievalBackend['authorizeCitations']>(async () => {}),
+    resolveCitation: vi.fn<XAgentRetrievalBackend['resolveCitation']>(),
+  } satisfies XAgentRetrievalBackend
 }
 
 function service(value = backend(), registry = new XAgentReceiptRegistry()) {
@@ -548,9 +549,10 @@ describe('XAgentRetrievalService', () => {
     expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
       issuer: 'xagent-host', audience: 'xagent-api', privateKey,
     })).toThrow(/BGE-M3 tokenizer/i)
+    const validTokenizer = tokenizer()
     expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
       issuer: 'xagent-host', audience: 'xagent-api', privateKey,
-      tokenizer: Object.freeze({ ...tokenizer(), revision: 'wrong', count: tokenizer().count }),
+      tokenizer: Object.freeze({ ...validTokenizer, revision: 'wrong', count: (value: string) => validTokenizer.count(value) }),
     })).toThrow(/BGE-M3 tokenizer/i)
 
     const fetch = vi.fn(async (_input: string, _init: RequestInit) => new Response(JSON.stringify({

@@ -37,7 +37,7 @@ function props(value = block()): CitedAnswerViewProps {
 afterEach(cleanup)
 
 describe('XAgent cited answer ToolView', () => {
-  it('renders only closed result metadata with safe Markdown and deduplicated sources', () => {
+  it('renders only closed result metadata with inert Markdown and deduplicated sources', () => {
     const injected = props()
     render(<CitedAnswerView {...injected} />)
     expect(screen.getByRole('strong').textContent).toBe('季度结论')
@@ -66,6 +66,32 @@ describe('XAgent cited answer ToolView', () => {
     rerender(<CitedAnswerView {...props(block({ meta: { ...meta, extra: 'forbidden' } }))} />)
     expect(screen.getByRole('alert').textContent).toBe('已验证回答不可用')
     expect(document.body.textContent).not.toContain('SECRET')
+  })
+
+  it.each([
+    ['empty blocks', { ...meta, blocks: [], citationIds: [] }],
+    ['missing Markdown', { ...meta, blocks: [{ type: 'citation', id: '[资料1]' }], citationIds: ['[资料1]'] }],
+    ['missing citation', { ...meta, blocks: [{ type: 'markdown', text: '结论' }], citationIds: [] }],
+    ['noncanonical citation id', {
+      ...meta, blocks: [{ type: 'markdown', text: '结论' }, { type: 'citation', id: '[资料01]' }], citationIds: ['[资料01]'],
+    }],
+    ['adjacent duplicate citation', {
+      ...meta,
+      blocks: [{ type: 'markdown', text: '结论' }, { type: 'citation', id: '[资料1]' }, { type: 'citation', id: '[资料1]' }],
+      citationIds: ['[资料1]'],
+    }],
+    ['too many blocks', {
+      ...meta,
+      blocks: [
+        { type: 'markdown', text: '结论' },
+        ...Array.from({ length: 256 }, (_, index) => ({ type: 'citation', id: `[资料${index + 1}]` })),
+      ],
+      citationIds: Array.from({ length: 256 }, (_, index) => `[资料${index + 1}]`),
+    }],
+  ])('fails closed for canonical metadata violation: %s', (_name, malformed) => {
+    render(<CitedAnswerView {...props(block({ meta: malformed }))} />)
+    expect(screen.getByRole('alert').textContent).toBe('已验证回答不可用')
+    expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('cancels its resolution when the ToolView unmounts', () => {

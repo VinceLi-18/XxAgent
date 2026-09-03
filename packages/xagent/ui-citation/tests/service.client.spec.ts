@@ -14,7 +14,9 @@ describe('XAgent citation controller', () => {
     controller.setScope('account-a', 'session-701')
     await controller.open('session-701', '[资料1]')
     expect(remote.resolve).toHaveBeenCalledWith('session-701', '[资料1]', expect.any(AbortSignal))
-    expect(artifact.openCitation).toHaveBeenCalledWith(target)
+    expect(artifact.openCitation).toHaveBeenCalledWith({
+      artifactId: 'artifact-1', versionId: 'version-1', lineStart: 7, lineEnd: 9,
+    })
   })
 
   it('aborts replacement, account and Session changes, failures, cancellation, and disposal', async () => {

@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-`@xagent/dsh-ui-citation` renders the closed `xagent-cited-answer` result metadata for `submit_cited_answer` inside the existing Business conversation. Markdown blocks use the shared safe Markdown component. Citation blocks become keyboard-accessible “已验证资料” chips, and the quiet source strip lists each citation once in first-use order. Citation-looking Markdown remains text and never becomes an action.
+`@xagent/dsh-ui-citation` renders the closed `xagent-cited-answer` result metadata for `submit_cited_answer` inside the existing Business conversation. Markdown blocks use the shared safe Markdown component with authored links kept inert. Citation blocks become keyboard-accessible “已验证资料” chips, and the quiet source strip lists each citation once in first-use order. Only those blocks create navigation actions; Markdown links, autolinks, URL-shaped inline code, and citation lookalikes remain text.
 
 Selecting a chip sends only the current Session ID and citation ID to `xagentCitation/resolve`. The Host recovers the authenticated actor, account, permission revision, and persisted citation identity, then returns immutable Artifact, Version, Chunk, and line identities without a URL. The browser hands only the Artifact, Version, and line range to `xagentArtifactCitationOpener`; the Artifact controller re-reads detail and preview for that exact clean version.
 
@@ -28,4 +28,4 @@ The package does not read or write the model KV cache. Citation navigation is a 
 
 - Citation navigation supports only persisted citations from the current authenticated top-level Session.
 - The source strip intentionally shows stable short citation IDs rather than filenames, URLs, snippets, or model-authored labels.
-- Unsupported, non-clean, revoked, or mismatched Artifact versions fail closed in the Artifact panel.
+- Non-text, non-clean, revoked, or mismatched Artifact versions fail closed because citation navigation requires an exact line highlight.

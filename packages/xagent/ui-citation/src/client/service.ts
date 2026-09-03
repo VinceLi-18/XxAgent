@@ -57,7 +57,12 @@ export class XAgentCitationController {
         const result = await this.remote.resolve(sessionId, citationId, controller.signal)
         if (controller.signal.aborted || this.disposed || epoch !== this.epoch || this.sessionId !== sessionId || !result.ok) return
         this.artifactActive = true
-        await this.artifact.openCitation(result.value)
+        await this.artifact.openCitation({
+          artifactId: result.value.artifactId,
+          versionId: result.value.versionId,
+          lineStart: result.value.lineStart,
+          lineEnd: result.value.lineEnd,
+        })
       } catch {
         // Remote 失败与取消都保持关闭；服务端诊断不能进入对话 UI。
       }

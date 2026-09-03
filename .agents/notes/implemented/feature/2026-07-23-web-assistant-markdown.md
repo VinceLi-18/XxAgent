@@ -22,6 +22,8 @@ The dependency is explicit in `ui-primitives`; because that pure library is seed
 
 Assistant-authored link destinations are restricted to absolute HTTP, HTTPS, and mailto URLs. HTTP(S) links open in a new tab with `rel="noopener noreferrer"`; relative destinations and other protocols render as non-navigable text. Markdown images follow the separate [remote-image policy](2026-07-30-web-remote-markdown-images.md). Raw HTML remains inert source text because no HTML parser enters the pipeline. Shiki output is a static span tree generated from the fence text (no scripts or user HTML).
 
+A presentation that cannot grant assistant-authored destinations navigation authority sets `linkPolicy="inert"`. Direct links, references, autolinks, and URL-shaped inline code then preserve their labels without anchors. The default remains the safe-link policy used by assistant conversation.
+
 Fenced code and GFM tables own horizontal overflow so long content cannot widen the conversation column.
 
 ## Alternatives considered
@@ -42,4 +44,4 @@ Fenced code and GFM tables own horizontal overflow so long content cannot widen 
 
 ## Consequences
 
-Assistant replies render semantic Markdown consistently during streaming and replay, while tool cards, reasoning rows, interactions, user bubbles, and the host protocol remain unchanged. Streaming reparses only the unstable tail after each accumulated update; incomplete Markdown can temporarily change the tail's structure, but the isolated tail bounds React invalidation and the final event does not switch renderers. URL-shaped inline code becomes navigable without changing its visible literal, while unsafe schemes and mixed code remain non-interactive. Code fences share one chrome and copy path with tool and details surfaces. The initial Web shell includes the Markdown parser, GFM runtime, KaTeX, and shiki allowlist; citation, anchor, and thinking-small surfaces remain deferred.
+Assistant replies render semantic Markdown consistently during streaming and replay, while tool cards, reasoning rows, interactions, user bubbles, and the host protocol remain unchanged. Streaming reparses only the unstable tail after each accumulated update; incomplete Markdown can temporarily change the tail's structure, but the isolated tail bounds React invalidation and the final event does not switch renderers. URL-shaped inline code becomes navigable without changing its visible literal under the default policy, while unsafe schemes and mixed code remain non-interactive. Explicitly inert presentations preserve the same authored labels without navigation. Code fences share one chrome and copy path with tool and details surfaces. The initial Web shell includes the Markdown parser, GFM runtime, KaTeX, and shiki allowlist; heading anchors and thinking-small surfaces remain deferred.

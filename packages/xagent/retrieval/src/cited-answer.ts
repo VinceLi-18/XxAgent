@@ -14,6 +14,7 @@ export type {
   XAgentCitedAnswerErrorReason,
   XAgentCitedAnswerMeta,
 } from './types.ts'
+export { parseXAgentCitedAnswerMeta } from './cited-answer-meta.ts'
 
 /** Maximum UTF-8 bytes in the complete model-authored JSON value. */
 export const CITED_ANSWER_MAX_BYTES = 64 * 1024

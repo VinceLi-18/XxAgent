@@ -7,6 +7,7 @@ import {
   XAgentCitedAnswerError,
   normalizeCitedAnswer,
   renderCitedAnswer,
+  parseXAgentCitedAnswerMeta,
   toCitedAnswerMeta,
   type XAgentCitedAnswerBlock,
 } from '../src/cited-answer.ts'
@@ -30,6 +31,30 @@ function expectInvalid(value: unknown, allowed = IDS): void {
 }
 
 describe('normalizeCitedAnswer', () => {
+  test('accepts only replay metadata that is already canonical and bounded', () => {
+    const canonical = {
+      kind: 'xagent-cited-answer' as const,
+      schemaVersion: 1 as const,
+      blocks: [
+        { type: 'markdown' as const, text: '正文' },
+        { type: 'citation' as const, id: '[资料2]' },
+        { type: 'markdown' as const, text: '后续' },
+        { type: 'citation' as const, id: '[资料1]' },
+      ],
+      citationIds: ['[资料2]', '[资料1]'],
+    }
+    expect(parseXAgentCitedAnswerMeta(canonical)).toEqual(canonical)
+    expect(parseXAgentCitedAnswerMeta({
+      ...canonical,
+      blocks: [...canonical.blocks, { type: 'citation', id: '[资料1]' }],
+    })).toBeUndefined()
+    expect(parseXAgentCitedAnswerMeta({
+      ...canonical,
+      blocks: [{ type: 'markdown', text: '正文' }, { type: 'citation', id: '[资料01]' }],
+      citationIds: ['[资料01]'],
+    })).toBeUndefined()
+  })
+
   test('rejects unknown root and block fields through a closed discriminated union', () => {
     expectInvalid(answer([
       { type: 'markdown', text: 'valid' },

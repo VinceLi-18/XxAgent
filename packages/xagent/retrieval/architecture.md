@@ -4,6 +4,8 @@
 
 `XAgentRetrievalService` 要求工具传入的 Agent Session 与作用域 Session 完全一致，并验证作用域 Principal 的连接标识。Project Session 的委托固定 `project_id`，请求正文不接受任何选择器；Private Session 的委托固定空项目，并把显式项目 UUID 与私人资料选择器规范化为请求 `scope_hash`。搜索先通过固定到 `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181` 的内部 HTTP provider 取得不含 special token 的精确计数，再生成新 nonce 和最长 60 秒的 Ed25519 委托，只发起一次 FastAPI 检索请求。计数 provider 拒绝畸形 UTF-16，在序列化前限制 8 KiB 原始 UTF-8 和最坏 JSON 转义大小，并以 Host 服务令牌调用同一 backend origin 上的固定 relay。tokenizer 或检索后端的取消、拒绝、协议错误不会触发缓存或部分回退。
 
+`XAgentCitationRemoteService` 是独立的请求作用域 Host 服务。Typert gateway 只把 Browser 提供的当前 Session ID 与 citation ID 交给 `resolve`，并在 `withRequest` 中安装已认证 Principal、用户令牌、权限 revision、物理连接以及请求与连接取消信号；匿名、嵌套、Session 不匹配、服务替换和释放都会关闭式失败。服务先从 live Session 的规范持久 `xagent-cited-answer` 与对应检索 metadata 重建 Artifact、Version、Chunk 身份，再用新的 nonce 签发 60 秒委托并调用 FastAPI。响应只投影不可变身份与行范围，不包含读取地址；服务不缓存 locator 或 URL。公开错误集合固定为 `unauthenticated`、`session-not-found`、`citation-invalid` 和 `service-unavailable`，其他后端失败统一映射为 `service-unavailable`。取消、请求结束与释放会终止在飞解析并等待后端结算。
+
 公开 `XAgentAccessibleProjects` 和 `XAgentArtifactSearch` 只含 FastAPI 已验证的数据与 payload hash。服务在返回公开结果前，把 receipt、Session、tool call 和 payload hash 写入 `XAgentReceiptRegistry`。该 owner 覆盖 backend admission、注册、post-execute、公开结果与 Session 绑定；阻止、取消、渲染失败、append 失败或 Agent／Session 终止会确认未发布并清除 secret。释放服务先关闭 admission，清除已无 publication continuation 的 owner，再取消并等待 backend，因此 reentrant post-execute 释放不会等待自身。只有已绑定 sidecar 会留给 Session 持久化按精确 append 序号窗口读取，并在远端确认后调用 `commit()`。
 
 `@xagent/dsh-tool-retrieval` 是独立 Consumer。它注册两个关闭 schema，从实际 Agent 取得 Session 与 tool call 标识，并把取消信号交给服务。工具不接受 Principal、用户令牌、委托、receipt 或任意 Session scope 字段；公开 `tool/result` metadata 只有固定 kind、payload hash 和短引用标识。

@@ -148,6 +148,24 @@ describe('MarkdownText', () => {
     expect(container.querySelector('pre code a')).toBeNull()
   })
 
+  it.each([false, true])('keeps authored links inert when the owner disables link capability (streaming=%s)', (streaming) => {
+    const source = [
+      '[direct](https://example.com/direct)',
+      '<https://example.com/auto>',
+      '`https://example.com/code`',
+      '[reference][source]',
+      '',
+      '[source]: https://example.com/reference',
+    ].join('\n')
+    const { container } = render(<MarkdownText text={source} streaming={streaming} linkPolicy="inert" />)
+
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('direct')
+    expect(container.textContent).toContain('https://example.com/auto')
+    expect(container.querySelector('code')?.textContent).toBe('https://example.com/code')
+    expect(container.textContent).toContain('reference')
+  })
+
   it('links inline code through the file-mention resolver: URL first, settled only, never inside links', () => {
     const opened: string[] = []
     const fileMentions = {

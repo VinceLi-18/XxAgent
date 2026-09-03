@@ -125,6 +125,8 @@ export interface MarkdownRenderContext {
   readonly codeLabels: MarkdownCodeLabels | undefined
   /** Inline-code file mentions; absent wherever no opener vocabulary exists. */
   readonly fileMentions: MarkdownFileMentions | undefined
+  /** Whether authored link destinations become safe anchors or inert label text. */
+  readonly linkPolicy: MarkdownLinkPolicy
   /** Inside an anchor's children: interactive mentions must not nest there. */
   readonly inLink?: boolean
   /** Reference targets visible to this pass. */
@@ -134,6 +136,9 @@ export interface MarkdownRenderContext {
   /** References rendered per identifier; drives the section's back-reference count. */
   readonly footnoteCounts: Map<string, number>
 }
+
+/** Rendering policy for model-authored Markdown destinations. */
+export type MarkdownLinkPolicy = 'safe' | 'inert'
 
 /**
  * Render top-level blocks. Nodes that render nothing (definitions, unmapped
@@ -236,7 +241,9 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
       // authored text, not a parsed destination, so no normalizeUri: port,
       // path, and query render unchanged.
       const href = inlineCodeHttpUrl(value)
-      if (href !== undefined) return <code key={key}>{renderSafeLink(href, [value], 'link')}</code>
+      if (href !== undefined && context.linkPolicy === 'safe') {
+        return <code key={key}>{renderSafeLink(href, [value], 'link')}</code>
+      }
       // A token the owner's file-mention vocabulary recognizes opens that
       // file; the resolver, not this renderer, decides what names a file.
       // Inside an anchor the token stays inert — a button cannot nest there.
@@ -275,7 +282,7 @@ function renderNode(node: Md.RootContent, key: Key, context: MarkdownRenderConte
     case 'table':
       return renderTable(node, key, context)
     case 'link':
-      return renderAnchor(node.url, renderChildren(node.children, { ...context, inLink: true }), key)
+      return renderAuthoredLink(node.url, renderChildren(node.children, { ...context, inLink: true }), key, context)
     case 'linkReference':
       return renderLinkReference(node, key, context)
     case 'image':
@@ -453,6 +460,16 @@ function renderAnchor(url: string, children: ReactNode[], key: Key): ReactNode {
   return renderSafeLink(normalizeUri(url), children, key)
 }
 
+/** Apply the owning surface's link policy after parsing has preserved label semantics. */
+function renderAuthoredLink(
+  url: string,
+  children: ReactNode[],
+  key: Key,
+  context: MarkdownRenderContext,
+): ReactNode {
+  return context.linkPolicy === 'inert' ? <Fragment key={key}>{children}</Fragment> : renderAnchor(url, children, key)
+}
+
 /**
  * The complete inline-code value when it is exactly an absolute HTTP(S) URL
  * (no surrounding whitespace); anything else stays inert code.
@@ -506,7 +523,12 @@ function renderLinkReference(
     // not an anchor, so mentions inside it stay live.
     return <Fragment key={key}>{'['}{renderChildren(node.children, context)}{referenceSuffix(node)}</Fragment>
   }
-  return renderAnchor(definition.url, renderChildren(node.children, { ...context, inLink: true }), key)
+  return renderAuthoredLink(
+    definition.url,
+    renderChildren(node.children, { ...context, inLink: true }),
+    key,
+    context,
+  )
 }
 
 function renderImageReference(

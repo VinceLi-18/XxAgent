@@ -12,4 +12,4 @@
 
 控制器不解释权限或推导扫描状态。FastAPI 返回的私人／项目范围、`canEdit`、五态 Version 与 latest clean Version 是界面唯一权威；Host Remote 只转发固定操作。该浏览器链不注册模型工具，不写 Session 事件，也不触发模型请求。
 
-Citation 导航只通过 `XAgentArtifactCitationOpener.openCitation` 进入控制器。控制器先撤销普通选择、轮询和预览读取，再以服务端重新读取的详情核对 Artifact ID、不可变 Version ID、`clean` 状态与预览 MIME；核对成功后才请求该版本的短期 URL。Session 变化独立取消这条链，确保同一账号下切换对话也不会发布旧引用的 locator 或预览。
+Citation 导航只通过 `XAgentArtifactCitationOpener.openCitation` 进入控制器。控制器用独立 selection generation 拥有这条链，以服务端重新读取的详情核对 Artifact ID、不可变 Version ID、`clean` 状态与文本 MIME；核对成功后才请求该版本的短期 URL 并逐行高亮。PDF、图片及其他无法逐行高亮的 citation 关闭式失败，普通预览能力不变。Session 变化只取消仍由 citation generation 拥有的选择、详情与预览；普通 Artifact 选择和扫描轮询继续运行。账号或项目变化会撤销整个范围，并与 dispose 一样阻止任何迟到 locator 或预览发布。
