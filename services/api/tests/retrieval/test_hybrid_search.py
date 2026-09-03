@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from uuid import UUID
 
 import pytest
@@ -43,6 +44,29 @@ def test_rrf_combines_dense_and_lexical_candidates_and_uses_domain_ties() -> Non
     ranked = reciprocal_rank_fusion([first, third], [second, third])
 
     assert [item.chunk_id for item in ranked] == [third.chunk_id, second.chunk_id, first.chunk_id]
+
+
+def test_rrf_version_fallback_for_unreachable_live_head_pair() -> None:
+    lower_version = replace(
+        _candidate(200, artifact=7),
+        version_id=UUID(int=101),
+        ordinal=9,
+    )
+    higher_version = replace(
+        _candidate(100, artifact=7),
+        version_id=UUID(int=102),
+        ordinal=1,
+    )
+
+    ranked = reciprocal_rank_fusion([higher_version], [lower_version])
+
+    assert lower_version.version_id < higher_version.version_id
+    assert lower_version.chunk_id > higher_version.chunk_id
+    assert lower_version.ordinal > higher_version.ordinal
+    assert [item.chunk_id for item in ranked] == [
+        lower_version.chunk_id,
+        higher_version.chunk_id,
+    ]
 
 
 def test_bounded_selection_enforces_total_artifact_byte_and_token_limits() -> None:

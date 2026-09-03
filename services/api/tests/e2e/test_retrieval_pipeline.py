@@ -507,30 +507,32 @@ def test_real_hybrid_branches_and_final_domain_tie_break(
     unrelated_vector = _embedding("astronomy geology unrelated phrase")
     lexical_chunk = "ffffffff-ffff-ffff-ffff-ffffffff0001"
     dense_chunk = "00000000-0000-0000-0000-000000000001"
-    lexical_artifact = "10000000-0000-0000-0000-000000000001"
-    dense_artifact = "10000000-0000-0000-0000-000000000002"
-    distractor_artifact = "10000000-0000-0000-0000-000000000003"
+    lexical_artifact = "30000000-0000-0000-0000-000000000001"
+    lexical_version = "f1000000-0000-0000-0000-000000000001"
+    dense_artifact = "40000000-0000-0000-0000-000000000001"
+    dense_version = "01000000-0000-0000-0000-000000000001"
+    distractor_artifact = "50000000-0000-0000-0000-000000000001"
     _seed_ready_artifact(
         retrieval_session,
         artifact_id=lexical_artifact,
-        version_id="11000000-0000-0000-0000-000000000001",
-        index_id="12000000-0000-0000-0000-000000000001",
+        version_id=lexical_version,
+        index_id="f2000000-0000-0000-0000-000000000001",
         filename="lexical-only.txt",
-        chunks=[(lexical_chunk, 2, query, unrelated_vector)],
+        chunks=[(lexical_chunk, 9, query, unrelated_vector)],
     )
     _seed_ready_artifact(
         retrieval_session,
         artifact_id=dense_artifact,
-        version_id="11000000-0000-0000-0000-000000000002",
-        index_id="12000000-0000-0000-0000-000000000002",
+        version_id=dense_version,
+        index_id="02000000-0000-0000-0000-000000000001",
         filename="dense-only.txt",
-        chunks=[(dense_chunk, 9, "annual capital allocation protocol", query_vector)],
+        chunks=[(dense_chunk, 1, "annual capital allocation protocol", query_vector)],
     )
     _seed_ready_artifact(
         retrieval_session,
         artifact_id=distractor_artifact,
-        version_id="11000000-0000-0000-0000-000000000003",
-        index_id="12000000-0000-0000-0000-000000000003",
+        version_id="51000000-0000-0000-0000-000000000001",
+        index_id="52000000-0000-0000-0000-000000000001",
         filename="vector-cutoff.txt",
         chunks=[
             (
@@ -579,6 +581,13 @@ def test_real_hybrid_branches_and_final_domain_tie_break(
     assert lexical_rank == "1"
     assert dense_vector_rank == "1"
     assert float(dense_lexical_rank) == 0
+    artifact_order_opposes_lower_keys = (
+        UUID(lexical_artifact) < UUID(dense_artifact)
+        and UUID(lexical_version) > UUID(dense_version)
+        and 9 > 1
+        and UUID(lexical_chunk) > UUID(dense_chunk)
+    )
+    assert artifact_order_opposes_lower_keys
 
     tool_call_id = f"top-forty-{uuid4()}"
     result = _search(retrieval_session, query, tool_call_id)
@@ -591,6 +600,68 @@ def test_real_hybrid_branches_and_final_domain_tie_break(
         f"WHERE action = 'retrieval.search' AND details->>'tool_call_id' = '{tool_call_id}' "
         "ORDER BY created_at DESC LIMIT 1;\n"
     ) == "41"
+
+    ordinal_query = "yxwvqkzjmnhg"
+    ordinal_vector = _embedding(ordinal_query)
+    ordinal_chunk = "ffffffff-ffff-ffff-ffff-ffffffff0010"
+    vector_chunk = "00000000-0000-0000-0000-000000000010"
+    ordinal_artifact = "60000000-0000-0000-0000-000000000001"
+    ordinal_version = "61000000-0000-0000-0000-000000000001"
+    _seed_ready_artifact(
+        retrieval_session,
+        artifact_id=ordinal_artifact,
+        version_id=ordinal_version,
+        index_id="62000000-0000-0000-0000-000000000001",
+        filename="ordinal-fallback.txt",
+        chunks=[
+            (ordinal_chunk, 2, ordinal_query, unrelated_vector),
+            (vector_chunk, 9, "tectonic nebula unrelated phrase", ordinal_vector),
+            *[
+                (
+                    f"70000000-0000-0000-0000-{number:012d}",
+                    100 + number,
+                    f"dense filler {number}",
+                    ordinal_vector,
+                )
+                for number in range(1, 40)
+            ],
+        ],
+    )
+    ordinal_vector_rank = _psql(
+        "SELECT vector_rank FROM (SELECT c.id, row_number() OVER (ORDER BY "
+        f"c.embedding <=> CAST('{ordinal_vector}' AS vector), c.id) AS vector_rank "
+        "FROM artifact_text_chunks c JOIN artifact_text_indexes i ON i.id = c.index_id "
+        "JOIN artifact_search_heads h ON h.index_id = i.id) ranked "
+        f"WHERE id = '{vector_chunk}';\n"
+    )
+    ordinal_lexical_rank = _psql(
+        "SELECT count(*) FROM artifact_text_chunks c WHERE greatest("
+        "ts_rank_cd(c.lexical_document, plainto_tsquery('simple'::regconfig, "
+        f"'{ordinal_query}')), similarity(c.normalized_text, '{ordinal_query}')) > 0;\n"
+    )
+    ordinal_lexical_vector_top_40 = _psql(
+        "SELECT count(*) FROM (SELECT c.id FROM artifact_text_chunks c "
+        "JOIN artifact_text_indexes i ON i.id = c.index_id "
+        "JOIN artifact_search_heads h ON h.index_id = i.id "
+        f"ORDER BY c.embedding <=> CAST('{ordinal_vector}' AS vector), c.id LIMIT 40) ranked "
+        f"WHERE id = '{ordinal_chunk}';\n"
+    )
+    ordinal_result = _search(
+        retrieval_session,
+        ordinal_query,
+        f"ordinal-fallback-{uuid4()}",
+    )
+    ordinal_order_opposes_chunk_id = (
+        UUID(ordinal_chunk) > UUID(vector_chunk) and 2 < 9
+    )
+    assert ordinal_vector_rank == "1"
+    assert ordinal_lexical_rank == "1"
+    assert ordinal_lexical_vector_top_40 == "0"
+    assert ordinal_order_opposes_chunk_id
+    assert [item["chunk_id"] for item in ordinal_result["citations"][:2]] == [
+        ordinal_chunk,
+        vector_chunk,
+    ]
 
     chinese_query = "甲乙丙丁戊己庚辛壬癸甲乙丙丁戊庚"
     chinese_text = "甲乙丙丁戊己庚辛壬癸甲乙丙丁戊己"

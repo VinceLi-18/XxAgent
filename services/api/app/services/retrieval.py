@@ -117,7 +117,11 @@ def reciprocal_rank_fusion(
     vector_candidates: list[RetrievalCandidate],
     lexical_candidates: list[RetrievalCandidate],
 ) -> list[RetrievalCandidate]:
-    """Fuse independent top-40 ranks with deterministic domain-identity ties."""
+    """Fuse independent top-40 ranks with deterministic domain-identity ties.
+
+    Live head cardinality permits one searchable Version per Artifact, so VersionID
+    fallback is reachable only for direct candidate lists, not a valid live search.
+    """
     scores: dict[UUID, float] = defaultdict(float)
     values: dict[UUID, RetrievalCandidate] = {}
     for ranking in (vector_candidates[:MAX_CANDIDATES], lexical_candidates[:MAX_CANDIDATES]):

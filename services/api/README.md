@@ -42,7 +42,7 @@ API 进程同时接收最低权限业务连接 `DATABASE_URL` 和受信管理连
 
 `xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 
-检索栈使用固定镜像摘要的 PostgreSQL 16 + pgvector 和 CPU embedding 容器。embedding 的 Python 与 uv 基础镜像也按摘要固定，依赖来自冻结的 `services/embedding/uv.lock`。embedding 不发布主机端口，只接收 API 和 worker 通过 Compose 服务网络发送的请求；健康检查必须真实加载 `BAAI/bge-m3` 的固定修订并返回 1024 维向量。`services/embedding/bge-m3-snapshot.json` 记录官方 Hugging Face 不可变修订 API 和全部运行时文件的大小、SHA-256 与 blob ID；`verify_model_snapshot.py` 在真实验收前检查该清单，缺失、部分存在、损坏或元数据漂移都会失败关闭。
+检索栈使用固定镜像摘要的 PostgreSQL 16 + pgvector 和 CPU embedding 容器。embedding 的 Python 与 uv 基础镜像也按摘要固定，依赖来自冻结的 `services/embedding/uv.lock`。embedding 不发布主机端口，只接收 API 和 worker 通过 Compose 服务网络发送的请求；健康检查必须真实加载 `BAAI/bge-m3` 的固定修订并返回 1024 维向量。`services/embedding/bge-m3-snapshot.json` 记录官方 Hugging Face 不可变修订 API 和精确 snapshot 文件集的大小、SHA-256 与 blob ID；`verify_model_snapshot.py` 在真实验收前检查该清单。缺失、部分存在、损坏、元数据漂移，或精确 revision snapshot 内出现未列出的常规文件与符号链接（包括替代权重、索引和 adapter）都会失败关闭；snapshot 外的 Hugging Face 缓存元数据不参与该文件集比较。
 
 `XAGENT_EMBEDDING_CACHE_DIR` 指向 embedding 可写且 API 和 worker 只读的共享模型与 tokenizer 缓存。Linux CI 或部署主机以 embedding 的 UID/GID `65532:65532` 持有该目录，并只给组和其他用户读取与遍历权限：
 

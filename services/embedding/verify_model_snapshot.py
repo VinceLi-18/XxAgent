@@ -107,6 +107,33 @@ def _digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _snapshot_entries(snapshot: Path) -> set[str]:
+    entries: set[str] = set()
+    pending = [snapshot]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = list(directory.iterdir())
+        except OSError as error:
+            raise SnapshotVerificationError("cannot inspect snapshot inventory") from error
+        for child in children:
+            relative = child.relative_to(snapshot).as_posix()
+            if child.is_symlink():
+                entries.add(relative)
+                continue
+            try:
+                is_directory = child.is_dir()
+            except OSError as error:
+                raise SnapshotVerificationError(
+                    f"cannot inspect snapshot entry: {relative}"
+                ) from error
+            if is_directory:
+                pending.append(child)
+            else:
+                entries.add(relative)
+    return entries
+
+
 def verify_snapshot(
     cache_dir: Path,
     manifest_path: Path,
@@ -137,6 +164,12 @@ def verify_snapshot(
         raise SnapshotVerificationError("snapshot is absent")
     if not snapshot.is_dir():
         raise SnapshotVerificationError("snapshot path is not a directory")
+    expected_entries = {entry["path"] for entry in entries}
+    unexpected_entries = sorted(_snapshot_entries(snapshot) - expected_entries)
+    if unexpected_entries:
+        raise SnapshotVerificationError(
+            f"unexpected snapshot entry: {unexpected_entries[0]}"
+        )
     for entry in entries:
         candidate = snapshot.joinpath(*PurePosixPath(entry["path"]).parts)
         if not candidate.is_file():

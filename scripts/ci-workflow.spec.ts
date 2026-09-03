@@ -701,12 +701,19 @@ describe('CI workflow', () => {
       resolve(root, 'services/api/tests/e2e/test_retrieval_worker_recovery.py'),
       'utf8',
     )
+    const hybridUnit = readFileSync(
+      resolve(root, 'services/api/tests/retrieval/test_hybrid_search.py'),
+      'utf8',
+    )
 
     expect(pipeline).toContain('test_real_hybrid_branches_and_final_domain_tie_break')
     expect(pipeline).toContain('vector_top_40')
     expect(pipeline).toContain('lexical_rank')
     expect(pipeline).toContain('trigram_score')
     expect(pipeline).toContain('candidate_count')
+    expect(pipeline).toContain('artifact_order_opposes_lower_keys')
+    expect(pipeline).toContain('ordinal_order_opposes_chunk_id')
+    expect(hybridUnit).toContain('test_rrf_version_fallback_for_unreachable_live_head_pair')
     expect(recovery).toContain('xagent-stale-worker')
     expect(recovery).toContain('active-replacement')
     expect(recovery).toContain('superseded')
