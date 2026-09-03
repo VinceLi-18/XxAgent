@@ -110,6 +110,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   workspaceRegistry: 'workspace.md',
   xagentProject: 'web-server.md',
   xagentArtifact: 'web-server.md',
+  xagentCitation: 'web-server.md',
   xagentPrincipal: 'web-server.md',
   xagentRetrieval: 'web-server.md',
 }
@@ -160,6 +161,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   slots: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
   theme: 'client-side interface-typed browser service — packages/client/ui-theme/README.md owns the API',
   workspaces: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
+  xagentArtifactCitationOpener: 'client-side immutable Artifact navigation service — packages/xagent/ui-artifact/README.md owns the API',
   xagentWorkbench: 'client-side account-scoped project workbench service — packages/xagent/ui-project/README.md owns the API',
 }
 
@@ -544,6 +546,8 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   XAgentArtifactSearch: 'XAgent retrieval response is owned by packages/xagent/retrieval/architecture.md',
   XAgentListAccessibleProjectsInput: 'XAgent retrieval input is owned by packages/xagent/retrieval/architecture.md',
   XAgentSearchArtifactsInput: 'XAgent retrieval input is owned by packages/xagent/retrieval/architecture.md',
+  XAgentAuthenticatedSessionRequestScope: 'XAgent authenticated Session request scope is owned by packages/xagent/principal/architecture.md',
+  XAgentCitationTarget: 'XAgent citation navigation identity is owned by packages/xagent/retrieval/architecture.md',
   ApprovalRequestId: 'dynamic Plugin approval identity is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisErrorDetails: 'Cordis runtime error payload is owned by packages/extensions/cordis-host-runner/src/types.ts',
   CordisInspectPlatform: 'Cordis inspect platform identity is owned by packages/extensions/cordis-host-runner/src/types.ts',

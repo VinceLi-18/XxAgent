@@ -7,12 +7,13 @@ import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import { remoteMethods, TypertRemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import type {
   XAgentProjectDiscoveryInput,
   XAgentProjectDiscoveryResult,
   XAgentRetrievalBackend,
 } from '@xagent/dsh-backend-client'
-import { runWithXAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
+import { runWithXAgentAuthenticatedRequestScope, type XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
 import { describe, expect, test, vi } from 'vitest'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import * as retrievalTools from '../../tool-retrieval/src/index.ts'
@@ -24,12 +25,11 @@ import {
   CITED_ANSWER_INSTRUCTION,
   CITED_ANSWER_TOOL,
   XAgentBgeM3HttpTokenizer,
+  XAgentCitationRemoteService,
   XAgentRetrievalError,
   XAgentRetrievalService,
   type XAgentBgeM3Tokenizer,
 } from '../src/index.ts'
-
-/* oxlint-disable typescript/unbound-method -- Vitest reads backend mock functions as values for call assertions. */
 
 const ACTOR = '00000000-0000-0000-0000-000000000001'
 const SESSION = '00000000-0000-0000-0000-000000000701'
@@ -46,17 +46,18 @@ function tokenizer(count: (value: string) => number = value => value.trim().spli
   })
 }
 
-function scope(visibility: 'private' | 'project' = 'private') {
-  return Object.freeze({
+function scope(visibility: 'private' | 'project' = 'private'): XAgentAuthenticatedSessionRequestScope {
+  const base = {
     principal: Object.freeze({
       actorId: ACTOR, role: 'specialist' as const, permissionRevision: 3,
       authSessionId: '00000000-0000-0000-0000-000000000101', connectionId: 'connection-alice',
     }),
     userToken: 'alice-token', connectionId: 'connection-alice', sessionId: SESSION,
     requestSignal: LIVE_REQUEST_SIGNAL, connectionSignal: LIVE_CONNECTION_SIGNAL,
-    visibility,
-    ...visibility === 'project' ? { projectId: PROJECT } : { projectId: null },
-  })
+  }
+  return visibility === 'project'
+    ? Object.freeze({ ...base, visibility, projectId: PROJECT })
+    : Object.freeze({ ...base, visibility, projectId: null })
 }
 
 function backend(): XAgentRetrievalBackend {
@@ -71,7 +72,7 @@ function backend(): XAgentRetrievalBackend {
         displayName: 'brief.md', versionNumber: 1, lineStart: 1, lineEnd: 2, text: 'evidence', scope: 'project' as const,
       }], receipt: 'opaque-search-receipt', payloadHash: 'b'.repeat(64),
     })),
-    authorizeCitations: vi.fn(async () => {}), resolveCitation: vi.fn(),
+    authorizeCitations: vi.fn(async () => {}), resolveCitation: vi.fn<XAgentRetrievalBackend['resolveCitation']>(),
   }
 }
 
@@ -81,6 +82,53 @@ function service(value = backend(), registry = new XAgentReceiptRegistry()) {
     issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
     tokenizer: tokenizer(),
   }) }
+}
+
+function appendPersistedCitation(session: Session, id = '[资料1]'): void {
+  session.append('turn/start', { turn: 0 })
+  session.append('step/start', { turn: 0, step: 0 })
+  const call = session.append('tool/call', {
+    turn: 0, step: 0, callId: 'call-search' as never, name: 'search_artifacts',
+    arguments: JSON.stringify({ artifactId: 'browser-forged', versionId: 'browser-forged' }),
+  })
+  session.append('tool/result', {
+    turn: 0,
+    step: 0,
+    message: {
+      id: 'message-search' as never,
+      role: 'user',
+      source: { kind: 'tool', callId: 'call-search' as never },
+      content: [{
+        type: 'tool-result', toolCallId: 'call-search' as never, isError: false,
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            schema_version: 1,
+            citations: [{
+              id,
+              artifact_id: '00000000-0000-0000-0000-000000000501',
+              version_id: '00000000-0000-0000-0000-000000000601',
+              chunk_id: '00000000-0000-0000-0000-000000000801',
+              display_name: 'brief.md', version_number: 1, line_start: 4, line_end: 7,
+              text: 'evidence', scope: 'project',
+            }],
+          }),
+        }],
+      }],
+    },
+    meta: { kind: 'xagent-retrieval', payloadHash: 'b'.repeat(64), citations: [id] },
+  }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+}
+
+async function citationService(value = backend()) {
+  const ctx = new Context()
+  await ctx.plugin(SessionStore)
+  const session = ctx.sessions.create(SessionId(`session-${SESSION}`))
+  appendPersistedCitation(session)
+  const remote = new XAgentCitationRemoteService(ctx, value, {
+    issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
+  })
+  return { ctx, session, backend: value, remote }
 }
 
 async function agentHarness(adapter: LlmAdapter, value = backend()) {
@@ -1169,5 +1217,90 @@ describe('XAgentRetrievalService', () => {
     await expect(operation).rejects.toMatchObject({ code: 'service-unavailable' })
     expect(value.projects).toHaveBeenCalledTimes(1)
     expect(created.registry.attachments(`session-${SESSION}`, 0, 99)).toEqual([])
+  })
+})
+
+describe('XAgentCitationRemoteService', () => {
+  test('publishes only resolve and derives every backend identity from persisted citation evidence', async () => {
+    const created = await citationService()
+    created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, input) => ({
+      ...input.citation, lineStart: 4, lineEnd: 7,
+    }))
+
+    expect(remoteMethods(created.remote)).toEqual([
+      { method: 'resolve', invocation: { kind: 'direct' } },
+    ])
+    await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
+      `session-${SESSION}`,
+      '[资料1]',
+    ))).resolves.toEqual({
+      artifactId: '00000000-0000-0000-0000-000000000501',
+      versionId: '00000000-0000-0000-0000-000000000601',
+      chunkId: '00000000-0000-0000-0000-000000000801',
+      lineStart: 4,
+      lineEnd: 7,
+    })
+    const call = vi.mocked(created.backend.resolveCitation).mock.calls[0]!
+    expect(call[0]).toBe('alice-token')
+    expect(call[1]).toMatch(/^[^.]+\.[^.]+\.[^.]+$/)
+    expect(call[2]).toEqual({
+      sessionId: SESSION,
+      toolCallId: call[2].toolCallId,
+      permissionRevision: 3,
+      citation: {
+        id: '[资料1]',
+        artifactId: '00000000-0000-0000-0000-000000000501',
+        versionId: '00000000-0000-0000-0000-000000000601',
+        chunkId: '00000000-0000-0000-0000-000000000801',
+      },
+    })
+    expect(call[2].toolCallId).toEqual(expect.any(String))
+    expect(call[3]).toBeInstanceOf(AbortSignal)
+  })
+
+  test('mints a fresh delegation and resolves again instead of caching a locator or URL', async () => {
+    const created = await citationService()
+    created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, input) => ({
+      ...input.citation, lineStart: 4, lineEnd: 7,
+    }))
+    await created.remote.withRequest(scope(), async () => {
+      await created.remote.resolve(`session-${SESSION}`, '[资料1]')
+      await created.remote.resolve(`session-${SESSION}`, '[资料1]')
+    })
+    const calls = vi.mocked(created.backend.resolveCitation).mock.calls
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.[1]).not.toBe(calls[1]?.[1])
+    expect(JSON.stringify(await created.remote.withRequest(scope(), () =>
+      created.remote.resolve(`session-${SESSION}`, '[资料1]')))).not.toContain('url')
+  })
+
+  test('fails closed for missing evidence, Session mismatch, nested scope, cancellation, and disposal', async () => {
+    const pending = Promise.withResolvers<never>()
+    const value = backend()
+    value.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, _input, signal) => {
+      await new Promise<void>((_resolve, reject) => {
+        const abort = (): void => { reject(new DOMException('aborted', 'AbortError')) }
+        if (signal?.aborted === true) abort()
+        else signal?.addEventListener('abort', abort, { once: true })
+      })
+      return pending.promise
+    })
+    const created = await citationService(value)
+    await expect(created.remote.resolve(`session-${SESSION}`, '[资料1]')).rejects.toThrow('request scope')
+    await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
+      'session-00000000-0000-0000-0000-000000000999', '[资料1]',
+    ))).rejects.toMatchObject({ failure: { code: 'unauthenticated' } })
+    await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
+      `session-${SESSION}`, '[资料9]',
+    ))).rejects.toMatchObject({ failure: { code: 'citation-invalid' } })
+    await expect(created.remote.withRequest(scope(), () => created.remote.withRequest(scope(), async () => undefined)))
+      .rejects.toThrow('nested')
+
+    const operation = created.remote.withRequest(scope(), () => created.remote.resolve(`session-${SESSION}`, '[资料1]'))
+    await vi.waitFor(() => { expect(value.resolveCitation).toHaveBeenCalledOnce() })
+    const disposal = created.remote.dispose()
+    await expect(operation).rejects.toBeInstanceOf(TypertRemoteFailure)
+    await disposal
+    await expect(created.remote.withRequest(scope(), async () => undefined)).rejects.toThrow('disposed')
   })
 })

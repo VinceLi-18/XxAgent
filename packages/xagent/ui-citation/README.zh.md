@@ -1,0 +1,31 @@
+# @xagent/dsh-ui-citation
+
+[English](README.md) | 中文
+
+`@xagent/dsh-ui-citation` 在现有 Business 对话中渲染 `submit_cited_answer` 的封闭 `xagent-cited-answer` 结果 metadata。Markdown block 使用共享安全 Markdown 组件。Citation block 变为键盘可访问的“已验证资料” chip，安静的来源条按首次使用顺序各列一次 citation。看似 citation 的 Markdown 仍是文本，绝不会变成操作入口。
+
+选择 chip 时，Browser 只向 `xagentCitation/resolve` 发送当前 Session ID 和 citation ID。Host 从认证请求恢复 actor、账号、权限 revision 和已持久化 citation 身份，并返回不含 URL 的不可变 Artifact、Version、Chunk 与行身份。Browser 只把 Artifact、Version 与行范围交给 `xagentArtifactCitationOpener`；Artifact 控制器重新读取详情和该精确 clean 版本的预览。
+
+一个控制器只拥有一个账号和 Session 范围，并且最多拥有一次 resolution。请求被替换、账号或 Session 变化、ToolView 卸载、Remote 失败以及插件 dispose 都会取消请求并阻止迟到 Artifact 发布。UI 绝不把 Tool 参数、结果文本或 Markdown 当作 citation 权威。畸形或非成功 metadata 只显示稳定的关闭式文案。
+
+## Model Experience
+
+### 已验证引用回答
+
+#### What the model sees
+
+本包不增加模型输入。终止型 `submit_cited_answer` Tool 及其规范持久结果由 `@xagent/dsh-retrieval` 拥有；本包只渲染该 durable 结果。
+
+#### Token effect
+
+本包不增加提示词或输出 token。
+
+#### KV Cache effect
+
+本包不读写模型 KV Cache。Citation 导航只是面向用户的 Browser 与 Host 操作。
+
+## Known Limitations and Deferred Work
+
+- Citation 导航只支持当前已认证顶层 Session 中持久化的 citation。
+- 来源条有意显示稳定短 citation ID，而不是文件名、URL、snippet 或模型创作的标签。
+- 不支持、非 clean、已撤销或不匹配的 Artifact 版本会在 Artifact 面板中关闭式失败。

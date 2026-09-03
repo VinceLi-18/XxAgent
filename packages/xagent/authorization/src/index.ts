@@ -19,6 +19,7 @@ import {
 import type {
   XAgentProjectScopeRunner,
 } from '@xagent/dsh-project'
+import type { XAgentCitationScopeRunner } from '@xagent/dsh-retrieval'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
@@ -103,6 +104,14 @@ function artifactNamespace(endpoint: string): boolean {
 function artifactMethod(endpoint: string): string | undefined {
   const method = endpoint.slice('xagentArtifact'.length + 1)
   return ARTIFACT_METHODS.has(method) ? method : undefined
+}
+
+function citationNamespace(endpoint: string): boolean {
+  return endpoint.startsWith('xagentCitation/') || endpoint.startsWith('xagentCitation.')
+}
+
+function citationMethod(endpoint: string): 'resolve' | undefined {
+  return endpoint === 'xagentCitation/resolve' ? 'resolve' : undefined
 }
 
 function sessionPermission(
@@ -223,6 +232,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     private readonly persistence: TokenScopedPersistence,
     private readonly project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
     private readonly artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
+    private readonly citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
   ) {}
 
   async run<T>(
@@ -232,6 +242,36 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     signal: AbortSignal,
     operation: () => Promise<RpcResult<T>>,
   ): Promise<RpcResult<T>> {
+    if (citationNamespace(endpoint)) {
+      if (!authenticated(request)) return unauthenticated()
+      if (citationMethod(endpoint) === undefined) return unauthenticated()
+      const values = args(payload)
+      const sessionId = values?.sessionId
+      const citationId = values?.citationId
+      if (typeof sessionId !== 'string' || typeof citationId !== 'string') return unauthenticated()
+      const citation = typeof this.citation === 'function' ? this.citation() : this.citation
+      if (citation === undefined) {
+        return { ok: false, error: { code: 'internal', message: 'citation service unavailable', details: {} } }
+      }
+      try {
+        return await this.persistence.withUserToken(request.userToken, async () => {
+          const requestScope = authenticatedScope(request, signal)
+          const scoped = authenticatedSessionScope(
+            await this.backend.sessions.list(request.userToken, signal), sessionId, requestScope,
+          )
+          return citation.withRequest(scoped, operation)
+        })
+      } catch (error) {
+        if (error instanceof XAgentBackendError && error.code === 'unauthenticated') return unauthenticated()
+        if (error instanceof XAgentBackendError && error.code === 'not-found') {
+          return {
+            ok: false,
+            error: { code: 'session-not-found', message: 'session not found', details: { sessionId: sessionId as never } },
+          }
+        }
+        return { ok: false, error: { code: 'internal', message: 'citation operation unavailable', details: {} } }
+      }
+    }
     if (artifactNamespace(endpoint)) {
       if (!authenticated(request)) return unauthenticated()
       if (artifactMethod(endpoint) === undefined) return unauthenticated()
@@ -387,9 +427,10 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     persistence: TokenScopedPersistence,
     project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
     artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
+    citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
   ) {
     super(ctx, 'connectionRequestAuthorizer')
-    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact)
+    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact, citation)
   }
 
   /**
@@ -441,5 +482,6 @@ export function apply(ctx: Context, config: Config): void {
     persistence,
     () => ctx.get('xagentProject'),
     () => ctx.get('xagentArtifact'),
+    () => ctx.get('xagentCitation'),
   )
 }

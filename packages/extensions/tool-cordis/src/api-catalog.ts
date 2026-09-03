@@ -2264,6 +2264,31 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'xagentCitation',
+    summary: 'Request-scoped citation locator that resolves only persisted public evidence.',
+    description: 'Request-scoped citation locator that resolves only persisted public evidence.',
+    methods: [
+      {
+        signature: 'async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: 'Run one Remote operation inside the Host-authenticated Session scope.',
+        parameters: [{ name: 'scope', description: 'current physical connection, actor, revision, and Session identity.' }, { name: 'operation', description: 'complete downstream Remote operation.' }],
+        returns: 'the downstream result after request-local identity is cleared.',
+      },
+      {
+        signature: '@Remote async resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget>',
+        description: 'Resolve one persisted citation into immutable Artifact navigation identities.',
+        parameters: [{ name: 'sessionId', description: 'current Browser Session id.' }, { name: 'citationId', description: 'persisted short citation id.' }, { name: 'signal', description: 'Browser request cancellation.' }],
+        returns: 'immutable Artifact, Version, Chunk, and line identities without a URL.',
+      },
+      {
+        signature: 'async dispose(): Promise<void>',
+        description: 'Close admission, abort every resolution, and await their settlement.',
+        parameters: [],
+        returns: 'when all owned backend operations have settled.',
+      },
+    ],
+  },
+  {
     key: 'xagentPrincipal',
     summary: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
     description: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
@@ -4846,8 +4871,16 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n    readonly requestSignal?: AbortSignal;\n    readonly connectionSignal?: AbortSignal;\n}',
   },
   {
+    name: 'XAgentAuthenticatedSessionRequestScope',
+    declaration: 'export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestScope & ({\n    readonly sessionId: string;\n    readonly visibility: \'private\';\n    readonly projectId: null;\n} | {\n    readonly sessionId: string;\n    readonly visibility: \'project\';\n    readonly projectId: string;\n});',
+  },
+  {
     name: 'XAgentCitationIdentity',
     declaration: 'export interface XAgentCitationIdentity {\n    readonly id: string;\n    readonly artifactId: string;\n    readonly versionId: string;\n    readonly chunkId: string;\n}',
+  },
+  {
+    name: 'XAgentCitationTarget',
+    declaration: 'export interface XAgentCitationTarget {\n    readonly artifactId: string;\n    readonly versionId: string;\n    readonly chunkId: string;\n    readonly lineStart: number;\n    readonly lineEnd: number;\n}',
   },
   {
     name: 'XAgentListAccessibleProjectsInput',

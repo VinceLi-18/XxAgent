@@ -29,7 +29,8 @@
     "@xagent/dsh-artifact": "workspace:^",
     "@xagent/dsh-backend-client": "workspace:^",
     "@xagent/dsh-principal": "workspace:^",
-    "@xagent/dsh-project": "workspace:^"
+    "@xagent/dsh-project": "workspace:^",
+    "@xagent/dsh-retrieval": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
@@ -40,6 +41,7 @@
     "@xagent/dsh-artifact": "workspace:^",
     "@xagent/dsh-backend-client": "workspace:^",
     "@xagent/dsh-principal": "workspace:^",
-    "@xagent/dsh-project": "workspace:^"
+    "@xagent/dsh-project": "workspace:^",
+    "@xagent/dsh-retrieval": "workspace:^"
   }
 }

@@ -1,12 +1,14 @@
 /** Authenticated XAgent retrieval service and private receipt lifetime. @module @xagent/dsh-retrieval */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { createPrivateKey, randomUUID, type KeyObject } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import { Remote, TypertRemoteFailure, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
   XAgentBackendClient,
   XAgentBackendError,
@@ -39,6 +41,9 @@ import {
 import type {
   XAgentAccessibleProjects,
   XAgentArtifactSearch,
+  XAgentCitationRemote,
+  XAgentCitationScopeRunner,
+  XAgentCitationTarget,
   XAgentListAccessibleProjectsInput,
   XAgentRetrievalErrorCode,
   XAgentSearchArtifactsInput,
@@ -90,9 +95,18 @@ interface ServiceOptions {
   readonly tokenizer?: XAgentBgeM3Tokenizer
 }
 
+/** Citation Remote signer and clock configuration. */
+export interface XAgentCitationRemoteServiceOptions {
+  readonly issuer: string
+  readonly audience: string
+  readonly privateKey?: KeyObject
+  readonly now?: () => number
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     xagentRetrieval: XAgentRetrieval
+    xagentCitation: XAgentCitationRemoteService
   }
 }
 
@@ -204,6 +218,192 @@ function samePhysicalScope(
     && left.principal.actorId === right.principal.actorId
     && left.principal.permissionRevision === right.principal.permissionRevision
     && left.principal.authSessionId === right.principal.authSessionId
+}
+
+interface CitationRequestScopeState {
+  readonly scope: XAgentAuthenticatedSessionRequestScope
+  active: boolean
+}
+
+type ActiveCitationRequestScope = XAgentAuthenticatedSessionRequestScope & {
+  readonly requestSignal: AbortSignal
+  readonly connectionSignal: AbortSignal
+}
+
+const CITATION_REMOTE_ERRORS = new Set([
+  'unauthenticated', 'session-not-found', 'citation-invalid', 'service-unavailable',
+])
+
+function citationRemoteFailure(code: string): TypertRemoteFailure {
+  return new TypertRemoteFailure({
+    code: CITATION_REMOTE_ERRORS.has(code) ? code : 'service-unavailable',
+    message: 'XAgent citation request failed',
+    details: {},
+  })
+}
+
+/** Request-scoped citation locator that resolves only persisted public evidence. */
+export class XAgentCitationRemoteService extends TypertRemoteService implements XAgentCitationRemote, XAgentCitationScopeRunner {
+  private readonly requestScope = new AsyncLocalStorage<CitationRequestScopeState>()
+  private readonly controllers = new Map<AbortController, Promise<void>>()
+  private readonly issuer: string
+  private readonly audience: string
+  private readonly privateKey: KeyObject | undefined
+  private readonly now: () => number
+  private accepting = true
+  private disposal: Promise<void> | undefined
+
+  constructor(
+    ctx: Context,
+    private readonly backend: XAgentRetrievalBackend,
+    options: XAgentCitationRemoteServiceOptions,
+  ) {
+    super(ctx, 'xagentCitation')
+    this.issuer = options.issuer
+    this.audience = options.audience
+    this.privateKey = options.privateKey
+    this.now = options.now ?? (() => Math.floor(Date.now() / 1000))
+    ctx.effect(() => () => this.dispose(), 'dispose xagent citation request scope')
+  }
+
+  /**
+   * Run one Remote operation inside the Host-authenticated Session scope.
+   * @param scope - current physical connection, actor, revision, and Session identity.
+   * @param operation - complete downstream Remote operation.
+   * @returns the downstream result after request-local identity is cleared.
+   */
+  async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> {
+    if (!this.accepting) throw new Error('xagent citation service is disposed')
+    if (!authenticatedSessionScope(scope) || scope.requestSignal === undefined || scope.connectionSignal === undefined) {
+      throw new Error('invalid xagent citation request scope')
+    }
+    if (this.requestScope.getStore()?.active === true) throw new Error('nested xagent citation request scope')
+    const state: CitationRequestScopeState = { scope, active: true }
+    try {
+      return await this.requestScope.run(state, operation)
+    } finally {
+      state.active = false
+    }
+  }
+
+  /**
+   * Resolve one persisted citation into immutable Artifact navigation identities.
+   * @param sessionId - current Browser Session id.
+   * @param citationId - persisted short citation id.
+   * @param signal - Browser request cancellation.
+   * @returns immutable Artifact, Version, Chunk, and line identities without a URL.
+   */
+  @Remote
+  async resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget> {
+    const scope = this.requireScope(sessionId)
+    const session = this.ctx.sessions.get(SessionId(`session-${scope.sessionId}`))
+    if (session === undefined) throw citationRemoteFailure('session-not-found')
+    let citation
+    try {
+      citation = reconstructCitedAnswerEvidence(session.deriveMessages(), session)?.get(citationId)
+    } catch {
+      throw citationRemoteFailure('citation-invalid')
+    }
+    if (citation === undefined) throw citationRemoteFailure('citation-invalid')
+    const toolCallId = randomUUID()
+    const merged = AbortSignal.any([
+      ...(signal === undefined ? [] : [signal]),
+      scope.requestSignal,
+      scope.connectionSignal,
+    ])
+    const resolved = await this.call(merged, operationSignal => this.backend.resolveCitation(
+      scope.userToken,
+      this.delegation(scope, toolCallId),
+      {
+        sessionId: scope.sessionId,
+        toolCallId,
+        permissionRevision: scope.principal.permissionRevision,
+        citation,
+      },
+      operationSignal,
+    ))
+    return Object.freeze({
+      artifactId: resolved.artifactId,
+      versionId: resolved.versionId,
+      chunkId: resolved.chunkId,
+      lineStart: resolved.lineStart,
+      lineEnd: resolved.lineEnd,
+    })
+  }
+
+  /**
+   * Close admission, abort every resolution, and await their settlement.
+   * @returns when all owned backend operations have settled.
+   */
+  async dispose(): Promise<void> {
+    this.disposal ??= (async () => {
+      this.accepting = false
+      const active = [...this.controllers.entries()]
+      for (const [controller] of active) controller.abort()
+      await Promise.allSettled(active.map(([, settlement]) => settlement))
+    })()
+    await this.disposal
+  }
+
+  private requireScope(sessionId: string): ActiveCitationRequestScope {
+    if (!this.accepting) throw new Error('xagent citation service is disposed')
+    const state = this.requestScope.getStore()
+    if (state?.active !== true) throw new Error('xagent citation request scope is required')
+    let resolved: string
+    try {
+      resolved = backendSessionId(sessionId)
+    } catch {
+      throw citationRemoteFailure('unauthenticated')
+    }
+    if (resolved !== state.scope.sessionId) throw citationRemoteFailure('unauthenticated')
+    if (state.scope.requestSignal === undefined || state.scope.connectionSignal === undefined) {
+      throw new Error('invalid xagent citation request scope')
+    }
+    return state.scope as ActiveCitationRequestScope
+  }
+
+  private delegation(scope: XAgentAuthenticatedSessionRequestScope, toolCallId: string): string {
+    if (this.privateKey === undefined) throw citationRemoteFailure('service-unavailable')
+    try {
+      return issueDelegationToken({
+        actorId: scope.principal.actorId,
+        projectId: scope.projectId,
+        sessionId: scope.sessionId,
+        toolCallId,
+        toolName: 'resolve_citation',
+        permissionRevision: scope.principal.permissionRevision,
+        issuer: this.issuer,
+        audience: this.audience,
+        privateKey: this.privateKey,
+        now: this.now(),
+        expiresInSeconds: 60,
+        nonce: newDelegationNonce(),
+      })
+    } catch {
+      throw citationRemoteFailure('service-unavailable')
+    }
+  }
+
+  private async call<T>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (!this.accepting) throw citationRemoteFailure('service-unavailable')
+    const controller = new AbortController()
+    const merged = AbortSignal.any([signal, controller.signal])
+    const settled = Promise.withResolvers<void>()
+    this.controllers.set(controller, settled.promise)
+    try {
+      merged.throwIfAborted()
+      const value = await operation(merged)
+      merged.throwIfAborted()
+      return value
+    } catch (error: unknown) {
+      if (error instanceof TypertRemoteFailure) throw error
+      if (error instanceof XAgentBackendError) throw citationRemoteFailure(error.code)
+      throw citationRemoteFailure('service-unavailable')
+    } finally {
+      this.controllers.delete(controller)
+      settled.resolve()
+    }
+  }
 }
 
 /** FastAPI provider with one operation scope and quiescent disposal. */
@@ -706,10 +906,16 @@ export class XAgentRetrievalService extends XAgentRetrieval {
  */
 export function apply(ctx: Context, config: Config): void {
   const backend = new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken }).retrieval
+  const privateKey = createPrivateKey(config.delegationPrivateKey)
   new XAgentRetrievalService(ctx, backend, new XAgentReceiptRegistry(), {
     issuer: config.delegationIssuer,
     audience: config.delegationAudience,
-    privateKey: createPrivateKey(config.delegationPrivateKey),
+    privateKey,
     tokenizer: new XAgentBgeM3HttpTokenizer(config.backendOrigin, config.serviceToken),
+  })
+  new XAgentCitationRemoteService(ctx, backend, {
+    issuer: config.delegationIssuer,
+    audience: config.delegationAudience,
+    privateKey,
   })
 }

@@ -9,6 +9,7 @@
     { "path": "../../llm/llm" },
     { "path": "../../core/session" },
     { "path": "../../core/tools" },
+    { "path": "../../typert/protocol" },
     { "path": "../../runtime-diagnostics/invariants" },
     { "path": "../backend-client" },
     { "path": "../delegation-token" },

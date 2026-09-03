@@ -17,5 +17,6 @@
 | `@xagent/dsh-ui-account` | 提供正式登录、账号状态与退出界面 |
 | `@xagent/dsh-ui-project` | 提供项目导航、上下文标识与第三栏项目概览 |
 | `@xagent/dsh-ui-artifact` | 在项目详情 Slot 中提供资料上传、扫描状态、不可变版本、预览与下载 |
+| `@xagent/dsh-ui-citation` | 渲染结构化引用回答，并把已验证资料导航到精确不可变版本 |
 
 这些包本身不接管通用 DSH Profile。只有 XAgent Business 组合显式装载后才生效；Developer 和上游 Profile 不会启用这些服务或界面，也不会获得服务凭据或委托私钥。资料管理能力只服务人工界面；独立检索工具包显式装载后，才会把当前授权范围内的只读证据加入 Session 与模型上下文。

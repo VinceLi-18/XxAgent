@@ -51,6 +51,19 @@ interface ControllerOptions {
   readonly openUrl?: ((url: string) => void) | undefined
 }
 
+/** Cited answer 交给 Artifact 面板的持久身份；不含读取地址。 */
+export interface XAgentArtifactCitationTarget {
+  readonly artifactId: string
+  readonly versionId: string
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
+/** Browser citation 导航唯一允许调用的 Artifact seam。 */
+export interface XAgentArtifactCitationOpener {
+  openCitation(target: XAgentArtifactCitationTarget): Promise<void>
+}
+
 interface Operation {
   readonly controller: AbortController
   readonly epoch: number
@@ -238,12 +251,60 @@ export class XAgentArtifactController {
     return this.trackOperation(() => this.loadDetail(artifactId))
   }
 
+  /**
+   * 重新读取 citation 指定的 Artifact 和不可变版本，再发布短期预览。
+   * @param target Host 解析出的 Artifact、版本和行范围。
+   */
+  openCitation(target: XAgentArtifactCitationTarget): Promise<void> {
+    return this.trackOperation(() => this.loadCitation(target))
+  }
+
+  private async loadCitation(target: XAgentArtifactCitationTarget): Promise<void> {
+    const selectionGeneration = this.invalidateSelection()
+    const operation = this.begin('detail')
+    if (operation === undefined) return
+    this.snapshot.replaceReady({
+      selectedId: target.artifactId, detail: undefined, detailLoading: true, detailError: undefined,
+      preview: undefined, citation: undefined,
+    })
+    try {
+      const result = await this.remote.detail(target.artifactId, operation.controller.signal)
+      if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, target.artifactId)) return
+      const version = result.ok && result.value.id === target.artifactId
+        ? result.value.versions.find(item => item.id === target.versionId)
+        : undefined
+      if (!result.ok || version?.status !== 'clean' || previewKind(version.contentType) === undefined) {
+        this.snapshot.replaceReady({
+          selectedId: target.artifactId, detail: undefined, detailLoading: false,
+          detailError: '引用资料暂时不可用', preview: undefined, citation: undefined,
+        })
+        return
+      }
+      this.snapshot.replaceReady({
+        detail: result.value, detailLoading: false, detailError: undefined,
+        citation: { versionId: target.versionId, lineStart: target.lineStart, lineEnd: target.lineEnd },
+      })
+      await this.loadPreview(target.versionId)
+      const current = this.snapshot.getSnapshot()
+      if (current.phase === 'ready' && current.citation?.versionId === target.versionId
+        && current.preview?.versionId !== target.versionId) {
+        this.snapshot.replaceReady({ citation: undefined, preview: undefined })
+      }
+    } catch {
+      if (!operation.controller.signal.aborted && !this.isStale(operation)) {
+        this.snapshot.replaceReady({
+          detailLoading: false, detailError: '引用资料暂时不可用', preview: undefined, citation: undefined,
+        })
+      }
+    }
+  }
+
   private async loadDetail(artifactId: string): Promise<void> {
     const selectionGeneration = this.invalidateSelection()
     const operation = this.begin('detail')
     if (operation === undefined) return
     this.snapshot.replaceReady({
-      selectedId: artifactId, detail: undefined, detailLoading: true, detailError: undefined, preview: undefined,
+      selectedId: artifactId, detail: undefined, detailLoading: true, detailError: undefined, preview: undefined, citation: undefined,
     })
     if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, artifactId)) return
     try {
@@ -266,9 +327,18 @@ export class XAgentArtifactController {
   backToList(): void {
     this.invalidateSelection()
     this.snapshot.replaceReady({
-      selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined, preview: undefined,
+      selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined, preview: undefined, citation: undefined,
     })
     this.armPollIfNeeded()
+  }
+
+  /** Session citation 范围变化时取消 handoff 并丢弃 locator 与短期 URL。 */
+  cancelCitation(): void {
+    this.invalidateSelection()
+    this.snapshot.replaceReady({
+      selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined,
+      preview: undefined, citation: undefined,
+    })
   }
 
   /**
@@ -497,6 +567,7 @@ export class XAgentArtifactController {
       detailLoading: false,
       detailError: undefined,
       preview: undefined,
+      citation: undefined,
     })
   }
 

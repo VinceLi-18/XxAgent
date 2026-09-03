@@ -116,6 +116,65 @@ function file(name = '季度报告.pdf', size = 16, type = 'application/pdf'): F
 }
 
 describe('XAgent 资料控制器', () => {
+  it('按 citation immutable identity 重读详情和精确版本预览', async () => {
+    const { client, artifactDetail, preview } = remote([cleanSummary])
+    const controller = new XAgentArtifactController(client, undefined, {
+      readText: vi.fn(async () => '第一行\n第二行\n第三行'),
+    })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.openCitation({
+      artifactId: ARTIFACT_A, versionId: VERSION_CLEAN, lineStart: 2, lineEnd: 3,
+    })
+    expect(artifactDetail).toHaveBeenCalledWith(ARTIFACT_A, expect.any(AbortSignal))
+    expect(preview).toHaveBeenCalledWith(VERSION_CLEAN, expect.any(AbortSignal))
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      selectedId: ARTIFACT_A,
+      citation: { versionId: VERSION_CLEAN, lineStart: 2, lineEnd: 3 },
+      preview: { versionId: VERSION_CLEAN },
+    })
+  })
+
+  it('拒绝 Artifact、版本或 clean 状态不匹配并不发布预览 URL', async () => {
+    const { client, artifactDetail, preview } = remote([cleanSummary])
+    artifactDetail.mockResolvedValueOnce({ ok: true, value: secondDetail() })
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.openCitation({ artifactId: ARTIFACT_A, versionId: VERSION_CLEAN, lineStart: 1, lineEnd: 1 })
+    expect(preview).not.toHaveBeenCalled()
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ preview: undefined, citation: undefined })
+
+    artifactDetail.mockResolvedValueOnce({ ok: true, value: detail('clean') })
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.openCitation({ artifactId: ARTIFACT_A, versionId: 'missing-version', lineStart: 1, lineEnd: 1 })
+    expect(preview).not.toHaveBeenCalled()
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ preview: undefined, citation: undefined })
+  })
+
+  it('预览 Remote 失败会清除 citation locator 与短期 URL', async () => {
+    const { client, preview } = remote([cleanSummary])
+    preview.mockResolvedValueOnce({ ok: false, error: { code: 'forbidden', message: 'secret', details: {} } })
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    await controller.openCitation({ artifactId: ARTIFACT_A, versionId: VERSION_CLEAN, lineStart: 1, lineEnd: 2 })
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ preview: undefined, citation: undefined })
+  })
+
+  it('范围变化和 disposal 取消 citation handoff 并阻止迟到 URL 发布', async () => {
+    const pending = Promise.withResolvers<RemoteResult<XAgentArtifactDetail>>()
+    const { client, artifactDetail } = remote([cleanSummary])
+    artifactDetail.mockImplementationOnce((_id, signal) => {
+      signal?.addEventListener('abort', () => { pending.reject(new DOMException('aborted', 'AbortError')) }, { once: true })
+      return pending.promise
+    })
+    const controller = new XAgentArtifactController(client)
+    await controller.setScope(ACCOUNT_A, { kind: 'workbench' })
+    const opening = controller.openCitation({ artifactId: ARTIFACT_A, versionId: VERSION_CLEAN, lineStart: 1, lineEnd: 2 })
+    controller.clear(ACCOUNT_B)
+    await opening
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ phase: 'empty' })
+    await controller.dispose()
+  })
+
   it('账号切换立即清空内存、取消旧请求并丢弃迟到列表', async () => {
     const first = Promise.withResolvers<RemoteResult<readonly XAgentArtifactSummary[]>>()
     const second = Promise.withResolvers<RemoteResult<readonly XAgentArtifactSummary[]>>()

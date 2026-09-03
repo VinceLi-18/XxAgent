@@ -9,6 +9,7 @@ import {
   type XAgentAuthenticatedRequestScope,
 } from '../../principal/src/index.ts'
 import type { XAgentProjectScopeRunner } from '../../project/src/index.ts'
+import type { XAgentCitationScopeRunner } from '../../retrieval/src/index.ts'
 import { describe, expect, test, vi } from 'vitest'
 import * as authorizationModule from '../src/index.ts'
 import {
@@ -83,6 +84,25 @@ function artifactScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => voi
     active: () => active,
     async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
       if (active !== undefined) throw new Error('nested artifact request scope')
+      active = scope
+      onScope?.(scope)
+      try {
+        return await operation()
+      } finally {
+        active = undefined
+      }
+    },
+  }
+}
+
+function citationScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => void): XAgentCitationScopeRunner & {
+  readonly active: () => XAgentAuthenticatedRequestScope | undefined
+} {
+  let active: XAgentAuthenticatedRequestScope | undefined
+  return {
+    active: () => active,
+    async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
+      if (active !== undefined) throw new Error('nested citation request scope')
       active = scope
       onScope?.(scope)
       try {
@@ -549,6 +569,105 @@ describe('XAgent Session 授权', () => {
     const replacement = artifactScope()
     current = replacement
     await expect(auth.run('xagentArtifact/list', {}, context, new AbortController().signal, success))
+      .resolves.toEqual({ ok: true, value: 'ok' })
+    expect(first.active()).toBeUndefined()
+  })
+
+  test('唯一 citation resolve endpoint 在当前物理连接与 Session scope 内运行', async () => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const scopes: XAgentAuthenticatedRequestScope[] = []
+    const runner = citationScope(value => scopes.push(value))
+    const operation = vi.fn(async (): Promise<RpcResult<string>> => {
+      const active = runner.active()
+      expect(active).toMatchObject({
+        principal: context.principal,
+        userToken: 'alice-token',
+        connectionId: 'connection-1',
+        sessionId: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        projectId: '00000000-0000-0000-0000-000000000401',
+      })
+      expect(active?.requestSignal).toBeInstanceOf(AbortSignal)
+      expect(active?.connectionSignal).toBeInstanceOf(AbortSignal)
+      return { ok: true, value: 'ok' }
+    })
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, undefined, runner)
+
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+    expect(operation).toHaveBeenCalledOnce()
+    expect(scopes).toHaveLength(1)
+    expect(runner.active()).toBeUndefined()
+  })
+
+  test('citation namespace 对未知方法、匿名、串号 Session 与缺失 service 失败关闭', async () => {
+    const operation = vi.fn(success)
+    const runner = citationScope()
+    const auth = new XAgentAuthorization(backend(), persistence(), undefined, undefined, runner)
+    await expect(auth.run('xagentCitation.unknown', {}, context, new AbortController().signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run('xagentCitation.resolve', {}, context, new AbortController().signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000999', citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'session-not-found' } })
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } },
+      { connectionId: 'anonymous' },
+      new AbortController().signal,
+      operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    const missing = new XAgentAuthorization(backend(), persistence())
+    await expect(missing.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toEqual({
+      ok: false,
+      error: { code: 'internal', message: 'citation service unavailable', details: {} },
+    })
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test('citation resolver replacement、取消与异常不会保留旧请求 scope', async () => {
+    const first = citationScope()
+    let current: XAgentCitationScopeRunner | undefined = first
+    const remote = backend()
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, undefined, () => current)
+    const payload = { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } }
+    await expect(auth.run(
+      'xagentCitation/resolve', payload, context, new AbortController().signal,
+      async () => { throw new DOMException('cancelled', 'AbortError') },
+    )).resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+    expect(first.active()).toBeUndefined()
+
+    current = undefined
+    await expect(auth.run('xagentCitation/resolve', payload, context, new AbortController().signal, success))
+      .resolves.toMatchObject({ ok: false, error: { message: 'citation service unavailable' } })
+    const replacement = citationScope()
+    current = replacement
+    await expect(auth.run('xagentCitation/resolve', payload, context, new AbortController().signal, success))
       .resolves.toEqual({ ok: true, value: 'ok' })
     expect(first.active()).toBeUndefined()
   })

@@ -33,11 +33,22 @@ describe('XAgent Artifact UI 插件', () => {
     }
     const disposeNamespace = ctx.reflect.provide('remote.xagentArtifact', remote)
     ctx.provide('remote', { $mount: vi.fn(async () => async () => { await disposeNamespace() }) } as never)
+    const sessionListeners = new Set<() => void>()
+    let currentSession: string | undefined = 'session-1'
+    ctx.provide('sessions', { list: {
+      getSnapshot: () => ({ current: currentSession }),
+      subscribe: (listener: () => void) => {
+        sessionListeners.add(listener)
+        return () => { sessionListeners.delete(listener) }
+      },
+    } } as never)
     ctx.provide('xagentWorkbench', workbench as never)
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
 
     expect((ctx as Context & { xagentArtifacts?: unknown }).xagentArtifacts).toBeUndefined()
+    const opener = ctx.get('xagentArtifactCitationOpener') as unknown as { readonly cancelCitation: () => void }
+    const cancelCitation = vi.spyOn(opener, 'cancelCitation')
     expect(slots.entries('xagent.workbench.artifacts')[0]?.component).toBe(ArtifactPanel)
     await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(1) })
     const firstSignal = (list.mock.calls as unknown as readonly [AbortSignal][])[0]![0]
@@ -57,6 +68,10 @@ describe('XAgent Artifact UI 插件', () => {
     listeners.forEach((listener) => { listener() })
     await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(2) })
 
+    currentSession = 'session-2'
+    sessionListeners.forEach((listener) => { listener() })
+    expect(cancelCitation).toHaveBeenCalledOnce()
+
     const pendingList = Promise.withResolvers<{ ok: true; value: never[] }>()
     list.mockImplementationOnce(() => pendingList.promise)
     workbenchState = {
@@ -74,6 +89,7 @@ describe('XAgent Artifact UI 插件', () => {
     await disposing
     expect(slots.entries('xagent.workbench.artifacts')).toHaveLength(0)
     expect(listeners).toHaveLength(0)
+    expect(sessionListeners).toHaveLength(0)
     declareDetails()
     declareRoot()
   })

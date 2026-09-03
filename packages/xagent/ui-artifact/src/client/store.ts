@@ -8,6 +8,13 @@ export interface XAgentArtifactUploadState {
   readonly phase: 'authorizing' | 'putting' | 'completing' | 'complete'
 }
 
+/** 一次 citation handoff 的不可变版本与行范围。 */
+export interface XAgentArtifactCitationState {
+  readonly versionId: string
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
 /** 只在当前详情层存活的短期安全预览。 */
 export type XAgentArtifactPreviewState =
   | { readonly versionId: string; readonly filename: string; readonly kind: 'pdf' | 'image'; readonly url: string }
@@ -30,6 +37,7 @@ export type XAgentArtifactState = ArtifactScopeState & (
     readonly detail?: XAgentArtifactDetail | undefined
     readonly detailLoading?: boolean | undefined
     readonly preview?: XAgentArtifactPreviewState | undefined
+    readonly citation?: XAgentArtifactCitationState | undefined
     readonly upload?: XAgentArtifactUploadState | undefined
     readonly uploadError?: string | undefined
     readonly detailError?: string | undefined

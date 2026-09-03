@@ -11,3 +11,5 @@
 预览许可同时要求版本状态为 `clean`，且详情中的服务端识别 MIME 属于 PDF、纯文本类、PNG、JPEG 或 WebP 白名单。控制器在许可成立后才调用 `preview`。PDF、图片和纯文本分别使用固定渲染分支；Office、HTML、SVG 和未知二进制只有下载路径，因此不能借助伪造扩展名进入 iframe。
 
 控制器不解释权限或推导扫描状态。FastAPI 返回的私人／项目范围、`canEdit`、五态 Version 与 latest clean Version 是界面唯一权威；Host Remote 只转发固定操作。该浏览器链不注册模型工具，不写 Session 事件，也不触发模型请求。
+
+Citation 导航只通过 `XAgentArtifactCitationOpener.openCitation` 进入控制器。控制器先撤销普通选择、轮询和预览读取，再以服务端重新读取的详情核对 Artifact ID、不可变 Version ID、`clean` 状态与预览 MIME；核对成功后才请求该版本的短期 URL。Session 变化独立取消这条链，确保同一账号下切换对话也不会发布旧引用的 locator 或预览。

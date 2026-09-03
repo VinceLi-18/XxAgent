@@ -1,5 +1,6 @@
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { XAgentRetrievalCitation, XAgentRetrievalProject } from '@xagent/dsh-backend-client'
+import type { XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
 
 /** One canonical cited-answer block. Markdown never carries citation authority. */
 export type XAgentCitedAnswerBlock =
@@ -91,4 +92,23 @@ export interface XAgentReceiptRegistryContract {
   attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[]
   commit(sessionId: string, throughSequence: number): void
   dispose(): Promise<void>
+}
+
+/** Immutable citation navigation target returned without any content URL. */
+export interface XAgentCitationTarget {
+  readonly artifactId: string
+  readonly versionId: string
+  readonly chunkId: string
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
+/** Browser-visible citation Remote; identity and delegation remain Host-owned. */
+export interface XAgentCitationRemote {
+  resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget>
+}
+
+/** Authorizer entry for one authenticated citation Remote request. */
+export interface XAgentCitationScopeRunner {
+  withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
 }

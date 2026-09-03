@@ -209,6 +209,39 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 
 Source: [`packages/xagent/artifact/src/index.ts:204`](../../packages/xagent/artifact/src/index.ts)
 
+<a id="ctxxagentcitation--xagentcitationremoteservice"></a>
+
+### `ctx.xagentCitation` — `XAgentCitationRemoteService`
+
+Request-scoped citation locator that resolves only persisted public evidence.
+
+```ts cordis-catalog
+/**
+ * Run one Remote operation inside the Host-authenticated Session scope.
+ * @param scope - current physical connection, actor, revision, and Session identity.
+ * @param operation - complete downstream Remote operation.
+ * @returns the downstream result after request-local identity is cleared.
+ */
+async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * Resolve one persisted citation into immutable Artifact navigation identities.
+ * @param sessionId - current Browser Session id.
+ * @param citationId - persisted short citation id.
+ * @param signal - Browser request cancellation.
+ * @returns immutable Artifact, Version, Chunk, and line identities without a URL.
+ */
+@Remote async resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget>
+
+/**
+ * Close admission, abort every resolution, and await their settlement.
+ * @returns when all owned backend operations have settled.
+ */
+async dispose(): Promise<void>
+```
+
+Source: [`packages/xagent/retrieval/src/index.ts:246`](../../packages/xagent/retrieval/src/index.ts)
+
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 
 ### `ctx.xagentPrincipal` — `XAgentPrincipalService` (abstract seam)
@@ -300,5 +333,5 @@ abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promi
 abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:119`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:133`](../../packages/xagent/retrieval/src/index.ts)
 <!-- END GENERATED cordis-surface -->

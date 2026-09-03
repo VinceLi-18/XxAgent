@@ -3055,7 +3055,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/authorization/src/index.ts:51`](../packages/xagent/authorization/src/index.ts)
+Source: [`packages/xagent/authorization/src/index.ts:52`](../packages/xagent/authorization/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 
@@ -3117,7 +3117,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:62`](../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:67`](../packages/xagent/retrieval/src/index.ts)
 
 <a id="xagentdsh-session-persistence-api"></a>
 
@@ -3209,6 +3209,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@xagent/dsh-tool-retrieval` — requires `tools` ([`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts))
 - `@xagent/dsh-ui-account` ([`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts))
 - `@xagent/dsh-ui-artifact` ([`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts))
+- `@xagent/dsh-ui-citation` ([`packages/xagent/ui-citation/src/index.ts`](../packages/xagent/ui-citation/src/index.ts))
 - `@xagent/dsh-ui-project` ([`packages/xagent/ui-project/src/index.ts`](../packages/xagent/ui-project/src/index.ts))
 
 ## Seam packages (not directly loadable)

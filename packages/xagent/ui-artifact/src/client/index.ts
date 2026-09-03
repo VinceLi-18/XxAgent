@@ -1,11 +1,18 @@
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, ISessions } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@xagent/dsh-ui-project/client'
 import artifactRemote from '@xagent/dsh-artifact/remote'
 import { ArtifactPanel, type ArtifactPanelInjected } from './ArtifactPanel.tsx'
 import { XAgentArtifactController, type XAgentArtifactRemoteClient } from './service.ts'
 
 export type { XAgentArtifactState } from './store.ts'
-export type { XAgentArtifactRemoteClient } from './service.ts'
+export type { XAgentArtifactCitationOpener, XAgentArtifactRemoteClient } from './service.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Citation UI 可调用的不可变 Artifact 导航入口。 */
+    xagentArtifactCitationOpener: import('./service.ts').XAgentArtifactCitationOpener
+  }
+}
 
 interface WorkbenchSnapshot {
   readonly phase: 'empty' | 'loading' | 'ready' | 'unavailable'
@@ -22,7 +29,7 @@ interface WorkbenchBridge {
 }
 
 /** 资料 UI 依赖项目工作台、Slot 与生成式 Remote 装配服务。 */
-export const inject = ['slots', 'remote', 'xagentWorkbench']
+export const inject = ['slots', 'remote', 'sessions', 'xagentWorkbench']
 
 /** 挂载 Artifact Remote，并把资料面板贡献到项目工作台子 Slot。 */
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
@@ -31,6 +38,15 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     const remote = scope.get('remote.xagentArtifact') as XAgentArtifactRemoteClient
     const workbench = (scope as ClientContext & { xagentWorkbench: WorkbenchBridge }).xagentWorkbench
     const controller = new XAgentArtifactController(remote)
+    scope.provide('xagentArtifactCitationOpener', controller)
+    const sessions = scope.get('sessions') as ISessions
+    let sessionId = sessions.list.getSnapshot().current
+    scope.effect(() => sessions.list.subscribe(() => {
+      const next = sessions.list.getSnapshot().current
+      if (next === sessionId) return
+      sessionId = next
+      controller.cancelCitation()
+    }), 'xagent artifacts: cancel citation navigation on Session change')
 
     const sync = () => {
       const state = workbench.snapshot.getSnapshot()
