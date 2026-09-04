@@ -1,6 +1,6 @@
 # XAgent 结构化 citation UI 架构
 
-`ui-citation` 通过 keyed `tool.call.toolview` Slot 接管 `submit_cited_answer`，但不建立新的对话视觉系统。视图用 retrieval 的 Browser-safe validator 检查成功 Tool result 上的 `xagent-cited-answer` metadata，包括关闭字段集、完整大小与数量上限、所需 block、规范 citation ID、相邻去重和首次使用顺序。Markdown block 继续交给共享 `MarkdownText` 的 inert-link 模式，只有 citation block 能产生“已验证资料”按钮；Tool 参数、结果正文和普通 Markdown 都没有导航权限。
+`ui-citation` 通过 keyed `tool.call.toolview` Slot 接管 `submit_cited_answer`，但不建立新的对话视觉系统。视图用 retrieval 的 Browser-safe validator 检查成功 Tool result 上的 `xagent-cited-answer` metadata，包括关闭字段集、完整大小与数量上限、所需 block、规范 citation ID、相邻去重和首次使用顺序。Markdown block 继续交给共享 `MarkdownText` 的 inert-link 模式，只有 citation block 能产生“已验证资料”按钮；Tool 参数、结果正文和普通 Markdown 都没有导航权限。失败 Tool result 只产生中性的未发布状态；畸形成功 metadata 产生关闭式 alert，终态 `CITATION_FAILED` 则由通用对话错误呈现。
 
 `XAgentCitationController` 跟随 `xagentWorkbench` 的认证账号和 `sessions.list.current` 的顶层 Session。每次点击只调用 `resolve(sessionId, citationId, signal)`；替换点击、范围变化、视图卸载和 dispose 会取消旧请求，并用单调 epoch 拒绝迟到结果。成功结果只携带 Artifact、Version、Chunk 和行身份，不携带 URL。
 

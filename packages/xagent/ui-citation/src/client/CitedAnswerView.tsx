@@ -32,7 +32,7 @@ function CitationChip({ id, activate }: { id: string; activate: () => void }) {
 export function CitedAnswerView(props: CitedAnswerViewProps) {
   useEffect(() => () => { props.cancelCitation(props.sessionId) }, [props.cancelCitation, props.sessionId])
   if (!('kind' in props.block)) return <p className={css.status}>{text.running}</p>
-  if (props.block.isError) return null
+  if (props.block.isError) return <p className={css.status} role="status">{text.failed}</p>
   const meta = parseXAgentCitedAnswerMeta(props.block.meta)
   if (meta === undefined) return <p className={css.error} role="alert">{text.malformed}</p>
   const activate = (id: string) => { void props.openCitation(props.sessionId, id) }

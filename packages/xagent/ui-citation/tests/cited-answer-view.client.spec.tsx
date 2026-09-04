@@ -57,13 +57,14 @@ describe('XAgent cited answer ToolView', () => {
     expect(injected.openCitation).toHaveBeenNthCalledWith(2, 'session-701', '[资料1]')
   })
 
-  it('keeps retryable tool errors internal while failing closed for malformed success metadata', () => {
+  it('renders rejected attempts as a neutral unpublished state and fails closed for malformed success metadata', () => {
     const running = props({ callId: 'call-answer', name: 'submit_cited_answer', argsRaw: 'SECRET ARGS', subCalls: [] } as never)
     const { rerender } = render(<CitedAnswerView {...running} />)
     expect(screen.getByText('正在生成已验证回答…')).toBeTruthy()
     rerender(<CitedAnswerView {...props(block({ isError: true }))} />)
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(document.body.textContent).toBe('')
+    expect(screen.getByRole('status').textContent).toBe('引用验证未通过，回答未发布')
+    expect(document.body.textContent).not.toContain('SECRET')
     rerender(<CitedAnswerView {...props(block({ meta: { ...meta, extra: 'forbidden' } }))} />)
     expect(screen.getByRole('alert').textContent).toBe('已验证回答不可用')
     expect(document.body.textContent).not.toContain('SECRET')

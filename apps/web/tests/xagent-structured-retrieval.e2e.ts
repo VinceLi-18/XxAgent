@@ -607,7 +607,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
         'Task12 Alpha 预算复核',
         '联合复核要求预算负责人确认季度额度。',
         '供应链恢复计划需要与预算同步审批。',
-        '混合检索共享词：联合复核 预算 供应链 恢复计划。',
+        '混合检索共享词：预算、联合复核、恢复计划和供应链。',
         'Alpha 的结论是先核对额度，再批准采购。',
       ].join('\n'))
       await waitForIndexed(identity.composeProject, override, FIRST_FILENAME)
@@ -617,7 +617,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
         'Task12 Beta 供应链恢复计划',
         '联合复核要求供应链负责人确认恢复窗口。',
         '预算审批需要引用恢复计划的时间表。',
-        '混合检索共享词：联合复核 预算 供应链 恢复计划。',
+        '混合检索共享词：供应链、恢复计划、预算与联合复核。',
         'Beta 的结论是验证恢复窗口并保留回滚方案。',
       ].join('\n'))
       await waitForIndexed(identity.composeProject, override, SECOND_FILENAME)
@@ -634,7 +634,9 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       await privateAnswer.or(privateFailure).first().waitFor({ timeout: 90_000 })
       if (await privateAnswer.count() === 0) throw new Error('private cited-answer request failed')
       expect(await privateAnswer.count()).toBe(1)
-      expect(await activePage.getByRole('alert').filter({ hasText: '未能生成已验证回答' }).count()).toBe(0)
+      expect(await privateFailure.count()).toBe(0)
+      const correctionState = activePage.getByRole('status').filter({ hasText: '引用验证未通过，回答未发布' })
+      expect(await correctionState.count()).toBe(1)
       const liveText = await privateAnswer.innerText()
       const liveHtml = await privateAnswer.innerHTML()
       expect(liveText).toContain('跨项目结论')
@@ -644,7 +646,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       expect(await privateAnswer.getByRole('button', { name: /资料999/u }).count()).toBe(0)
       expect(await privateAnswer.getByRole('link').count()).toBe(0)
       await privateAnswer.getByRole('navigation', { name: '已验证资料来源' }).waitFor()
-      await frame('02-structured-answer', privateAnswer)
+      await frame('02-structured-answer', correctionState)
 
       expect(terminalAttemptEvidence(identity.composeProject, override, privateSession)).toEqual({
         calls: ['task12-private-invalid', 'task12-private-answer'],
@@ -699,6 +701,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       ).waitFor({ timeout: 30_000 })
       expect(await preview.locator('[data-citation-line="true"]').count())
         .toBe(expectedCitation.lineEnd - expectedCitation.lineStart + 1)
+      expect(await preview.innerText()).not.toContain(RETRIEVAL_QUERY)
       await frame('04-immutable-citation', preview, 0)
       await preview.getByRole('button', { name: '关闭预览' }).click()
 
@@ -726,8 +729,10 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       const invalidSession = await sendNewPrompt(
         activePage, INVALID_PROMPT, 'project', identity.composeProject, override,
       )
-      await activePage.getByText('本轮运行失败', { exact: true }).waitFor({ timeout: 90_000 })
-      expect(await activePage.getByRole('alert').filter({ hasText: '未能生成已验证回答' }).count()).toBe(0)
+      const terminalFailure = activePage.getByText('本轮运行失败', { exact: true })
+      await terminalFailure.waitFor({ timeout: 90_000 })
+      expect(await terminalFailure.count()).toBe(1)
+      expect(await activePage.getByRole('status').filter({ hasText: '引用验证未通过，回答未发布' }).count()).toBe(2)
       expect(terminalAttemptEvidence(identity.composeProject, override, invalidSession)).toEqual({
         calls: ['task12-invalid-answer-1', 'task12-invalid-answer-2'],
         errorResults: ['task12-invalid-answer-1', 'task12-invalid-answer-2'],

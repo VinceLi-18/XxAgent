@@ -6,7 +6,7 @@ English | [中文](README.zh.md)
 
 Selecting a chip sends only the current Session ID and citation ID to `xagentCitation/resolve`. The Host recovers the authenticated actor, account, permission revision, and persisted citation identity, then returns immutable Artifact, Version, Chunk, and line identities without a URL. The browser hands only the Artifact, Version, and line range to `xagentArtifactCitationOpener`; the handoff opens the workbench's Artifacts tab before the Artifact controller re-reads detail and preview for that exact clean version.
 
-One controller owns one account and Session scope and at most one resolution. Replacement, account or Session change, ToolView unmount, Remote failure, and plugin disposal cancel the request and suppress late Artifact publication. The UI never reads Tool arguments, result text, or Markdown as citation authority. Malformed or non-success metadata produces stable closed copy.
+One controller owns one account and Session scope and at most one resolution. Replacement, account or Session change, ToolView unmount, Remote failure, and plugin disposal cancel the request and suppress late Artifact publication. The UI never reads Tool arguments, result text, or Markdown as citation authority. A failed Tool result displays the neutral status “引用验证未通过，回答未发布” without exposing its arguments or content; a terminal `CITATION_FAILED` turn retains the conversation's generic failure state. Malformed successful metadata displays the closed alert “已验证回答不可用”.
 
 ## Model Experience
 

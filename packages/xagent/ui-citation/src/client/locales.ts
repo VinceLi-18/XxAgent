@@ -1,7 +1,7 @@
 /** Business cited-answer copy shared by lifecycle, chip, and source-strip states. */
 export const citationLocale = Object.freeze({
   running: '正在生成已验证回答…',
-  failed: '未能生成已验证回答',
+  failed: '引用验证未通过，回答未发布',
   malformed: '已验证回答不可用',
   answer: '已验证回答',
   source: '已验证资料',
