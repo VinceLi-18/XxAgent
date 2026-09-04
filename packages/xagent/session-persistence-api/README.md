@@ -6,7 +6,7 @@
 
 新 Agent 在注册表发布前，把 Header 与完整 seed 作为一次 FastAPI 创建事务提交。创建请求不接受最终 `visibility` 或 `project_id`；FastAPI 在同一事务内锁定并重新验证账号已保存的工作上下文，决定 private 工作台范围或当前 project 范围。Host 只在响应 Session ID 与范围组合通过校验后建立写入租约；远端失败时 Agent 和 Session 均保持不可见。冷加载会为完整但中断的最终回合生成确定性的关闭事件，先追加到 FastAPI，再返回平衡日志；`inspect()` 只在内存中展示同一逻辑视图。
 
-普通 Host fork 不走通用 create。Host 将同一个 RPC request ID 作为全部重试共享的逻辑操作身份；provider 先 flush 源 Session，再只提交源 ID、包含式末 sequence 和由该身份派生的幂等键。FastAPI 重新授权并锁定源，在同一事务由服务端分配子 ID、派生 runtime Header，并复制精确事件前缀、`visibility`、`project_id`、私有 Session 项目引用和已进入该前缀的 cited-answer provenance。已提交响应丢失以及后续 resume 或 Workspace 附加失败时，重试会取回同一个持久子 Session；Host 只复用完全相同的已运行 Header，冲突则失败关闭。当前工作上下文与调用方字段都不能改变 fork 范围。不拥有权威身份的 provider 仍可返回 `undefined`，由 Host 使用进程内 seed 路径。
+普通 Host fork 不走通用 create。一次 RPC request ID 就是一个逻辑操作身份；provider 先 flush 源 Session，再只提交源 ID、包含式末 sequence 和由该身份派生的幂等键。FastAPI 重新授权并锁定源，在同一事务由服务端分配子 ID、派生 runtime Header，并复制精确事件前缀、`visibility`、`project_id`、私有 Session 项目引用和已进入该前缀的 cited-answer provenance。provider 仅把 XAgent `service-unavailable` 判为可恢复，Host 在返回该 RPC 前立即重试一次持久派生或同一持久子 Session 的 resume；Workspace 附加仅对封闭 errno 集重试一次，且不重复已经成功的阶段。授权、缺失、冲突、响应 schema 与 Workspace 校验失败都不会重试。后续独立 fork RPC 使用新身份并创建新子 Session。当前工作上下文与调用方字段都不能改变 fork 范围。不拥有权威身份的 provider 仍可返回 `undefined`，由 Host 使用进程内 seed 路径。
 
 检索工具的不透明 receipt 由检索注册表按已绑定的 `tool/result` sequence 提供。provider 只在对应 append 的私有 `retrieval_receipts` sidecar 中传输它，并在 FastAPI 返回关闭的 schema、精确末事件 sequence 和有效 Session version 后才从注册表确认删除。FastAPI 接受运行时真实 `tool/result` provenance，其中 `surfaceOp` 必须为 `append`，可选 `sourceEventSeqs` 只能引用同一 Session 中 sequence 更小且不重复的事件；检查点可以先持久化 `tool/call`，再由后续 append 持久化对应的 `tool/result`。这些字段会进入规范公开事件。网络、后端或响应校验失败保留原事件批次与同一 sidecar，下一次 checkpoint 精确重试；receipt 不进入 Session 事件、模型内容、读取响应、日志或审计。
 

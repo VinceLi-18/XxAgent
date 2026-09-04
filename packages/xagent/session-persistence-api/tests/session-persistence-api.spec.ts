@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { SessionForkOperationId } from '@deepseek-ai/dsh-session-persistence'
-import type { XAgentBackend } from '@xagent/dsh-backend-client'
+import { XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { describe, expect, test, vi } from 'vitest'
 import * as persistenceModule from '../src/index.ts'
@@ -140,6 +140,15 @@ describe('XAgent FastAPI Session Persistence', () => {
       '00000000-0000-0000-0000-000000000702',
       undefined,
     ])
+  })
+
+  test('fork recovery admits only backend service unavailability', () => {
+    const persistence = new XAgentSessionPersistence(new Context(), backend())
+
+    expect(persistence.isForkRetryable(new XAgentBackendError('service-unavailable'))).toBe(true)
+    expect(persistence.isForkRetryable(new XAgentBackendError('not-found'))).toBe(false)
+    expect(persistence.isForkRetryable(new XAgentBackendError('idempotency-conflict'))).toBe(false)
+    expect(persistence.isForkRetryable(new Error('setup invalid'))).toBe(false)
   })
 
   test.each([

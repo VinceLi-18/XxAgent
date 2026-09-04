@@ -120,6 +120,9 @@ const COLD_SUMMARY_BATCH_SIZE = 16
 /** Default maximum artifact size eligible for one cold blankness read. */
 export const DEFAULT_COLD_BLANK_PROBE_MAX_BYTES = 1024
 
+/** Filesystem conditions eligible for one immediate, phase-local attachment retry. */
+const TRANSIENT_WORKSPACE_ATTACHMENT_CODES = new Set(['EAGAIN', 'EBUSY', 'ETIMEDOUT'])
+
 /** Conversation message event types (the pagination counting unit). */
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
 
@@ -599,6 +602,24 @@ function directoryError(error: unknown): RpcError {
     return { code: error.code, message: error.message, details: { path: error.path } }
   }
   return { code: 'internal', message: error instanceof Error ? error.message : String(error), details: {} }
+}
+
+/** Execute one phase once more only when its owner classifies the first failure as transient. */
+async function recoverOnce<T>(operation: () => Promise<T>, retryable: (error: unknown) => boolean): Promise<T> {
+  try {
+    return await operation()
+  } catch (error: unknown) {
+    if (!retryable(error)) throw error
+    return operation()
+  }
+}
+
+/** Recognize the closed transient errno set for Workspace membership persistence. */
+function transientWorkspaceAttachment(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null
+    ? (error as { code?: unknown }).code
+    : undefined
+  return typeof code === 'string' && TRANSIENT_WORKSPACE_ATTACHMENT_CODES.has(code)
 }
 
 /** Resolved Agent model and project-directory defaults consumed by the API implementation. */
@@ -2410,12 +2431,15 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         // plane, composing nothing would leave the child with no tools at all.
         const forkComposition = await composeAgent(resolveSessionPreset(source))
         const persistence = ctx.get('sessionPersistence')
+        const operationId = SessionForkOperationId(request.rpcId)
+        const throughSequence = cut - 1
         let childId: SessionId
         try {
-          const durableChild = await persistence?.fork(
-            source.id,
-            cut - 1,
-            SessionForkOperationId(request.rpcId),
+          const durableChild = await recoverOnce(
+            () => persistence === undefined
+              ? Promise.resolve(undefined)
+              : persistence.fork(source.id, throughSequence, operationId),
+            error => persistence?.isForkRetryable(error) === true,
           )
           if (durableChild === undefined) {
             childId = `session-${randomUUID()}` as SessionId
@@ -2435,24 +2459,26 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             })
           } else {
             childId = durableChild.id
-            const existing = ctx.agents.get(childId)
-            if (existing === undefined) {
-              await ctx.agents.resume({
-                resumeSessionId: childId,
-                agentOptions: agentOptions(),
-                setup: forkComposition.setup,
-              })
-            } else {
-              const left = existing.session.header
-              const right = durableChild
-              const fields = [
-                'version', 'id', 'createdAt', 'cwd', 'parentSession', 'seedLength',
-                'origin', 'delegationDepth', 'agentPreset',
-              ] as const
-              if (fields.some(field => left[field] !== right[field])) {
-                throw new Error(`durable fork child "${childId}" conflicts with its live session`)
+            await recoverOnce(async () => {
+              const existing = ctx.agents.get(childId)
+              if (existing === undefined) {
+                await ctx.agents.resume({
+                  resumeSessionId: childId,
+                  agentOptions: agentOptions(),
+                  setup: forkComposition.setup,
+                })
+              } else {
+                const left = existing.session.header
+                const right = durableChild
+                const fields = [
+                  'version', 'id', 'createdAt', 'cwd', 'parentSession', 'seedLength',
+                  'origin', 'delegationDepth', 'agentPreset',
+                ] as const
+                if (fields.some(field => left[field] !== right[field])) {
+                  throw new Error(`durable fork child "${childId}" conflicts with its live session`)
+                }
               }
-            }
+            }, error => persistence?.isForkRetryable(error) === true)
           }
         } catch (error: unknown) {
           return err(request, {
@@ -2466,7 +2492,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         // ancestor instead. The child is already published if attach fails.
         if (workspace !== undefined) {
           try {
-            await workspace.attachSession(childId)
+            await recoverOnce(
+              () => workspace.attachSession(childId),
+              transientWorkspaceAttachment,
+            )
           } catch (error: unknown) {
             return err(request, {
               code: 'workspace-attach-failed',

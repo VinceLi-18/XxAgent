@@ -144,7 +144,7 @@ export abstract class SessionPersistence extends Service {
    * ordinary in-process seed path.
    * @param _sourceId - authorized source Session identity.
    * @param _throughSequence - inclusive final source event sequence.
-   * @param _operationId - caller-owned identity shared by every retry of this fork.
+   * @param _operationId - Host-owned RPC identity shared by every retry of this fork.
    * @returns the durable child header, or `undefined` when unsupported.
    */
   fork(
@@ -153,6 +153,18 @@ export abstract class SessionPersistence extends Service {
     _operationId: SessionForkOperationId,
   ): Promise<SessionHeader | undefined> {
     return Promise.resolve(undefined)
+  }
+
+  /**
+   * Classify a provider-owned failure for the Host's single immediate fork
+   * recovery attempt. The default rejects every failure; remote providers may
+   * admit only errors whose operation is safe to replay with the same
+   * {@link SessionForkOperationId}.
+   * @param _error - failure raised while deriving or resuming the durable child.
+   * @returns whether the Host may repeat only the failed phase once.
+   */
+  isForkRetryable(_error: unknown): boolean {
+    return false
   }
 
   /**

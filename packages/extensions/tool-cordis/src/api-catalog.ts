@@ -1074,8 +1074,14 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       {
         signature: 'fork( _sourceId: SessionId, _throughSequence: number, _operationId: SessionForkOperationId, ): Promise<SessionHeader | undefined>',
         description: 'Atomically derive a durable child from an authorized source prefix when this backend owns Session scope and identity. The backend, not the caller, chooses the child identity and copies every backend-owned authorization relation. Local stores return `undefined`, allowing the Host to use its ordinary in-process seed path.',
-        parameters: [{ name: '_sourceId', description: 'authorized source Session identity.' }, { name: '_throughSequence', description: 'inclusive final source event sequence.' }, { name: '_operationId', description: 'caller-owned identity shared by every retry of this fork.' }],
+        parameters: [{ name: '_sourceId', description: 'authorized source Session identity.' }, { name: '_throughSequence', description: 'inclusive final source event sequence.' }, { name: '_operationId', description: 'Host-owned RPC identity shared by every retry of this fork.' }],
         returns: 'the durable child header, or `undefined` when unsupported.',
+      },
+      {
+        signature: 'isForkRetryable(_error: unknown): boolean',
+        description: 'Classify a provider-owned failure for the Host\'s single immediate fork recovery attempt. The default rejects every failure; remote providers may admit only errors whose operation is safe to replay with the same SessionForkOperationId.',
+        parameters: [{ name: '_error', description: 'failure raised while deriving or resuming the durable child.' }],
+        returns: 'whether the Host may repeat only the failed phase once.',
       },
       {
         signature: 'abstract create(meta: SessionHeader): Promise<void>',

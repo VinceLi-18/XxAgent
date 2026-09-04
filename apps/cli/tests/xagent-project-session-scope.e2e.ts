@@ -7,8 +7,8 @@ import SessionStore, { SessionId, type SessionEvent, type SessionHeader } from '
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { WorkspaceId, type Workspace } from '@deepseek-ai/dsh-workspace'
-import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
-import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
+import { createApiProxy, InProcessApiClient, toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
+import { RpcId, type RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import type {
   XAgentBackend,
   XAgentWorkbenchBackend,
@@ -49,6 +49,22 @@ interface CompositionOptions {
   resumeFailures?: number
 }
 
+interface ForkClientRuntime {
+  refresh(): Promise<void>
+  fork(request: { sessionId: SessionId; atSeq?: number }): Promise<SessionId>
+}
+
+interface ForkClientRuntimeConstructor {
+  new(ctx: Context, api: InProcessApiClient, remote: unknown): ForkClientRuntime
+}
+
+/** Load the Client compiler face at runtime for this Host-to-browser integration. */
+async function forkClientRuntime(): Promise<ForkClientRuntimeConstructor> {
+  const source = new URL('../../../packages/client/runtime/src/client/sessions/service.ts', import.meta.url).href
+  const loaded = await import(source) as { SessionRuntime: ForkClientRuntimeConstructor }
+  return loaded.SessionRuntime
+}
+
 function composition(faults: CompositionOptions = {}): {
   readonly project: XAgentProjectService
   readonly persistence: XAgentSessionPersistence
@@ -69,6 +85,7 @@ function composition(faults: CompositionOptions = {}): {
   const revokedSources = new Set<string>()
   const forkCalls: { readonly sourceId: string; readonly body: unknown }[] = []
   const forkResults = new Map<string, { throughSequence: number; item: StoredSession }>()
+  let nextForkId = 799
   const workspaces: Workspace[] = []
   const resumeCalls = { count: 0 }
   const bootstrap = (token: string): XAgentWorkbenchBootstrap => ({
@@ -180,7 +197,7 @@ function composition(faults: CompositionOptions = {}): {
             },
           }
         }
-        const targetId = '00000000-0000-0000-0000-000000000799'
+        const targetId = `00000000-0000-0000-0000-${String(nextForkId++).padStart(12, '0')}`
         const runtimeHeader: SessionHeader = {
           version: 0,
           id: SessionId(`session-${targetId}`),
@@ -203,7 +220,7 @@ function composition(faults: CompositionOptions = {}): {
         forkResults.set(body.idempotency_key, { throughSequence: body.through_sequence, item: child })
         if ((faults.forkResponseLosses ?? 0) > 0) {
           faults.forkResponseLosses = (faults.forkResponseLosses ?? 0) - 1
-          throw new Error('simulated committed-response loss')
+          throw new XAgentBackendError('service-unavailable')
         }
         return {
           schema_version: 1,
@@ -280,7 +297,7 @@ async function hostComposition(faults: CompositionOptions = {}) {
       value.resumeCalls.count++
       if ((faults.resumeFailures ?? 0) > 0) {
         faults.resumeFailures = (faults.resumeFailures ?? 0) - 1
-        throw new Error('simulated resume failure')
+        throw new XAgentBackendError('service-unavailable')
       }
       const loaded = await value.persistence.load(options.resumeSessionId)
       return publish(
@@ -358,17 +375,25 @@ async function forkHarness(faults: CompositionOptions = {}) {
     defaultModelSelection: () => ({ provider: 'default', model: 'default' }),
     cwd: '/tmp',
   })
-  const fork = (rpcId: string, atSeq?: number) => value.authorization.run(
-    'session/fork',
-    { args: { sessionId: sourceId } },
-    request,
-    signal,
-    () => proxy.sessions.fork({
-      rpcId: RpcId(rpcId),
-      payload: { sessionId: sourceId, ...atSeq === undefined ? {} : { atSeq } },
-    }).then(item => item.result),
-  )
-  return { value, sourceId, fork }
+  const handler = toFetchHandler(proxy, {
+    requestContext: request,
+    authorizer: value.authorization,
+  })
+  const api = new InProcessApiClient(handler)
+  const clientCtx = new Context()
+  const SessionRuntime = await forkClientRuntime()
+  const runtime = new SessionRuntime(clientCtx, api, {
+    commands: {
+      list: async () => ({ ok: true, value: [] }),
+      execute: async () => ({ ok: true, value: undefined }),
+    },
+  })
+  await runtime.refresh()
+  const fork = (atSeq?: number) => runtime.fork({
+    sessionId: sourceId,
+    ...atSeq === undefined ? {} : { atSeq },
+  })
+  return { value, sourceId, fork, handler, clientCtx }
 }
 
 describe('XAgent 项目上下文与 Session 创建组合', () => {
@@ -522,43 +547,58 @@ describe('XAgent 项目上下文与 Session 创建组合', () => {
     await value.ctx.fiber.dispose()
   })
 
-  test('Host retries a committed fork response loss with one stable durable child', async () => {
-    const { value, sourceId, fork } = await forkHarness({ forkResponseLosses: 1 })
+  test('production SessionRuntime fork recovers a committed response loss under one RPC identity', async () => {
+    const { value, sourceId, fork, handler, clientCtx } = await forkHarness({ forkResponseLosses: 1 })
 
-    const lost = await fork('fork-response-loss')
-    const recovered = await fork('fork-response-loss')
-
-    expect(lost).toMatchObject({ ok: false, error: { code: 'internal' } })
-    expect(recovered).toEqual({
-      ok: true,
-      value: { sessionId: SessionId('session-00000000-0000-0000-0000-000000000799') },
-    })
+    await expect(fork()).resolves.toBe(SessionId('session-00000000-0000-0000-0000-000000000799'))
     expect(value.forkCalls.map(call => (
       call.body as { idempotency_key: string }
-    ).idempotency_key)).toEqual(['fork:fork-response-loss', 'fork:fork-response-loss'])
+    ).idempotency_key)).toEqual([expect.stringMatching(/^fork:.+$/), expect.stringMatching(/^fork:.+$/)])
+    const firstOperation = (value.forkCalls[0]?.body as { idempotency_key: string }).idempotency_key
+    expect((value.forkCalls[1]?.body as { idempotency_key: string }).idempotency_key).toBe(firstOperation)
     expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(1)
     expect(value.ctx.agents.list().filter(agent => agent.id !== sourceId)).toHaveLength(1)
+
+    await expect(fork()).resolves.toBe(SessionId('session-00000000-0000-0000-0000-000000000800'))
+    const secondOperation = (value.forkCalls.at(-1)?.body as { idempotency_key: string }).idempotency_key
+    expect(secondOperation).not.toBe(firstOperation)
+    expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(2)
+
+    const conflictingRpcId = firstOperation.slice('fork:'.length)
+    const conflictResponse = await handler.fetch(new Request('http://dsh.internal/api/session.fork', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: conflictingRpcId,
+        method: 'session.fork',
+        payload: { sessionId: sourceId, atSeq: 1 },
+      }),
+    }))
+    const conflict = await conflictResponse.json() as { result: RpcResult<{ sessionId: SessionId }> }
+    expect(conflict.result).toMatchObject({ ok: false, error: { code: 'internal' } })
+    expect(value.forkCalls).toHaveLength(4)
+    expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(2)
+    await clientCtx.fiber.dispose()
     await value.ctx.fiber.dispose()
   })
 
-  test('Host retries resume failure against the same durable child', async () => {
-    const { value, sourceId, fork } = await forkHarness({ resumeFailures: 1 })
+  test('production SessionRuntime fork retries resume against the same durable child', async () => {
+    const { value, sourceId, fork, clientCtx } = await forkHarness({ resumeFailures: 1 })
 
-    const failed = await fork('fork-resume-retry')
-    const recovered = await fork('fork-resume-retry')
-
-    expect(failed).toMatchObject({ ok: false, error: { code: 'internal' } })
-    expect(recovered).toMatchObject({ ok: true })
+    await expect(fork()).resolves.toBe(SessionId('session-00000000-0000-0000-0000-000000000799'))
     expect(value.resumeCalls.count).toBe(2)
     expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(1)
     expect(value.ctx.agents.list().filter(agent => agent.id !== sourceId)).toHaveLength(1)
+    expect(value.forkCalls).toHaveLength(1)
+    await clientCtx.fiber.dispose()
     await value.ctx.fiber.dispose()
   })
 
-  test('Host repairs attachment without resuming the replayed durable child twice', async () => {
-    const { value, sourceId, fork } = await forkHarness()
+  test('production SessionRuntime fork retries only a transient Workspace attachment failure', async () => {
+    const { value, sourceId, fork, clientCtx } = await forkHarness()
     const attachSession = vi.fn()
-      .mockRejectedValueOnce(new Error('simulated attachment failure'))
+      .mockRejectedValueOnce(Object.assign(new Error('simulated attachment failure'), { code: 'EBUSY' }))
       .mockResolvedValueOnce(undefined)
     value.workspaces.push({
       id: WorkspaceId('00000000-0000-0000-0000-000000000801'),
@@ -574,18 +614,41 @@ describe('XAgent 项目上下文与 Session 创建组合', () => {
       status: vi.fn<() => Promise<'ok' | 'missing-dir'>>(async () => 'ok'),
     })
 
-    const failed = await fork('fork-attachment-retry')
-    const recovered = await fork('fork-attachment-retry')
-
-    expect(failed).toMatchObject({
-      ok: false,
-      error: { code: 'workspace-attach-failed' },
-    })
-    expect(recovered).toMatchObject({ ok: true })
+    await expect(fork()).resolves.toBe(SessionId('session-00000000-0000-0000-0000-000000000799'))
     expect(attachSession).toHaveBeenCalledTimes(2)
     expect(value.resumeCalls.count).toBe(1)
+    expect(value.forkCalls).toHaveLength(1)
     expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(1)
     expect(value.ctx.agents.list().filter(agent => agent.id !== sourceId)).toHaveLength(1)
+    await clientCtx.fiber.dispose()
+    await value.ctx.fiber.dispose()
+  })
+
+  test('production SessionRuntime fork does not retry a non-transient Workspace attachment failure', async () => {
+    const { value, sourceId, fork, clientCtx } = await forkHarness()
+    const attachSession = vi.fn().mockRejectedValue(new Error('workspace path no longer matches'))
+    value.workspaces.push({
+      id: WorkspaceId('00000000-0000-0000-0000-000000000801'),
+      path: '/workspace/alpha',
+      title: 'Alpha',
+      createdAt: '2026-09-04T00:00:00Z',
+      updatedAt: '2026-09-04T00:00:00Z',
+      sessionIds: [sourceId],
+      attachSession,
+      setTitle: vi.fn(),
+      insertSessionBefore: vi.fn(),
+      detachSession: vi.fn(),
+      status: vi.fn<() => Promise<'ok' | 'missing-dir'>>(async () => 'ok'),
+    })
+
+    await expect(fork()).rejects.toMatchObject({
+      rpcError: { code: 'workspace-attach-failed' },
+      sourceSessionId: sourceId,
+    })
+    expect(attachSession).toHaveBeenCalledOnce()
+    expect(value.forkCalls).toHaveLength(1)
+    expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(1)
+    await clientCtx.fiber.dispose()
     await value.ctx.fiber.dispose()
   })
 })

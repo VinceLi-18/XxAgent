@@ -20,7 +20,7 @@ import {
   type SessionHeader,
   type SessionId as SessionIdType,
 } from '@deepseek-ai/dsh-session'
-import { XAgentBackendClient, type XAgentBackend } from '@xagent/dsh-backend-client'
+import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
@@ -296,6 +296,17 @@ export class XAgentSessionPersistence extends SessionPersistence {
     const header = forkedHeader(response, sourceId, throughSequence)
     this.leases.set(header.id, token)
     return header
+  }
+
+  /**
+   * Admit only the backend's transient availability failure for one Host fork
+   * recovery attempt. Authorization, absence, conflict, and response-schema
+   * failures remain terminal.
+   * @param error - provider failure raised by fork or exact-child resume.
+   * @returns whether replay with the same fork operation identity is safe.
+   */
+  override isForkRetryable(error: unknown): boolean {
+    return error instanceof XAgentBackendError && error.code === 'service-unavailable'
   }
 
   /**
