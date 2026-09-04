@@ -699,7 +699,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       ).waitFor({ timeout: 30_000 })
       expect(await preview.locator('[data-citation-line="true"]').count())
         .toBe(expectedCitation.lineEnd - expectedCitation.lineStart + 1)
-      await frame('04-immutable-citation', preview, 250)
+      await frame('04-immutable-citation', preview, 0)
       await preview.getByRole('button', { name: '关闭预览' }).click()
 
       const firstProjectButton = activePage.getByRole('button', { name: identity.firstProjectName, exact: true })
