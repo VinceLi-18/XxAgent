@@ -57,12 +57,13 @@ describe('XAgent cited answer ToolView', () => {
     expect(injected.openCitation).toHaveBeenNthCalledWith(2, 'session-701', '[资料1]')
   })
 
-  it('uses stable lifecycle and malformed states without exposing arguments or result text', () => {
+  it('keeps retryable tool errors internal while failing closed for malformed success metadata', () => {
     const running = props({ callId: 'call-answer', name: 'submit_cited_answer', argsRaw: 'SECRET ARGS', subCalls: [] } as never)
     const { rerender } = render(<CitedAnswerView {...running} />)
     expect(screen.getByText('正在生成已验证回答…')).toBeTruthy()
     rerender(<CitedAnswerView {...props(block({ isError: true }))} />)
-    expect(screen.getByRole('alert').textContent).toBe('未能生成已验证回答')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(document.body.textContent).toBe('')
     rerender(<CitedAnswerView {...props(block({ meta: { ...meta, extra: 'forbidden' } }))} />)
     expect(screen.getByRole('alert').textContent).toBe('已验证回答不可用')
     expect(document.body.textContent).not.toContain('SECRET')

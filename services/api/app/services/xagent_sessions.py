@@ -408,6 +408,7 @@ def _retrieval_public_payload(
             raise ValueError
         text_content = result_content[0]
         tool_call_id = result["toolCallId"]
+        has_source_event_seqs = "sourceEventSeqs" in payload
         source_event_seqs = payload.get("sourceEventSeqs")
         if (
             event["event_type"] != "tool/result"
@@ -447,7 +448,7 @@ def _retrieval_public_payload(
             or not isinstance(meta["payloadHash"], str)
             or not isinstance(meta["citations"], list)
             or (
-                source_event_seqs is not None
+                has_source_event_seqs
                 and (
                     not isinstance(source_event_seqs, list)
                     or len(source_event_seqs) == 0
@@ -495,7 +496,7 @@ def _retrieval_public_payload(
             "surfaceOp": "append",
             **(
                 {"sourceEventSeqs": source_event_seqs}
-                if source_event_seqs is not None
+                if has_source_event_seqs
                 else {}
             ),
             "data": {

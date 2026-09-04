@@ -721,6 +721,9 @@ async def test_append_rejects_every_open_or_extra_retrieval_event_field(
     missing = deepcopy(canonical)
     del missing["payload"]["data"]["message"]["id"]
     variants.append(missing)
+    null_source_provenance = deepcopy(canonical)
+    null_source_provenance["payload"]["sourceEventSeqs"] = None
+    variants.append(null_source_provenance)
 
     endpoint = f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append"
     for index, event in enumerate(variants):

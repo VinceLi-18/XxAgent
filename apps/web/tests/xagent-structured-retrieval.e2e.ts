@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { Browser, Page } from 'playwright'
+import type { Browser, Locator, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { probeFreePort, REPO_ROOT, requireDist, saveFailureShot, ZH_BROWSER_LOCALE } from './support.ts'
@@ -28,6 +28,8 @@ const PRIVATE_PROMPT = '请跨两个项目检索联合复核、预算、供应�
 const PROJECT_PROMPT = '请只在当前项目检索联合复核预算，并给出带资料引用的结论。'
 const INVALID_PROMPT = '请检索后提交一个引用无效的结构化回答，以验证有界重试。'
 const REVOCATION_PROMPT = '请检索后生成一个很长的带引用回答。'
+const REVOCATION_PREAMBLE_DELTAS = 8
+const REVOCATION_TOTAL_DELTAS = 240
 
 interface RpcResponse<T> {
   readonly status: number
@@ -47,6 +49,23 @@ interface WorkbenchBootstrap {
 
 interface CreatedSession {
   readonly sessionId: string
+}
+
+interface CitationEvidence {
+  readonly citationId: string
+  readonly artifactId: string
+  readonly versionId: string
+  readonly chunkId: string
+  readonly displayName: string
+  readonly versionNumber: number
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
+interface TerminalAttemptEvidence {
+  readonly calls: readonly string[]
+  readonly errorResults: readonly string[]
+  readonly terminalFailures: number
 }
 
 type JsonObject = Record<string, unknown>
@@ -117,6 +136,54 @@ function backendSessionId(sessionId: string): string {
   return sessionId.startsWith('session-') ? sessionId.slice('session-'.length) : sessionId
 }
 
+function terminalAttemptEvidence(project: string, override: string, sessionId: string): TerminalAttemptEvidence {
+  const id = sqlLiteral(backendSessionId(sessionId))
+  return JSON.parse(psql(project, override, [
+    'SELECT jsonb_build_object(',
+    "'calls', coalesce((SELECT jsonb_agg(payload #>> '{data,callId}' ORDER BY sequence)",
+    'FROM xagent_session_events',
+    `WHERE session_id = ${id}::uuid AND event_type = 'tool/call'`,
+    "AND payload #>> '{data,name}' = 'submit_cited_answer'), '[]'::jsonb),",
+    "'errorResults', coalesce((SELECT jsonb_agg(payload #>> '{data,message,source,callId}' ORDER BY sequence)",
+    'FROM xagent_session_events',
+    `WHERE session_id = ${id}::uuid AND event_type = 'tool/result'`,
+    "AND payload #>> '{data,message,content,0,isError}' = 'true'",
+    "AND payload #>> '{data,message,source,callId}' IN (SELECT payload #>> '{data,callId}'",
+    'FROM xagent_session_events',
+    `WHERE session_id = ${id}::uuid AND event_type = 'tool/call'`,
+    "AND payload #>> '{data,name}' = 'submit_cited_answer')), '[]'::jsonb),",
+    "'terminalFailures', (SELECT count(*) FROM xagent_session_events",
+    `WHERE session_id = ${id}::uuid AND event_type = 'turn/end'`,
+    "AND payload #>> '{data,reason,error,code}' = 'CITATION_FAILED'))::text;",
+  ].join(' '))) as TerminalAttemptEvidence
+}
+
+function citationEvidence(project: string, override: string, sessionId: string, citationId: string): CitationEvidence {
+  const row = psql(project, override, [
+    "SELECT jsonb_build_object('citationId', citation->>'id',",
+    "'artifactId', i.artifact_id::text, 'versionId', i.version_id::text, 'chunkId', c.id::text,",
+    "'displayName', a.filename, 'versionNumber', v.version_number,",
+    "'lineStart', c.line_start, 'lineEnd', c.line_end)::text",
+    'FROM xagent_session_events e',
+    "CROSS JOIN LATERAL jsonb_array_elements(((e.payload #>> '{data,message,content,0,content,0,text}')::jsonb)->'citations') citation",
+    "JOIN artifact_text_chunks c ON c.id = (citation->>'chunk_id')::uuid",
+    'JOIN artifact_text_indexes i ON i.id = c.index_id',
+    'JOIN artifacts a ON a.id = i.artifact_id',
+    'JOIN artifact_versions v ON v.id = i.version_id',
+    `WHERE e.session_id = ${sqlLiteral(backendSessionId(sessionId))}::uuid`,
+    "AND e.event_type = 'tool/result' AND e.tool_call_id = 'task12-private-search'",
+    `AND citation->>'id' = ${sqlLiteral(citationId)}`,
+    "AND i.artifact_id = (citation->>'artifact_id')::uuid",
+    "AND i.version_id = (citation->>'version_id')::uuid",
+    "AND a.filename = citation->>'display_name'",
+    "AND v.version_number = (citation->>'version_number')::integer",
+    "AND c.line_start = (citation->>'line_start')::integer",
+    "AND c.line_end = (citation->>'line_end')::integer;",
+  ].join(' '))
+  if (row === '') throw new Error(`durable citation ${citationId} did not match its Artifact Version and chunk`)
+  return JSON.parse(row) as CitationEvidence
+}
+
 function usage(): JsonObject {
   return { type: 'usage', usage: { inputTokens: 32, outputTokens: 16, cacheReadTokens: 0, reasoningTokens: 0 } }
 }
@@ -134,10 +201,12 @@ function toolCall(callId: string, name: string, args: JsonObject): JsonObject[] 
 
 function protectedPartial(): JsonObject[] {
   const chunks: JsonObject[] = [{ type: 'block-start', index: 0, blockType: 'text' }]
-  for (let index = 0; index < 240; index++) chunks.push({ type: 'text-delta', index: 0, text: 'partial-secret ' })
+  for (let index = 0; index < REVOCATION_TOTAL_DELTAS; index++) {
+    chunks.push({ type: 'text-delta', index: 0, text: 'partial-secret ' })
+    if (index + 1 === REVOCATION_PREAMBLE_DELTAS) chunks.push(usage())
+  }
   chunks.push(
-    { type: 'block-end', index: 0, block: { type: 'text', text: 'partial-secret '.repeat(240) } },
-    usage(),
+    { type: 'block-end', index: 0, block: { type: 'text', text: 'partial-secret '.repeat(REVOCATION_TOTAL_DELTAS) } },
     { type: 'finish', reason: { kind: 'stop' } },
   )
   return chunks
@@ -337,11 +406,11 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
   () => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 10)
     const identity = structuredRetrievalIdentity(suffix)
-    const root = mkdtempSync(join(tmpdir(), 'xagent-task12-e2e-'))
-    const override = join(root, 'compose.override.yml')
-    const patch = join(root, 'replay.patch.yml')
-    const replayPaths = writeReplayWorld(root, identity)
     const frameRoot = process.env.XAGENT_TASK12_FRAMES_DIR
+    let root = ''
+    let override = ''
+    let patch = ''
+    let replayPaths: readonly string[] = []
     let composeOwned = false
     let dsh: OwnedChildProcess | undefined
     let browser: Browser | undefined
@@ -352,14 +421,23 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
     const diagnostics: string[] = []
     let dshOutput = ''
 
-    async function frame(name: string): Promise<void> {
+    async function frame(name: string, anchor?: Locator, x = 300): Promise<void> {
       if (frameRoot === undefined || page === undefined) return
       mkdirSync(frameRoot, { recursive: true })
-      await page.screenshot({ path: join(frameRoot, `${name}.png`) })
+      const box = await anchor?.boundingBox()
+      const y = Math.min(400, Math.max(0, Math.floor(box?.y ?? 100)))
+      await page.screenshot({
+        path: join(frameRoot, `${name}.png`),
+        clip: { x, y, width: 1_100, height: 500 },
+      })
     }
 
     beforeAll(async () => {
       requireDist()
+      root = mkdtempSync(join(tmpdir(), 'xagent-task12-e2e-'))
+      override = join(root, 'compose.override.yml')
+      patch = join(root, 'replay.patch.yml')
+      replayPaths = writeReplayWorld(root, identity)
       const apiPort = await probeFreePort()
       const minioPort = await probeFreePort()
       const postgresPort = await probeFreePort()
@@ -487,7 +565,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
         ].filter(Boolean)
         if (residue.length > 0) errors.push(`Docker residue: ${residue.join(', ')}`)
       }
-      rmSync(root, { recursive: true, force: true })
+      if (root !== '') rmSync(root, { recursive: true, force: true })
       if (errors.length > 0) throw new Error(errors.join('\n'))
     }, 240_000)
 
@@ -521,6 +599,8 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       const activePage = page!
       await login(activePage, identity.managerEmail)
       await dismissOnboarding(activePage)
+      const managerAccount = value(await browserRpc<WorkbenchBootstrap>(activePage, 'xagentProject.bootstrap', {})).account
+      expect(managerAccount).toMatchObject({ email: identity.managerEmail, role: 'manager' })
 
       firstProjectId = await createProject(activePage, identity.firstProjectName)
       await upload(activePage, FIRST_FILENAME, [
@@ -541,7 +621,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
         'Beta 的结论是验证恢复窗口并保留回滚方案。',
       ].join('\n'))
       await waitForIndexed(identity.composeProject, override, SECOND_FILENAME)
-      await frame('01-project-scopes')
+      await frame('01-project-scopes', undefined, 20)
 
       const workbenchButton = activePage.getByRole('button', { name: '我的工作台', exact: true })
       await workbenchButton.click()
@@ -554,7 +634,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       await privateAnswer.or(privateFailure).first().waitFor({ timeout: 90_000 })
       if (await privateAnswer.count() === 0) throw new Error('private cited-answer request failed')
       expect(await privateAnswer.count()).toBe(1)
-      expect(await activePage.getByRole('alert').filter({ hasText: '未能生成已验证回答' }).count()).toBe(1)
+      expect(await activePage.getByRole('alert').filter({ hasText: '未能生成已验证回答' }).count()).toBe(0)
       const liveText = await privateAnswer.innerText()
       const liveHtml = await privateAnswer.innerHTML()
       expect(liveText).toContain('跨项目结论')
@@ -564,7 +644,13 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       expect(await privateAnswer.getByRole('button', { name: /资料999/u }).count()).toBe(0)
       expect(await privateAnswer.getByRole('link').count()).toBe(0)
       await privateAnswer.getByRole('navigation', { name: '已验证资料来源' }).waitFor()
-      await frame('02-structured-answer')
+      await frame('02-structured-answer', privateAnswer)
+
+      expect(terminalAttemptEvidence(identity.composeProject, override, privateSession)).toEqual({
+        calls: ['task12-private-invalid', 'task12-private-answer'],
+        errorResults: ['task12-private-invalid'],
+        terminalFailures: 0,
+      })
 
       expect(psql(identity.composeProject, override, [
         'SELECT count(DISTINCT project_id) FROM xagent_session_project_refs',
@@ -580,14 +666,40 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       await replayedAnswer.waitFor({ timeout: 30_000 })
       expect(await replayedAnswer.innerText()).toBe(liveText)
       expect(await replayedAnswer.innerHTML()).toBe(liveHtml)
-      await frame('03-replayed-answer')
+      await frame('03-replayed-answer', replayedAnswer)
 
+      const expectedCitation = citationEvidence(identity.composeProject, override, privateSession, '[资料1]')
+      expect(expectedCitation.citationId).toBe('[资料1]')
+      expect([FIRST_FILENAME, SECOND_FILENAME]).toContain(expectedCitation.displayName)
+      const resolvedCitation = value(await browserRpc<{
+        artifactId: string
+        versionId: string
+        chunkId: string
+        lineStart: number
+        lineEnd: number
+      }>(activePage, 'xagentCitation/resolve', {
+        args: { sessionId: privateSession, citationId: '[资料1]' },
+      }))
+      expect(resolvedCitation).toEqual({
+        artifactId: expectedCitation.artifactId,
+        versionId: expectedCitation.versionId,
+        chunkId: expectedCitation.chunkId,
+        lineStart: expectedCitation.lineStart,
+        lineEnd: expectedCitation.lineEnd,
+      })
       await replayedAnswer.getByRole('button', { name: '已验证资料 [资料1]' }).first().click()
-      await activePage.getByText(/已定位安全版本，第 \d+–\d+ 行/u).waitFor({ timeout: 30_000 })
-      const preview = activePage.getByRole('dialog', { name: /Task12-(?:Alpha|Beta)-证据\.txt 全屏预览/u })
-      await preview.getByText(/已定位至不可变版本，第 \d+–\d+ 行/u).waitFor({ timeout: 30_000 })
-      expect(await preview.locator('[data-citation-line="true"]').count()).toBeGreaterThan(0)
-      await frame('04-immutable-citation')
+      await activePage.getByText(
+        `已定位安全版本，第 ${String(expectedCitation.lineStart)}–${String(expectedCitation.lineEnd)} 行`,
+        { exact: true },
+      ).waitFor({ timeout: 30_000 })
+      const preview = activePage.getByRole('dialog', { name: `${expectedCitation.displayName} 全屏预览` })
+      await preview.getByText(
+        `已定位至不可变版本，第 ${String(expectedCitation.lineStart)}–${String(expectedCitation.lineEnd)} 行`,
+        { exact: true },
+      ).waitFor({ timeout: 30_000 })
+      expect(await preview.locator('[data-citation-line="true"]').count())
+        .toBe(expectedCitation.lineEnd - expectedCitation.lineStart + 1)
+      await frame('04-immutable-citation', preview, 250)
       await preview.getByRole('button', { name: '关闭预览' }).click()
 
       const firstProjectButton = activePage.getByRole('button', { name: identity.firstProjectName, exact: true })
@@ -615,12 +727,12 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
         activePage, INVALID_PROMPT, 'project', identity.composeProject, override,
       )
       await activePage.getByText('本轮运行失败', { exact: true }).waitFor({ timeout: 90_000 })
-      expect(await activePage.getByRole('alert').filter({ hasText: '未能生成已验证回答' }).count()).toBeGreaterThan(0)
-      expect(psql(identity.composeProject, override, [
-        'SELECT count(*) FROM xagent_session_events',
-        `WHERE session_id = ${sqlLiteral(backendSessionId(invalidSession))}::uuid`,
-        "AND event_type = 'turn/end' AND payload::text LIKE '%CITATION_FAILED%';",
-      ].join(' '))).toBe('1')
+      expect(await activePage.getByRole('alert').filter({ hasText: '未能生成已验证回答' }).count()).toBe(0)
+      expect(terminalAttemptEvidence(identity.composeProject, override, invalidSession)).toEqual({
+        calls: ['task12-invalid-answer-1', 'task12-invalid-answer-2'],
+        errorResults: ['task12-invalid-answer-1', 'task12-invalid-answer-2'],
+        terminalFailures: 1,
+      })
 
       const revocationSession = await sendNewPrompt(
         activePage, REVOCATION_PROMPT, 'project', identity.composeProject, override,
@@ -628,25 +740,55 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       await expect.poll(() => psql(identity.composeProject, override, [
         'SELECT count(*) FROM xagent_session_events',
         `WHERE session_id = ${sqlLiteral(backendSessionId(revocationSession))}::uuid`,
-        "AND event_type = 'tool/result' AND tool_call_id = 'task12-revocation-search';",
-      ].join(' ')), { timeout: 60_000, interval: 500 }).toBe('1')
-      await new Promise<void>((resolve) => { setTimeout(resolve, 500) })
+        "AND event_type = 'assistant/chunk' AND payload #>> '{data,chunk,type}' = 'usage'",
+        'AND sequence > (SELECT sequence FROM xagent_session_events',
+        `WHERE session_id = ${sqlLiteral(backendSessionId(revocationSession))}::uuid`,
+        "AND event_type = 'tool/result' AND tool_call_id = 'task12-revocation-search');",
+      ].join(' ')), { timeout: 60_000, interval: 100 }).toBe('1')
+      const stopGenerating = activePage.getByRole('button', { name: '停止生成', exact: true })
+      await stopGenerating.waitFor({ timeout: 30_000 })
+      expect(psql(identity.composeProject, override, [
+        'SELECT count(*) FROM xagent_session_events',
+        `WHERE session_id = ${sqlLiteral(backendSessionId(revocationSession))}::uuid`,
+        "AND event_type = 'turn/end';",
+      ].join(' '))).toBe('0')
       expect(await activePage.locator('body').innerText()).not.toContain('partial-secret')
       deactivateAccount(identity.composeProject, override, identity.managerEmail)
-      await activePage.reload({ waitUntil: 'domcontentloaded' })
-      await activePage.getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
+      expect(psql(identity.composeProject, override, [
+        'SELECT is_active::text FROM accounts',
+        `WHERE id = ${sqlLiteral(managerAccount.id)}::uuid AND email = ${sqlLiteral(identity.managerEmail)};`,
+      ].join(' '))).toBe('false')
+      await expect.poll(() => compose(identity.composeProject, override, [
+        'logs', '--no-color', '--tail', '80', 'api',
+      ]).split('\n').some(line => line.includes(
+        `/internal/xagent/sessions/${backendSessionId(revocationSession)}/append`,
+      ) && line.includes('401 Unauthorized')), { timeout: 30_000, interval: 500 }).toBe(true)
       expect(await activePage.locator('body').innerText()).not.toContain('partial-secret')
+      expect(psql(identity.composeProject, override, [
+        'SELECT count(*) FROM xagent_session_events',
+        `WHERE session_id = ${sqlLiteral(backendSessionId(revocationSession))}::uuid`,
+        "AND payload::text LIKE '%partial-secret%';",
+      ].join(' '))).toBe('0')
       expect(psql(identity.composeProject, override, [
         'SELECT count(*) FROM xagent_session_events',
         `WHERE session_id = ${sqlLiteral(backendSessionId(revocationSession))}::uuid`,
         "AND event_type = 'tool/result' AND payload::text LIKE '%xagent-cited-answer%';",
       ].join(' '))).toBe('0')
+      await activePage.getByRole('button', { name: '退出登录', exact: true }).click()
+      await activePage.getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
+      expect(await stopGenerating.count()).toBe(0)
+      expect(await activePage.locator('body').innerText()).not.toContain('partial-secret')
 
       await login(activePage, identity.specialistEmail)
+      const specialistBootstrap = value(await browserRpc<WorkbenchBootstrap>(activePage, 'xagentProject.bootstrap', {}))
+      expect(specialistBootstrap.account).toMatchObject({ email: identity.specialistEmail, role: 'specialist' })
+      expect(specialistBootstrap.account.id).not.toBe(managerAccount.id)
+      expect(specialistBootstrap.projects).toEqual([])
+      expect(specialistBootstrap.sessionScopes).toEqual([])
       expect(await activePage.getByText(identity.firstProjectName, { exact: true }).count()).toBe(0)
       expect(await activePage.getByText(identity.secondProjectName, { exact: true }).count()).toBe(0)
       expect(await activePage.getByRole('article', { name: '已验证回答' }).count()).toBe(0)
-      await frame('05-account-isolation')
+      await frame('05-account-isolation', undefined, 20)
 
       const businessDump = profileDump(root, 'xagent-business')
       expect(businessDump).toContain('@xagent/dsh-retrieval')
@@ -661,7 +803,10 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
       }
       expect(diagnostics.join('\n')).not.toContain(RETRIEVAL_QUERY)
       expect(diagnostics.join('\n')).not.toMatch(/(?:receipt|delegation|object_key|signed_url|bearer\s+eyJ)/iu)
-      expect([firstProjectId, secondProjectId]).toHaveLength(2)
+      expect(JSON.parse(psql(identity.composeProject, override, [
+        'SELECT jsonb_agg(id::text ORDER BY id)::text FROM projects',
+        `WHERE id IN (${sqlLiteral(firstProjectId)}::uuid, ${sqlLiteral(secondProjectId)}::uuid);`,
+      ].join(' '))) as unknown).toEqual([firstProjectId, secondProjectId].sort())
     }, 900_000)
   },
 )
