@@ -293,9 +293,10 @@ preparePublication(_session: Session): Promise<void>
  * ordinary in-process seed path.
  * @param _sourceId - authorized source Session identity.
  * @param _throughSequence - inclusive final source event sequence.
+ * @param _operationId - caller-owned identity shared by every retry of this fork.
  * @returns the durable child header, or `undefined` when unsupported.
  */
-fork(_sourceId: SessionId, _throughSequence: number): Promise<SessionHeader | undefined>
+fork( _sourceId: SessionId, _throughSequence: number, _operationId: SessionForkOperationId, ): Promise<SessionHeader | undefined>
 
 /**
  * Register a new session's metadata. A backend MAY defer the physical write
@@ -412,5 +413,5 @@ abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot
 
 Types: [Session](session.md) · [SessionEvent](session.md) · [SessionId](core.md)
 
-Source: [`packages/session/session-persistence/src/index.ts:84`](../../packages/session/session-persistence/src/index.ts)
+Source: [`packages/session/session-persistence/src/index.ts:86`](../../packages/session/session-persistence/src/index.ts)
 <!-- END GENERATED cordis-surface -->

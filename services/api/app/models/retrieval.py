@@ -208,8 +208,71 @@ class XAgentRetrievalReceipt(Base):
     citation_ordinal_end: Mapped[int | None] = mapped_column(Integer)
 
 
+class XAgentAdmittedEvidence(Base):
+    """One immutable citation identity admitted through a verified retrieval receipt."""
+
+    __tablename__ = "xagent_admitted_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "citation_id ~ '^\\[资料[1-9][0-9]*\\]$'",
+            name="ck_xagent_admitted_evidence_citation_id",
+        ),
+        CheckConstraint(
+            "admission_event_sequence >= 0",
+            name="ck_xagent_admitted_evidence_event",
+        ),
+        CheckConstraint(
+            "index_generation >= 1",
+            name="ck_xagent_admitted_evidence_index_generation",
+        ),
+        ForeignKeyConstraint(
+            ("session_id", "admission_event_sequence"),
+            ("xagent_session_events.session_id", "xagent_session_events.sequence"),
+            name="fk_xagent_admitted_evidence_event",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ("index_id", "artifact_id", "version_id", "index_generation"),
+            (
+                "artifact_text_indexes.id",
+                "artifact_text_indexes.artifact_id",
+                "artifact_text_indexes.version_id",
+                "artifact_text_indexes.generation",
+            ),
+            name="fk_xagent_admitted_evidence_index_identity",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("chunk_id", "index_id"),
+            ("artifact_text_chunks.id", "artifact_text_chunks.index_id"),
+            name="fk_xagent_admitted_evidence_chunk_identity",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "session_id",
+            "citation_id",
+            "admission_event_sequence",
+            "artifact_id",
+            "version_id",
+            "index_id",
+            "index_generation",
+            "chunk_id",
+            name="uq_xagent_admitted_evidence_identity",
+        ),
+    )
+
+    session_id: Mapped[UUID] = mapped_column(primary_key=True)
+    citation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    admission_event_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    artifact_id: Mapped[UUID] = mapped_column(nullable=False)
+    version_id: Mapped[UUID] = mapped_column(nullable=False)
+    index_id: Mapped[UUID] = mapped_column(nullable=False)
+    index_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_id: Mapped[UUID] = mapped_column(nullable=False)
+
+
 class XAgentCitedAnswerEvidence(Base):
-    """An immutable link from one cited answer to its admitted retrieval evidence."""
+    """An immutable link from one cited answer to one admitted citation identity."""
 
     __tablename__ = "xagent_cited_answer_evidence"
     __table_args__ = (
@@ -232,27 +295,28 @@ class XAgentCitedAnswerEvidence(Base):
             ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
-            ("session_id", "admission_event_sequence"),
-            ("xagent_session_events.session_id", "xagent_session_events.sequence"),
-            name="fk_xagent_cited_answer_evidence_admission_event",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ("index_id", "artifact_id", "version_id", "index_generation"),
             (
-                "artifact_text_indexes.id",
-                "artifact_text_indexes.artifact_id",
-                "artifact_text_indexes.version_id",
-                "artifact_text_indexes.generation",
+                "session_id",
+                "citation_id",
+                "admission_event_sequence",
+                "artifact_id",
+                "version_id",
+                "index_id",
+                "index_generation",
+                "chunk_id",
             ),
-            name="fk_xagent_cited_answer_evidence_index_identity",
-            ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ("chunk_id", "index_id"),
-            ("artifact_text_chunks.id", "artifact_text_chunks.index_id"),
-            name="fk_xagent_cited_answer_evidence_chunk_identity",
-            ondelete="RESTRICT",
+            (
+                "xagent_admitted_evidence.session_id",
+                "xagent_admitted_evidence.citation_id",
+                "xagent_admitted_evidence.admission_event_sequence",
+                "xagent_admitted_evidence.artifact_id",
+                "xagent_admitted_evidence.version_id",
+                "xagent_admitted_evidence.index_id",
+                "xagent_admitted_evidence.index_generation",
+                "xagent_admitted_evidence.chunk_id",
+            ),
+            name="fk_xagent_cited_answer_admitted_evidence",
+            ondelete="CASCADE",
         ),
         Index("ix_xagent_cited_answer_evidence_lookup", "session_id", "citation_id"),
     )

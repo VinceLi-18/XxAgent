@@ -6,6 +6,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
+import { WorkspaceId, type Workspace } from '@deepseek-ai/dsh-workspace'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import type {
@@ -43,7 +44,12 @@ interface StoredSession {
   readonly events: SessionEvent[]
 }
 
-function composition(): {
+interface CompositionOptions {
+  forkResponseLosses?: number
+  resumeFailures?: number
+}
+
+function composition(faults: CompositionOptions = {}): {
   readonly project: XAgentProjectService
   readonly persistence: XAgentSessionPersistence
   readonly authorization: XAgentAuthorization
@@ -54,12 +60,17 @@ function composition(): {
   readonly ctx: Context
   readonly stored: StoredSession[]
   readonly createBodies: Record<string, unknown>[]
+  readonly workspaces: Workspace[]
+  readonly resumeCalls: { count: number }
 } {
   const contexts = new Map<string, XAgentWorkbenchContext>([['alice-token', { kind: 'workbench' }]])
   const stored: StoredSession[] = []
   const createBodies: Record<string, unknown>[] = []
   const revokedSources = new Set<string>()
   const forkCalls: { readonly sourceId: string; readonly body: unknown }[] = []
+  const forkResults = new Map<string, { throughSequence: number; item: StoredSession }>()
+  const workspaces: Workspace[] = []
+  const resumeCalls = { count: 0 }
   const bootstrap = (token: string): XAgentWorkbenchBootstrap => ({
     account: {
       id: actorId,
@@ -152,7 +163,23 @@ function composition(): {
         forkCalls.push({ sourceId, body: value })
         const source = stored.find(candidate => candidate.sessionId === sourceId)
         if (source === undefined || revokedSources.has(sourceId)) throw new XAgentBackendError('not-found')
-        const body = value as { through_sequence: number }
+        const body = value as { through_sequence: number; idempotency_key: string }
+        const replay = forkResults.get(body.idempotency_key)
+        if (replay !== undefined) {
+          if (replay.throughSequence !== body.through_sequence) {
+            throw new XAgentBackendError('idempotency-conflict')
+          }
+          return {
+            schema_version: 1,
+            session: {
+              id: replay.item.sessionId,
+              visibility: replay.item.visibility,
+              project_id: replay.item.projectId,
+              runtime_header: replay.item.runtimeHeader,
+              last_event_sequence: body.through_sequence,
+            },
+          }
+        }
         const targetId = '00000000-0000-0000-0000-000000000799'
         const runtimeHeader: SessionHeader = {
           version: 0,
@@ -165,13 +192,19 @@ function composition(): {
             ? {}
             : { agentPreset: source.runtimeHeader.agentPreset },
         }
-        stored.push({
+        const child = {
           sessionId: targetId,
           runtimeHeader,
           visibility: source.visibility,
           projectId: source.projectId,
           events: source.events.slice(0, body.through_sequence + 1),
-        })
+        }
+        stored.push(child)
+        forkResults.set(body.idempotency_key, { throughSequence: body.through_sequence, item: child })
+        if ((faults.forkResponseLosses ?? 0) > 0) {
+          faults.forkResponseLosses = (faults.forkResponseLosses ?? 0) - 1
+          throw new Error('simulated committed-response loss')
+        }
         return {
           schema_version: 1,
           session: {
@@ -204,18 +237,20 @@ function composition(): {
     contexts,
     revokedSources,
     forkCalls,
+    workspaces,
+    resumeCalls,
     ctx,
   }
 }
 
-async function hostComposition() {
-  const value = composition()
+async function hostComposition(faults: CompositionOptions = {}) {
+  const value = composition(faults)
   const { ctx } = value
   await ctx.plugin(SessionStore)
   await ctx.plugin(SystemPrompt, { persona: '' })
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(UserQuestionService)
-  ctx.provide('workspaceRegistry', { list: () => [] } as never)
+  ctx.provide('workspaceRegistry', { list: () => value.workspaces } as never)
 
   const publish = async (
     ownerCtx: Context,
@@ -242,6 +277,11 @@ async function hostComposition() {
       true,
     ),
     resume: async (ownerCtx, options) => {
+      value.resumeCalls.count++
+      if ((faults.resumeFailures ?? 0) > 0) {
+        faults.resumeFailures = (faults.resumeFailures ?? 0) - 1
+        throw new Error('simulated resume failure')
+      }
       const loaded = await value.persistence.load(options.resumeSessionId)
       return publish(
         ownerCtx,
@@ -263,6 +303,72 @@ async function hostComposition() {
     },
   })
   return value
+}
+
+async function forkHarness(faults: CompositionOptions = {}) {
+  const value = await hostComposition(faults)
+  const signal = new AbortController().signal
+  const sourceId = SessionId('session-00000000-0000-0000-0000-000000000741')
+  await value.authorization.run(
+    'xagentProject/select-context',
+    { args: { context: { kind: 'project', projectId } } },
+    request,
+    signal,
+    async () => ({
+      ok: true,
+      value: await value.project.selectContext({ kind: 'project', projectId }, signal),
+    }),
+  )
+  await value.authorization.run(
+    'session/create',
+    { args: {} },
+    request,
+    signal,
+    async () => {
+      await value.persistence.create({
+        version: 0,
+        id: sourceId,
+        createdAt: 1_787_587_200_000,
+        cwd: '/workspace/alpha',
+      })
+      return { ok: true, value: { sessionId: sourceId } }
+    },
+  )
+  const source = value.ctx.sessions.create(sourceId, { meta: { cwd: '/workspace/alpha' } })
+  source.append('turn/start', { turn: 1 })
+  source.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: 'first turn' }],
+    source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  source.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  source.append('turn/start', { turn: 2 })
+  source.append('user/message', createUserMessage({
+    content: [{ type: 'text', text: 'second turn' }],
+    source: { kind: 'user' },
+  }), { surfaceOp: 'append' })
+  source.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+  value.ctx.agents.register({
+    id: source.id,
+    session: source,
+    status: 'idle',
+    ctx: value.ctx,
+  } as Agent)
+  await value.ctx.sessions.flush(source)
+  const proxy = createApiProxy(value.ctx, {
+    defaultModelSelection: () => ({ provider: 'default', model: 'default' }),
+    cwd: '/tmp',
+  })
+  const fork = (rpcId: string, atSeq?: number) => value.authorization.run(
+    'session/fork',
+    { args: { sessionId: sourceId } },
+    request,
+    signal,
+    () => proxy.sessions.fork({
+      rpcId: RpcId(rpcId),
+      payload: { sessionId: sourceId, ...atSeq === undefined ? {} : { atSeq } },
+    }).then(item => item.result),
+  )
+  return { value, sourceId, fork }
 }
 
 describe('XAgent 项目上下文与 Session 创建组合', () => {
@@ -413,6 +519,73 @@ describe('XAgent 项目上下文与 Session 创建组合', () => {
         .then(item => item.result),
     )).resolves.toMatchObject({ ok: false, error: { code: 'session-not-found' } })
     expect(value.forkCalls).toHaveLength(1)
+    await value.ctx.fiber.dispose()
+  })
+
+  test('Host retries a committed fork response loss with one stable durable child', async () => {
+    const { value, sourceId, fork } = await forkHarness({ forkResponseLosses: 1 })
+
+    const lost = await fork('fork-response-loss')
+    const recovered = await fork('fork-response-loss')
+
+    expect(lost).toMatchObject({ ok: false, error: { code: 'internal' } })
+    expect(recovered).toEqual({
+      ok: true,
+      value: { sessionId: SessionId('session-00000000-0000-0000-0000-000000000799') },
+    })
+    expect(value.forkCalls.map(call => (
+      call.body as { idempotency_key: string }
+    ).idempotency_key)).toEqual(['fork:fork-response-loss', 'fork:fork-response-loss'])
+    expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(1)
+    expect(value.ctx.agents.list().filter(agent => agent.id !== sourceId)).toHaveLength(1)
+    await value.ctx.fiber.dispose()
+  })
+
+  test('Host retries resume failure against the same durable child', async () => {
+    const { value, sourceId, fork } = await forkHarness({ resumeFailures: 1 })
+
+    const failed = await fork('fork-resume-retry')
+    const recovered = await fork('fork-resume-retry')
+
+    expect(failed).toMatchObject({ ok: false, error: { code: 'internal' } })
+    expect(recovered).toMatchObject({ ok: true })
+    expect(value.resumeCalls.count).toBe(2)
+    expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(1)
+    expect(value.ctx.agents.list().filter(agent => agent.id !== sourceId)).toHaveLength(1)
+    await value.ctx.fiber.dispose()
+  })
+
+  test('Host repairs attachment without resuming the replayed durable child twice', async () => {
+    const { value, sourceId, fork } = await forkHarness()
+    const attachSession = vi.fn()
+      .mockRejectedValueOnce(new Error('simulated attachment failure'))
+      .mockResolvedValueOnce(undefined)
+    value.workspaces.push({
+      id: WorkspaceId('00000000-0000-0000-0000-000000000801'),
+      path: '/workspace/alpha',
+      title: 'Alpha',
+      createdAt: '2026-09-04T00:00:00Z',
+      updatedAt: '2026-09-04T00:00:00Z',
+      sessionIds: [sourceId],
+      attachSession,
+      setTitle: vi.fn(),
+      insertSessionBefore: vi.fn(),
+      detachSession: vi.fn(),
+      status: vi.fn<() => Promise<'ok' | 'missing-dir'>>(async () => 'ok'),
+    })
+
+    const failed = await fork('fork-attachment-retry')
+    const recovered = await fork('fork-attachment-retry')
+
+    expect(failed).toMatchObject({
+      ok: false,
+      error: { code: 'workspace-attach-failed' },
+    })
+    expect(recovered).toMatchObject({ ok: true })
+    expect(attachSession).toHaveBeenCalledTimes(2)
+    expect(value.resumeCalls.count).toBe(1)
+    expect(value.stored.filter(item => item.runtimeHeader.parentSession === sourceId)).toHaveLength(1)
+    expect(value.ctx.agents.list().filter(agent => agent.id !== sourceId)).toHaveLength(1)
     await value.ctx.fiber.dispose()
   })
 })

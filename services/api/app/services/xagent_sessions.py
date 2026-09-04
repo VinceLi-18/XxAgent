@@ -11,7 +11,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project, ProjectAction
-from app.models.retrieval import XAgentCitedAnswerEvidence, XAgentRetrievalReceipt
+from app.models.retrieval import (
+    XAgentAdmittedEvidence,
+    XAgentCitedAnswerEvidence,
+    XAgentRetrievalReceipt,
+)
 from app.models.workbench import XAgentSessionProjectRef
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
 from app.services.audit import retrieval_audit_details, write_audit_event
@@ -653,13 +657,6 @@ class _PendingRetrievalAdmission:
 
 
 @dataclass(frozen=True)
-class _AdmittedRetrieval:
-    tool_call_id: str
-    payload: dict[str, Any]
-    audit_id: UUID
-
-
-@dataclass(frozen=True)
 class _CitationEvidence:
     admission_sequence: int
     artifact_id: UUID
@@ -667,6 +664,14 @@ class _CitationEvidence:
     index_id: UUID
     index_generation: int
     chunk_id: UUID
+
+
+@dataclass(frozen=True)
+class _AdmittedRetrieval:
+    tool_call_id: str
+    payload: dict[str, Any]
+    audit_id: UUID
+    evidence: tuple[tuple[str, _CitationEvidence], ...]
 
 
 async def _load_retrieval_admissions(
@@ -903,6 +908,12 @@ async def _admit_retrieval_receipts(
             tool_call_id=admission.tool_call_id,
             payload=admission.canonical_payload,
             audit_id=audit.id,
+            evidence=tuple(_canonical_retrieval_evidence(
+                event_type="tool/result",
+                schema_version=1,
+                payload=admission.canonical_payload,
+                sequence=admission.sequence,
+            ) or ()),
         )
     return admitted
 
@@ -1140,32 +1151,51 @@ async def _cited_answer_provenance(
     events: list[dict[str, Any]],
     admitted: dict[int, _AdmittedRetrieval],
 ) -> tuple[list[XAgentCitedAnswerEvidence], dict[int, str]]:
-    """Bind new cited answers to prior server-canonical retrieval events."""
-    evidence_by_id: dict[str, _CitationEvidence] = {}
+    """Bind new cited answers through citation-bounded admitted-evidence reads."""
+    answers: dict[int, tuple[str, list[str]]] = {}
+    for offset, event in enumerate(events, start=1):
+        sequence = expected_sequence + offset
+        answer = _canonical_cited_answer(event, sequence=sequence)
+        if answer is not None:
+            answers[sequence] = answer
+    if not answers:
+        return [], {}
 
-    def add_evidence(values: list[tuple[str, _CitationEvidence]] | None) -> None:
-        for citation_id, evidence in values or []:
+    required_ids = {
+        citation_id
+        for _, citation_ids in answers.values()
+        for citation_id in citation_ids
+    }
+    stored = (
+        await session.scalars(
+            select(XAgentAdmittedEvidence)
+            .where(
+                XAgentAdmittedEvidence.session_id == item.id,
+                XAgentAdmittedEvidence.citation_id.in_(sorted(required_ids)),
+            )
+            .order_by(XAgentAdmittedEvidence.citation_id)
+            .limit(len(required_ids))
+        )
+    ).all()
+    evidence_by_id = {
+        value.citation_id: _CitationEvidence(
+            admission_sequence=value.admission_event_sequence,
+            artifact_id=value.artifact_id,
+            version_id=value.version_id,
+            index_id=value.index_id,
+            index_generation=value.index_generation,
+            chunk_id=value.chunk_id,
+        )
+        for value in stored
+    }
+
+    def add_evidence(values: tuple[tuple[str, _CitationEvidence], ...]) -> None:
+        for citation_id, evidence in values:
+            if citation_id not in required_ids:
+                continue
             if citation_id in evidence_by_id:
                 raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
             evidence_by_id[citation_id] = evidence
-
-    previous = (
-        await session.scalars(
-            select(XAgentSessionEvent)
-            .where(
-                XAgentSessionEvent.session_id == item.id,
-                XAgentSessionEvent.sequence <= expected_sequence,
-            )
-            .order_by(XAgentSessionEvent.sequence)
-        )
-    ).all()
-    for stored in previous:
-        add_evidence(_canonical_retrieval_evidence(
-            event_type=stored.event_type,
-            schema_version=stored.schema_version,
-            payload=stored.payload,
-            sequence=stored.sequence,
-        ))
 
     provenance: list[XAgentCitedAnswerEvidence] = []
     answer_tool_calls: dict[int, str] = {}
@@ -1173,13 +1203,8 @@ async def _cited_answer_provenance(
         sequence = expected_sequence + offset
         admission = admitted.get(sequence)
         if admission is not None:
-            add_evidence(_canonical_retrieval_evidence(
-                event_type="tool/result",
-                schema_version=1,
-                payload=admission.payload,
-                sequence=sequence,
-            ))
-        answer = _canonical_cited_answer(event, sequence=sequence)
+            add_evidence(admission.evidence)
+        answer = answers.get(sequence)
         if answer is None:
             continue
         tool_call_id, citation_ids = answer
@@ -1200,6 +1225,27 @@ async def _cited_answer_provenance(
                 chunk_id=evidence.chunk_id,
             ))
     return provenance, answer_tool_calls
+
+
+def _admitted_evidence_rows(
+    item: XAgentSession,
+    admitted: dict[int, _AdmittedRetrieval],
+) -> list[XAgentAdmittedEvidence]:
+    """Materialize receipt-owned citation identities after their event rows exist."""
+    return [
+        XAgentAdmittedEvidence(
+            session_id=item.id,
+            citation_id=citation_id,
+            admission_event_sequence=sequence,
+            artifact_id=evidence.artifact_id,
+            version_id=evidence.version_id,
+            index_id=evidence.index_id,
+            index_generation=evidence.index_generation,
+            chunk_id=evidence.chunk_id,
+        )
+        for sequence, admission in admitted.items()
+        for citation_id, evidence in admission.evidence
+    ]
 
 
 async def _reject_consumed_receipt_reuse(
@@ -1352,6 +1398,8 @@ async def append_events(
     item.last_event_sequence = expected_sequence + len(events)
     item.version += 1
     await session.flush()
+    session.add_all(_admitted_evidence_rows(item, admitted))
+    await session.flush()
     session.add_all(provenance)
     await session.flush()
     result = {
@@ -1443,6 +1491,30 @@ async def fork_session(
                 audit_id=event.audit_id,
             )
         )
+    await session.flush()
+    source_admitted_evidence = (
+        await session.scalars(
+            select(XAgentAdmittedEvidence)
+            .where(
+                XAgentAdmittedEvidence.session_id == source_id,
+                XAgentAdmittedEvidence.admission_event_sequence <= through_sequence,
+            )
+            .order_by(XAgentAdmittedEvidence.citation_id)
+        )
+    ).all()
+    session.add_all([
+        XAgentAdmittedEvidence(
+            session_id=target.id,
+            citation_id=value.citation_id,
+            admission_event_sequence=value.admission_event_sequence,
+            artifact_id=value.artifact_id,
+            version_id=value.version_id,
+            index_id=value.index_id,
+            index_generation=value.index_generation,
+            chunk_id=value.chunk_id,
+        )
+        for value in source_admitted_evidence
+    ])
     await session.flush()
     source_provenance = (
         await session.scalars(

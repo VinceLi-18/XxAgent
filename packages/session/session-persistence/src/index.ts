@@ -8,10 +8,12 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { SessionPreparation } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
+import type { SessionForkOperationId } from './fork.ts'
 import type { SessionPersistenceRevision } from './revision.ts'
 
 // Re-export the metadata vocabulary so Consumers import it from the Service Definition.
 export type { SessionHeader } from '@deepseek-ai/dsh-session'
+export { SessionForkOperationId } from './fork.ts'
 export { SessionPersistenceRevision } from './revision.ts'
 
 /** Lightweight immutable source identity returned without loading a full log. */
@@ -142,9 +144,14 @@ export abstract class SessionPersistence extends Service {
    * ordinary in-process seed path.
    * @param _sourceId - authorized source Session identity.
    * @param _throughSequence - inclusive final source event sequence.
+   * @param _operationId - caller-owned identity shared by every retry of this fork.
    * @returns the durable child header, or `undefined` when unsupported.
    */
-  fork(_sourceId: SessionId, _throughSequence: number): Promise<SessionHeader | undefined> {
+  fork(
+    _sourceId: SessionId,
+    _throughSequence: number,
+    _operationId: SessionForkOperationId,
+  ): Promise<SessionHeader | undefined> {
     return Promise.resolve(undefined)
   }
 

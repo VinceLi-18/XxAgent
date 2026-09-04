@@ -8,9 +8,10 @@ from uuid import UUID
 import jwt
 import pytest
 from argon2 import PasswordHasher
-from sqlalchemy import select, text
+from sqlalchemy import event as sqlalchemy_event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import admin_engine as app_admin_engine
 from app.models.audit import AuditEvent
 from app.models.retrieval import XAgentRetrievalReceipt
 from app.models.workbench import XAgentSessionProjectRef
@@ -524,7 +525,7 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
             "expected_sequence": 2,
             "idempotency_key": "append-invented-citation-1",
             "events": [_cited_answer_result(
-                2,
+                3,
                 "submit-invented-cited-answer",
                 ["[资料999]"],
             )],
@@ -611,6 +612,20 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
                 },
             )
         ).all()
+        invented_event_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM xagent_session_events "
+                "WHERE session_id = :session_id AND sequence = 3"
+            ),
+            {"session_id": alice_private_xagent_session.id},
+        )
+        invented_provenance_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM xagent_cited_answer_evidence "
+                "WHERE session_id = :session_id AND answer_event_sequence = 3"
+            ),
+            {"session_id": alice_private_xagent_session.id},
+        )
     assert receipt is not None
     assert receipt.consumed_event_sequence == 0
     assert receipt.consumed_payload_sha256 == search_body["payload_sha256"]
@@ -623,6 +638,7 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
     assert admission_audit.details["query_sha256"] == hashlib.sha256("预算".encode()).hexdigest()
     assert admission_audit.details["project_scope_sha256"] == persisted_meta["scopeHash"]
     assert len(provenance) == 2
+    assert invented_event_count == invented_provenance_count == 0
     assert {row.session_id for row in provenance} == {
         alice_private_xagent_session.id,
         fork_id,
@@ -653,6 +669,369 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
     serialized_audit = json.dumps(admission_audit.details)
     assert search_body["receipt"] not in serialized_audit
     assert "项目预算" not in serialized_audit
+
+
+@pytest.mark.anyio
+async def test_append_provenance_queries_are_bounded_by_current_citations_not_log_length(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    await _seed_search_chunk(seeded_database, alice.id, alice_project.id)
+    token = await _login(client, seeded_database, alice)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-XAgent-Service-Token": SERVICE_TOKEN,
+    }
+    tool_call_id = "bounded-provenance-search"
+    search_response = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=alice_private_xagent_session.id,
+                tool_call_id=tool_call_id,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": 1,
+            "query": "预算",
+            "project_ids": [str(alice_project.id)],
+            "include_private": False,
+        },
+    )
+    assert search_response.status_code == 200
+    search = search_response.json()
+    admitted = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "bounded-provenance-admission",
+            "events": [_tool_result(0, tool_call_id, search)],
+            "retrieval_receipts": [{
+                "event_sequence": 0,
+                "tool_call_id": tool_call_id,
+                "receipt": search["receipt"],
+                "payload_hash": search["payload_sha256"],
+            }],
+        },
+    )
+    assert admitted.status_code == 200
+    history_length = 1_000
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO xagent_session_events "
+                    "(session_id, sequence, event_type, schema_version, payload, actor_id) "
+                    "SELECT :session_id, value, 'history', 1, "
+                    "jsonb_build_object('seq', value), :actor_id "
+                    "FROM generate_series(1, :history_length) AS value"
+                ),
+                {
+                    "session_id": alice_private_xagent_session.id,
+                    "actor_id": alice.id,
+                    "history_length": history_length,
+                },
+            )
+            await session.execute(
+                text(
+                    "UPDATE xagent_sessions SET last_event_sequence = :history_length "
+                    "WHERE id = :session_id"
+                ),
+                {
+                    "session_id": alice_private_xagent_session.id,
+                    "history_length": history_length,
+                },
+            )
+
+    statements: list[tuple[str, object]] = []
+
+    def capture_statement(
+        _connection,
+        _cursor,
+        statement: str,
+        parameters: object,
+        _context,
+        _executemany: bool,
+    ) -> None:
+        statements.append((statement, parameters))
+
+    sqlalchemy_event.listen(
+        app_admin_engine.sync_engine,
+        "before_cursor_execute",
+        capture_statement,
+    )
+    try:
+        ordinary = await client.post(
+            f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+            headers=headers,
+            json={
+                "schema_version": 1,
+                "expected_sequence": history_length,
+                "idempotency_key": "bounded-provenance-ordinary",
+                "events": [{
+                    "event_type": "ordinary",
+                    "schema_version": 1,
+                    "payload": {"seq": history_length + 1},
+                }],
+            },
+        )
+        assert ordinary.status_code == 200
+        assert not [
+            statement
+            for statement, _ in statements
+            if "FROM xagent_session_events" in statement
+            or "FROM xagent_admitted_evidence" in statement
+        ]
+
+        statements.clear()
+        answered = await client.post(
+            f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+            headers=headers,
+            json={
+                "schema_version": 1,
+                "expected_sequence": history_length + 1,
+                "idempotency_key": "bounded-provenance-answer",
+                "events": [_cited_answer_result(
+                    history_length + 2,
+                    "bounded-provenance-answer",
+                    [search["citations"][0]["id"]],
+                )],
+            },
+        )
+        assert answered.status_code == 200
+    finally:
+        sqlalchemy_event.remove(
+            app_admin_engine.sync_engine,
+            "before_cursor_execute",
+            capture_statement,
+        )
+
+    provenance_selects = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if "FROM xagent_session_events" in statement
+        or "FROM xagent_admitted_evidence" in statement
+    ]
+    assert len(provenance_selects) == 1
+    statement, parameters = provenance_selects[0]
+    assert "FROM xagent_admitted_evidence" in statement
+    assert "xagent_admitted_evidence.citation_id IN" in statement
+    assert " LIMIT " in statement
+    assert search["citations"][0]["id"] in repr(parameters)
+    assert "1000" not in repr(parameters)
+
+
+@pytest.mark.anyio
+async def test_append_rejects_semantic_citation_forgery_without_partial_commit(
+    client,
+    seeded_database,
+    alice,
+    alice_project,
+    alice_private_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    await _seed_search_chunk(seeded_database, alice.id, alice_project.id)
+    token = await _login(client, seeded_database, alice)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "X-XAgent-Service-Token": SERVICE_TOKEN,
+    }
+
+    async def search(tool_call_id: str):
+        return await client.post(
+            "/internal/xagent/retrieval/search",
+            headers={
+                **headers,
+                "X-XAgent-Delegation": _delegation_token(
+                    actor_id=alice.id,
+                    session_id=alice_private_xagent_session.id,
+                    tool_call_id=tool_call_id,
+                ),
+            },
+            json={
+                "schema_version": 1,
+                "session_id": str(alice_private_xagent_session.id),
+                "tool_call_id": tool_call_id,
+                "permission_revision": 1,
+                "query": "预算",
+                "project_ids": [str(alice_project.id)],
+                "include_private": False,
+            },
+        )
+
+    first_search_response = await search("semantic-forgery-admission")
+    assert first_search_response.status_code == 200
+    first_search = first_search_response.json()
+    admitted = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "semantic-forgery-admission",
+            "events": [_tool_result(0, "semantic-forgery-admission", first_search)],
+            "retrieval_receipts": [{
+                "event_sequence": 0,
+                "tool_call_id": "semantic-forgery-admission",
+                "receipt": first_search["receipt"],
+                "payload_hash": first_search["payload_sha256"],
+            }],
+        },
+    )
+    assert admitted.status_code == 200
+    citation_id = first_search["citations"][0]["id"]
+    duplicate = _cited_answer_result(1, "duplicate-citation", [citation_id, citation_id])
+    malformed = _cited_answer_result(1, "malformed-answer", [citation_id])
+    del malformed["payload"]["data"]["meta"]["blocks"][0]["text"]
+    variants = (
+        ("duplicate", duplicate),
+        ("malformed", malformed),
+        ("noncanonical", _cited_answer_result(
+            1,
+            "noncanonical-citation",
+            ["[资料01]"],
+        )),
+    )
+    endpoint = f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append"
+    for name, forged in variants:
+        denied = await client.post(
+            endpoint,
+            headers=headers,
+            json={
+                "schema_version": 1,
+                "expected_sequence": 0,
+                "idempotency_key": f"semantic-forgery-{name}",
+                "events": [forged],
+            },
+        )
+        assert denied.status_code == 409
+        assert denied.json() == {"detail": {"code": "evidence-conflict"}}
+
+    second_search_response = await search("later-citation-admission")
+    assert second_search_response.status_code == 200
+    second_search = second_search_response.json()
+    later_citation_id = second_search["citations"][0]["id"]
+    assert later_citation_id != citation_id
+    later = await client.post(
+        endpoint,
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "semantic-forgery-later",
+            "events": [
+                _cited_answer_result(1, "later-citation-answer", [later_citation_id]),
+                _tool_result(2, "later-citation-admission", second_search),
+            ],
+            "retrieval_receipts": [{
+                "event_sequence": 2,
+                "tool_call_id": "later-citation-admission",
+                "receipt": second_search["receipt"],
+                "payload_hash": second_search["payload_sha256"],
+            }],
+        },
+    )
+    assert later.status_code == 409
+    assert later.json() == {"detail": {"code": "evidence-conflict"}}
+
+    opened = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/open",
+        headers=headers,
+        json={"schema_version": 1},
+    )
+    assert opened.status_code == 200
+    noncanonical_evidence = deepcopy(opened.json()["events"][0]["payload"])
+    noncanonical_evidence["seq"] = 1
+    noncanonical_evidence["time"] += 1
+    noncanonical_evidence["data"]["message"]["id"] = "noncanonical-evidence"
+    noncanonical_evidence["data"]["meta"]["citations"] = ["[资料999]"]
+    noncanonical_evidence["data"]["meta"]["evidence"][0]["citationId"] = "[资料999]"
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO xagent_session_events "
+                    "(session_id, sequence, event_type, schema_version, payload, actor_id) "
+                    "VALUES (:session_id, 1, 'tool/result', 1, CAST(:payload AS jsonb), :actor_id)"
+                ),
+                {
+                    "session_id": alice_private_xagent_session.id,
+                    "payload": json.dumps(noncanonical_evidence, ensure_ascii=False),
+                    "actor_id": alice.id,
+                },
+            )
+            await session.execute(
+                text(
+                    "UPDATE xagent_sessions SET last_event_sequence = 1 "
+                    "WHERE id = :session_id"
+                ),
+                {"session_id": alice_private_xagent_session.id},
+            )
+    unadmitted = await client.post(
+        endpoint,
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": 1,
+            "idempotency_key": "semantic-forgery-unadmitted-event",
+            "events": [_cited_answer_result(
+                2,
+                "unadmitted-event-answer",
+                ["[资料999]"],
+            )],
+        },
+    )
+    assert unadmitted.status_code == 409
+    assert unadmitted.json() == {"detail": {"code": "evidence-conflict"}}
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        event_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM xagent_session_events WHERE session_id = :session_id"
+            ),
+            {"session_id": alice_private_xagent_session.id},
+        )
+        provenance_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM xagent_cited_answer_evidence "
+                "WHERE session_id = :session_id"
+            ),
+            {"session_id": alice_private_xagent_session.id},
+        )
+        admitted_ids = tuple((await session.scalars(
+            text(
+                "SELECT citation_id FROM xagent_admitted_evidence "
+                "WHERE session_id = :session_id ORDER BY citation_id"
+            ),
+            {"session_id": alice_private_xagent_session.id},
+        )).all())
+        later_receipt = await session.get(
+            XAgentRetrievalReceipt,
+            receipt_digest_id(second_search["receipt"]),
+        )
+    assert event_count == 2
+    assert provenance_count == 0
+    assert admitted_ids == (citation_id,)
+    assert later_receipt is not None and later_receipt.consumed_at is None
 
 
 @pytest.mark.anyio

@@ -1072,9 +1072,9 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: '_session', description: 'the fully seeded but still unpublished Session.' }],
       },
       {
-        signature: 'fork(_sourceId: SessionId, _throughSequence: number): Promise<SessionHeader | undefined>',
+        signature: 'fork( _sourceId: SessionId, _throughSequence: number, _operationId: SessionForkOperationId, ): Promise<SessionHeader | undefined>',
         description: 'Atomically derive a durable child from an authorized source prefix when this backend owns Session scope and identity. The backend, not the caller, chooses the child identity and copies every backend-owned authorization relation. Local stores return `undefined`, allowing the Host to use its ordinary in-process seed path.',
-        parameters: [{ name: '_sourceId', description: 'authorized source Session identity.' }, { name: '_throughSequence', description: 'inclusive final source event sequence.' }],
+        parameters: [{ name: '_sourceId', description: 'authorized source Session identity.' }, { name: '_throughSequence', description: 'inclusive final source event sequence.' }, { name: '_operationId', description: 'caller-owned identity shared by every retry of this fork.' }],
         returns: 'the durable child header, or `undefined` when unsupported.',
       },
       {
@@ -4007,6 +4007,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionEventWindow',
     declaration: 'export interface SessionEventWindow {\n    session: SessionHeader;\n    target: SessionEvent;\n    events: SessionEvent[];\n    startSeq: number;\n    endSeq: number;\n}',
+  },
+  {
+    name: 'SessionForkOperationId',
+    declaration: 'export type SessionForkOperationId = Branded<\'SessionForkOperationId\'>;',
   },
   {
     name: 'SessionForkSource',

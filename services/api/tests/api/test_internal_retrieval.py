@@ -784,6 +784,21 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
             )
             await session.execute(
                 text(
+                    "INSERT INTO xagent_admitted_evidence "
+                    "(session_id, citation_id, admission_event_sequence, artifact_id, "
+                    "version_id, index_id, index_generation, chunk_id) "
+                    "VALUES (:session, '[资料1]', 0, :artifact, :version, :index, 1, :chunk)"
+                ),
+                {
+                    "session": alice_private_xagent_session.id,
+                    "artifact": artifact_id,
+                    "version": version_id,
+                    "index": index_id,
+                    "chunk": chunk_id,
+                },
+            )
+            await session.execute(
+                text(
                     "INSERT INTO xagent_cited_answer_evidence "
                     "(session_id, citation_id, answer_event_sequence, admission_event_sequence, "
                     "artifact_id, version_id, index_id, index_generation, chunk_id) "

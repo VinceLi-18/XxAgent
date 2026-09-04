@@ -1,5 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
+import { SessionForkOperationId } from '@deepseek-ai/dsh-session-persistence'
 import type { XAgentBackend } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { describe, expect, test, vi } from 'vitest'
@@ -21,6 +22,7 @@ const event: SessionEvent = {
   type: 'turn/start',
   data: { turn: 0 },
 }
+const forkOperationId = SessionForkOperationId('fork-request-000000000701')
 
 function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[] } {
   const calls: { name: string; args: unknown[] }[] = []
@@ -103,7 +105,10 @@ describe('XAgent FastAPI Session Persistence', () => {
     }
     const persistence = new XAgentSessionPersistence(new Context(), value)
 
-    const forked = await persistence.withUserToken('alice-token', () => persistence.fork(id, 0))
+    const forked = await persistence.withUserToken(
+      'alice-token',
+      () => persistence.fork(id, 0, forkOperationId),
+    )
 
     expect(forked).toEqual(childHeader)
     const forkCall = value.calls.find(call => call.name === 'fork')
@@ -115,6 +120,11 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(forkCall?.args[2]).toMatchObject({ schema_version: 1, through_sequence: 0 })
     const forkBody = forkCall?.args[2] as Record<string, unknown>
     expect(typeof forkBody.idempotency_key).toBe('string')
+    expect(forkBody).toEqual({
+      schema_version: 1,
+      through_sequence: 0,
+      idempotency_key: 'fork:fork-request-000000000701',
+    })
     expect(forkBody).not.toHaveProperty('visibility')
     value.sessions.open = async (...args) => {
       value.calls.push({ name: 'open-child', args })
@@ -160,7 +170,7 @@ describe('XAgent FastAPI Session Persistence', () => {
 
     await expect(persistence.withUserToken(
       'alice-token',
-      () => persistence.fork(id, 0),
+      () => persistence.fork(id, 0, forkOperationId),
     )).rejects.toThrow('invalid XAgent session fork response')
   })
 

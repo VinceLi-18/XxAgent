@@ -17,7 +17,7 @@ import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { isAppendSurfaceEvent, isJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue, Session, SessionEvent, SessionEventMap, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
-import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
+import { SessionForkOperationId, type SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
 import { SubagentError } from '@deepseek-ai/dsh-subagent'
 import type { SubagentListEntry as CatalogSubagentListEntry } from '@deepseek-ai/dsh-subagent'
@@ -2412,7 +2412,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         const persistence = ctx.get('sessionPersistence')
         let childId: SessionId
         try {
-          const durableChild = await persistence?.fork(source.id, cut - 1)
+          const durableChild = await persistence?.fork(
+            source.id,
+            cut - 1,
+            SessionForkOperationId(request.rpcId),
+          )
           if (durableChild === undefined) {
             childId = `session-${randomUUID()}` as SessionId
             await ctx.agents.create({
@@ -2431,11 +2435,24 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             })
           } else {
             childId = durableChild.id
-            await ctx.agents.resume({
-              resumeSessionId: childId,
-              agentOptions: agentOptions(),
-              setup: forkComposition.setup,
-            })
+            const existing = ctx.agents.get(childId)
+            if (existing === undefined) {
+              await ctx.agents.resume({
+                resumeSessionId: childId,
+                agentOptions: agentOptions(),
+                setup: forkComposition.setup,
+              })
+            } else {
+              const left = existing.session.header
+              const right = durableChild
+              const fields = [
+                'version', 'id', 'createdAt', 'cwd', 'parentSession', 'seedLength',
+                'origin', 'delegationDepth', 'agentPreset',
+              ] as const
+              if (fields.some(field => left[field] !== right[field])) {
+                throw new Error(`durable fork child "${childId}" conflicts with its live session`)
+              }
+            }
           }
         } catch (error: unknown) {
           return err(request, {

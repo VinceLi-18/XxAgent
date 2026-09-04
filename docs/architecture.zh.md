@@ -54,7 +54,7 @@ Business 资料管理复用同一认证作用域，且不增加模型工具。Fa
 
 Business 检索只在 `xagent-business` 中组装。`@xagent/dsh-retrieval` 把每次 Native 工具调用绑定到认证物理请求与 Session 范围，签发新的委托签名，并向 FastAPI 发送一次有界请求。Project Session 使用固定项目；Private Session 必须显式选择项目和／或私人资料。FastAPI 验证委托和一次性 nonce，在 serializable 检索事务中重新校验登录与权限 revision，应用 PostgreSQL RLS，并在当前 clean 索引 head 上执行混合检索。不透明 receipt 在匹配的公开 `tool/result` 完成持久 append 且后端原子接纳证据身份前，只存在于私有持久化 sidecar。
 
-非空证据结果进入下一次模型请求后，Retrieval 会注册仅限 Native 的终止型 `submit_cited_answer` 工具。规范结果包含有序 Markdown block 与 citation block；Markdown 绝不授予引用权限，只有精确 citation block 会重新授权并持久化。append 事务为每个 cited-answer ID 记录精确的已入账 Artifact Version、Index generation 与 Chunk，且不依赖表层投影或入账 actor 的 receipt。`@xagent/dsh-ui-citation` 在实时状态和重新加载后从相同的持久 result metadata 渲染。点击已验证 chip 时只通过认证 citation Remote 发送 Session 与 citation ID；FastAPI 解析持久 provenance，并为当前 actor 重新授权该不可变证据，包括 compaction 或保留范围的 fork 之后。Browser 不会收到存储 URL，而是打开“资料”页签、重新读取精确的 clean 不可变版本，并高亮已授权行范围。
+非空证据结果进入下一次模型请求后，Retrieval 会注册仅限 Native 的终止型 `submit_cited_answer` 工具。规范结果包含有序 Markdown block 与 citation block；Markdown 绝不授予引用权限，只有精确 citation block 会重新授权并持久化。receipt admission 会把每个 citation ID 的精确 Artifact Version、Index generation 与 Chunk 记录到不可变关系中，且不依赖表层投影或入账 actor 的 receipt。cited-answer append 仅通过索引和显式行上限，把本批次引用的 ID 绑定到更早的关系；没有 cited answer 的 append 不查询 provenance 或历史事件。`@xagent/dsh-ui-citation` 在实时状态和重新加载后从相同的持久 result metadata 渲染。点击已验证 chip 时只通过认证 citation Remote 发送 Session 与 citation ID；FastAPI 解析持久的回答至 admission 关系，并为当前 actor 重新授权该不可变证据，包括 compaction 或保留范围的 fork 之后。Browser 不会收到存储 URL，而是打开“资料”页签、重新读取精确的 clean 不可变版本，并高亮已授权行范围。
 
 `@xagent/dsh-ui-account` 向浏览器连接的生成式 Remote 与既有 Web API 传输贡献 CSRF Cookie 请求头。没有贡献者时，该请求头服务保持惰性。只有 `xagent-business` 挂载这些 XAgent 配置项；通用布局、Developer Profile 和上游 Profile 保持原有 UI 与传输行为。
 

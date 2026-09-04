@@ -18,6 +18,7 @@ async def _require_retrieval_schema(engine: AsyncEngine) -> None:
         "artifact_index_jobs",
         "artifact_search_heads",
         "xagent_retrieval_receipts",
+        "xagent_admitted_evidence",
         "xagent_cited_answer_evidence",
     }
     required_columns = {
@@ -35,6 +36,10 @@ async def _require_retrieval_schema(engine: AsyncEngine) -> None:
         "audit_events.index_generation",
         "xagent_retrieval_receipts.expires_at",
         "xagent_retrieval_receipts.consumed_at",
+        "xagent_admitted_evidence.citation_id",
+        "xagent_admitted_evidence.admission_event_sequence",
+        "xagent_admitted_evidence.version_id",
+        "xagent_admitted_evidence.index_generation",
         "xagent_cited_answer_evidence.answer_event_sequence",
         "xagent_cited_answer_evidence.admission_event_sequence",
         "xagent_cited_answer_evidence.version_id",
@@ -125,36 +130,60 @@ async def test_retrieval_schema_installs_extensions_and_durable_tables(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "table",
+    ("xagent_admitted_evidence", "xagent_cited_answer_evidence"),
+)
 async def test_cited_answer_provenance_is_immutable_and_not_available_to_workers(
     seeded_database: AsyncEngine,
     application_role: str,
     worker_role: str,
+    table: str,
 ) -> None:
     async with seeded_database.connect() as connection:
         privileges = tuple((await connection.execute(
             text(
                 "SELECT has_table_privilege(:application_role, "
-                "'xagent_cited_answer_evidence', 'SELECT'), "
+                f"'{table}', 'SELECT'), "
                 "has_table_privilege(:application_role, "
-                "'xagent_cited_answer_evidence', 'INSERT'), "
+                f"'{table}', 'INSERT'), "
                 "has_table_privilege(:application_role, "
-                "'xagent_cited_answer_evidence', 'UPDATE'), "
+                f"'{table}', 'UPDATE'), "
                 "has_table_privilege(:application_role, "
-                "'xagent_cited_answer_evidence', 'DELETE'), "
+                f"'{table}', 'DELETE'), "
                 "has_table_privilege(:worker_role, "
-                "'xagent_cited_answer_evidence', 'SELECT')"
+                f"'{table}', 'SELECT')"
             ),
             {"application_role": application_role, "worker_role": worker_role},
         )).one())
         row_security = tuple((await connection.execute(
             text(
                 "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
-                "WHERE oid = 'xagent_cited_answer_evidence'::regclass"
+                f"WHERE oid = '{table}'::regclass"
             )
         )).one())
 
     assert privileges == (True, True, False, False, False)
     assert row_security == (True, True)
+
+
+@pytest.mark.anyio
+async def test_admitted_evidence_primary_key_is_the_citation_lookup_index(
+    seeded_database: AsyncEngine,
+) -> None:
+    async with seeded_database.connect() as connection:
+        primary_key_columns = tuple((await connection.scalars(
+            text(
+                "SELECT attribute.attname FROM pg_index AS idx "
+                "JOIN LATERAL unnest(idx.indkey) WITH ORDINALITY AS key(attnum, ordinal) "
+                "ON true JOIN pg_attribute AS attribute "
+                "ON attribute.attrelid = idx.indrelid AND attribute.attnum = key.attnum "
+                "WHERE idx.indrelid = 'xagent_admitted_evidence'::regclass "
+                "AND idx.indisprimary ORDER BY key.ordinal"
+            )
+        )).all())
+
+    assert primary_key_columns == ("session_id", "citation_id")
 
 
 @pytest.mark.anyio

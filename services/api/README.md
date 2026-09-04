@@ -90,9 +90,9 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 `POST /internal/xagent/session-project-refs` 只为当前账号拥有的私有 Session 登记项目引用。请求包含 `schema_version: 1`、`session_id`、非空 `project_ids`、`idempotency_key`；全部新旧引用必须在同一事务对当前账号可见，成功返回 204。项目不可见或 Session 不可登记统一隐藏具体项目，幂等键对应不同请求时返回 `idempotency-conflict`。
 
-带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 请求只命名源 Session 与包含式末 sequence；服务端在同一事务重新授权并锁定源、分配子 ID，并继承事件前缀、`visibility`、`project_id`、私有项目引用和前缀内的 cited-answer provenance。请求不能指定目标范围。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。
+带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 请求只命名源 Session、包含式末 sequence 和稳定幂等键；服务端在同一事务重新授权并锁定源、分配子 ID，并继承事件前缀、`visibility`、`project_id`、私有项目引用以及前缀内已入账和已引用的证据关系。同一请求的传输、resume 或附加重试返回同一个子 Session，修改 cut 的重放返回幂等冲突。请求不能指定目标范围。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。
 
-规范 `xagent-cited-answer` append 会把每个短 citation ID 与同一物理 Session 日志中更早的规范检索 admission 绑定，并在 `xagent_cited_answer_evidence` 保存 answer／admission sequence 及精确 Artifact、Version、Index generation 与 Chunk。该关系不读取表层消息投影，也不把原 actor 的私有 receipt 当作后续读取授权。Citation resolve 只接受短 ID，先通过 Session RLS 读取持久 provenance，再以当前 actor 的 Artifact RLS 和权限 finalizer 重新授权精确不可变版本；reload、resume、compaction、有效 fork 和仍获授权的 Project 成员可继续打开，撤权后失败关闭。
+检索 receipt admission 会在 `xagent_admitted_evidence` 保存短 citation ID、admission sequence 及精确 Artifact、Version、Index generation 与 Chunk。规范 `xagent-cited-answer` append 只把首次使用的 citation ID 绑定到该 Session 中更早的已入账关系，并在 `xagent_cited_answer_evidence` 保存 answer 与证据关系；复合外键要求全部不可变身份精确一致。没有 cited answer 的批次不查询 provenance 或历史事件；有 cited answer 的批次仅以当前引用 ID 经主键索引和显式行上限读取已入账证据，工作量不随日志长度增加。这两张不可变关系表不读取表层消息投影，也不把原 actor 的私有 receipt 当作后续读取授权。Citation resolve 只接受短 ID，先通过 Session RLS 读取持久 provenance，再以当前 actor 的 Artifact RLS 和权限 finalizer 重新授权精确不可变版本；reload、resume、compaction、有效 fork 和仍获授权的 Project 成员可继续打开，撤权后失败关闭。
 
 ### 资料读取 URL
 

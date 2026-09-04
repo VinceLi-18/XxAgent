@@ -14,7 +14,7 @@
 | `supportsRawArtifacts: boolean` | 明确说明该后端是否为每个会话暴露一份逐字工件。Consumer 在调用 `readRaw` 前检查此能力；`false` 并不表示会话缺失。 |
 | `readRaw(id, signal?): Promise<SessionRawArtifact \| undefined>` | 读取受支持后端自身的逐字工件文本；只解码物理编码，绝不从事件重建。`undefined` 仅表示所请求工件缺失；不支持的后端会拒绝。 |
 | `create(meta): Promise<void>` | 注册新会话元数据。可以将物理写入延迟到第一次 `append`（延迟实体化）。 |
-| `fork(sourceId, throughSequence): Promise<SessionHeader \| undefined>` | 对拥有持久 Session 身份或授权范围的后端，以原子方式从已授权源前缀派生服务端定名的子 Session，并返回其 Header。本地后端返回 `undefined`，由 Host 使用普通进程内 seed 路径。 |
+| `fork(sourceId, throughSequence, operationId): Promise<SessionHeader \| undefined>` | 对拥有持久 Session 身份或授权范围的后端，以原子方式从已授权源前缀派生服务端定名的子 Session，并返回其 Header。每次重试必须复用同一个稳定逻辑请求身份 `operationId`，使权威后端在已提交响应未被观察时仍返回同一子 Session。本地后端返回 `undefined`，由 Host 使用普通进程内 seed 路径。 |
 | `append(id, events): Promise<void>` | 持久保存一个批次。仅追加；任何修复后，第一个事件 `seq` == 已存储 next-seq；非 JSON 可序列化数据会被拒绝，并命名违规类型。 |
 | `prepare(id, signal?): Promise<SessionPreparation>` | 预留恢复所使用的那个未发布 Session。协调器会尽可能复用之前的检查结果、提交待处理恢复，并在 dispose（资源释放）时将未发布 reservation 释放回有界缓存。 |
 | `load(id): Promise<{ meta; events }>` | 转换同一格式版本中受支持的旧记录后，返回不可变、平衡的逻辑日志，并提交冷恢复。实时 load 先 flush 其快照，并在轮次开放时拒绝；冷 load 保留中断的最终轮次，并用合成 `tool/result`/`step/end?`/`turn/end {interrupted}` 事件持久关闭它。只丢弃撕裂尾部碎片；已提交损坏和格式错误的记录以 `SessionPersistenceCorruptionError` 拒绝，不支持的格式 `version` 或本构建不认识且信封未带 `ignorable` 标记的事件类型以 `SessionFormatUnsupportedError` 拒绝，消息说明拒绝方向，并在后端为每个会话保留独立文件时给出原始日志路径。 |

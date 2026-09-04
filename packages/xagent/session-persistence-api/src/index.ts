@@ -5,6 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
   SessionPersistence,
+  type SessionForkOperationId,
   SessionPersistenceRevision,
   type SessionInspection,
   type SessionLocation,
@@ -271,18 +272,26 @@ export class XAgentSessionPersistence extends SessionPersistence {
    * Derive a scope-preserving child through FastAPI and lease its returned identity.
    * @param sourceId - authorized source Session identity.
    * @param throughSequence - inclusive final sequence in the copied source prefix.
+   * @param operationId - Host request identity shared by every transport retry.
    * @returns the server-derived durable child Header.
    */
-  override async fork(sourceId: SessionIdType, throughSequence: number): Promise<SessionHeader> {
+  override async fork(
+    sourceId: SessionIdType,
+    throughSequence: number,
+    operationId: SessionForkOperationId,
+  ): Promise<SessionHeader> {
     if (!Number.isSafeInteger(throughSequence) || throughSequence < -1) {
       throw new TypeError('throughSequence must be an integer greater than or equal to -1')
+    }
+    if (operationId.length === 0 || operationId.length > 250) {
+      throw new TypeError('operationId must contain between 1 and 250 characters')
     }
     const token = this.requireActiveToken()
     await this.flushSession(sourceId)
     const response = await this.backend.sessions.fork(token, backendSessionId(sourceId), {
       schema_version: 1,
       through_sequence: throughSequence,
-      idempotency_key: `fork:${sourceId}:${randomUUID()}`,
+      idempotency_key: `fork:${operationId}`,
     }, undefined)
     const header = forkedHeader(response, sourceId, throughSequence)
     this.leases.set(header.id, token)

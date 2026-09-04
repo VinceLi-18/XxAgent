@@ -173,6 +173,7 @@ describe('sessions.fork', () => {
     ctx.provide('sessionPersistence', {
       list: () => Promise.resolve([header]),
       inspect: () => Promise.resolve({ meta: header, events }),
+      fork: () => Promise.resolve(undefined),
     } as never)
     ctx.provide('sessionQuery', {
       traceSession: () => Promise.resolve({

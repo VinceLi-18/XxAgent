@@ -343,6 +343,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   SkillProviderControl: 'skills.md',
   CreateSessionOptions: 'persistence.md',
   PrepareSessionOptions: 'persistence.md',
+  SessionForkOperationId: 'persistence.md',
   SessionHeader: 'persistence.md',
   SessionInspection: 'persistence.md',
   SessionLocation: 'persistence.md',
