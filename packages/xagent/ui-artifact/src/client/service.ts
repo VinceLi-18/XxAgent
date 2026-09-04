@@ -61,6 +61,11 @@ export interface XAgentArtifactCitationTarget {
 
 /** Browser citation 导航唯一允许调用的 Artifact seam。 */
 export interface XAgentArtifactCitationOpener {
+  /**
+   * 重新读取不可变资料版本并定位行范围。
+   * @param target Host 已重新授权的资料、版本和行身份。
+   * @returns 详情与短期预览读取结算后的 Promise。
+   */
   openCitation(target: XAgentArtifactCitationTarget): Promise<void>
 }
 
@@ -255,6 +260,7 @@ export class XAgentArtifactController {
   /**
    * 重新读取 citation 指定的 Artifact 和不可变版本，再发布短期预览。
    * @param target Host 解析出的 Artifact、版本和行范围。
+   * @returns 详情与短期预览读取结算后的 Promise。
    */
   openCitation(target: XAgentArtifactCitationTarget): Promise<void> {
     return this.trackOperation(() => this.loadCitation(target))

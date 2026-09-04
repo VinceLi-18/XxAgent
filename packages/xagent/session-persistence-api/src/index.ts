@@ -266,13 +266,13 @@ export class XAgentSessionPersistence extends SessionPersistence {
     }
     const receipts = this.receiptRegistry()
     const attachments = receipts?.attachments(String(id), first.seq, last.seq) ?? []
-    const response = await this.backend.sessions.append(token, backendSessionId(id), {
-      schema_version: 1,
+    const body = {
+      schema_version: 1 as const,
       expected_sequence: first.seq - 1,
       idempotency_key: `append:${id}:${String(first.seq)}:${String(last.seq)}`,
       events: events.map(event => ({
         event_type: event.type,
-        schema_version: 1,
+        schema_version: 1 as const,
         payload: structuredClone(event),
       })),
       retrieval_receipts: attachments.map(attachment => ({
@@ -281,7 +281,8 @@ export class XAgentSessionPersistence extends SessionPersistence {
         receipt: attachment.receipt,
         payload_hash: attachment.payloadHash,
       })),
-    }, undefined)
+    }
+    const response = await this.backend.sessions.append(token, backendSessionId(id), body, undefined)
     validateAppendResult(response, last.seq)
     receipts?.commit(String(id), last.seq)
     if (events.some(event => event.type === 'turn/end')) this.turnTokens.delete(id)
@@ -462,6 +463,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
       state.timer = undefined
     }
     if (state.flushing !== undefined) return state.flushing
+    if (state.retry === undefined && state.pending.length === 0) return Promise.resolve()
     state.flushing = (async () => {
       try {
         while (state.retry !== undefined || state.pending.length > 0) {

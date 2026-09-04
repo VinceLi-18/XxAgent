@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import type { HostObservable, InjectFace, PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { XAgentWorkbenchState } from './store.ts'
+import type { XAgentWorkbenchDetailsTab, XAgentWorkbenchState } from './store.ts'
 import { projectLocale as text } from './locales.ts'
 import css from './project.module.css'
 
 export interface WorkbenchDetailsInjected {
-  hooks: { workbench: HostObservable<XAgentWorkbenchState> }
+  hooks: {
+    workbench: HostObservable<XAgentWorkbenchState>
+    detailsTab: HostObservable<XAgentWorkbenchDetailsTab>
+  }
   loadProject(projectId: string): Promise<void>
+  selectDetailsTab(tab: XAgentWorkbenchDetailsTab): void
 }
 
 export type WorkbenchDetailsProps =
@@ -15,23 +19,25 @@ export type WorkbenchDetailsProps =
   & PropsRenderSlots<'xagent.workbench.artifacts'>
   & InjectFace<WorkbenchDetailsInjected>
 
-type DetailsTab = 'overview' | 'artifacts' | 'inbox'
-
-const DETAILS_TABS: readonly (readonly [DetailsTab, string])[] = [
+const DETAILS_TABS: readonly (readonly [XAgentWorkbenchDetailsTab, string])[] = [
   ['overview', text.overview],
   ['artifacts', text.artifacts],
   ['inbox', text.inbox],
 ]
 
-export function WorkbenchDetails({ useWorkbench, loadProject, renderSlot }: WorkbenchDetailsProps) {
+export function WorkbenchDetails({
+  useWorkbench, useDetailsTab, loadProject, selectDetailsTab, renderSlot,
+}: WorkbenchDetailsProps) {
   const state = useWorkbench(value => value)
-  const [tab, setTab] = useState<DetailsTab>('overview')
-  const tabRefs = useRef(new Map<DetailsTab, HTMLButtonElement>())
+  const requestedTab = useDetailsTab(value => value)
+  const [tab, setTab] = useState<XAgentWorkbenchDetailsTab>(requestedTab)
+  const tabRefs = useRef(new Map<XAgentWorkbenchDetailsTab, HTMLButtonElement>())
   const projectId = state.phase === 'ready' && state.context.kind === 'project' ? state.context.projectId : undefined
   const loadedProjectId = state.phase === 'ready' ? state.projectDetail?.id : undefined
   useEffect(() => {
     if (projectId !== undefined && loadedProjectId !== projectId) void loadProject(projectId)
   }, [loadProject, loadedProjectId, projectId])
+  useEffect(() => { setTab(requestedTab) }, [requestedTab])
   if (state.phase !== 'ready') return <p className={css.status}>正在加载详情…</p>
 
   const heading = state.context.kind === 'workbench'
@@ -67,6 +73,7 @@ export function WorkbenchDetails({ useWorkbench, loadProject, renderSlot }: Work
     if (nextEntry === undefined) return
     const next = nextEntry[0]
     setTab(next)
+    selectDetailsTab(next)
     tabRefs.current.get(next)?.focus()
   }
 
@@ -85,7 +92,7 @@ export function WorkbenchDetails({ useWorkbench, loadProject, renderSlot }: Work
         aria-controls={`xagent-workbench-${id}`}
         tabIndex={tab === id ? 0 : -1}
         onKeyDown={(event) => { onTabKeyDown(event, index) }}
-        onClick={() => { setTab(id) }}
+        onClick={() => { setTab(id); selectDetailsTab(id) }}
       >{label}</button>)}
     </div>
     {tab === 'overview' && <section id="xagent-workbench-overview" role="tabpanel" aria-label={text.overview}>

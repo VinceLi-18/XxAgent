@@ -4,6 +4,8 @@
 
 “资料”页签声明 root-scope 单 occupant Slot `xagent.workbench.artifacts`。没有资料插件时只显示稳定空态；资料列表、详情、上传和预览由独立 occupant 拥有，不替换中央 Agent 对话。
 
+工作台服务拥有响应式第三栏页签状态。人工点击使用同一状态；已验证 citation 的资料 handoff 可以选择“资料”并打开通用详情栏，因此宽屏第三栏和窄屏抽屉共享一条导航路径。
+
 项目、能力、上下文和会话范围全部来自 `xagentProject` Remote 的服务器 Bootstrap。浏览器不使用本地存储推断账号数据；账号退出或切换时，工作台会取消在途请求并清空项目、上下文和当前 Session 选择。
 
 ## Model Experience

@@ -1,6 +1,6 @@
 # XAgent 资料右栏架构
 
-`ui-project` 拥有 root-scope 单 occupant Slot `xagent.workbench.artifacts`，并且只有第三栏“资料”页签渲染该 Slot。`ui-artifact` 通过 Slot 注入占用它，不导入 `WorkbenchDetails` 或其他项目展示组件。中栏 Agent 对话与通用 layout 的宽屏第三栏、窄屏抽屉保持原有所有权。
+`ui-project` 拥有 root-scope 单 occupant Slot `xagent.workbench.artifacts` 和响应式第三栏页签状态，并且只有第三栏“资料”页签渲染该 Slot。`ui-artifact` 通过 Slot 注入占用它，不导入 `WorkbenchDetails` 或其他项目展示组件。Citation handoff 只调用工作台服务选择“资料”并打开通用详情栏。中栏 Agent 对话与通用 layout 的宽屏第三栏、窄屏抽屉保持原有所有权。
 
 `XAgentArtifactController` 是资料 UI 唯一异步操作所有者。它订阅 `xagentWorkbench` 服务的账号和服务器上下文，把工作台映射为 `workbench`，把项目映射为 `project:<id>`，并用 account ID、context key 与单调 epoch 拒绝迟到响应。列表、详情、上传、读取和轮询分别拥有取消控制器；账号重置、项目切换和 dispose 会取消全部操作、删除短期预览并清空内存 Store。
 

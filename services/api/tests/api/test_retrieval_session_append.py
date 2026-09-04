@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit import AuditEvent
 from app.models.retrieval import XAgentRetrievalReceipt
 from app.models.workbench import XAgentSessionProjectRef
+from app.services.retrieval import payload_sha256
+from app.services.xagent_sessions import _retrieval_public_payload
 from app.services.retrieval_receipts import receipt_digest_id
 from conftest import DELEGATION_PRIVATE_KEY
 
@@ -173,6 +175,7 @@ def _tool_result(sequence: int, tool_call_id: str, search: dict[str, object]) ->
             "seq": sequence,
             "time": 1_787_587_200_000 + sequence,
             "type": "tool/result",
+            "surfaceOp": "append",
             "data": {
                 "turn": 0,
                 "step": 0,
@@ -210,6 +213,7 @@ def _project_result(
             "seq": sequence,
             "time": 1_787_587_200_000 + sequence,
             "type": "tool/result",
+            "surfaceOp": "append",
             "data": {
                 "turn": 0,
                 "step": 0,
@@ -235,6 +239,28 @@ def _project_result(
             },
         },
     }
+
+
+def test_receipt_admission_preserves_session_surface_provenance() -> None:
+    projects = [{
+        "project_id": "00000000-0000-0000-0000-000000000701",
+        "name": "Alpha",
+    }]
+    event = _project_result(16, "project-list", {
+        "projects": projects,
+        "payload_sha256": payload_sha256({"schema_version": 1, "projects": projects}),
+    })
+    event["payload"]["surfaceOp"] = "append"
+    event["payload"]["sourceEventSeqs"] = [15]
+
+    _, _, _, canonical = _retrieval_public_payload(
+        event,
+        sequence=16,
+        receipt_kind="project_discovery",
+    )
+
+    assert canonical["surfaceOp"] == "append"
+    assert canonical["sourceEventSeqs"] == [15]
 
 
 @pytest.mark.anyio

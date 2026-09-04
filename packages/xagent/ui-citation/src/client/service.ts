@@ -4,6 +4,13 @@ import type { XAgentArtifactCitationOpener } from '@xagent/dsh-ui-artifact/clien
 
 /** Browser 调用的 citation Remote 最小接口。 */
 export interface XAgentCitationRemoteClient {
+  /**
+   * 重新授权当前 Session 已持久化的 citation。
+   * @param sessionId 当前顶层 Session。
+   * @param citationId 已验证资料短 ID。
+   * @param signal Browser 请求取消信号。
+   * @returns 不含读取地址的不可变资料定位结果。
+   */
   resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<RemoteResult<XAgentCitationTarget>>
 }
 
@@ -46,6 +53,7 @@ export class XAgentCitationController {
    * 解析当前 Session 的一个已持久化 citation 并交给 Artifact 面板。
    * @param sessionId ToolView 所属 Session。
    * @param citationId 已验证资料短 ID。
+   * @returns 重新授权与 Artifact handoff 结算后的 Promise。
    */
   open(sessionId: string, citationId: string): Promise<void> {
     if (this.disposed || this.accountId === undefined || this.sessionId !== sessionId) return Promise.resolve()

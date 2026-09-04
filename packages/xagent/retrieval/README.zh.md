@@ -18,6 +18,8 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 请求 owner 按精确 `ToolExecution` 暂存合法答案，调用 `concludeTurn()`，并只把其权威且成功的 `tools/result` 视为发布。第一次无效提交可在同一请求中返回有界 `CITATION_INVALID` 工具错误并立即重试；第二次无效提交或响应结束时未成功调用终结工具，均返回固定 `CITATION_FAILED`。终结工具之前的工具正常完成；单调 guard 会持续到 turn boundary，拒绝并行终结调度和之后的所有调用。请求或连接取消、账号或 Session 替换、Agent 或 Session 释放以及 Retrieval 释放会关闭 admission、中止活跃授权、在失败时不发布 cited-answer metadata，并保留 draining owner 直至其受保护 iterator 完成。
 
+Business 组合把本服务与 `@xagent/dsh-tool-retrieval`、FastAPI/PostgreSQL receipt admission、远端 Session Persistence 和 `@xagent/dsh-ui-citation` 组装在一起。只有匹配的 receipt sidecar 与公开 Tool result 共同提交后，证据才会进入后续请求。Browser 只渲染规范持久结果 metadata；点击 citation 时经认证 Remote 返回，并重新打开精确的 clean 不可变 Artifact 版本与行范围。
+
 ## Model Experience
 
 ### Retrieval evidence（检索证据）
@@ -38,4 +40,5 @@ FastAPI 返回的 opaque receipt 会在公开结果返回前写入内存 registr
 
 - 本包拥有 Host 检索、委托、receipt 生命周期和终结引用回答发布；混合排序、RLS、引用序号和 receipt 消费由 FastAPI 拥有。
 - Receipt sidecar 的远端 append 与确认由 Session 持久化提供方装配；registry 不自行写入磁盘或网络。
+- 完整 Browser 验收车道使用正式 Business 组合、真实 PostgreSQL RLS、扫描与 CPU BGE-M3 索引；没有配置 provider key 时可以由仓库确定性模型 adapter 驱动 Agent Loop，但该模式不声称运行了真实模型回合。
 - Retrieval 自带固定到 `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181` 的 HTTP tokenizer provider；模型或 revision 不一致时服务加载失败。Provider 拒绝畸形 UTF-16，最多接受 8 KiB 查询 UTF-8 数据，限制最坏 JSON 转义大小，把调用方取消信号与五秒超时合并，拒绝重定向和不完全匹配的响应，并且最多读取 512 字节响应。它只把 Host 服务令牌发送到 `backendOrigin` 上有正文上限的 FastAPI token-count relay；FastAPI 不使用用户或委托令牌，把请求转发到仅服务网络可达的 embedding endpoint。最多 512 个精确 token 的查询才会到达检索接口，513-token 查询不会发起检索。

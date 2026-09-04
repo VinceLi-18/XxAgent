@@ -40,4 +40,4 @@ FastAPI 与 PostgreSQL 继续拥有资料范围、权限、不可变版本、扫
 
 上传请求会在短数据库事务后返回，而扫描与 cleanup 工作可以跨 API 和 worker 重启恢复。租约 token 会阻止陈旧 worker 发布状态或删除其他 worker 创建的对象版本。版本化对象所有权与持久 cleanup 为每个晋级对象保留可恢复身份，独立 worker 角色则限制数据库暴露范围。
 
-部署必须运行 PostgreSQL、启用版本化的私有 MinIO bucket、ClamAV、独立 worker 角色与 worker 进程。任何新增 worker 输入或结果列都必须同步演进 schema grant。dead cleanup Job 需要运维使用其保留的 object key 与 MinIO version ID 处置。浏览器目前通过轮询观察扫描进度；资料检索、解析、OCR、Embedding、引用与模型工具仍属于独立的后续决策。
+部署必须运行 PostgreSQL、启用版本化的私有 MinIO bucket、ClamAV、独立 worker 角色与 worker 进程。任何新增 worker 输入或结果列都必须同步演进 schema grant。dead cleanup Job 需要运维使用其保留的 object key 与 MinIO version ID 处置。浏览器通过轮询观察扫描进度。[RAG 检索决策](2026-08-28-xagent-rag-retrieval.md)持有文本索引、检索、收据、结构化引用与模型工具；OCR 不在已交付范围内。

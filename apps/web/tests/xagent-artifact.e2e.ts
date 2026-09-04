@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,6 +33,11 @@ function compose(project: string, override: string, args: readonly string[], inp
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: 600_000,
+    env: {
+      ...process.env,
+      HF_HUB_OFFLINE: 'true',
+      XAGENT_EMBEDDING_CACHE_DIR: join(REPO_ROOT, 'services/api/.cache/huggingface'),
+    },
     ...(input === undefined ? {} : { input }),
   }).trim()
 }
@@ -136,6 +141,7 @@ describe('XAgent Business 真实资料生命周期', () => {
         JX_TEST_DATABASE_URL: '不得进入 DSH',
         PGPASSWORD: '不得进入 DSH',
       }
+      const { privateKey } = generateKeyPairSync('ed25519')
       const dshEnvironment = {
         ...withoutInfrastructureCredentials(inheritedEnvironment),
         DSH_HOME: join(root, 'home'),
@@ -144,6 +150,9 @@ describe('XAgent Business 真实资料生命周期', () => {
         XAGENT_SERVICE_TOKEN: SERVICE_TOKEN,
         XAGENT_ALLOWED_ORIGINS: baseUrl,
         XAGENT_ALLOW_INSECURE_COOKIE: '1',
+        XAGENT_DELEGATION_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+        XAGENT_DELEGATION_ISSUER: 'xagent-artifact-web-e2e',
+        XAGENT_DELEGATION_AUDIENCE: 'xagent-fastapi-artifact-web-e2e',
       }
       expect(Object.keys(dshEnvironment).filter(isInfrastructureCredential)).toEqual([])
       dsh = spawnOwnedChild(process.execPath, [

@@ -20,7 +20,7 @@ Overlapping-worker recovery uses observable leases instead of delay-based coordi
 
 The CI step installs an unconditional exit trap before startup. Failure diagnostics run before teardown, the named one-off worker is removed, and Compose removes volumes and orphans. Exact worker-name and Compose project-label queries require container, volume, and network results to be empty, so a successful test command cannot conceal cleanup failure.
 
-The [RAG retrieval proposal](../../proposed/architecture/2026-08-28-xagent-rag-retrieval.md) continues to own the runtime data, authorization, receipt, and citation design. This note owns the assembled deployment and acceptance strategy and does not supersede that proposal.
+The [RAG retrieval decision](../architecture/2026-08-28-xagent-rag-retrieval.md) continues to own the runtime data, authorization, receipt, and citation design. This note owns the assembled deployment and acceptance strategy and does not supersede that decision.
 
 ## Alternatives considered
 

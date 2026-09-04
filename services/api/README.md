@@ -86,6 +86,8 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 `/internal/xagent/*` 业务路由同时要求 `X-XAgent-Service-Token` 服务身份和当前账号的 Bearer token。服务端 introspection 生成 Principal，并在同一数据库事务设置 actor context；浏览器不得提交 actor、role、owner 或权限版本。固定的 `/internal/xagent/retrieval/token-count` 是纯内部 tokenizer relay，只接受服务令牌，不接收用户 JWT 或委托令牌；它在解析前把最坏 JSON 转义正文限制为 49,163 bytes，把合法原始查询限制为 8 KiB UTF-8，只向 `EMBEDDING_URL` 的 `/token-count` 转发，并把 embedding 响应限制为 512 bytes。relay 手动处理重定向，并对重定向、超时、请求取消、超限或畸形响应失败关闭。该路径不写检索审计，API 与 embedding 日志均不得记录原始查询。
 
+检索入口在同一 serializable 事务中完成登录、权限 revision、项目授权、RLS 搜索、ordinal 预留和 receipt 签发。该路径的 introspection 仍完整验证 token、账号状态、登录撤销、角色与 revision，但不锁定认证记录，也不更新 `last_verified_at`；普通登录校验路径继续锁定并更新时间。这样检索事务不会因无关的认证审计写入产生 serializable 写冲突。
+
 `POST /internal/xagent/session-project-refs` 只为当前账号拥有的私有 Session 登记项目引用。请求包含 `schema_version: 1`、`session_id`、非空 `project_ids`、`idempotency_key`；全部新旧引用必须在同一事务对当前账号可见，成功返回 204。项目不可见或 Session 不可登记统一隐藏具体项目，幂等键对应不同请求时返回 `idempotency-conflict`。
 
 带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 在同一事务继承引用。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。

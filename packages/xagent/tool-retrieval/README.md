@@ -25,4 +25,4 @@ The fixed tool definitions can reuse the request-prefix cache. Each result varie
 ## Known Limitations and Deferred Work
 
 - This package does not decide permissions, ranking, or citation lifetime; the Host service and FastAPI provide those results.
-- This package provides generic tool results only; citation enforcement, final-answer composition, and specialized UI presentation belong to later composition.
+- This package provides generic retrieval Tool results only. In the Business composition, `@xagent/dsh-retrieval` owns cited-answer enforcement and terminal publication, while `@xagent/dsh-ui-citation` owns the specialized durable-result view.

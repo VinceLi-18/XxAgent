@@ -5,3 +5,5 @@
 执行时，工具从当前 Agent 读取 Session ID，从工具运行时读取 call ID 和取消信号，再调用 Host 检索服务。两个定义都声明 `nativeOnly`；工具 registry 在 Code SDK 投影、binding 枚举和嵌套执行解析中排除它们。服务返回的规范数据通过输出 schema 后，纯 render 函数生成模型正文，pure presentation metadata 只生成固定 kind、payload hash 和短引用标识。工具不缓存结果，也不读取 receipt registry。
 
 Private Session 的项目名称不明确时，描述要求模型先调用项目发现并询问用户；没有显式项目或私人资料选择时服务失败关闭。Project Session 的固定项目完全来自认证 prompt 作用域，模型不能通过工具参数覆盖。
+
+Business Profile 把本 Consumer 与 Retrieval owner、远端 Session Persistence 和结构化 citation UI 一起装配。工具成功只代表公开结果已产生；匹配 receipt sidecar 在同一远端 append 中完成 admission 后，证据才会进入后续请求。终结回答的验证、重授权、发布与展示不由本包复制。

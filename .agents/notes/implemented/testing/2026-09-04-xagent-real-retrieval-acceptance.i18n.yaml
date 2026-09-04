@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/testing/2026-09-04-xagent-real-retrieval-acceptance.md
-2026-09-04-xagent-real-retrieval-acceptance.md: 18734d042b6668f3b34e632367cb8f2e9b446683
-2026-09-04-xagent-real-retrieval-acceptance.zh.md: 5d85674196d292a77537edc53bf051da0a0b3e4c
+2026-09-04-xagent-real-retrieval-acceptance.md: b28975d00800e20b1f09e7c8ace7ce343101dbc1
+2026-09-04-xagent-real-retrieval-acceptance.zh.md: 0154a430c18f79447d0d844644f995934be72af8

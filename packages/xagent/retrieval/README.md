@@ -18,6 +18,8 @@ The terminal tool accepts a closed ordered union of Markdown and citation blocks
 
 The request owner stages a valid answer by the exact `ToolExecution`, calls `concludeTurn()`, and treats only its authoritative successful `tools/result` as publication. One invalid submission may return the bounded `CITATION_INVALID` tool error for an immediate retry in the same request; a second invalid submission or a finished response without a successful terminal call yields stable `CITATION_FAILED`. Tools preceding the terminal call settle normally, while a monotonic guard remains active through the turn boundary to deny parallel terminal dispatch and every later call. Request or connection abort, account or Session replacement, Agent or Session disposal, and Retrieval disposal close admission, abort active authorization, publish no cited-answer metadata on failure, and retain draining owners until their protected iterators settle.
 
+The Business composition pairs this service with `@xagent/dsh-tool-retrieval`, FastAPI/PostgreSQL receipt admission, remote Session persistence, and `@xagent/dsh-ui-citation`. Evidence becomes available to a later request only after the matching receipt sidecar and public Tool result commit together. The Browser renders only canonical persisted result metadata; citation clicks return through the authenticated Remote and reopen the exact clean immutable Artifact version and line range.
+
 ## Model Experience
 
 ### Retrieval evidence
@@ -38,4 +40,5 @@ Tool results become Session events and therefore change the cache prefix after t
 
 - This package owns Host retrieval, delegation, receipt lifetime, and terminal cited-answer publication; FastAPI owns hybrid ranking, RLS, citation ordinals, and receipt consumption.
 - The Session persistence provider supplies remote append and confirmation for receipt sidecars; the registry performs no disk or network persistence.
+- The full Browser acceptance lane uses the production Business composition, real PostgreSQL RLS, scanning and CPU BGE-M3 indexing; a deterministic repository model adapter may drive the Agent Loop when no provider key is configured, but that mode does not claim a real model round.
 - Retrieval owns an HTTP tokenizer provider fixed to `BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181`. Service loading rejects another identity or revision. The provider rejects malformed UTF-16, accepts at most 8 KiB of query UTF-8, bounds worst-case JSON escaping, combines caller cancellation with a five-second timeout, rejects redirects and non-exact responses, and reads at most 512 response bytes. It sends only the Host service token to the bounded FastAPI token-count relay on `backendOrigin`; FastAPI forwards to the service-only embedding endpoint without a user or delegation token. Queries of at most 512 exact tokens reach retrieval, while 513-token queries do not.

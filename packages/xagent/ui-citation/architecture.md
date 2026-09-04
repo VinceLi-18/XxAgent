@@ -4,6 +4,6 @@
 
 `XAgentCitationController` 跟随 `xagentWorkbench` 的认证账号和 `sessions.list.current` 的顶层 Session。每次点击只调用 `resolve(sessionId, citationId, signal)`；替换点击、范围变化、视图卸载和 dispose 会取消旧请求，并用单调 epoch 拒绝迟到结果。成功结果只携带 Artifact、Version、Chunk 和行身份，不携带 URL。
 
-Host `XAgentCitationRemoteService` 从 Typert Gateway 的认证 Session scope 读取 actor、用户 token、权限 revision 和物理连接。它从当前 live Session 重建 Task 8 固定的持久 citation 身份，在每次调用时签发新 delegation，再请求后端解析。未知方法、匿名或嵌套 scope、Session 不匹配、citation 缺失、取消与 dispose 都关闭式失败；服务不缓存 locator 或读取地址。
+Host `XAgentCitationRemoteService` 从 Typert Gateway 的认证 Session scope 读取 actor、用户 token、权限 revision 和物理连接。它从当前 live Session 重建规范持久 citation 身份，在每次调用时签发新 delegation，再请求后端解析。未知方法、匿名或嵌套 scope、Session 不匹配、citation 缺失、取消与 dispose 都关闭式失败；服务不缓存 locator 或读取地址。
 
-`XAgentArtifactCitationOpener` 是 citation UI 到资料面板的窄入口。Artifact 控制器先清空旧 citation locator 和短期 URL，再重新读取目标 Artifact 的详情，要求服务端返回相同 Artifact ID、相同 clean Version ID 和文本 MIME，之后才请求一次精确版本预览并逐行标记范围。PDF、图片及其他无法兑现逐行高亮的格式关闭式失败，但普通 Artifact 浏览仍可预览受支持的 PDF 与图片。Citation 自有 generation 使 Session 变化只撤销 citation 拥有的选择、详情与预览，不干扰普通浏览或轮询；账号、项目变化以及 dispose 仍取消整个资料范围。
+`XAgentArtifactCitationOpener` 是 citation UI 到资料面板的窄入口。入口先通过项目工作台的响应式页签状态打开第三栏“资料”，再由 Artifact 控制器清空旧 citation locator 和短期 URL、重新读取目标 Artifact 的详情，要求服务端返回相同 Artifact ID、相同 clean Version ID 和文本 MIME，之后才请求一次精确版本预览并逐行标记范围。PDF、图片及其他无法兑现逐行高亮的格式关闭式失败，但普通 Artifact 浏览仍可预览受支持的 PDF 与图片。Citation 自有 generation 使 Session 变化只撤销 citation 拥有的选择、详情与预览，不干扰普通浏览或轮询；账号、项目变化以及 dispose 仍取消整个资料范围。

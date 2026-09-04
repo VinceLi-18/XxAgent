@@ -13,6 +13,7 @@ export type {
   IXAgentWorkbench, XAgentProjectRemoteClient, XAgentSessionActions,
 } from './service.ts'
 export type { XAgentWorkbenchState } from './store.ts'
+export type { XAgentWorkbenchDetailsTab } from './store.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
@@ -38,7 +39,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     const remote = scope.get('remote.xagentProject') as XAgentProjectRemoteClient
     const workbench = new XAgentWorkbenchController(remote, {
       clear: () => { scope.sessions.clear() },
-    })
+    }, undefined, () => { scope.layout.openDetails() })
     scope.provide('xagentWorkbench', workbench)
 
     const browserInjected = (): ProjectBrowserInjected => ({
@@ -54,8 +55,9 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       openSession: (sessionId) => { scope.sessions.open(sessionId as never) },
     })
     const detailsInjected = (): WorkbenchDetailsInjected => ({
-      hooks: { workbench: workbench.snapshot },
+      hooks: { workbench: workbench.snapshot, detailsTab: workbench.details },
       loadProject: projectId => workbench.loadProject(projectId),
+      selectDetailsTab: (tab) => { workbench.selectDetailsTab(tab) },
     })
     scope.slots.inject('sidebar.workspaces', () => scope.slots.register({
       name: 'sidebar.workspaces', registrant: 'xagent-project-browser', inject: browserInjected,

@@ -80,7 +80,7 @@ async def test_workbench_migration_round_trip(
         revision = await connection.scalar(
             text("SELECT version_num FROM alembic_version")
         )
-    assert revision == "011_drop_legacy_threads"
+    assert revision == "013_xagent_rag_retrieval"
 
 
 async def _insert_session(
@@ -95,8 +95,10 @@ async def _insert_session(
         await connection.execute(
             text(
                 "INSERT INTO xagent_sessions "
-                "(id, owner_id, project_id, visibility, permission_revision_created, title) "
-                "VALUES (:id, :owner_id, :project_id, :visibility, 1, 'Workbench schema test')"
+                "(id, owner_id, project_id, visibility, permission_revision_created, title, "
+                "next_citation_ordinal) "
+                "VALUES (:id, :owner_id, :project_id, :visibility, 1, "
+                "'Workbench schema test', 1)"
             ),
             {
                 "id": session_id,

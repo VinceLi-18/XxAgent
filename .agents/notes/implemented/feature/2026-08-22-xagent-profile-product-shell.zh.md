@@ -38,4 +38,4 @@ XAgent 运行时包是随本 fork 交付的私有 workspace，不属于 npm 发�
 
 `packages/boot/app-boot/tests/profile.spec.ts` 验证 XAgent 模板与 Profile 数据路径；`apps/cli/tests/profile-boot.spec.ts` 验证不同的启动时路径；两个 XAgent 组合包测试验证状态配置项表达式和业务能力闭包。`apps/cli/tests/xagent-business-rosterless.e2e.ts` 通过真实 API proxy 创建业务会话，并验证空 Preset 清单、空文件型 skill 目录和两个检索 schema。`apps/cli/tests/xagent-retrieval-runtime.e2e.ts` 验证已认证 Private 与 Project Session、请求作用域的终稿工具准入、Code Mode 缺席和 citation 解析。其 Browser 车道从 Host origin 登录，通过生产 module system 与 Browser Loader 装载 `window.__DSH_BOOT__` 中由 `ClientModuleRegistry` 提供的 graph，等待生产 `WebApiClient` 连接发布 Host 描述，再经已认证 Host gateway 调用生成式 citation Remote。测试局部的 WebSocket adapter 在 jsdom 下只补充由浏览器管理的 Cookie 与 Origin header；Connection、Remote、gateway 和插件 graph 均采用生产实现。该车道仅在 Business 中观察 keyed Tool view，递归拒绝 Host secret 字段和值，并启动 Developer、Web 与 Headless 来验证其完整缺席面。
 
-[RAG 检索提案](../../proposed/architecture/2026-08-28-xagent-rag-retrieval.md)继续拥有检索数据、授权、收据与 citation 语义。本 Note 拥有 Profile 组合，不取代该提案、认证与 Session 隔离决策或真实检索验收 Note。
+[RAG 检索决策](../architecture/2026-08-28-xagent-rag-retrieval.md)继续拥有检索数据、授权、收据与 citation 语义。本 Note 拥有 Profile 组合，不取代该决策、认证与 Session 隔离决策或真实检索验收 Note。

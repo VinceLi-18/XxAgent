@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-25-xagent-artifact-processing.md
-2026-08-25-xagent-artifact-processing.md: f6dc545730b045bd160cc12cd5327c014d8d2360
-2026-08-25-xagent-artifact-processing.zh.md: f5ec836550ab59c65c0fb47caf121ab1830ef474
+2026-08-25-xagent-artifact-processing.md: a9efc48d9d692a2e14a7fab78f9f3353b017737e
+2026-08-25-xagent-artifact-processing.zh.md: 2e3e1c0581cb62b1412c259bf37cf528353e331a

@@ -25,4 +25,4 @@
 ## Known Limitations and Deferred Work
 
 - 本包不决定权限、检索排序或引用有效期；这些结果由 Host 服务和 FastAPI 提供。
-- 本包只提供通用工具结果；引用强制、最终回答合成和专用 UI 展示由后续组合拥有。
+- 本包只提供通用检索 Tool result。Business 组合中，`@xagent/dsh-retrieval` 拥有引用强制和终稿发布，`@xagent/dsh-ui-citation` 拥有持久结果的专用视图。

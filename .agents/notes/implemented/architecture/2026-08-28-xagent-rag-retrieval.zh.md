@@ -1,6 +1,8 @@
 # Agent Note: XAgent 检索索引、收据与最小权限数据库角色
 
-Status: proposed
+Status: implemented
+
+[English](2026-08-28-xagent-rag-retrieval.md) | 中文
 
 ## Problem
 
@@ -8,7 +10,7 @@ Status: proposed
 
 索引 worker 需要写入分片和切换搜索 head，但不需要账号、认证、Session 或项目成员数据。应用角色需要按当前 actor 读取可见分片和签发/消费收据，却不应直接写入 embedding。没有独立权限与 RLS，任一运行时凭据泄漏都会扩大到不相关的用户资料或身份数据。
 
-## Proposal
+## Decision
 
 PostgreSQL 启用 `vector` 与 `pg_trgm` 扩展，并保存 `artifact_text_indexes`、`artifact_text_chunks`、`artifact_index_jobs`、`artifact_search_heads` 和 `xagent_retrieval_receipts`。一个 Artifact 每个 generation 只有一个 Index，单个 Version 与相同配置指纹只有一个并发 `building` Index；Index 只可从 `building` 进入 `ready` 或 `failed`。分片按 Index 的 ordinal 唯一，正文不超过 8 KiB、token 数为 1 至 512、向量固定为 `vector(1024)`，并由数据库生成 `simple` 全文和规范化 trigram 文本。
 
@@ -18,15 +20,15 @@ PostgreSQL 启用 `vector` 与 `pg_trgm` 扩展，并保存 `artifact_text_index
 
 Host 在每条进入 Agent inbox 的消息上固定认证请求范围，并在该消息被领取时激活；排队、steering、账号切换、连接关闭和权限 revision 变化都不能继承另一条消息的 token。两个检索工具只进入 Native 工具路径，Code SDK 与嵌套 Code dispatch 不暴露它们。Host 组合必须提供固定 BGE tokenizer 的精确查询计数器，缺失或返回无效计数时检索失败关闭。Host 拒绝畸形 UTF-16，在发送请求前限制 8 KiB 查询 UTF-8 与最坏 JSON 转义正文，把调用方取消信号与固定超时合并，拒绝重定向，并在严格响应类型、大小、UTF-8、字段、模型与 revision 验证之后接受计数。Host 使用已有 backend origin 和服务令牌调用固定 FastAPI relay；relay 不接收用户或委托令牌，在解析前限制正文，只把合法请求转发到服务网络内的 embedding endpoint。内部 endpoint 只加载该 revision 的 tokenizer 资产，tokenizer 并发与 embedding 推理隔离，已取消的有限 tokenization 线程必须完成后才释放 owner。Host 在返回检索值前登记不透明收据，随后只在对应 `tool/result` 确认发布后允许同一 Session Event 绑定；取消、阻断和释放必须确认未发布或等待已发布结果完成绑定，不得把收据写入模型结果、metadata 或日志。
 
-Session Persistence 按每个 append 批次的首尾 sequence 取出已绑定收据，并只在私有 sidecar 中提交。FastAPI 先锁定 Session，再由数据库 finalizer 串行化当前权限 revision 并重新检查 Session、既有项目引用和收据项目并集；随后验证关闭的事件、tool call、公开 payload hash、返回身份和已预分配 citation ordinal。FastAPI 从已验证结果构造关闭的公开证据事件，并在同一事务写入脱敏证据审计、私有 Session 项目引用、收据消费、Session version 与幂等结果。append 不分配或改写 citation ordinal；project discovery 不分配 ordinal，过期或未消费搜索留下的缺口永不复用。只有关闭的后端成功响应携带精确末事件 sequence 和有效 Session version 时，Host 才会删除注册表中的收据；失败批次保持相同事件与 sidecar 独立重试，并在下一次模型请求前的 checkpoint 完成。sidecar 不进入事件、读取响应、日志或审计。
+Session Persistence 按每个 append 批次的首尾 sequence 取出已绑定收据，并只在私有 sidecar 中提交。空队列 flush 在建立 owner 前返回，不能覆盖同步到达的新事件所建立的写任务。FastAPI 先锁定 Session，再由数据库 finalizer 串行化当前权限 revision 并重新检查 Session、既有项目引用和收据项目并集；随后验证关闭的事件、tool call、公开 payload hash、返回身份和已预分配 citation ordinal。运行时 `tool/result` 必须携带 `surfaceOp: append`，可选 `sourceEventSeqs` 只能引用同批次中更早且不重复的事件；规范公开事件保留这组 provenance。FastAPI 从已验证结果构造关闭的公开证据事件，并在同一事务写入脱敏证据审计、私有 Session 项目引用、收据消费、Session version 与幂等结果。append 不分配或改写 citation ordinal；project discovery 不分配 ordinal，过期或未消费搜索留下的缺口永不复用。只有关闭的后端成功响应携带精确末事件 sequence 和有效 Session version 时，Host 才会删除注册表中的收据；失败批次保持相同事件与 sidecar 独立重试，并在下一次模型请求前的 checkpoint 完成。sidecar 不进入事件、读取响应、日志或审计。
 
 Host 只在当前模型 request 包含与 Session 中已 checkpoint 检索结果相同的非空证据时注册 Native-only `submit_cited_answer`。模型用关闭的 Markdown 块与引用块提交终稿；Host 在固定 64 KiB JSON、256 个 block 和 64 个引用上限内验证并规范化，只从引用块重建待授权身份。Markdown、raw HTML、字符实体和 Unicode 文本均不产生引用权限。工具使用当前请求 token、permission revision 和新委托 nonce 交给 FastAPI 重授权，成功后持久化规范 `tool/result`、投影 replayable metadata 并结束 turn；普通对话和空检索保留原流式路径。
 
-同一受保护请求最多接受两次终稿提交。第一次 schema、范围、引用集合或重授权失败只向模型返回有界工具错误，不发布候选正文；第二次失败或没有成功终稿结果时以持久中文 `CITATION_FAILED` turn error 结束。每个受保护请求在证据 checkpoint 完成后登记独立 owner；每次提交按精确 ToolExecution 暂存，request、connection、Session 和 service 取消会关闭 admission 并等待授权、结果投影与权威结果观察结算。Browser 只把结构化引用块渲染为已验证资料 chip；普通文本中的相似字符串不进入来源条或点击能力。完整协议由[结构化引用终稿设计](../../../../docs/superpowers/specs/2026-09-01-xagent-structured-citation-output-design.md)定义。
+同一受保护请求最多接受两次终稿提交。第一次 schema、范围、引用集合或重授权失败只向模型返回有界工具错误，不发布候选正文；第二次失败或没有成功终稿结果时以持久中文 `CITATION_FAILED` turn error 结束。每个受保护请求在证据 checkpoint 完成后登记独立 owner；每次提交按精确 ToolExecution 暂存，request、connection、Session 和 service 取消会关闭 admission 并等待授权、结果投影与权威结果观察结算。Browser 只把结构化引用块渲染为已验证资料 chip；普通文本中的相似字符串不进入来源条或点击能力。点击 chip 会打开工作台“资料”页签，并在重新授权后读取精确 clean 不可变版本与行范围。完整协议由[结构化引用终稿设计](../../../../docs/superpowers/specs/2026-09-01-xagent-structured-citation-output-design.md)定义。
 
 FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把 nonce 的 SHA-256 摘要作为全局唯一键持久化；令牌原文、nonce 原文和签名不进入数据库或日志。令牌严格绑定 actor、Session、Project Session 的 project 或 Private Session 的 null project、endpoint tool、tool call、权限 revision 和不超过六十秒的有效期。nonce 消费使用独立提交的事务，因此后续查询失败也不能重新使用同一委托。
 
-搜索在一个 serializable 授权快照内完成权限 revision、全部项目授权、向量与词法候选查询、citation ordinal 预留、收据和审计。只读项目授权通过 SECURITY DEFINER 函数预留最多八个连续 ordinal，应用角色不取得 Session 通用更新权限。模型可见 citation payload 以固定 embedding revision 的 tokenizer 计算完整 JSON framing、标识、元数据、scope 和正文，在 32 KiB 或 4096 token 首次溢出时停止，保留 RRF 前缀。
+搜索在一个 serializable 授权快照内完成登录有效性、权限 revision、全部项目授权、向量与词法候选查询、citation ordinal 预留、收据和审计。该事务中的 introspection 完整校验 token、账号状态、登录撤销、角色和 revision，但不锁定认证记录或更新最近验证时间；普通认证路径仍执行这项审计写入。只读项目授权通过 SECURITY DEFINER 函数预留最多八个连续 ordinal，应用角色不取得 Session 通用更新权限。模型可见 citation payload 以固定 embedding revision 的 tokenizer 计算完整 JSON framing、标识、元数据、scope 和正文，在 32 KiB 或 4096 token 首次溢出时停止，保留 RRF 前缀。
 
 检索审计只保留 Session 与 tool call 标识、scope 与 query 摘要、数量、结果、延迟，以及最多八组 Artifact、Version、Index、generation 和 Chunk 标识。数据库约束验证固定 JSON 字段和大小；查询、正文、向量、prompt、answer、URL、收据、签名和对象 key 均不得写入审计。
 
@@ -44,7 +46,7 @@ FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把
 
 **从自由 Markdown 解析引用。** CommonMark 与 HTML parser 能恢复语法结构，但不能同时判断 Unicode 视觉近似、自然中文和权限意图。关闭的终稿工具让模型显式提交引用节点，Host 只为这些节点授予资料能力。
 
-## Acceptance criteria
+## Testing
 
 - 迁移启用 `vector` 与 `pg_trgm`，创建五张表、`next_citation_ordinal`、约束、触发器、RLS 和精确角色授权，并支持 `upgrade → downgrade → upgrade`。
 - 数据库拒绝错误向量维度、重复分片 ordinal、超出正文或 token 上限、无效 Index 状态跳转、未就绪 Index head、错误收据 TTL 和非正 citation ordinal。
@@ -56,6 +58,6 @@ FastAPI 在任何检索工作之前验证 Host 的 Ed25519 委托令牌，并把
 - 已入账证据回答只通过关闭的结构化终稿工具发布并在成功前重新授权；第一次无效提交允许一次纠正，第二次稳定失败，普通对话、并发 Session、取消与撤权路径不泄漏任何候选正文。
 - 检索允许与拒绝审计包含固定结果和延迟，返回证据包含受限身份集合，任何原始查询、内容、向量或 bearer secret 均被排除。
 
-## Risks
+## Consequences
 
 `vector` 扩展必须由 PostgreSQL 部署镜像提供；没有扩展的数据库会在迁移时失败关闭。部署必须配置对应 Host 私钥的 FastAPI Ed25519 公钥，且轮换时不能让两个部署实例对同一 nonce 使用不共享的数据库。新增 worker 输入或输出列时必须同时审计 RLS policy 和列/表授权。后续检索、索引和证据入账实现必须使用这里的持久化状态，不得绕过收据或以应用层筛选替代数据库 RLS。

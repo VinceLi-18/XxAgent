@@ -1782,7 +1782,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     ],
     replaceRisk: 'shadows-shipped-ui',
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'xagent.workbench.artifacts\', () => ctx.slots.register(\n      { name: \'xagent.workbench.artifacts\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
-    source: 'packages/xagent/ui-project/src/client/index.ts:20',
+    source: 'packages/xagent/ui-project/src/client/index.ts:21',
   },
 ]
 /* jscpd:ignore-end */

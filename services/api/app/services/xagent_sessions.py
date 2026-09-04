@@ -408,11 +408,14 @@ def _retrieval_public_payload(
             raise ValueError
         text_content = result_content[0]
         tool_call_id = result["toolCallId"]
+        source_event_seqs = payload.get("sourceEventSeqs")
         if (
             event["event_type"] != "tool/result"
             or event["schema_version"] != 1
-            or set(payload) != {"seq", "time", "type", "data"}
+            or set(payload) - {"sourceEventSeqs"}
+            != {"seq", "time", "type", "data", "surfaceOp"}
             or payload["type"] != "tool/result"
+            or payload["surfaceOp"] != "append"
             or payload["seq"] != sequence
             or isinstance(payload["time"], bool)
             or not isinstance(payload["time"], int)
@@ -443,6 +446,22 @@ def _retrieval_public_payload(
             or not isinstance(text_content["text"], str)
             or not isinstance(meta["payloadHash"], str)
             or not isinstance(meta["citations"], list)
+            or (
+                source_event_seqs is not None
+                and (
+                    not isinstance(source_event_seqs, list)
+                    or len(source_event_seqs) == 0
+                    or len(source_event_seqs) > 100
+                    or len(set(source_event_seqs)) != len(source_event_seqs)
+                    or any(
+                        isinstance(source, bool)
+                        or not isinstance(source, int)
+                        or source < 0
+                        or source >= sequence
+                        for source in source_event_seqs
+                    )
+                )
+            )
         ):
             raise ValueError
         if receipt_kind == "artifact_search" and meta["citations"] == []:
@@ -473,6 +492,12 @@ def _retrieval_public_payload(
             "seq": sequence,
             "time": payload["time"],
             "type": "tool/result",
+            "surfaceOp": "append",
+            **(
+                {"sourceEventSeqs": source_event_seqs}
+                if source_event_seqs is not None
+                else {}
+            ),
             "data": {
                 "turn": data["turn"],
                 "step": data["step"],

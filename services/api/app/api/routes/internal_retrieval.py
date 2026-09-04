@@ -112,7 +112,7 @@ async def get_retrieval_context(
     """Authenticate retrieval inside one serializable authorization snapshot."""
     await session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
     try:
-        principal = await introspect(token, session)
+        principal = await introspect(token, session, update_verification=False)
     except AuthenticationRejected:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

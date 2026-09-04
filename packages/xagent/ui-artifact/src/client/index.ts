@@ -2,7 +2,11 @@ import type { ClientContext, ISessions } from '@deepseek-ai/dsh-client-runtime/c
 import type {} from '@xagent/dsh-ui-project/client'
 import artifactRemote from '@xagent/dsh-artifact/remote'
 import { ArtifactPanel, type ArtifactPanelInjected } from './ArtifactPanel.tsx'
-import { XAgentArtifactController, type XAgentArtifactRemoteClient } from './service.ts'
+import {
+  XAgentArtifactController,
+  type XAgentArtifactCitationOpener,
+  type XAgentArtifactRemoteClient,
+} from './service.ts'
 
 export type { XAgentArtifactState } from './store.ts'
 export type { XAgentArtifactCitationOpener, XAgentArtifactRemoteClient } from './service.ts'
@@ -22,6 +26,7 @@ interface WorkbenchSnapshot {
 }
 
 interface WorkbenchBridge {
+  openArtifacts(): void
   readonly snapshot: {
     getSnapshot(): WorkbenchSnapshot
     subscribe(listener: () => void): () => void
@@ -38,14 +43,21 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     const remote = scope.get('remote.xagentArtifact') as XAgentArtifactRemoteClient
     const workbench = (scope as ClientContext & { xagentWorkbench: WorkbenchBridge }).xagentWorkbench
     const controller = new XAgentArtifactController(remote)
-    scope.provide('xagentArtifactCitationOpener', controller)
+    const citationOpener: XAgentArtifactCitationOpener & { cancelCitation(): void } = {
+      openCitation: (target) => {
+        workbench.openArtifacts()
+        return controller.openCitation(target)
+      },
+      cancelCitation: () => { controller.cancelCitation() },
+    }
+    scope.provide('xagentArtifactCitationOpener', citationOpener)
     const sessions = scope.get('sessions') as ISessions
     let sessionId = sessions.list.getSnapshot().current
     scope.effect(() => sessions.list.subscribe(() => {
       const next = sessions.list.getSnapshot().current
       if (next === sessionId) return
       sessionId = next
-      controller.cancelCitation()
+      citationOpener.cancelCitation()
     }), 'xagent artifacts: cancel citation navigation on Session change')
 
     const sync = () => {

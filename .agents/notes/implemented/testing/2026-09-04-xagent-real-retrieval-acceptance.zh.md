@@ -20,7 +20,7 @@ embedding UID/GID `65532:65532` 持有共享 Hugging Face 缓存，owner 可写�
 
 CI 步骤在启动前安装无条件退出 trap。失败诊断先于拆卸运行，随后删除具名的一次性 worker，并由 Compose 删除卷和遗留资源。精确的 worker 名称与 Compose 项目标签查询要求容器、卷和网络结果均为空，因此成功的测试命令无法掩盖清理失败。
 
-[RAG 检索提案](../../proposed/architecture/2026-08-28-xagent-rag-retrieval.md)继续持有运行时数据、授权、收据和引用设计。本笔记持有组装后的部署与验收策略，不取代该提案。
+[RAG 检索决策](../architecture/2026-08-28-xagent-rag-retrieval.md)继续持有运行时数据、授权、收据和引用设计。本笔记持有组装后的部署与验收策略，不取代该决策。
 
 ## Alternatives considered
 

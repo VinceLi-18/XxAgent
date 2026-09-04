@@ -610,6 +610,33 @@ describe('XAgent FastAPI Session Persistence', () => {
     }
   })
 
+  test('空 checkpoint 后到达的事件仍会触发定时写入', async () => {
+    vi.useFakeTimers()
+    try {
+      const ctx = new Context()
+      const value = backend()
+      const persistence = new XAgentSessionPersistence(ctx, value)
+      persistence.authorizeRequest(id, undefined, 'token')
+      const session = { id } as Session
+      ctx.emit('session/event', session, event)
+      await ctx.parallel('session/flush', session)
+      await ctx.parallel('session/flush', session)
+
+      ctx.emit('session/event', session, {
+        seq: 1,
+        time: event.time + 1,
+        type: 'todo/write',
+        data: { todos: [] },
+      })
+      await vi.advanceTimersByTimeAsync(200)
+
+      expect(value.calls.filter(call => call.name === 'append')).toHaveLength(2)
+      await ctx.fiber.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('定时写入失败保留原批次，checkpoint 使用相同事件重试', async () => {
     vi.useFakeTimers()
     try {

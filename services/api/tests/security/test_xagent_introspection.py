@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import admin_engine
 from app.models.auth import XAgentAuthSession
+from app.services.auth import introspect
 
 PASSWORD = "correct horse battery staple"
 SERVICE_HEADERS = {"X-XAgent-Service-Token": "xagent-test-service-token-00000001"}
@@ -92,6 +93,34 @@ async def test_introspection_locks_only_the_auth_session_it_updates(
     locking_statements = [statement for statement in statements if "FOR UPDATE" in statement]
     assert len(locking_statements) == 1
     assert "FOR UPDATE OF xagent_auth_sessions" in locking_statements[0]
+
+
+@pytest.mark.anyio
+async def test_serializable_authorization_can_introspect_without_touching_login_state(
+    client,
+    seeded_database,
+    alice,
+) -> None:
+    token = await _login(client, seeded_database, alice.id)
+    statements: list[str] = []
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany) -> None:
+        statements.append(statement)
+
+    event.listen(admin_engine.sync_engine, "before_cursor_execute", capture_statement)
+    try:
+        async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+            async with session.begin():
+                await session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+                principal = await introspect(token, session, update_verification=False)
+    finally:
+        event.remove(admin_engine.sync_engine, "before_cursor_execute", capture_statement)
+
+    assert principal.actor_id == alice.id
+    assert not any("FOR UPDATE" in statement for statement in statements)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        auth_session = await session.scalar(select(XAgentAuthSession))
+    assert auth_session is not None and auth_session.last_verified_at is None
 
 
 @pytest.mark.anyio
