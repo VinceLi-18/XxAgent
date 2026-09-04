@@ -13,6 +13,7 @@ import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { TOOL_RUNTIME_CODE_SCHEMAS } from '@deepseek-ai/dsh-tools'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import WebSocketTransport from 'ws'
 
 const installAnchor = join(process.cwd(), 'apps/cli/package.json')
 const actorId = '00000000-0000-0000-0000-000000000001'
@@ -20,6 +21,7 @@ const authSessionId = '00000000-0000-0000-0000-000000000101'
 const projectId = '00000000-0000-0000-0000-000000000401'
 const privateSessionId = 'session-00000000-0000-0000-0000-000000000711'
 const projectSessionId = 'session-00000000-0000-0000-0000-000000000712'
+const browserSessionId = 'session-00000000-0000-0000-0000-000000000713'
 const artifactId = '00000000-0000-0000-0000-000000000501'
 const versionId = '00000000-0000-0000-0000-000000000502'
 const chunkId = '00000000-0000-0000-0000-000000000503'
@@ -94,7 +96,7 @@ async function requestBody(request: import('node:http').IncomingMessage): Promis
   return value.length === 0 ? undefined : JSON.parse(value) as unknown
 }
 
-function searchResponse(): Record<string, unknown> {
+function searchResponse(receipt: string): Record<string, unknown> {
   const citations = [{
     id: '[资料1]',
     artifact_id: artifactId,
@@ -110,7 +112,7 @@ function searchResponse(): Record<string, unknown> {
   const payload = { schema_version: 1, citations }
   return {
     ...payload,
-    receipt: 'receipt_private_search_1',
+    receipt,
     payload_sha256: createHash('sha256').update(canonicalJson(payload)).digest('hex'),
   }
 }
@@ -120,6 +122,7 @@ function backend(
   stored: Map<string, StoredSession>,
 ): Server {
   let selectedProject: string | null = null
+  let searchSequence = 0
   const bootstrap = (): Record<string, unknown> => ({
     schema_version: 1,
     account: {
@@ -253,7 +256,10 @@ function backend(
         return
       }
       if (path === '/internal/xagent/retrieval/search') {
-        response.end(JSON.stringify(searchResponse()))
+        searchSequence += 1
+        response.end(JSON.stringify(searchResponse(searchSequence === 1
+          ? 'receipt_private_search_1'
+          : `receipt_browser_search_${String(searchSequence)}`)))
         return
       }
       if (path === '/internal/xagent/retrieval/citations/authorize') {
@@ -471,6 +477,110 @@ interface BrowserProfile {
   readonly graph: WebBootGraph
 }
 
+interface BrowserConnection {
+  readonly api: {
+    readonly constructor: { readonly name: string }
+    readonly sessions: {
+      create(payload: { readonly sessionId: string }): Promise<RpcResponse<{ readonly sessionId: string }>>
+      prompt(payload: {
+        readonly sessionId: string
+        readonly mode: 'queue'
+        readonly content: Array<{ readonly type: 'text'; readonly text: string }>
+      }): Promise<RpcResponse<{ readonly accepted: boolean }>>
+    }
+  }
+  readonly hostDescription: { getSnapshot(): unknown }
+}
+
+interface CitationRemote {
+  resolve(sessionId: string, citationId: string): Promise<{
+    readonly ok: boolean
+    readonly value?: {
+      readonly artifactId: string
+      readonly versionId: string
+      readonly chunkId: string
+      readonly lineStart: number
+      readonly lineEnd: number
+    }
+  }>
+}
+
+interface ProjectRemote {
+  'select-context'(context: { readonly kind: 'workbench' }): Promise<{
+    readonly ok: boolean
+    readonly value?: { readonly context: { readonly kind: string } }
+  }>
+}
+
+interface BrowserDom {
+  readonly cookieJar: {
+    getCookieString(url: string): Promise<string>
+    setCookie(cookie: string, url: string): Promise<unknown>
+    removeAllCookies(): Promise<void>
+    getCookieStringSync(url: string): string
+  }
+  reconfigure(settings: { readonly url: string }): void
+}
+
+interface BrowserNetwork {
+  login(): Promise<Response>
+  restore(): Promise<void>
+}
+
+async function installBrowserNetwork(origin: string): Promise<BrowserNetwork> {
+  const browserDom = (globalThis as typeof globalThis & { jsdom?: BrowserDom }).jsdom
+  if (browserDom === undefined) throw new Error('Browser test requires Vitest jsdom')
+  const dom = browserDom
+  const previousUrl = location.href
+  const nativeFetch = globalThis.fetch
+  const nativeWebSocket = globalThis.WebSocket
+  await browserDom.cookieJar.removeAllCookies()
+  browserDom.reconfigure({ url: `${origin}/` })
+  class BrowserWebSocket extends WebSocketTransport {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(url, protocols ?? [], {
+        headers: { cookie: dom.cookieJar.getCookieStringSync(String(url)), origin },
+      })
+      // Browser WebSocket error events do not become uncaught EventEmitter errors.
+      this.on('error', () => {})
+    }
+  }
+  globalThis.WebSocket = BrowserWebSocket as unknown as typeof WebSocket
+  globalThis.fetch = async (input, init) => {
+    const rawUrl = typeof input === 'string' || input instanceof URL ? String(input) : input.url
+    const url = new URL(rawUrl, location.href)
+    const headers = new Headers(input instanceof Request ? input.headers : init?.headers)
+    const sameOrigin = url.origin === location.origin
+    if (sameOrigin && init?.credentials !== 'omit') {
+      const cookie = await browserDom.cookieJar.getCookieString(url.href)
+      if (cookie !== '') headers.set('cookie', cookie)
+      const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+      if (method !== 'GET' && method !== 'HEAD') headers.set('origin', location.origin)
+    }
+    const response = await nativeFetch(url, { ...init, headers })
+    if (sameOrigin) {
+      for (const cookie of response.headers.getSetCookie()) {
+        await browserDom.cookieJar.setCookie(cookie, url.href)
+      }
+    }
+    return response
+  }
+  return {
+    login: () => fetch('/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'alice@example.test', password: 'loader-password' }),
+    }),
+    restore: async () => {
+      globalThis.fetch = nativeFetch
+      globalThis.WebSocket = nativeWebSocket
+      await browserDom.cookieJar.removeAllCookies()
+      browserDom.reconfigure({ url: previousUrl })
+    },
+  }
+}
+
 function expectBrowserDataSafe(value: unknown, forbiddenValues: readonly string[]): void {
   const keys: string[] = []
   const strings: string[] = []
@@ -550,7 +660,21 @@ async function bootServedBrowser(origin: string, host: Context): Promise<Browser
 }
 
 /** Clear page-global module registration state after one Browser Loader graph. */
-async function disposeBrowser(browser: Context): Promise<void> {
+async function disposeBrowser(browser: Context, host: Context): Promise<void> {
+  const runner = [...browser.loader.entries()]
+    .find(entry => entry.options.name === '@deepseek-ai/dsh-cordis-client-runner')
+  if (runner !== undefined) {
+    const inspect = host.get('cordisInspect') as {
+      list(): Array<{ readonly platform: string }>
+    } | undefined
+    if (inspect !== undefined) {
+      await vi.waitFor(() => {
+        expect(inspect.list().some(row => row.platform === 'client')).toBe(true)
+      })
+    }
+    await browser.loader.remove(runner.id)
+    await browser.loader.await()
+  }
   await browser.fiber.dispose()
   const win = globalThis as BrowserModuleGlobals
   delete win.__ModuleLoader__
@@ -823,6 +947,8 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
 
   it('只在 Business Browser 安装 citation Remote 与 keyed Tool view', { retry: 0 }, async () => {
     const browserHome = join(root, 'browser-home')
+    const startupWarnings = vi.spyOn(console, 'warn')
+    const startupErrors = vi.spyOn(console, 'error')
     for (const profileName of ['xagent-business', 'xagent-developer', 'web', 'headless']) {
       const host = profileName === 'xagent-business'
         ? { ctx: ctx!, origin }
@@ -841,7 +967,8 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
         continue
       }
       if (host.origin === undefined) throw new Error(`${profileName} Host 缺少 Web origin`)
-      history.replaceState(null, '', '/?fixture')
+      const network = await installBrowserNetwork(host.origin)
+      if (profileName === 'xagent-business') expect((await network.login()).status).toBe(200)
       const loaded = await bootServedBrowser(host.origin, host.ctx)
       const browser = loaded.ctx
       try {
@@ -855,15 +982,52 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
         if (profileName === 'xagent-business') {
           expect(roster).toContain('@xagent/dsh-ui-citation')
           expect(roster).not.toContain('@xagent/dsh-ui-citation/client')
-          expect(browser.get('remote.xagentCitation')).toBeDefined()
+          const connection = browser.get('connection') as BrowserConnection | undefined
+          expect(connection?.api.constructor.name).toBe('WebApiClient')
+          if (connection === undefined) throw new Error('Business Browser 缺少 Connection')
+          await vi.waitFor(() => { expect(connection.hostDescription.getSnapshot()).toBeDefined() })
+          const inspect = browser.get('cordisInspect') as { publish(): void } | undefined
+          if (inspect === undefined) throw new Error('Business Browser 缺少 Cordis inspect registry')
+          inspect.publish()
+          const project = browser.get('remote.xagentProject') as ProjectRemote | undefined
+          if (project === undefined) throw new Error('Business Browser 缺少 project Remote')
+          await expect(project['select-context']({ kind: 'workbench' })).resolves.toMatchObject({
+            ok: true,
+            value: { context: { kind: 'workbench' } },
+          })
+          const citation = browser.get('remote.xagentCitation') as CitationRemote | undefined
+          expect(citation).toBeDefined()
           expect(entries).toHaveLength(1)
           expect(entries[0]?.registrant).toBe('xagent-cited-answer')
+          if (citation === undefined) throw new Error('Business Browser 缺少 citation Remote')
+          expect(await connection.api.sessions.create({ sessionId: browserSessionId })).toMatchObject({
+            result: { ok: true, value: { sessionId: browserSessionId } },
+          })
+          const evidenceStart = observations.length
+          expect(await connection.api.sessions.prompt({
+            sessionId: browserSessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text: '请通过真实 Browser 连接检索资料。' }],
+          })).toMatchObject({ result: { ok: true, value: { accepted: true } } })
+          await vi.waitFor(() => {
+            expect(observations.slice(evidenceStart)
+              .some(item => item.path === '/internal/xagent/retrieval/citations/authorize')).toBe(true)
+          }, { timeout: 20_000 })
+          const observationStart = observations.length
+          await expect(citation.resolve(browserSessionId, '[资料1]')).resolves.toEqual({
+            ok: true,
+            value: { artifactId, versionId, chunkId, lineStart: 7, lineEnd: 9 },
+          })
+          const resolved = observations.slice(observationStart)
+            .find(item => item.path === '/internal/xagent/retrieval/citations/resolve')
+          expect(resolved).toMatchObject({ authorization: `Bearer ${userToken}`, serviceToken })
+          expect(typeof resolved?.delegation).toBe('string')
           const privateKey = process.env.XAGENT_DELEGATION_PRIVATE_KEY
           if (privateKey === undefined) throw new Error('Business Host 测试私钥缺失')
           expectBrowserDataSafe({
             graph: loaded.graph,
             entries: [...browser.loader.entries()].map(entry => entry.options),
-          }, [serviceToken, userToken, 'receipt_private_search_1', privateKey])
+          }, [serviceToken, userToken, 'receipt_private_search_1', 'receipt_browser_search_2', privateKey])
         } else {
           for (const packageName of RETRIEVAL_PACKAGE_NAMES) {
             expect(hostRoster, `${profileName} Host package ${packageName}`).not.toContain(packageName)
@@ -873,11 +1037,21 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
           expect(entries, `${profileName} citation Tool view`).toEqual([])
         }
       } finally {
-        await disposeBrowser(browser)
-        history.replaceState(null, '', '/')
+        await disposeBrowser(browser, host.ctx)
+        await network.restore()
         if (profileName !== 'xagent-business') await host.ctx.fiber.dispose()
       }
     }
+    const retries = startupWarnings.mock.calls
+      .filter(call => call[0] === '[web-runtime] connection lost, retry #1')
+    const manifestDenials = startupErrors.mock.calls.filter(call =>
+      call.some(item => String(item).includes('syncInspectManifest failed: transport failure')
+        && String(item).includes('HTTP 401')))
+    startupWarnings.mockRestore()
+    startupErrors.mockRestore()
+    // 并行 Browser graph 允许 UI account 注册 CSRF header 前的首轮请求；随后必须连接并完成 manifest 同步。
+    expect(retries).toHaveLength(1)
+    expect(manifestDenials).toHaveLength(1)
   })
 
   it('保持 Developer、Web 与 Headless 的运行时和完整 dump 无检索面', { retry: 0 }, async () => {

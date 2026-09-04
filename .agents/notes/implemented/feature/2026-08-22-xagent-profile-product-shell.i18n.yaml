@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-22-xagent-profile-product-shell.md
-2026-08-22-xagent-profile-product-shell.md: 45ef65be13129be0247bf1eb57a783b2fb00f2bf
-2026-08-22-xagent-profile-product-shell.zh.md: b3d1d01979f2982c7b72cc03be9cafbeefaf197c
+2026-08-22-xagent-profile-product-shell.md: 340aff2e4b1fadc47efece6d6d2d976ee161e663
+2026-08-22-xagent-profile-product-shell.zh.md: 2e9f78486cdbcfbb417945ab540c32801ec5a391
