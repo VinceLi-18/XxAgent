@@ -3103,6 +3103,8 @@ export interface Config {
 
 ## `@xagent/dsh-retrieval`
 
+需要：`sessions`
+
 ```ts config-catalog
 /** Host retrieval provider configuration. */
 export interface Config {

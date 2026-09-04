@@ -3101,6 +3101,8 @@ Source: [`packages/xagent/project/src/index.ts:34`](../packages/xagent/project/s
 
 ## `@xagent/dsh-retrieval`
 
+Requires: `sessions`
+
 ```ts config-catalog
 /** Host retrieval provider configuration. */
 export interface Config {

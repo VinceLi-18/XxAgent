@@ -1,4 +1,5 @@
 import type { AddressInfo } from 'node:net'
+import { generateKeyPairSync } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -127,6 +128,9 @@ describe('XAgent Business 资料真实 Loader 闭包', () => {
     XAGENT_SERVICE_TOKEN: process.env.XAGENT_SERVICE_TOKEN,
     XAGENT_ALLOWED_ORIGINS: process.env.XAGENT_ALLOWED_ORIGINS,
     XAGENT_ALLOW_INSECURE_COOKIE: process.env.XAGENT_ALLOW_INSECURE_COOKIE,
+    XAGENT_DELEGATION_PRIVATE_KEY: process.env.XAGENT_DELEGATION_PRIVATE_KEY,
+    XAGENT_DELEGATION_ISSUER: process.env.XAGENT_DELEGATION_ISSUER,
+    XAGENT_DELEGATION_AUDIENCE: process.env.XAGENT_DELEGATION_AUDIENCE,
   }
   let backendServer: Server | undefined
   let ctx: Context | undefined
@@ -142,6 +146,10 @@ describe('XAgent Business 资料真实 Loader 闭包', () => {
     process.env.XAGENT_SERVICE_TOKEN = serviceToken
     process.env.XAGENT_ALLOWED_ORIGINS = origin
     process.env.XAGENT_ALLOW_INSECURE_COOKIE = '1'
+    const { privateKey } = generateKeyPairSync('ed25519')
+    process.env.XAGENT_DELEGATION_PRIVATE_KEY = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+    process.env.XAGENT_DELEGATION_ISSUER = 'xagent-artifact-loader-test'
+    process.env.XAGENT_DELEGATION_AUDIENCE = 'xagent-fastapi-artifact-loader-test'
 
     const profile = loadProfile('dsh-test', 'xagent-business', installAnchor, home)
     mkdirSync(profile.dir, { recursive: true })
@@ -222,8 +230,11 @@ describe('XAgent Business 资料真实 Loader 闭包', () => {
     ])
   })
 
-  it('保持 Business 的运行时危险工具闭包为空', () => {
+  it('保持 Business 的运行时工具闭包只含结构化检索入口', () => {
     if (ctx === undefined) throw new Error('Business Loader 未启动')
-    expect(ctx.tools.schemas().map(tool => tool.name)).toEqual([])
+    expect(ctx.tools.schemas().map(tool => tool.name).sort()).toEqual([
+      'list_accessible_projects',
+      'search_artifacts',
+    ])
   })
 })

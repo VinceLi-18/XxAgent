@@ -28,6 +28,7 @@ import {
   XAgentCitationRemoteService,
   XAgentRetrievalError,
   XAgentRetrievalService,
+  inject as pluginInject,
   type XAgentBgeM3Tokenizer,
 } from '../src/index.ts'
 
@@ -37,6 +38,12 @@ const PROJECT = '00000000-0000-0000-0000-000000000401'
 const { privateKey } = generateKeyPairSync('ed25519')
 const LIVE_REQUEST_SIGNAL = new AbortController().signal
 const LIVE_CONNECTION_SIGNAL = new AbortController().signal
+
+describe('retrieval plugin composition', () => {
+  test('declares the exact Session service consumed by Loader-mounted citation reads', () => {
+    expect(pluginInject).toEqual(['sessions'])
+  })
+})
 
 function tokenizer(count: (value: string) => number = value => value.trim().split(/\s+/u).length): XAgentBgeM3Tokenizer {
   return Object.freeze({

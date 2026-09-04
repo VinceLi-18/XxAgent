@@ -221,12 +221,14 @@ const EXACT_EDITS: readonly ExactEdit[] = [
     file: 'knip.json',
     find: `      "ignoreDependencies": [
         "@cordisjs/plugin-logger-console",
-        "@deepseek-ai/.+"
+        "@deepseek-ai/.+",
+        "@xagent/dsh-tool-retrieval"
       ]
     },
     "packages/util/home": {`,
     replace: `      "ignoreDependencies": [
-        "@deepseek-ai/.+"
+        "@deepseek-ai/.+",
+        "@xagent/dsh-tool-retrieval"
       ]
     },
     "packages/util/home": {`,

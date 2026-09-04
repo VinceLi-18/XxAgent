@@ -48,6 +48,9 @@
         "headless-agent/tests/fixtures/session-telemetry-otel-driver.ts",
         "headless-agent/tests/fixtures/telemetry-redact-rule.ts",
         "headless-agent/tests/fixtures/e2b/e2b/bin.ts",
+        "headless-agent/tests/fixtures/xagent/retrieval/backend.ts",
+        "headless-agent/tests/fixtures/xagent/retrieval/driver.ts",
+        "headless-agent/tests/fixtures/xagent/retrieval/mock-llm.ts",
         "acp-agent/tests/snapshots/lsp-definition/workspace/subject.ts",
         "acp-agent/tests/fixtures/child-question-tripwire.ts",
         "acp-agent/tests/fixtures/parent-sandbox-override.ts",
@@ -72,7 +75,8 @@
         "**/*.ts"
       ],
       "ignoreDependencies": [
-        "@deepseek-ai/.+"
+        "@deepseek-ai/.+",
+        "@xagent/dsh-tool-retrieval"
       ]
     },
     "packages/util/home": {
@@ -247,6 +251,11 @@
       ]
     },
     "packages/xagent/project": {
+      "ignoreDependencies": [
+        "zod"
+      ]
+    },
+    "packages/xagent/retrieval": {
       "ignoreDependencies": [
         "zod"
       ]
@@ -761,8 +770,12 @@
         "@xagent/dsh-business",
         "@xagent/dsh-developer",
         "@xagent/dsh-artifact",
+        "@xagent/dsh-delegation-token",
+        "@xagent/dsh-retrieval",
+        "@xagent/dsh-tool-retrieval",
         "@xagent/dsh-ui-account",
         "@xagent/dsh-ui-artifact",
+        "@xagent/dsh-ui-citation",
         "@xagent/dsh-ui-project"
       ]
     },
@@ -817,11 +830,15 @@
         "@xagent/dsh-authorization",
         "@xagent/dsh-backend-client",
         "@xagent/dsh-connection-auth",
+        "@xagent/dsh-delegation-token",
         "@xagent/dsh-principal",
         "@xagent/dsh-project",
+        "@xagent/dsh-retrieval",
         "@xagent/dsh-session-persistence-api",
+        "@xagent/dsh-tool-retrieval",
         "@xagent/dsh-ui-account",
         "@xagent/dsh-ui-artifact",
+        "@xagent/dsh-ui-citation",
         "@xagent/dsh-ui-project"
       ]
     }

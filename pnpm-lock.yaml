@@ -306,18 +306,30 @@ importers:
       '@xagent/dsh-business':
         specifier: workspace:^
         version: link:../../packages/bundle/xagent-business
+      '@xagent/dsh-delegation-token':
+        specifier: workspace:^
+        version: link:../../packages/xagent/delegation-token
       '@xagent/dsh-developer':
         specifier: workspace:^
         version: link:../../packages/bundle/xagent-developer
       '@xagent/dsh-project':
         specifier: workspace:^
         version: link:../../packages/xagent/project
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../../packages/xagent/retrieval
+      '@xagent/dsh-tool-retrieval':
+        specifier: workspace:^
+        version: link:../../packages/xagent/tool-retrieval
       '@xagent/dsh-ui-account':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-account
       '@xagent/dsh-ui-artifact':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-artifact
+      '@xagent/dsh-ui-citation':
+        specifier: workspace:^
+        version: link:../../packages/xagent/ui-citation
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-project
@@ -1505,21 +1517,33 @@ importers:
       '@xagent/dsh-connection-auth':
         specifier: workspace:^
         version: link:../../xagent/connection-auth
+      '@xagent/dsh-delegation-token':
+        specifier: workspace:^
+        version: link:../../xagent/delegation-token
       '@xagent/dsh-principal':
         specifier: workspace:^
         version: link:../../xagent/principal
       '@xagent/dsh-project':
         specifier: workspace:^
         version: link:../../xagent/project
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../../xagent/retrieval
       '@xagent/dsh-session-persistence-api':
         specifier: workspace:^
         version: link:../../xagent/session-persistence-api
+      '@xagent/dsh-tool-retrieval':
+        specifier: workspace:^
+        version: link:../../xagent/tool-retrieval
       '@xagent/dsh-ui-account':
         specifier: workspace:^
         version: link:../../xagent/ui-account
       '@xagent/dsh-ui-artifact':
         specifier: workspace:^
         version: link:../../xagent/ui-artifact
+      '@xagent/dsh-ui-citation':
+        specifier: workspace:^
+        version: link:../../xagent/ui-citation
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../../xagent/ui-project

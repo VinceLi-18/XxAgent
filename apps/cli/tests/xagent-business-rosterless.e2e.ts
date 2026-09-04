@@ -44,8 +44,14 @@ async function bootBusiness(home: string): Promise<Context> {
     { id: 'client-hmr', disabled: true },
     { id: 'directory-picker', disabled: true },
     { id: 'xagent-session-persistence-api', disabled: true },
+    { id: 'session-persistence-jsonl', disabled: false, config: { root: join(profileDir, 'data', 'sessions') } },
     { id: 'xagent-connection-auth', disabled: true },
     { id: 'xagent-authorization', disabled: true },
+    // This roster-only fixture has no backend. Keep the real retrieval Tool
+    // consumer mounted while withholding only providers that require one.
+    { id: 'xagent-retrieval', disabled: true },
+    { id: 'xagent-project', disabled: true },
+    { id: 'xagent-artifact', disabled: true },
     { insert: [
       { id: 'directory-picker-browse', name: '@deepseek-ai/dsh-host-directory-picker-browse' },
       { id: 'ui-directory-picker-browse', name: '@deepseek-ai/dsh-client-ui-directory-picker-browse' },
@@ -117,7 +123,14 @@ This project skill must not enter a Business session.
     const agent = ctx.agents.get(sessionId)
     expect(agent).toBeDefined()
     if (agent === undefined) throw new Error('Business session was not published')
-    expect(ctx.tools.schemas(agent).map(tool => tool.name)).toEqual([])
+    expect(ctx.tools.schemas(agent).map(tool => tool.name).sort()).toEqual([
+      'list_accessible_projects',
+      'search_artifacts',
+    ])
+    expect([...ctx.loader.entries()].some(entry => (
+      entry.options.name === '@xagent/dsh-tool-retrieval' && entry.fiber !== undefined
+    ))).toBe(true)
+    expect(ctx.get('xagentRetrieval')).toBeUndefined()
 
     const skills = await ctx.apiProxy.skills.list({
       rpcId: RpcId('xagent-business-skills'),
@@ -171,7 +184,10 @@ This project skill must not enter a Business session.
     expect(agent).toBeDefined()
     if (agent === undefined) throw new Error('Blank Business session was not published')
     expect(agent.session.header.agentPreset).toBeUndefined()
-    expect(ctx.tools.schemas(agent).map(tool => tool.name)).toEqual([])
+    expect(ctx.tools.schemas(agent).map(tool => tool.name).sort()).toEqual([
+      'list_accessible_projects',
+      'search_artifacts',
+    ])
     const skills = await ctx.apiProxy.skills.list({
       rpcId: RpcId('xagent-business-select-skills'),
       payload: { sessionId },

@@ -86,6 +86,7 @@ export const Config: z<Config> = z.object({
 })
 
 export const name = 'xagent-retrieval'
+export const inject = ['sessions']
 
 interface ServiceOptions {
   readonly issuer: string
