@@ -213,7 +213,7 @@ Source: [`packages/xagent/artifact/src/index.ts:204`](../../packages/xagent/arti
 
 ### `ctx.xagentCitation` — `XAgentCitationRemoteService`
 
-Request-scoped citation locator that resolves only persisted public evidence.
+Request-scoped citation locator backed by durable provenance and current-actor authorization.
 
 ```ts cordis-catalog
 /**
@@ -225,7 +225,8 @@ Request-scoped citation locator that resolves only persisted public evidence.
 async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
 
 /**
- * Resolve one persisted citation into immutable Artifact navigation identities.
+ * Resolve one durable cited-answer ID through server-owned provenance and
+ * current-actor authorization.
  * @param sessionId - current Browser Session id.
  * @param citationId - persisted short citation id.
  * @param signal - Browser request cancellation.
@@ -240,7 +241,7 @@ async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: (
 async dispose(): Promise<void>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:247`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:248`](../../packages/xagent/retrieval/src/index.ts)
 
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 
@@ -333,5 +334,5 @@ abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promi
 abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:134`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:135`](../../packages/xagent/retrieval/src/index.ts)
 <!-- END GENERATED cordis-surface -->

@@ -286,6 +286,18 @@ readRaw(_id: SessionId, signal?: AbortSignal): Promise<SessionRawArtifact | unde
 preparePublication(_session: Session): Promise<void>
 
 /**
+ * Atomically derive a durable child from an authorized source prefix when
+ * this backend owns Session scope and identity. The backend, not the caller,
+ * chooses the child identity and copies every backend-owned authorization
+ * relation. Local stores return `undefined`, allowing the Host to use its
+ * ordinary in-process seed path.
+ * @param _sourceId - authorized source Session identity.
+ * @param _throughSequence - inclusive final source event sequence.
+ * @returns the durable child header, or `undefined` when unsupported.
+ */
+fork(_sourceId: SessionId, _throughSequence: number): Promise<SessionHeader | undefined>
+
+/**
  * Register a new session's metadata. A backend MAY defer the physical write
  * until the first {@link append} (lazy materialization), in which case a
  * created-but-never-appended session is absent from {@link list}

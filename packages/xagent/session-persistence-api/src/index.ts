@@ -114,6 +114,43 @@ function validateCreatedSession(value: unknown, expectedId: string): void {
   throw new TypeError('invalid XAgent session create response')
 }
 
+function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: number): SessionHeader {
+  const row = object(value)
+  const session = object(row.session)
+  const runtimeHeader = object(session.runtime_header)
+  const id = session.id
+  const sessionKeys = new Set([
+    'id', 'owner_id', 'project_id', 'visibility', 'permission_revision_created',
+    'title', 'runtime_header', 'archived', 'last_event_sequence', 'version',
+    'created_at', 'updated_at',
+  ])
+  const runtimeHeaderKeys = new Set([
+    'version', 'id', 'createdAt', 'cwd', 'parentSession', 'seedLength',
+    'agentPreset', 'origin', 'delegationDepth',
+  ])
+  if (Object.keys(row).length !== 2 || !Object.hasOwn(row, 'schema_version')
+    || !Object.hasOwn(row, 'session')
+    || Object.keys(session).some(key => !sessionKeys.has(key))
+    || Object.keys(runtimeHeader).some(key => !runtimeHeaderKeys.has(key))
+    || row.schema_version !== 1 || typeof id !== 'string' || !UUID_PATTERN.test(id)
+    || session.last_event_sequence !== throughSequence) {
+    throw new TypeError('invalid XAgent session fork response')
+  }
+  if (!((session.visibility === 'private' && session.project_id === null)
+    || (session.visibility === 'project' && typeof session.project_id === 'string'
+      && UUID_PATTERN.test(session.project_id)))) {
+    throw new TypeError('invalid XAgent session fork response')
+  }
+  const header = headerFrom(runtimeHeader)
+  const expectedChildId = `session-${id.toLowerCase()}`
+  if (header.id !== expectedChildId || header.parentSession !== sourceId
+    || header.seedLength !== throughSequence + 1
+    || header.origin !== undefined || header.delegationDepth !== undefined) {
+    throw new TypeError('invalid XAgent session fork response')
+  }
+  return header
+}
+
 function validateAppendResult(value: unknown, expectedLastSequence: number): void {
   const row = object(value)
   if (
@@ -228,6 +265,28 @@ export class XAgentSessionPersistence extends SessionPersistence {
     }, undefined)
     validateCreatedSession(response, expectedId)
     this.leases.set(session.id, token)
+  }
+
+  /**
+   * Derive a scope-preserving child through FastAPI and lease its returned identity.
+   * @param sourceId - authorized source Session identity.
+   * @param throughSequence - inclusive final sequence in the copied source prefix.
+   * @returns the server-derived durable child Header.
+   */
+  override async fork(sourceId: SessionIdType, throughSequence: number): Promise<SessionHeader> {
+    if (!Number.isSafeInteger(throughSequence) || throughSequence < -1) {
+      throw new TypeError('throughSequence must be an integer greater than or equal to -1')
+    }
+    const token = this.requireActiveToken()
+    await this.flushSession(sourceId)
+    const response = await this.backend.sessions.fork(token, backendSessionId(sourceId), {
+      schema_version: 1,
+      through_sequence: throughSequence,
+      idempotency_key: `fork:${sourceId}:${randomUUID()}`,
+    }, undefined)
+    const header = forkedHeader(response, sourceId, throughSequence)
+    this.leases.set(header.id, token)
+    return header
   }
 
   /**

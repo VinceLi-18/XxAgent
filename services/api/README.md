@@ -90,7 +90,9 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 `POST /internal/xagent/session-project-refs` 只为当前账号拥有的私有 Session 登记项目引用。请求包含 `schema_version: 1`、`session_id`、非空 `project_ids`、`idempotency_key`；全部新旧引用必须在同一事务对当前账号可见，成功返回 204。项目不可见或 Session 不可登记统一隐藏具体项目，幂等键对应不同请求时返回 `idempotency-conflict`。
 
-带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 在同一事务继承引用。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。
+带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 请求只命名源 Session 与包含式末 sequence；服务端在同一事务重新授权并锁定源、分配子 ID，并继承事件前缀、`visibility`、`project_id`、私有项目引用和前缀内的 cited-answer provenance。请求不能指定目标范围。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。
+
+规范 `xagent-cited-answer` append 会把每个短 citation ID 与同一物理 Session 日志中更早的规范检索 admission 绑定，并在 `xagent_cited_answer_evidence` 保存 answer／admission sequence 及精确 Artifact、Version、Index generation 与 Chunk。该关系不读取表层消息投影，也不把原 actor 的私有 receipt 当作后续读取授权。Citation resolve 只接受短 ID，先通过 Session RLS 读取持久 provenance，再以当前 actor 的 Artifact RLS 和权限 finalizer 重新授权精确不可变版本；reload、resume、compaction、有效 fork 和仍获授权的 Project 成员可继续打开，撤权后失败关闭。
 
 ### 资料读取 URL
 

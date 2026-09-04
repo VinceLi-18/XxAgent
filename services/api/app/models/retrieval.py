@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
@@ -44,6 +45,10 @@ class ArtifactTextIndex(Base):
         ),
         UniqueConstraint("artifact_id", "generation", name="uq_artifact_text_index_artifact_generation"),
         UniqueConstraint("id", "artifact_id", "version_id", name="uq_artifact_text_index_identity"),
+        UniqueConstraint(
+            "id", "artifact_id", "version_id", "generation",
+            name="uq_artifact_text_index_complete_identity",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -75,6 +80,7 @@ class ArtifactTextChunk(Base):
         CheckConstraint("token_count BETWEEN 1 AND 512", name="ck_artifact_text_chunk_token_count"),
         CheckConstraint("octet_length(text) <= 8192", name="ck_artifact_text_chunk_bytes"),
         UniqueConstraint("index_id", "ordinal", name="uq_artifact_text_chunks_index_ordinal"),
+        UniqueConstraint("id", "index_id", name="uq_artifact_text_chunk_id_index"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -200,6 +206,66 @@ class XAgentRetrievalReceipt(Base):
     consumed_payload_sha256: Mapped[str | None] = mapped_column(String(64))
     citation_ordinal_start: Mapped[int | None] = mapped_column(Integer)
     citation_ordinal_end: Mapped[int | None] = mapped_column(Integer)
+
+
+class XAgentCitedAnswerEvidence(Base):
+    """An immutable link from one cited answer to its admitted retrieval evidence."""
+
+    __tablename__ = "xagent_cited_answer_evidence"
+    __table_args__ = (
+        CheckConstraint(
+            "citation_id ~ '^\\[资料[1-9][0-9]*\\]$'",
+            name="ck_xagent_cited_answer_evidence_citation_id",
+        ),
+        CheckConstraint(
+            "admission_event_sequence >= 0 AND answer_event_sequence > admission_event_sequence",
+            name="ck_xagent_cited_answer_evidence_event_order",
+        ),
+        CheckConstraint(
+            "index_generation >= 1",
+            name="ck_xagent_cited_answer_evidence_index_generation",
+        ),
+        ForeignKeyConstraint(
+            ("session_id", "answer_event_sequence"),
+            ("xagent_session_events.session_id", "xagent_session_events.sequence"),
+            name="fk_xagent_cited_answer_evidence_answer_event",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ("session_id", "admission_event_sequence"),
+            ("xagent_session_events.session_id", "xagent_session_events.sequence"),
+            name="fk_xagent_cited_answer_evidence_admission_event",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ("index_id", "artifact_id", "version_id", "index_generation"),
+            (
+                "artifact_text_indexes.id",
+                "artifact_text_indexes.artifact_id",
+                "artifact_text_indexes.version_id",
+                "artifact_text_indexes.generation",
+            ),
+            name="fk_xagent_cited_answer_evidence_index_identity",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("chunk_id", "index_id"),
+            ("artifact_text_chunks.id", "artifact_text_chunks.index_id"),
+            name="fk_xagent_cited_answer_evidence_chunk_identity",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_xagent_cited_answer_evidence_lookup", "session_id", "citation_id"),
+    )
+
+    session_id: Mapped[UUID] = mapped_column(primary_key=True)
+    answer_event_sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    citation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    admission_event_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    artifact_id: Mapped[UUID] = mapped_column(nullable=False)
+    version_id: Mapped[UUID] = mapped_column(nullable=False)
+    index_id: Mapped[UUID] = mapped_column(nullable=False)
+    index_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_id: Mapped[UUID] = mapped_column(nullable=False)
 
 
 class XAgentDelegationNonce(Base):

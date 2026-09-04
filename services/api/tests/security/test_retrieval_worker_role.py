@@ -65,6 +65,7 @@ async def _seed_index(engine: AsyncEngine, account_id: UUID) -> tuple[UUID, UUID
         "SELECT * FROM xagent_sessions",
         "SELECT * FROM project_memberships",
         "SELECT * FROM xagent_retrieval_receipts",
+        "SELECT * FROM xagent_cited_answer_evidence",
     ),
 )
 async def test_worker_cannot_read_identity_session_or_receipt_data(

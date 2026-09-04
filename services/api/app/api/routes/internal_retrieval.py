@@ -46,6 +46,7 @@ from app.services.retrieval import (
     load_retrieval_session,
     payload_sha256,
     reserve_citation_ordinals,
+    resolve_session_citation,
     resolve_scope,
     scope_sha256,
 )
@@ -549,7 +550,7 @@ async def search_route(
 
 
 async def _authorized_citations(
-    request: CitationAuthorizeRequest | CitationResolveRequest,
+    request: CitationAuthorizeRequest,
     context: SessionContext,
     delegation_token: str | None,
     tool_name: str,
@@ -565,7 +566,7 @@ async def _authorized_citations(
     )
     identities = [
         (item.id, item.artifact_id, item.version_id, item.chunk_id)
-        for item in (request.citations if hasattr(request, "citations") else [request.citation])
+        for item in request.citations
     ]
     candidates = await authorize_session_citations(
         context.session,
@@ -585,6 +586,34 @@ async def _authorized_citations(
         ),
     )
     return candidates
+
+
+async def _resolved_citation(
+    request: CitationResolveRequest,
+    context: SessionContext,
+    delegation_token: str | None,
+) -> RetrievalCandidate:
+    _check_revision(request.permission_revision, context)
+    session_item = await load_retrieval_session(
+        context.session, context.principal.actor_id, request.session_id
+    )
+    await _verify_delegation(
+        delegation_token, context=context, session_item=session_item,
+        session_id=request.session_id, tool_call_id=request.tool_call_id,
+        tool_name="resolve_citation",
+    )
+    candidate = await resolve_session_citation(
+        context.session,
+        session_id=request.session_id,
+        citation_id=request.citation_id,
+    )
+    await finalize_retrieval_authorization(
+        context.session,
+        session_id=request.session_id,
+        permission_revision=context.principal.permission_revision,
+        project_ids=(candidate.project_id,) if candidate.project_id is not None else (),
+    )
+    return candidate
 
 
 @router.post("/citations/authorize", response_model=CitationAuthorizeResponse)
@@ -642,10 +671,7 @@ async def resolve_citation_route(
 ) -> CitationResolveResponse | JSONResponse:
     started = time.monotonic()
     try:
-        candidates = await _authorized_citations(
-            request, context, delegation_token, "resolve_citation"
-        )
-        item = candidates[0]
+        item = await _resolved_citation(request, context, delegation_token)
         await _write_retrieval_audit(
             context, action="retrieval.citation_resolve", session_id=request.session_id,
             tool_call_id=request.tool_call_id, result="allowed",

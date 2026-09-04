@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.project import Project, ProjectAction
-from app.models.retrieval import XAgentRetrievalReceipt
+from app.models.retrieval import XAgentCitedAnswerEvidence, XAgentRetrievalReceipt
 from app.models.workbench import XAgentSessionProjectRef
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
 from app.services.audit import retrieval_audit_details, write_audit_event
@@ -659,6 +659,16 @@ class _AdmittedRetrieval:
     audit_id: UUID
 
 
+@dataclass(frozen=True)
+class _CitationEvidence:
+    admission_sequence: int
+    artifact_id: UUID
+    version_id: UUID
+    index_id: UUID
+    index_generation: int
+    chunk_id: UUID
+
+
 async def _load_retrieval_admissions(
     session: AsyncSession,
     principal: Principal,
@@ -897,6 +907,301 @@ async def _admit_retrieval_receipts(
     return admitted
 
 
+def _citation_id(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) > 32
+        or not value.startswith("[资料")
+        or not value.endswith("]")
+    ):
+        raise ValueError
+    ordinal = value[3:-1]
+    if not ordinal.isascii() or not ordinal.isdigit() or ordinal.startswith("0"):
+        raise ValueError
+    return value
+
+
+def _canonical_uuid(value: object) -> UUID:
+    if not isinstance(value, str):
+        raise ValueError
+    parsed = UUID(value)
+    if str(parsed) != value:
+        raise ValueError
+    return parsed
+
+
+def _valid_source_event_sequences(payload: dict[str, Any], sequence: int) -> bool:
+    if "sourceEventSeqs" not in payload:
+        return True
+    values = payload["sourceEventSeqs"]
+    return (
+        isinstance(values, list)
+        and 1 <= len(values) <= 100
+        and len(set(values)) == len(values)
+        and all(
+            not isinstance(value, bool)
+            and isinstance(value, int)
+            and 0 <= value < sequence
+            for value in values
+        )
+    )
+
+
+def _canonical_retrieval_evidence(
+    *,
+    event_type: object,
+    schema_version: object,
+    payload: object,
+    sequence: int,
+) -> list[tuple[str, _CitationEvidence]] | None:
+    """Parse exact server-canonical retrieval metadata from one durable event."""
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    meta = data.get("meta") if isinstance(data, dict) else None
+    if not isinstance(meta, dict) or meta.get("kind") != "xagent-retrieval":
+        return None
+    try:
+        if (
+            event_type != "tool/result"
+            or schema_version != 1
+            or set(payload) - {"sourceEventSeqs"}
+            != {"seq", "time", "type", "data", "surfaceOp"}
+            or payload["seq"] != sequence
+            or payload["type"] != "tool/result"
+            or payload["surfaceOp"] != "append"
+            or not _valid_source_event_sequences(payload, sequence)
+            or set(data) != {"turn", "step", "message", "meta"}
+            or set(meta)
+            != {
+                "kind", "tool", "payloadHash", "scopeHash", "queryHash",
+                "citations", "evidence",
+            }
+            or meta["tool"] not in {"project_discovery", "artifact_search"}
+            or any(
+                not isinstance(meta[key], str)
+                or len(meta[key]) != 64
+                or any(character not in "0123456789abcdef" for character in meta[key])
+                for key in ("payloadHash", "scopeHash", "queryHash")
+            )
+            or not isinstance(meta["citations"], list)
+            or not isinstance(meta["evidence"], list)
+            or len(meta["citations"]) > 8
+            or len(meta["citations"]) != len(meta["evidence"])
+        ):
+            raise ValueError
+        citation_ids = [_citation_id(value) for value in meta["citations"]]
+        if len(set(citation_ids)) != len(citation_ids):
+            raise ValueError
+        parsed: list[tuple[str, _CitationEvidence]] = []
+        for citation_id, value in zip(citation_ids, meta["evidence"], strict=True):
+            if (
+                not isinstance(value, dict)
+                or set(value)
+                != {
+                    "citationId", "artifactId", "versionId", "chunkId",
+                    "indexId", "generation",
+                }
+                or value["citationId"] != citation_id
+                or isinstance(value["generation"], bool)
+                or not isinstance(value["generation"], int)
+                or value["generation"] < 1
+            ):
+                raise ValueError
+            parsed.append((
+                citation_id,
+                _CitationEvidence(
+                    admission_sequence=sequence,
+                    artifact_id=_canonical_uuid(value["artifactId"]),
+                    version_id=_canonical_uuid(value["versionId"]),
+                    index_id=_canonical_uuid(value["indexId"]),
+                    index_generation=value["generation"],
+                    chunk_id=_canonical_uuid(value["chunkId"]),
+                ),
+            ))
+        return parsed
+    except (KeyError, TypeError, ValueError):
+        raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT) from None
+
+
+def _canonical_cited_answer(
+    event: dict[str, Any],
+    *,
+    sequence: int,
+) -> tuple[str, list[str]] | None:
+    payload = event.get("payload")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    meta = data.get("meta") if isinstance(data, dict) else None
+    if not isinstance(meta, dict) or meta.get("kind") != "xagent-cited-answer":
+        return None
+    try:
+        message = data["message"]
+        content = message["content"]
+        if not isinstance(content, list) or len(content) != 1:
+            raise ValueError
+        result = content[0]
+        result_content = result["content"]
+        if not isinstance(result_content, list) or len(result_content) != 1:
+            raise ValueError
+        text_content = result_content[0]
+        tool_call_id = result["toolCallId"]
+        if (
+            event.get("event_type") != "tool/result"
+            or event.get("schema_version") != 1
+            or set(payload) - {"sourceEventSeqs"}
+            != {"seq", "time", "type", "data", "surfaceOp"}
+            or payload["seq"] != sequence
+            or payload["type"] != "tool/result"
+            or payload["surfaceOp"] != "append"
+            or isinstance(payload["time"], bool)
+            or not isinstance(payload["time"], int)
+            or payload["time"] < 0
+            or not _valid_source_event_sequences(payload, sequence)
+            or set(data) != {"turn", "step", "message", "meta"}
+            or any(
+                isinstance(data[key], bool)
+                or not isinstance(data[key], int)
+                or data[key] < 0
+                for key in ("turn", "step")
+            )
+            or set(meta) != {"kind", "schemaVersion", "blocks", "citationIds"}
+            or meta["schemaVersion"] != 1
+            or not isinstance(meta["blocks"], list)
+            or not 1 <= len(meta["blocks"]) <= 256
+            or not isinstance(meta["citationIds"], list)
+            or set(message) != {"id", "role", "source", "content"}
+            or not isinstance(message["id"], str)
+            or not 1 <= len(message["id"]) <= 255
+            or message["role"] != "user"
+            or set(message["source"]) != {"kind", "callId"}
+            or message["source"] != {"kind": "tool", "callId": tool_call_id}
+            or set(result) != {"type", "toolCallId", "isError", "content"}
+            or result["type"] != "tool-result"
+            or result["isError"] is not False
+            or result["toolCallId"] != tool_call_id
+            or not isinstance(tool_call_id, str)
+            or not 1 <= len(tool_call_id) <= 255
+            or set(text_content) != {"type", "text"}
+            or text_content["type"] != "text"
+            or not isinstance(text_content["text"], str)
+            or len(json.dumps(
+                {"blocks": meta["blocks"]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode()) > 64 * 1024
+        ):
+            raise ValueError
+        citation_count = 0
+        has_markdown = False
+        rendered: list[str] = []
+        first_use: list[str] = []
+        seen: set[str] = set()
+        previous_citation: str | None = None
+        for block in meta["blocks"]:
+            if not isinstance(block, dict) or not isinstance(block.get("type"), str):
+                raise ValueError
+            if block["type"] == "markdown":
+                if set(block) != {"type", "text"} or not isinstance(block["text"], str):
+                    raise ValueError
+                has_markdown = has_markdown or bool(block["text"])
+                rendered.append(block["text"])
+                previous_citation = None
+            elif block["type"] == "citation":
+                if set(block) != {"type", "id"}:
+                    raise ValueError
+                citation_id = _citation_id(block["id"])
+                citation_count += 1
+                if citation_count > 64 or citation_id == previous_citation:
+                    raise ValueError
+                rendered.append(f"【已验证资料：{citation_id}】")
+                previous_citation = citation_id
+                if citation_id not in seen:
+                    seen.add(citation_id)
+                    first_use.append(citation_id)
+            else:
+                raise ValueError
+        if (
+            not has_markdown
+            or citation_count == 0
+            or meta["citationIds"] != first_use
+            or text_content["text"] != "".join(rendered)
+        ):
+            raise ValueError
+        return tool_call_id, first_use
+    except (KeyError, TypeError, ValueError):
+        raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT) from None
+
+
+async def _cited_answer_provenance(
+    session: AsyncSession,
+    item: XAgentSession,
+    *,
+    expected_sequence: int,
+    events: list[dict[str, Any]],
+    admitted: dict[int, _AdmittedRetrieval],
+) -> tuple[list[XAgentCitedAnswerEvidence], dict[int, str]]:
+    """Bind new cited answers to prior server-canonical retrieval events."""
+    evidence_by_id: dict[str, _CitationEvidence] = {}
+
+    def add_evidence(values: list[tuple[str, _CitationEvidence]] | None) -> None:
+        for citation_id, evidence in values or []:
+            if citation_id in evidence_by_id:
+                raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
+            evidence_by_id[citation_id] = evidence
+
+    previous = (
+        await session.scalars(
+            select(XAgentSessionEvent)
+            .where(
+                XAgentSessionEvent.session_id == item.id,
+                XAgentSessionEvent.sequence <= expected_sequence,
+            )
+            .order_by(XAgentSessionEvent.sequence)
+        )
+    ).all()
+    for stored in previous:
+        add_evidence(_canonical_retrieval_evidence(
+            event_type=stored.event_type,
+            schema_version=stored.schema_version,
+            payload=stored.payload,
+            sequence=stored.sequence,
+        ))
+
+    provenance: list[XAgentCitedAnswerEvidence] = []
+    answer_tool_calls: dict[int, str] = {}
+    for offset, event in enumerate(events, start=1):
+        sequence = expected_sequence + offset
+        admission = admitted.get(sequence)
+        if admission is not None:
+            add_evidence(_canonical_retrieval_evidence(
+                event_type="tool/result",
+                schema_version=1,
+                payload=admission.payload,
+                sequence=sequence,
+            ))
+        answer = _canonical_cited_answer(event, sequence=sequence)
+        if answer is None:
+            continue
+        tool_call_id, citation_ids = answer
+        answer_tool_calls[sequence] = tool_call_id
+        for citation_id in citation_ids:
+            evidence = evidence_by_id.get(citation_id)
+            if evidence is None or evidence.admission_sequence >= sequence:
+                raise SessionServiceError(SessionErrorCode.EVIDENCE_CONFLICT)
+            provenance.append(XAgentCitedAnswerEvidence(
+                session_id=item.id,
+                answer_event_sequence=sequence,
+                citation_id=citation_id,
+                admission_event_sequence=evidence.admission_sequence,
+                artifact_id=evidence.artifact_id,
+                version_id=evidence.version_id,
+                index_id=evidence.index_id,
+                index_generation=evidence.index_generation,
+                chunk_id=evidence.chunk_id,
+            ))
+    return provenance, answer_tool_calls
+
+
 async def _reject_consumed_receipt_reuse(
     session: AsyncSession,
     attachments: list[dict[str, Any]],
@@ -1018,6 +1323,13 @@ async def append_events(
         item,
         pending,
     )
+    provenance, answer_tool_calls = await _cited_answer_provenance(
+        session,
+        item,
+        expected_sequence=expected_sequence,
+        events=events,
+        admitted=admitted,
+    )
     for offset, event in enumerate(events, start=1):
         sequence = expected_sequence + offset
         admission = admitted.get(sequence)
@@ -1032,13 +1344,15 @@ async def append_events(
                 tool_call_id=(
                     admission.tool_call_id
                     if admission is not None
-                    else event.get("tool_call_id")
+                    else answer_tool_calls.get(sequence, event.get("tool_call_id"))
                 ),
                 audit_id=(admission.audit_id if admission is not None else None),
             )
         )
     item.last_event_sequence = expected_sequence + len(events)
     item.version += 1
+    await session.flush()
+    session.add_all(provenance)
     await session.flush()
     result = {
         "schema_version": PROTOCOL_VERSION,
@@ -1062,7 +1376,7 @@ async def fork_session(
     *,
     source_id: UUID,
     through_sequence: int,
-    title: str,
+    title: str | None,
     idempotency_key: str,
     digest: str,
 ) -> tuple[dict[str, Any], bool]:
@@ -1079,14 +1393,22 @@ async def fork_session(
         return replay, True
     if through_sequence < -1 or through_sequence > source.last_event_sequence:
         raise SessionServiceError(SessionErrorCode.SEQUENCE_CONFLICT)
+    target_id = uuid4()
+    runtime_header = _fork_runtime_header(
+        source,
+        target_id=target_id,
+        through_sequence=through_sequence,
+    )
     target = XAgentSession(
-        id=uuid4(),
+        id=target_id,
         owner_id=principal.actor_id,
         project_id=source.project_id,
         visibility=source.visibility,
         permission_revision_created=principal.permission_revision,
-        title=title,
+        title=source.title if title is None else title,
+        runtime_header=runtime_header,
         last_event_sequence=through_sequence,
+        next_citation_ordinal=source.next_citation_ordinal,
     )
     session.add(target)
     await session.flush()
@@ -1122,6 +1444,35 @@ async def fork_session(
             )
         )
     await session.flush()
+    source_provenance = (
+        await session.scalars(
+            select(XAgentCitedAnswerEvidence)
+            .where(
+                XAgentCitedAnswerEvidence.session_id == source_id,
+                XAgentCitedAnswerEvidence.answer_event_sequence <= through_sequence,
+                XAgentCitedAnswerEvidence.admission_event_sequence <= through_sequence,
+            )
+            .order_by(
+                XAgentCitedAnswerEvidence.answer_event_sequence,
+                XAgentCitedAnswerEvidence.citation_id,
+            )
+        )
+    ).all()
+    session.add_all([
+        XAgentCitedAnswerEvidence(
+            session_id=target.id,
+            answer_event_sequence=value.answer_event_sequence,
+            citation_id=value.citation_id,
+            admission_event_sequence=value.admission_event_sequence,
+            artifact_id=value.artifact_id,
+            version_id=value.version_id,
+            index_id=value.index_id,
+            index_generation=value.index_generation,
+            chunk_id=value.chunk_id,
+        )
+        for value in source_provenance
+    ])
+    await session.flush()
     result = {"schema_version": PROTOCOL_VERSION, "session": session_payload(target)}
     await _store_idempotent_result(
         session,
@@ -1132,6 +1483,39 @@ async def fork_session(
         result=result,
     )
     return result, False
+
+
+def _fork_runtime_header(
+    source: XAgentSession,
+    *,
+    target_id: UUID,
+    through_sequence: int,
+) -> dict[str, Any] | None:
+    """Derive ordinary-fork runtime metadata only from the persisted source."""
+    header = source.runtime_header
+    if header is None:
+        return None
+    source_runtime_id = f"session-{source.id}"
+    if (
+        not isinstance(header, dict)
+        or header.get("version") != 0
+        or header.get("id") != source_runtime_id
+        or isinstance(header.get("createdAt"), bool)
+        or not isinstance(header.get("createdAt"), int)
+        or header["createdAt"] < 0
+        or ("cwd" in header and not isinstance(header["cwd"], str))
+        or ("agentPreset" in header and not isinstance(header["agentPreset"], str))
+    ):
+        raise SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
+    return {
+        "version": 0,
+        "id": f"session-{target_id}",
+        "createdAt": int(datetime.now(UTC).timestamp() * 1000),
+        **({"cwd": header["cwd"]} if "cwd" in header else {}),
+        "parentSession": source_runtime_id,
+        "seedLength": through_sequence + 1,
+        **({"agentPreset": header["agentPreset"]} if "agentPreset" in header else {}),
+    }
 
 
 async def archive_session(

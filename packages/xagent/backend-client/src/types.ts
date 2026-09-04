@@ -299,9 +299,10 @@ export interface XAgentAuthorizeCitationsInput extends XAgentRetrievalOperationI
   readonly citations: readonly XAgentCitationIdentity[]
 }
 
-/** Input for resolving one persisted citation into Artifact navigation. */
+/** Input that lets FastAPI resolve one durable citation without caller-supplied evidence identity. */
 export interface XAgentResolveCitationInput extends XAgentRetrievalOperationInput {
-  readonly citation: XAgentCitationIdentity
+  /** Session-local short ID whose exact immutable evidence is server-owned. */
+  readonly citationId: string
 }
 
 /** Reauthorized Artifact navigation target without a storage URL. */

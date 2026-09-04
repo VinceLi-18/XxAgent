@@ -328,6 +328,7 @@ def _tool_result(tool_call_id: str, search: dict[str, object]) -> dict[str, obje
             "seq": 0,
             "time": 1_788_451_200_000,
             "type": "tool/result",
+            "surfaceOp": "append",
             "data": {
                 "turn": 0,
                 "step": 0,
@@ -359,6 +360,44 @@ def _tool_result(tool_call_id: str, search: dict[str, object]) -> dict[str, obje
     }
 
 
+def _cited_answer_result(citation_id: str) -> dict[str, object]:
+    rendered = f"检索结论【已验证资料：{citation_id}】"
+    return {
+        "event_type": "tool/result",
+        "schema_version": 1,
+        "payload": {
+            "seq": 1,
+            "time": 1_788_451_200_001,
+            "type": "tool/result",
+            "surfaceOp": "append",
+            "data": {
+                "turn": 0,
+                "step": 1,
+                "message": {
+                    "id": "message-submit-cited-answer",
+                    "role": "user",
+                    "source": {"kind": "tool", "callId": "submit-cited-answer"},
+                    "content": [{
+                        "type": "tool-result",
+                        "toolCallId": "submit-cited-answer",
+                        "isError": False,
+                        "content": [{"type": "text", "text": rendered}],
+                    }],
+                },
+                "meta": {
+                    "kind": "xagent-cited-answer",
+                    "schemaVersion": 1,
+                    "blocks": [
+                        {"type": "markdown", "text": "检索结论"},
+                        {"type": "citation", "id": citation_id},
+                    ],
+                    "citationIds": [citation_id],
+                },
+            },
+        },
+    }
+
+
 def _admit_search(
     session: RetrievalSession,
     *,
@@ -372,7 +411,10 @@ def _admit_search(
             "schema_version": 1,
             "expected_sequence": -1,
             "idempotency_key": f"append-{uuid4()}",
-            "events": [_tool_result(tool_call_id, search)],
+            "events": [
+                _tool_result(tool_call_id, search),
+                _cited_answer_result(search["citations"][0]["id"]),
+            ],
             "retrieval_receipts": [{
                 "event_sequence": 0,
                 "tool_call_id": tool_call_id,
@@ -402,9 +444,10 @@ def _citation_request(
         "tool_call_id": tool_call_id,
         "permission_revision": session.permission_revision,
     }
-    payload["citations" if tool_name == "authorize_citations" else "citation"] = (
-        [citation_identity] if tool_name == "authorize_citations" else citation_identity
-    )
+    if tool_name == "authorize_citations":
+        payload["citations"] = [citation_identity]
+    else:
+        payload["citation_id"] = citation_identity["id"]
     return session.client.post(
         path,
         headers={

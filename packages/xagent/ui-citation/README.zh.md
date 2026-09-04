@@ -4,7 +4,7 @@
 
 `@xagent/dsh-ui-citation` 在现有 Business 对话中渲染 `submit_cited_answer` 的封闭 `xagent-cited-answer` 结果 metadata。Markdown block 使用共享安全 Markdown 组件，并使模型创作的链接保持不可交互。Citation block 变为键盘可访问的“已验证资料” chip，安静的来源条按首次使用顺序各列一次 citation。只有这些 block 会创建导航操作；Markdown 链接、自动链接、URL 形态的行内代码和 citation 近似文本都保持为文字。
 
-选择 chip 时，Browser 只向 `xagentCitation/resolve` 发送当前 Session ID 和 citation ID。Host 从认证请求恢复 actor、账号、权限 revision 和已持久化 citation 身份，并返回不含 URL 的不可变 Artifact、Version、Chunk 与行身份。Browser 只把 Artifact、Version 与行范围交给 `xagentArtifactCitationOpener`；handoff 先打开工作台的“资料”页签，再由 Artifact 控制器重新读取详情和该精确 clean 版本的预览。
+选择 chip 时，Browser 只向 `xagentCitation/resolve` 发送当前 Session ID 和 citation ID。Host 从认证请求恢复 actor、账号和权限 revision，再由 FastAPI 解析该 Session 的持久 cited-answer provenance，并为该 actor 重新授权精确的不可变 Artifact Version 与 Chunk。响应只包含不带 URL 的 Artifact、Version、Chunk 和行身份。Browser 只把 Artifact、Version 与行范围交给 `xagentArtifactCitationOpener`；handoff 先打开工作台的“资料”页签，再由 Artifact 控制器重新读取详情和该精确 clean 版本的预览。
 
 一个控制器只拥有一个账号和 Session 范围，并且最多拥有一次 resolution。请求被替换、账号或 Session 变化、ToolView 卸载、Remote 失败以及插件 dispose 都会取消请求并阻止迟到 Artifact 发布。UI 绝不把 Tool 参数、结果文本或 Markdown 当作 citation 权威。失败 Tool result 显示中性状态“引用验证未通过，回答未发布”，且不泄露参数或内容；终态 `CITATION_FAILED` 回合保留对话的通用失败状态。畸形的成功 metadata 显示关闭式 alert“已验证回答不可用”。
 

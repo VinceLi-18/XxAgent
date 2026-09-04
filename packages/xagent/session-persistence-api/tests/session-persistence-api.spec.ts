@@ -77,6 +77,93 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
 }
 
 describe('XAgent FastAPI Session Persistence', () => {
+  test('fork uses the source-derived backend transaction and binds its returned child identity', async () => {
+    const value = backend()
+    const childId = SessionId('session-00000000-0000-0000-0000-000000000702')
+    const childHeader: SessionHeader = {
+      version: 0,
+      id: childId,
+      createdAt: 1_787_587_200_010,
+      ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
+      parentSession: id,
+      seedLength: 1,
+    }
+    value.sessions.fork = async (...args) => {
+      value.calls.push({ name: 'fork', args })
+      return {
+        schema_version: 1,
+        session: {
+          id: '00000000-0000-0000-0000-000000000702',
+          visibility: 'project',
+          project_id: '00000000-0000-0000-0000-000000000401',
+          runtime_header: childHeader,
+          last_event_sequence: 0,
+        },
+      }
+    }
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    const forked = await persistence.withUserToken('alice-token', () => persistence.fork(id, 0))
+
+    expect(forked).toEqual(childHeader)
+    const forkCall = value.calls.find(call => call.name === 'fork')
+    expect(forkCall?.args.slice(0, 2)).toEqual([
+      'alice-token',
+      '00000000-0000-0000-0000-000000000701',
+    ])
+    expect(forkCall?.args[3]).toBeUndefined()
+    expect(forkCall?.args[2]).toMatchObject({ schema_version: 1, through_sequence: 0 })
+    const forkBody = forkCall?.args[2] as Record<string, unknown>
+    expect(typeof forkBody.idempotency_key).toBe('string')
+    expect(forkBody).not.toHaveProperty('visibility')
+    value.sessions.open = async (...args) => {
+      value.calls.push({ name: 'open-child', args })
+      return {
+        schema_version: 1,
+        session: { runtime_header: childHeader, version: 1, last_event_sequence: 0 },
+        events: [{ sequence: 0, payload: event }],
+      }
+    }
+    await expect(persistence.inspect(childId)).resolves.toMatchObject({ meta: childHeader })
+    expect(value.calls.find(call => call.name === 'open-child')?.args).toEqual([
+      'alice-token',
+      '00000000-0000-0000-0000-000000000702',
+      undefined,
+    ])
+  })
+
+  test.each([
+    { target_scope: { visibility: 'project' } },
+    { runtime_header_private: 'secret' },
+  ])('fork rejects caller-invented or private response fields %#', async (extra) => {
+    const value = backend()
+    const childHeader: SessionHeader & Record<string, unknown> = {
+      version: 0,
+      id: SessionId('session-00000000-0000-0000-0000-000000000702'),
+      createdAt: 1_787_587_200_010,
+      parentSession: id,
+      seedLength: 1,
+      ...('runtime_header_private' in extra ? extra : {}),
+    }
+    value.sessions.fork = vi.fn(async () => ({
+      schema_version: 1,
+      session: {
+        id: '00000000-0000-0000-0000-000000000702',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        runtime_header: childHeader,
+        last_event_sequence: 0,
+        ...('target_scope' in extra ? extra : {}),
+      },
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.withUserToken(
+      'alice-token',
+      () => persistence.fork(id, 0),
+    )).rejects.toThrow('invalid XAgent session fork response')
+  })
+
   test('flush sends only the exact receipt sidecars for its event window and commits after success', async () => {
     const ctx = new Context()
     const value = backend()

@@ -556,6 +556,11 @@ function citationOrdinal(value: unknown): number {
   return ordinal
 }
 
+function citationIdValue(value: unknown): string {
+  citationOrdinal(value)
+  return value as string
+}
+
 function citationIdentity(value: unknown): {
   readonly id: string
   readonly ordinal: number
@@ -1134,18 +1139,12 @@ export class XAgentBackendClient implements XAgentBackend {
         if (row.schema_version !== 1 || row.authorized !== true) failSchema()
       },
       resolveCitation: async (token, delegation, input, signal): Promise<XAgentResolvedCitation> => {
-        const citation = citationRequest(input.citation)
-        const identity = {
-          id: citation.id as string,
-          artifactId: citation.artifact_id as string,
-          versionId: citation.version_id as string,
-          chunkId: citation.chunk_id as string,
-        }
+        const citationId = citationIdValue(input.citationId)
         const value = await this.retrievalRequest(
           token,
           delegation,
           '/internal/xagent/retrieval/citations/resolve',
-          { schema_version: 1, ...retrievalOperation(input), citation },
+          { schema_version: 1, ...retrievalOperation(input), citation_id: citationId },
           CITATION_ERRORS,
           signal,
         )
@@ -1160,11 +1159,8 @@ export class XAgentBackendClient implements XAgentBackend {
         if (
           row.schema_version !== 1
           || lineEnd < lineStart
-          || artifactId !== identity.artifactId
-          || versionId !== identity.versionId
-          || chunkId !== identity.chunkId
         ) failSchema()
-        return { ...identity, lineStart, lineEnd }
+        return { id: citationId, artifactId, versionId, chunkId, lineStart, lineEnd }
       },
     }
     this.retrieval = Object.freeze(retrieval)

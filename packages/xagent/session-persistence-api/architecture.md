@@ -12,4 +12,4 @@ Agent Loop 在新 Agent 注册之前调用 provider 的发布准备边界。prov
 
 通用 Workspace 服务在 Host 启动时会枚举 Session，但该阶段没有用户 Principal。基础 Session Persistence 为此提供 `listForBootstrap()`，默认保持原有 `list()` 行为；XAgent 远端 provider 覆盖该方法并返回空数组，既满足内部 Workspace registry 的启动依赖，也不会使用服务身份枚举任何用户会话。所有浏览器 list、load、create、append 与 inspect 仍必须位于 `withUserToken()` 作用域内。
 
-工作台 Bootstrap 返回独立的 `sessionScopes` 索引，其 Session ID 来自已验证的运行时 Header。前端只用该索引分组；通用 `SessionHeader` 不增加项目字段。FastAPI fork 复制父 Session 的 `visibility`、`project_id` 和私有 Session 项目引用，不读取当前工作上下文。
+工作台 Bootstrap 返回独立的 `sessionScopes` 索引，其 Session ID 来自已验证的运行时 Header。前端只用该索引分组；通用 `SessionHeader` 不增加项目字段。Host fork 先 flush 源 Session，再调用 provider 的 source-derived fork。请求不携带目标 ID、`visibility`、`project_id` 或项目引用；FastAPI 在同一事务重新授权并锁定源，由服务端分配子 ID、派生 `parentSession`／`seedLength` Header，并复制精确事件前缀、父 Session 范围、私有项目引用和前缀内 cited-answer provenance。provider 要求响应 ID 与 runtime Header 一致、血缘和 seed 边界精确且不带 subagent 元数据，随后建立子 Session 租约并让 Host 恢复该持久身份。当前工作上下文不参与 fork。

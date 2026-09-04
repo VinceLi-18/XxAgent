@@ -6,7 +6,7 @@
 
 Private Session 的检索必须显式提供规范 Project UUID 和／或 `includePrivate`。Project Session 只使用 Session 固定项目，并拒绝调用方选择器。`listAccessibleProjects` 只用于 Private Session，接受可选且有界的项目名称查询，返回最多 20 个可访问项目。缺少认证作用域、Session、签名器或服务时失败关闭；已知后端失败映射为固定错误码，其他失败映射为 `service-unavailable`。
 
-请求作用域内的 Browser Remote `xagentCitation/resolve` 只接受当前 Session ID 与一个已持久化的 `[资料N]` ID。Typert gateway 提供认证 actor、账号、权限 revision、用户令牌、物理连接和请求取消；匿名、嵌套、不匹配、被替换、已取消和已释放的作用域都会关闭式失败。Remote 在签发新的精确委托前，会从 live Session 的规范持久 Tool result 重建 citation 的 Artifact、Version 与 Chunk 身份。它只返回不可变的 Artifact、Version、Chunk 和行身份，绝不返回存储 URL，也不保留 locator 或 URL 缓存。公开失败只包括 `unauthenticated`、`session-not-found`、`citation-invalid` 和 `service-unavailable`；集合外的后端错误码统一收敛为 `service-unavailable`。
+请求作用域内的 Browser Remote `xagentCitation/resolve` 只接受当前 Session ID 与一个已持久化的 `[资料N]` ID。Typert gateway 提供认证 actor、账号、权限 revision、用户令牌、物理连接和请求取消；匿名、嵌套、不匹配、被替换、已取消和已释放的作用域都会关闭式失败。Remote 只把短 ID 与新的精确委托发送给 FastAPI。FastAPI 通过随 Session 提交的 cited-answer provenance 解析该 ID，再为当前 actor 重新授权精确的不可变 Artifact Version 与 Chunk。该流程不依赖 Host 的 live message 投影，也不依赖 admission 时绑定原 actor 的 receipt，因此重新加载、恢复、compaction、保留范围的 fork 以及另一名仍获授权的 Project 成员都能继续打开引用，撤权则会关闭访问。响应只包含不可变的 Artifact、Version、Chunk 和行身份，绝不包含存储 URL；两端都不缓存 locator 或 URL。公开失败只包括 `unauthenticated`、`session-not-found`、`citation-invalid` 和 `service-unavailable`；集合外的后端错误码统一收敛为 `service-unavailable`。
 
 每次 XAgent inbox 插入都会记录认证作用域或显式无效标记。有效绑定同时包含 prompt 请求与物理连接的生命周期，并仅在 Agent 认领该消息时激活。缺失、过期、已取消、已断连或混合的认领绑定会拒绝该 step；只有空的内部 continuation 可以保留正在运行的作用域。取消、丢弃、替换、turn 结束、Agent 释放和服务释放会清除对应私有作用域，不新增 Session 事件。
 

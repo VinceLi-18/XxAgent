@@ -18,6 +18,7 @@ async def _require_retrieval_schema(engine: AsyncEngine) -> None:
         "artifact_index_jobs",
         "artifact_search_heads",
         "xagent_retrieval_receipts",
+        "xagent_cited_answer_evidence",
     }
     required_columns = {
         "artifact_text_indexes.artifact_id",
@@ -34,6 +35,10 @@ async def _require_retrieval_schema(engine: AsyncEngine) -> None:
         "audit_events.index_generation",
         "xagent_retrieval_receipts.expires_at",
         "xagent_retrieval_receipts.consumed_at",
+        "xagent_cited_answer_evidence.answer_event_sequence",
+        "xagent_cited_answer_evidence.admission_event_sequence",
+        "xagent_cited_answer_evidence.version_id",
+        "xagent_cited_answer_evidence.index_generation",
         "xagent_sessions.next_citation_ordinal",
     }
     async with engine.connect() as connection:
@@ -117,6 +122,39 @@ async def test_retrieval_schema_installs_extensions_and_durable_tables(
     seeded_database: AsyncEngine,
 ) -> None:
     await _require_retrieval_schema(seeded_database)
+
+
+@pytest.mark.anyio
+async def test_cited_answer_provenance_is_immutable_and_not_available_to_workers(
+    seeded_database: AsyncEngine,
+    application_role: str,
+    worker_role: str,
+) -> None:
+    async with seeded_database.connect() as connection:
+        privileges = tuple((await connection.execute(
+            text(
+                "SELECT has_table_privilege(:application_role, "
+                "'xagent_cited_answer_evidence', 'SELECT'), "
+                "has_table_privilege(:application_role, "
+                "'xagent_cited_answer_evidence', 'INSERT'), "
+                "has_table_privilege(:application_role, "
+                "'xagent_cited_answer_evidence', 'UPDATE'), "
+                "has_table_privilege(:application_role, "
+                "'xagent_cited_answer_evidence', 'DELETE'), "
+                "has_table_privilege(:worker_role, "
+                "'xagent_cited_answer_evidence', 'SELECT')"
+            ),
+            {"application_role": application_role, "worker_role": worker_role},
+        )).one())
+        row_security = tuple((await connection.execute(
+            text(
+                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                "WHERE oid = 'xagent_cited_answer_evidence'::regclass"
+            )
+        )).one())
+
+    assert privileges == (True, True, False, False, False)
+    assert row_security == (True, True)
 
 
 @pytest.mark.anyio

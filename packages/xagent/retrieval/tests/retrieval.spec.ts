@@ -1230,10 +1230,15 @@ describe('XAgentRetrievalService', () => {
 })
 
 describe('XAgentCitationRemoteService', () => {
-  test('publishes only resolve and derives every backend identity from persisted citation evidence', async () => {
+  test('publishes only resolve and sends only the durable citation id to the backend', async () => {
     const created = await citationService()
-    created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, input) => ({
-      ...input.citation, lineStart: 4, lineEnd: 7,
+    created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async () => ({
+      id: '[资料1]',
+      artifactId: '00000000-0000-0000-0000-000000000501',
+      versionId: '00000000-0000-0000-0000-000000000601',
+      chunkId: '00000000-0000-0000-0000-000000000801',
+      lineStart: 4,
+      lineEnd: 7,
     }))
 
     expect(remoteMethods(created.remote)).toEqual([
@@ -1256,21 +1261,44 @@ describe('XAgentCitationRemoteService', () => {
       sessionId: SESSION,
       toolCallId: call[2].toolCallId,
       permissionRevision: 3,
-      citation: {
-        id: '[资料1]',
-        artifactId: '00000000-0000-0000-0000-000000000501',
-        versionId: '00000000-0000-0000-0000-000000000601',
-        chunkId: '00000000-0000-0000-0000-000000000801',
-      },
+      citationId: '[资料1]',
     })
     expect(call[2].toolCallId).toEqual(expect.any(String))
     expect(call[3]).toBeInstanceOf(AbortSignal)
   })
 
+  test('resolves after Host reload or resume without a live Session projection', async () => {
+    const ctx = new Context()
+    const value = backend()
+    value.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, input) => ({
+      id: input.citationId,
+      artifactId: '00000000-0000-0000-0000-000000000501',
+      versionId: '00000000-0000-0000-0000-000000000601',
+      chunkId: '00000000-0000-0000-0000-000000000801',
+      lineStart: 4,
+      lineEnd: 7,
+    }))
+    const remote = new XAgentCitationRemoteService(ctx, value, {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
+    })
+
+    await expect(remote.withRequest(scope(), () => remote.resolve(
+      `session-${SESSION}`,
+      '[资料1]',
+    ))).resolves.toMatchObject({ versionId: '00000000-0000-0000-0000-000000000601' })
+    expect(value.resolveCitation).toHaveBeenCalledOnce()
+    await ctx.fiber.dispose()
+  })
+
   test('mints a fresh delegation and resolves again instead of caching a locator or URL', async () => {
     const created = await citationService()
     created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, input) => ({
-      ...input.citation, lineStart: 4, lineEnd: 7,
+      id: input.citationId,
+      artifactId: '00000000-0000-0000-0000-000000000501',
+      versionId: '00000000-0000-0000-0000-000000000601',
+      chunkId: '00000000-0000-0000-0000-000000000801',
+      lineStart: 4,
+      lineEnd: 7,
     }))
     await created.remote.withRequest(scope(), async () => {
       await created.remote.resolve(`session-${SESSION}`, '[资料1]')
@@ -1281,6 +1309,34 @@ describe('XAgentCitationRemoteService', () => {
     expect(calls[0]?.[1]).not.toBe(calls[1]?.[1])
     expect(JSON.stringify(await created.remote.withRequest(scope(), () =>
       created.remote.resolve(`session-${SESSION}`, '[资料1]')))).not.toContain('url')
+  })
+
+  test('resolves durable citation provenance after compaction shadows the retrieval result', async () => {
+    const created = await citationService()
+    const retrieval = created.session.events.find(event => event.type === 'tool/result')
+    if (retrieval === undefined) throw new Error('missing retrieval result')
+    created.session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'compacted history' }],
+      source: { kind: 'user' },
+    }), {
+      surfaceOp: { op: 'replace', start: retrieval.seq, end: retrieval.seq },
+      sourceEventSeqs: [retrieval.seq],
+    })
+    expect(created.session.deriveMessages().some(message => message.id === 'message-search')).toBe(false)
+    created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, input) => ({
+      id: input.citationId,
+      artifactId: '00000000-0000-0000-0000-000000000501',
+      versionId: '00000000-0000-0000-0000-000000000601',
+      chunkId: '00000000-0000-0000-0000-000000000801',
+      lineStart: 4,
+      lineEnd: 7,
+    }))
+
+    await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
+      `session-${SESSION}`,
+      '[资料1]',
+    ))).resolves.toMatchObject({ artifactId: '00000000-0000-0000-0000-000000000501' })
+    expect(created.backend.resolveCitation).toHaveBeenCalledOnce()
   })
 
   test('fails closed for missing evidence, Session mismatch, nested scope, cancellation, and disposal', async () => {
@@ -1300,7 +1356,7 @@ describe('XAgentCitationRemoteService', () => {
       'session-00000000-0000-0000-0000-000000000999', '[资料1]',
     ))).rejects.toMatchObject({ failure: { code: 'unauthenticated' } })
     await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
-      `session-${SESSION}`, '[资料9]',
+      `session-${SESSION}`, '[资料0]',
     ))).rejects.toMatchObject({ failure: { code: 'citation-invalid' } })
     await expect(created.remote.withRequest(scope(), () => created.remote.withRequest(scope(), async () => undefined)))
       .rejects.toThrow('nested')

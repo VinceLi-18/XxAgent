@@ -76,7 +76,7 @@ class CitationAuthorizeResponse(_ClosedModel):
 
 
 class CitationResolveRequest(_OperationRequest):
-    citation: CitationIdentity
+    citation_id: str = Field(pattern=r"^\[资料[1-9][0-9]*\]$", max_length=32)
 
 
 class CitationResolveResponse(_ClosedModel):

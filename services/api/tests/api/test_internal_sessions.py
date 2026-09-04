@@ -227,6 +227,7 @@ async def test_create_uses_the_saved_server_context_and_ignores_forged_scope(
     assert private_session.json()["session"]["visibility"] == "private"
     assert private_session.json()["session"]["project_id"] is None
     scopes = {item["session_id"]: item for item in bootstrap.json()["session_scopes"]}
+    fork_runtime_id = forked_project_session.json()["session"]["runtime_header"]["id"]
     assert scopes == {
         "session-00000000-0000-0000-0000-000000000711": {
             "session_id": "session-00000000-0000-0000-0000-000000000711",
@@ -237,6 +238,11 @@ async def test_create_uses_the_saved_server_context_and_ignores_forged_scope(
             "session_id": "session-00000000-0000-0000-0000-000000000712",
             "visibility": "private",
             "project_id": None,
+        },
+        fork_runtime_id: {
+            "session_id": fork_runtime_id,
+            "visibility": "project",
+            "project_id": str(alice_project.id),
         },
     }
     listed_runtime_ids = {
@@ -261,6 +267,14 @@ async def test_events_are_paginated_and_fork_copies_only_the_authorized_prefix(
             "schema_version": 1,
             "title": "source",
             "visibility": "private",
+            "runtime_header": {
+                "version": 0,
+                "id": "session-00000000-0000-0000-0000-000000000731",
+                "createdAt": 1787587200000,
+                "cwd": "/workspace/alpha",
+                "agentPreset": "business",
+            },
+            "session_id": "00000000-0000-0000-0000-000000000731",
             "idempotency_key": "source-1",
         },
     )
@@ -305,6 +319,50 @@ async def test_events_are_paginated_and_fork_copies_only_the_authorized_prefix(
     assert [event["sequence"] for event in page.json()["events"]] == [1]
     assert forked.status_code == 201
     assert [event["payload"] for event in fork_open.json()["events"]] == [{"n": 1}]
+    assert fork_open.json()["session"]["runtime_header"] == {
+        "version": 0,
+        "id": f"session-{fork_id}",
+        "createdAt": fork_open.json()["session"]["runtime_header"]["createdAt"],
+        "cwd": "/workspace/alpha",
+        "parentSession": "session-00000000-0000-0000-0000-000000000731",
+        "seedLength": 1,
+        "agentPreset": "business",
+    }
+    assert isinstance(fork_open.json()["session"]["runtime_header"]["createdAt"], int)
+
+
+@pytest.mark.anyio
+async def test_fork_rejects_caller_invented_target_scope(
+    client,
+    seeded_database,
+    alice,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    created = await client.post(
+        "/internal/xagent/sessions",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "title": "source",
+            "idempotency_key": "source-closed-fork",
+        },
+    )
+    source_id = created.json()["session"]["id"]
+
+    response = await client.post(
+        f"/internal/xagent/sessions/{source_id}/fork",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "through_sequence": -1,
+            "title": "forged scope",
+            "idempotency_key": "fork-forged-scope",
+            "visibility": "project",
+            "project_id": "00000000-0000-0000-0000-000000000499",
+        },
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.anyio
@@ -427,8 +485,19 @@ async def test_project_session_continues_to_use_its_project_access(
         headers=_headers(token),
         json={"schema_version": 1},
     )
+    hidden_fork = await client.post(
+        f"/internal/xagent/sessions/{session_id}/fork",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "through_sequence": -1,
+            "idempotency_key": "project-access-revoked-fork",
+        },
+    )
     assert hidden.status_code == 404
     assert hidden.json() == {"detail": {"code": "not-found"}}
+    assert hidden_fork.status_code == 404
+    assert hidden_fork.json() == {"detail": {"code": "not-found"}}
 
     async with AsyncSession(seeded_database) as session:
         async with session.begin():

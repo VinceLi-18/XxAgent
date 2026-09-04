@@ -1072,6 +1072,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: '_session', description: 'the fully seeded but still unpublished Session.' }],
       },
       {
+        signature: 'fork(_sourceId: SessionId, _throughSequence: number): Promise<SessionHeader | undefined>',
+        description: 'Atomically derive a durable child from an authorized source prefix when this backend owns Session scope and identity. The backend, not the caller, chooses the child identity and copies every backend-owned authorization relation. Local stores return `undefined`, allowing the Host to use its ordinary in-process seed path.',
+        parameters: [{ name: '_sourceId', description: 'authorized source Session identity.' }, { name: '_throughSequence', description: 'inclusive final source event sequence.' }],
+        returns: 'the durable child header, or `undefined` when unsupported.',
+      },
+      {
         signature: 'abstract create(meta: SessionHeader): Promise<void>',
         description: 'Register a new session\'s metadata. A backend MAY defer the physical write until the first append (lazy materialization), in which case a created-but-never-appended session is absent from list — abandoned sessions leave nothing behind.',
         parameters: [{ name: 'meta', description: 'the immutable header (id, version, cwd, lineage) to record.' }],
@@ -2265,8 +2271,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
   },
   {
     key: 'xagentCitation',
-    summary: 'Request-scoped citation locator that resolves only persisted public evidence.',
-    description: 'Request-scoped citation locator that resolves only persisted public evidence.',
+    summary: 'Request-scoped citation locator backed by durable provenance and current-actor authorization.',
+    description: 'Request-scoped citation locator backed by durable provenance and current-actor authorization.',
     methods: [
       {
         signature: 'async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>',
@@ -2276,7 +2282,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: '@Remote async resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget>',
-        description: 'Resolve one persisted citation into immutable Artifact navigation identities.',
+        description: 'Resolve one durable cited-answer ID through server-owned provenance and current-actor authorization.',
         parameters: [{ name: 'sessionId', description: 'current Browser Session id.' }, { name: 'citationId', description: 'persisted short citation id.' }, { name: 'signal', description: 'Browser request cancellation.' }],
         returns: 'immutable Artifact, Version, Chunk, and line identities without a URL.',
       },

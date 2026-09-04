@@ -12,7 +12,7 @@ Status: implemented
 
 ## 决策
 
-`dsh-session` 直接负责 `ctx.sessions` 上的常规活跃会话 fork。不设独立的 `dsh-session-fork` 包，也不设 `ctx.sessionFork` 服务：该 API 没有独立的后端、事件词汇、生命周期或持久化行为，所有持久化工作都委托给现有的会话存储和持久化后端。
+`dsh-session` 直接负责 `ctx.sessions` 上的常规活跃会话 fork 策略。不设独立的 `dsh-session-fork` 包，也不设 `ctx.sessionFork` 服务：该操作没有独立的事件词汇或生命周期，所有持久化工作都委托给现有的会话存储和持久化服务。`SessionPersistence.fork(sourceId, throughSequence)` 是拥有 Session 身份或授权范围的后端可选实现的权威入口；本地后端返回 `undefined`，继续使用进程内 seed 路径。
 
 store 暴露一个操作：
 
@@ -32,7 +32,7 @@ class SessionStore extends Service {
 
 Host 的 `session.fork` RPC 接受 `atSeq`，并将其视为所需轮次内的锚点，而非 store 中包含该序号的安全边界。它选择该锚点处或其后的首个 `turn/end`；锚点省略或超过末尾时，选择最后一个已完成轮次。若锚点已在日志中，但从该锚点起找不到匹配的 `turn/end`，则返回 `fork-unavailable`，绝不回退到更早的轮次，因此消息操作不会静默遗漏所点击的消息。
 
-Host 通过 agent（智能体）注册表，以选定的种子和谱系创建子会话；发布前 setup 会先安装日志中最新的提供方、模型和推理（reasoning）目标，子会话才能运行。随后，Host 将子会话附加到源 Workspace。若附加失败，则返回 `workspace-attach-failed` 及已发布的子会话 id；客户端先将该子会话对账到摘要列表，再向调用方报告错误。Session 行操作使用最后一个已完成轮次，消息操作则提供其事件 seq；两者都会在成功后打开子会话，展开谱系后可在源会话下看到它。
+Host 在子会话运行前，按源日志中的提供方、模型和推理（reasoning）目标完成组合。使用本地持久化后端时，Host 通过 agent（智能体）注册表，以选定的种子和谱系创建子会话。使用拥有范围的远端后端时，Host 先 flush 源会话，只提交源 ID 和包含式 cut，再恢复 `SessionPersistence.fork` 返回的精确持久 Header。权威后端在单个事务中重新授权并锁定源、分配子 ID，并复制精确事件前缀以及后端拥有的 `visibility`、项目引用和其他授权关系。当前工作区选择与调用方提交的目标 metadata 都不能决定子会话范围。随后，Host 将子会话附加到源 Workspace。若附加失败，则返回 `workspace-attach-failed` 及已发布的子会话 id；客户端先将该子会话对账到摘要列表，再向调用方报告错误。Session 行操作使用最后一个已完成轮次，消息操作则提供其事件 seq；两者都会在成功后打开子会话，展开谱系后可在源会话下看到它。
 
 ## 曾考虑的替代方案
 
@@ -44,6 +44,6 @@ Host 通过 agent（智能体）注册表，以选定的种子和谱系创建子
 
 ## 后果
 
-公开 API 保持精简且易于发现：活跃会话分支是 `ctx.sessions` 的一部分，紧邻 `create({ seed })`，而非一个独立服务或一对两步辅助函数。持久化继续通过现有的 `session/created` 和 `session/flush` 行为运作：fork 出的子会话创建时便带有种子事件，因此现有后端只需持久化该种子一次，并在 header 中保存 `parentSession`／`seedLength`。
+公开 API 保持精简且易于发现：活跃会话分支是 `ctx.sessions` 的一部分，紧邻 `create({ seed })`，而非一个独立服务或一对两步辅助函数。本地持久化继续通过现有的 `session/created` 和 `session/flush` 行为运作：fork 出的子会话创建时便带有种子事件，因此这些后端只需持久化该种子一次，并在 header 中保存 `parentSession`／`seedLength`。拥有安全范围的远端后端必须覆盖 `SessionPersistence.fork`，从已授权源派生持久子会话，并把服务端拥有的身份返回给 Host 恢复。
 
 v1 范围仍然排除 ACP（Agent Client Protocol） `session/fork`、对未加载的已持久化会话的 fork、面向模型的工具，以及 subagent 重构。如果未来添加 ACP 方法，应在具备协议与快照覆盖后才声明支持该能力；本 Agent Note 不添加任何 ACP 协议行为，因此不需要 ACP 快照。fork 子会话的回放仍由现有的[种子边界测试 Agent Note](../testing/2026-06-22-fork-child-replay-seed-boundary.md) 覆盖；store、Host、载体与客户端的专项测试固定边界和对账约定，真实 Chromium 场景则固定组装后的消息操作与谱系树。

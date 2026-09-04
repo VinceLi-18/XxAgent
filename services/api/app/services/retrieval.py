@@ -17,6 +17,7 @@ from app.models.retrieval import (
     ArtifactSearchHead,
     ArtifactTextChunk,
     ArtifactTextIndex,
+    XAgentCitedAnswerEvidence,
     XAgentRetrievalReceipt,
 )
 from app.models.xagent_session import XAgentSession
@@ -451,3 +452,43 @@ async def authorize_session_citations(
             for _, artifact_id, version_id, chunk_id in citations
         ],
     )
+
+
+async def resolve_session_citation(
+    session: AsyncSession,
+    *,
+    session_id: UUID,
+    citation_id: str,
+) -> RetrievalCandidate:
+    """Resolve durable answer provenance and reauthorize its exact immutable chunk."""
+    rows = (
+        await session.scalars(
+            select(XAgentCitedAnswerEvidence)
+            .where(
+                XAgentCitedAnswerEvidence.session_id == session_id,
+                XAgentCitedAnswerEvidence.citation_id == citation_id,
+            )
+            .order_by(XAgentCitedAnswerEvidence.answer_event_sequence)
+        )
+    ).all()
+    identities = {
+        (
+            row.artifact_id,
+            row.version_id,
+            row.index_id,
+            row.index_generation,
+            row.chunk_id,
+        )
+        for row in rows
+    }
+    if len(identities) != 1:
+        raise RetrievalError("citation-invalid")
+    artifact_id, version_id, index_id, index_generation, chunk_id = identities.pop()
+    candidates = await authorize_citation_chunks(
+        session,
+        identities=[(artifact_id, version_id, chunk_id)],
+    )
+    candidate = candidates[0]
+    if candidate.index_id != index_id or candidate.generation != index_generation:
+        raise RetrievalError("citation-invalid")
+    return candidate

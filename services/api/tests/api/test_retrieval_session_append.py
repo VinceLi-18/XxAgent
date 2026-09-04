@@ -37,7 +37,14 @@ async def _login(client, engine, account) -> str:
             )
     response = await client.post(
         "/api/v1/auth/login",
-        json={"email": "alice@example.test", "password": PASSWORD},
+        json={
+            "email": (
+                "alice@example.test"
+                if account.id.int == 1
+                else "bob@example.test"
+            ),
+            "password": PASSWORD,
+        },
     )
     assert response.status_code == 200
     return response.json()["access_token"]
@@ -49,6 +56,7 @@ def _delegation_token(
     session_id: UUID,
     tool_call_id: str,
     tool_name: str = "search_artifacts",
+    project_id: UUID | None = None,
     permission_revision: int = 1,
 ) -> str:
     now = datetime.now(UTC)
@@ -59,7 +67,7 @@ def _delegation_token(
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(seconds=30)).timestamp()),
             "actor_id": str(actor_id),
-            "project_id": None,
+            "project_id": str(project_id) if project_id is not None else None,
             "session_id": str(session_id),
             "tool_call_id": tool_call_id,
             "tool_name": tool_name,
@@ -195,6 +203,79 @@ def _tool_result(sequence: int, tool_call_id: str, search: dict[str, object]) ->
                     "payloadHash": search["payload_sha256"],
                     "citations": [item["id"] for item in search["citations"]],
                 },
+            },
+        },
+    }
+
+
+def _cited_answer_result(
+    sequence: int,
+    tool_call_id: str,
+    citation_ids: list[str],
+) -> dict[str, object]:
+    blocks = [{"type": "markdown", "text": "结论"}]
+    for citation_id in citation_ids:
+        blocks.append({"type": "citation", "id": citation_id})
+    rendered = "结论" + "".join(
+        f"【已验证资料：{citation_id}】" for citation_id in citation_ids
+    )
+    return {
+        "event_type": "tool/result",
+        "schema_version": 1,
+        "payload": {
+            "seq": sequence,
+            "time": 1_787_587_200_000 + sequence,
+            "type": "tool/result",
+            "surfaceOp": "append",
+            "data": {
+                "turn": 0,
+                "step": 1,
+                "message": {
+                    "id": f"message-{sequence}",
+                    "role": "user",
+                    "source": {"kind": "tool", "callId": tool_call_id},
+                    "content": [{
+                        "type": "tool-result",
+                        "toolCallId": tool_call_id,
+                        "isError": False,
+                        "content": [{"type": "text", "text": rendered}],
+                    }],
+                },
+                "meta": {
+                    "kind": "xagent-cited-answer",
+                    "schemaVersion": 1,
+                    "blocks": blocks,
+                    "citationIds": citation_ids,
+                },
+            },
+        },
+    }
+
+
+def _compaction_checkpoint(
+    sequence: int,
+    *,
+    start: int,
+    end: int,
+) -> dict[str, object]:
+    return {
+        "event_type": "user/message",
+        "schema_version": 1,
+        "payload": {
+            "seq": sequence,
+            "time": 1_787_587_200_000 + sequence,
+            "type": "user/message",
+            "surfaceOp": {"op": "replace", "start": start, "end": end},
+            "sourceEventSeqs": list(range(start, end + 1)),
+            "data": {
+                "id": f"message-{sequence}",
+                "role": "user",
+                "source": {
+                    "kind": "plugin",
+                    "plugin": "compact",
+                    "compactionId": "citation-compaction",
+                },
+                "content": [{"type": "text", "text": "Earlier evidence and answer."}],
             },
         },
     }
@@ -362,6 +443,93 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
         headers=headers,
         json={"schema_version": 1},
     )
+    answered = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-cited-answer-1",
+            "events": [_cited_answer_result(
+                1,
+                "submit-cited-answer",
+                [search_body["citations"][0]["id"]],
+            )],
+        },
+    )
+    compacted = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": 1,
+            "idempotency_key": "append-citation-compaction-1",
+            "events": [_compaction_checkpoint(2, start=0, end=1)],
+        },
+    )
+    reopened_after_compaction = await client.post(
+        "/internal/xagent/retrieval/citations/resolve",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=alice_private_xagent_session.id,
+                tool_call_id="resolve-after-compaction",
+                tool_name="resolve_citation",
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(alice_private_xagent_session.id),
+            "tool_call_id": "resolve-after-compaction",
+            "permission_revision": 1,
+            "citation_id": search_body["citations"][0]["id"],
+        },
+    )
+    forked = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/fork",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "through_sequence": 2,
+            "title": "cited answer fork",
+            "idempotency_key": "fork-cited-answer-1",
+        },
+    )
+    fork_id = UUID(forked.json()["session"]["id"])
+    reopened_fork = await client.post(
+        "/internal/xagent/retrieval/citations/resolve",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=fork_id,
+                tool_call_id="resolve-cited-answer-fork",
+                tool_name="resolve_citation",
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(fork_id),
+            "tool_call_id": "resolve-cited-answer-fork",
+            "permission_revision": 1,
+            "citation_id": search_body["citations"][0]["id"],
+        },
+    )
+    invented = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": 2,
+            "idempotency_key": "append-invented-citation-1",
+            "events": [_cited_answer_result(
+                2,
+                "submit-invented-cited-answer",
+                ["[资料999]"],
+            )],
+        },
+    )
 
     assert appended.status_code == replay.status_code == 200
     assert appended.json() == replay.json()
@@ -373,6 +541,18 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
     assert reused.json() == {"detail": {"code": "evidence-conflict"}}
     assert search_body["receipt"] not in opened.text
     assert "retrieval_receipts" not in opened.text
+    assert answered.status_code == 200
+    assert compacted.status_code == 200
+    assert reopened_after_compaction.status_code == 200
+    assert (
+        reopened_after_compaction.json()["version_id"]
+        == search_body["citations"][0]["version_id"]
+    )
+    assert forked.status_code == 201
+    assert reopened_fork.status_code == 200
+    assert reopened_fork.json()["version_id"] == search_body["citations"][0]["version_id"]
+    assert invented.status_code == 409
+    assert invented.json() == {"detail": {"code": "evidence-conflict"}}
     persisted_event = opened.json()["events"][0]
     persisted_meta = persisted_event["payload"]["data"]["meta"]
     assert persisted_event["payload"] != event["payload"]
@@ -416,6 +596,21 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
                 AuditEvent.action == "retrieval.evidence_admission",
             )
         )
+        provenance = (
+            await session.execute(
+                text(
+                    "SELECT session_id, citation_id, answer_event_sequence, "
+                    "admission_event_sequence, artifact_id, version_id, index_id, "
+                    "index_generation, chunk_id "
+                    "FROM xagent_cited_answer_evidence "
+                    "WHERE session_id IN (:source_id, :fork_id) ORDER BY session_id"
+                ),
+                {
+                    "source_id": alice_private_xagent_session.id,
+                    "fork_id": fork_id,
+                },
+            )
+        ).all()
     assert receipt is not None
     assert receipt.consumed_event_sequence == 0
     assert receipt.consumed_payload_sha256 == search_body["payload_sha256"]
@@ -427,9 +622,205 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
     assert admission_audit.details["tool_call_id"] == tool_call_id
     assert admission_audit.details["query_sha256"] == hashlib.sha256("预算".encode()).hexdigest()
     assert admission_audit.details["project_scope_sha256"] == persisted_meta["scopeHash"]
+    assert len(provenance) == 2
+    assert {row.session_id for row in provenance} == {
+        alice_private_xagent_session.id,
+        fork_id,
+    }
+    assert all(
+        (
+            row.citation_id,
+            row.answer_event_sequence,
+            row.admission_event_sequence,
+            row.artifact_id,
+            row.version_id,
+            row.index_id,
+            row.index_generation,
+            row.chunk_id,
+        )
+        == (
+            search_body["citations"][0]["id"],
+            1,
+            0,
+            UUID(search_body["citations"][0]["artifact_id"]),
+            UUID(search_body["citations"][0]["version_id"]),
+            UUID("00000000-0000-0000-0000-000000000723"),
+            1,
+            UUID(search_body["citations"][0]["chunk_id"]),
+        )
+        for row in provenance
+    )
     serialized_audit = json.dumps(admission_audit.details)
     assert search_body["receipt"] not in serialized_audit
     assert "项目预算" not in serialized_audit
+
+
+@pytest.mark.anyio
+async def test_project_member_reopens_admitted_citation_and_revocation_closes_access(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    shared_xagent_session,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    assert shared_xagent_session.project_id is not None
+    await _seed_search_chunk(
+        seeded_database,
+        bob.id,
+        shared_xagent_session.project_id,
+    )
+    bob_token = await _login(client, seeded_database, bob)
+    bob_headers = {
+        "Authorization": f"Bearer {bob_token}",
+        "X-XAgent-Service-Token": SERVICE_TOKEN,
+    }
+    search_call_id = "shared-search"
+    search = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **bob_headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=bob.id,
+                session_id=shared_xagent_session.id,
+                project_id=shared_xagent_session.project_id,
+                tool_call_id=search_call_id,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(shared_xagent_session.id),
+            "tool_call_id": search_call_id,
+            "permission_revision": 1,
+            "query": "预算",
+        },
+    )
+    assert search.status_code == 200, search.text
+    search_body = search.json()
+    citation_id = search_body["citations"][0]["id"]
+    admitted = await client.post(
+        f"/internal/xagent/sessions/{shared_xagent_session.id}/append",
+        headers=bob_headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "append-shared-search-1",
+            "events": [_tool_result(0, search_call_id, search_body)],
+            "retrieval_receipts": [{
+                "event_sequence": 0,
+                "tool_call_id": search_call_id,
+                "receipt": search_body["receipt"],
+                "payload_hash": search_body["payload_sha256"],
+            }],
+        },
+    )
+    answered = await client.post(
+        f"/internal/xagent/sessions/{shared_xagent_session.id}/append",
+        headers=bob_headers,
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-shared-answer-1",
+            "events": [_cited_answer_result(
+                1,
+                "submit-shared-cited-answer",
+                [citation_id],
+            )],
+        },
+    )
+    assert admitted.status_code == 200, admitted.text
+    assert answered.status_code == 200, answered.text
+
+    alice_token = await _login(client, seeded_database, alice)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        alice_revision = await session.scalar(
+            text(
+                "SELECT revision FROM xagent_permission_revisions "
+                "WHERE account_id = :actor"
+            ),
+            {"actor": alice.id},
+        )
+        alice_receipts = await session.scalar(
+            text(
+                "SELECT count(*) FROM xagent_retrieval_receipts "
+                "WHERE actor_id = :actor"
+            ),
+            {"actor": alice.id},
+        )
+    assert isinstance(alice_revision, int)
+    assert alice_receipts == 0
+
+    async def resolve(
+        tool_call_id: str,
+        permission_revision: int,
+        token: str,
+    ):
+        return await client.post(
+            "/internal/xagent/retrieval/citations/resolve",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-XAgent-Service-Token": SERVICE_TOKEN,
+                "X-XAgent-Delegation": _delegation_token(
+                    actor_id=alice.id,
+                    session_id=shared_xagent_session.id,
+                    project_id=shared_xagent_session.project_id,
+                    tool_call_id=tool_call_id,
+                    tool_name="resolve_citation",
+                    permission_revision=permission_revision,
+                ),
+            },
+            json={
+                "schema_version": 1,
+                "session_id": str(shared_xagent_session.id),
+                "tool_call_id": tool_call_id,
+                "permission_revision": permission_revision,
+                "citation_id": citation_id,
+            },
+        )
+
+    reopened = await resolve("resolve-shared", alice_revision, alice_token)
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "DELETE FROM project_memberships "
+                    "WHERE project_id = :project AND account_id = :actor"
+                ),
+                {
+                    "project": shared_xagent_session.project_id,
+                    "actor": alice.id,
+                },
+            )
+        current_revision = await session.scalar(
+            text(
+                "SELECT revision FROM xagent_permission_revisions "
+                "WHERE account_id = :actor"
+            ),
+            {"actor": alice.id},
+        )
+    assert isinstance(current_revision, int)
+    stale = await resolve("resolve-shared-stale", current_revision, alice_token)
+    refreshed_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "alice@example.test", "password": PASSWORD},
+    )
+    assert refreshed_login.status_code == 200
+    revoked = await resolve(
+        "resolve-shared-revoked",
+        current_revision,
+        refreshed_login.json()["access_token"],
+    )
+
+    assert reopened.status_code == 200
+    assert reopened.json()["version_id"] == search_body["citations"][0]["version_id"]
+    assert stale.status_code == 401
+    assert stale.json() == {"detail": {"code": "unauthenticated"}}
+    assert revoked.status_code == 503
+    assert revoked.json() == {"detail": {"code": "service-unavailable"}}
 
 
 @pytest.mark.anyio

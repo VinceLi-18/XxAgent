@@ -293,7 +293,7 @@ describe('XAgent 后端客户端', () => {
       'user-secret', 'delegation-authorize', { ...retrievalOperation, citations: [identity] },
     )).resolves.toBeUndefined()
     await expect(client.retrieval.resolveCitation(
-      'user-secret', 'delegation-resolve', { ...retrievalOperation, citation: identity },
+      'user-secret', 'delegation-resolve', { ...retrievalOperation, citationId: identity.id },
     )).resolves.toEqual({ ...identity, lineStart: 3, lineEnd: 8 })
 
     expect(calls.map(call => call.path)).toEqual([
@@ -307,7 +307,7 @@ describe('XAgent 后端客户端', () => {
         project_ids: [retrievalIds.project], include_private: true,
       },
       { schema_version: 1, ...snakeOperation(retrievalOperation), citations: [snakeCitation(identity)] },
-      { schema_version: 1, ...snakeOperation(retrievalOperation), citation: snakeCitation(identity) },
+      { schema_version: 1, ...snakeOperation(retrievalOperation), citation_id: identity.id },
     ])
     expect(calls.map(call => call.headers.get('x-xagent-delegation'))).toEqual([
       'delegation-projects', 'delegation-search', 'delegation-authorize', 'delegation-resolve',
@@ -364,7 +364,7 @@ describe('XAgent 后端客户端', () => {
     expect(fetcher).not.toHaveBeenCalled()
   })
 
-  test('引用解析在首个 await 前快照完整输入身份', async () => {
+  test('引用解析在首个 await 前快照短引用 ID', async () => {
     let finish: ((response: Response) => void) | undefined
     let sentBody: unknown
     const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
@@ -374,17 +374,11 @@ describe('XAgent 后端客户端', () => {
     const client = new XAgentBackendClient({
       origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: fetcher,
     })
-    const citation = {
-      id: '[资料1]', artifactId: retrievalIds.artifact,
-      versionId: retrievalIds.version, chunkId: retrievalIds.chunk,
-    }
+    const input = { ...retrievalOperation, citationId: '[资料1]' }
     const result = client.retrieval.resolveCitation(
-      'user', 'delegation', { ...retrievalOperation, citation },
+      'user', 'delegation', input,
     )
-    citation.id = '[资料2]'
-    citation.artifactId = crypto.randomUUID()
-    citation.versionId = crypto.randomUUID()
-    citation.chunkId = crypto.randomUUID()
+    input.citationId = '[资料2]'
     finish?.(Response.json({
       schema_version: 1,
       artifact_id: retrievalIds.artifact,
@@ -401,10 +395,7 @@ describe('XAgent 后端客户端', () => {
     expect(sentBody).toEqual({
       schema_version: 1,
       ...snakeOperation(retrievalOperation),
-      citation: {
-        id: '[资料1]', artifact_id: retrievalIds.artifact,
-        version_id: retrievalIds.version, chunk_id: retrievalIds.chunk,
-      },
+      citation_id: '[资料1]',
     })
   })
 
@@ -485,7 +476,7 @@ describe('XAgent 后端客户端', () => {
         'user', 'delegation', { ...retrievalOperation, citations: [identity] },
       )
       : client.retrieval.resolveCitation(
-        'user', 'delegation', { ...retrievalOperation, citation: identity },
+        'user', 'delegation', { ...retrievalOperation, citationId: identity.id },
       )
     await expect(request).rejects.toMatchObject({ code: 'service-unavailable' })
     expect(fetcher).not.toHaveBeenCalled()

@@ -2403,28 +2403,40 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             details: {},
           })
         }
-        const childId = `session-${randomUUID()}` as SessionId
         // The child inherits the parent's composition for the same reason a
         // resumed session keeps its own: the seeded history was produced under
         // those tools, and composing anything else would strand the tool calls
         // it already carries. Now that no model-facing row sits in the host
         // plane, composing nothing would leave the child with no tools at all.
         const forkComposition = await composeAgent(resolveSessionPreset(source))
+        const persistence = ctx.get('sessionPersistence')
+        let childId: SessionId
         try {
-          await ctx.agents.create({
-            sessionId: childId,
-            seed: events.slice(0, cut),
-            meta: {
-              ...source.header.cwd === undefined ? {} : { cwd: source.header.cwd },
-              parentSession: source.id,
-              seedLength: cut,
-              ...forkComposition.agentPreset === undefined
-                ? {}
-                : { agentPreset: forkComposition.agentPreset },
-            },
-            agentOptions: agentOptions(),
-            setup: forkComposition.setup,
-          })
+          const durableChild = await persistence?.fork(source.id, cut - 1)
+          if (durableChild === undefined) {
+            childId = `session-${randomUUID()}` as SessionId
+            await ctx.agents.create({
+              sessionId: childId,
+              seed: events.slice(0, cut),
+              meta: {
+                ...source.header.cwd === undefined ? {} : { cwd: source.header.cwd },
+                parentSession: source.id,
+                seedLength: cut,
+                ...forkComposition.agentPreset === undefined
+                  ? {}
+                  : { agentPreset: forkComposition.agentPreset },
+              },
+              agentOptions: agentOptions(),
+              setup: forkComposition.setup,
+            })
+          } else {
+            childId = durableChild.id
+            await ctx.agents.resume({
+              resumeSessionId: childId,
+              agentOptions: agentOptions(),
+              setup: forkComposition.setup,
+            })
+          }
         } catch (error: unknown) {
           return err(request, {
             code: 'internal',

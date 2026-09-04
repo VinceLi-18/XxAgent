@@ -6,7 +6,7 @@
 
 资料接口覆盖列表、详情、新资料上传、新版本上传、上传完成、失败重试、预览和下载。上传创建只返回短期 PUT 授权；完成和重试返回包含不可变版本历史的完整详情。预览与下载只返回服务端授权后的 opaque URL，客户端不跟随该 URL，也不读取资料正文。
 
-检索接口覆盖个人 Session 项目发现、资料搜索、回答释放前的批量引用授权和单条引用解析。个人 Session 搜索只接受已经转为小写、排序和去重的 canonical Project UUID 数组，最多 20 项；数组与本地 scope hash 不一致时不会发送请求。搜索最多接受 8 条唯一引用，完整模型可见 citations JSON 不超过 32 KiB。项目、资料、版本、分片和 Session 标识必须是 UUID；引用 ID 的 ordinal 必须是安全正整数，单次搜索响应中的 ID 必须按返回顺序连续递增；行号和版本号必须是安全正整数。项目发现和搜索返回的 receipt 只作为 opaque 值交给后续持久化，不进入模型正文。
+检索接口覆盖个人 Session 项目发现、资料搜索、回答释放前的批量引用授权和单条引用解析。单条解析请求只发送 Session 与短引用 ID；Artifact、Version 与 Chunk 身份只接受 FastAPI 从持久 cited-answer provenance 返回的关闭响应。个人 Session 搜索只接受已经转为小写、排序和去重的 canonical Project UUID 数组，最多 20 项；数组与本地 scope hash 不一致时不会发送请求。搜索最多接受 8 条唯一引用，完整模型可见 citations JSON 不超过 32 KiB。项目、资料、版本、分片和 Session 标识必须是 UUID；引用 ID 的 ordinal 必须是安全正整数，单次搜索响应中的 ID 必须按返回顺序连续递增；行号和版本号必须是安全正整数。项目发现和搜索返回的 receipt 只作为 opaque 值交给后续持久化，不进入模型正文。
 
 请求和响应都受字节上限约束，响应正文必须是严格 UTF-8。工作台与资料响应按固定 snake_case 字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、日期、状态、计数、大小或 URL 全部失败关闭。资料范围只接受 private 或带 UUID 的 project；列表摘要的 clean latest 必须同时是 latest clean，非 clean latest 只能引用更早的 clean 版本。详情版本号唯一且严格降序，latest 字段必须与版本历史一致，latest clean 必须指向最高 clean 版本。列表和版本历史各最多接受 1,000 项，单版本大小不超过 50 MiB。
 

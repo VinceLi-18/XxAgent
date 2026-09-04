@@ -6,7 +6,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
-import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { Remote, TypertRemoteFailure, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
@@ -58,6 +58,7 @@ export * from './tokenizer.ts'
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/iu
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u
 const HASH_PATTERN = /^[0-9a-f]{64}$/u
+const CITATION_ID_PATTERN = /^\[资料([1-9][0-9]*)\]$/u
 const RETRIEVAL_ERRORS = new Set<XAgentRetrievalErrorCode>([
   'unauthenticated', 'session-not-found', 'invalid-retrieval-scope', 'retrieval-unavailable',
   'evidence-expired', 'evidence-conflict', 'citation-invalid', 'service-unavailable',
@@ -243,7 +244,7 @@ function citationRemoteFailure(code: string): TypertRemoteFailure {
   })
 }
 
-/** Request-scoped citation locator that resolves only persisted public evidence. */
+/** Request-scoped citation locator backed by durable provenance and current-actor authorization. */
 export class XAgentCitationRemoteService extends TypertRemoteService implements XAgentCitationRemote, XAgentCitationScopeRunner {
   private readonly requestScope = new AsyncLocalStorage<CitationRequestScopeState>()
   private readonly controllers = new Map<AbortController, Promise<void>>()
@@ -288,7 +289,8 @@ export class XAgentCitationRemoteService extends TypertRemoteService implements 
   }
 
   /**
-   * Resolve one persisted citation into immutable Artifact navigation identities.
+   * Resolve one durable cited-answer ID through server-owned provenance and
+   * current-actor authorization.
    * @param sessionId - current Browser Session id.
    * @param citationId - persisted short citation id.
    * @param signal - Browser request cancellation.
@@ -297,15 +299,12 @@ export class XAgentCitationRemoteService extends TypertRemoteService implements 
   @Remote
   async resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget> {
     const scope = this.requireScope(sessionId)
-    const session = this.ctx.sessions.get(SessionId(`session-${scope.sessionId}`))
-    if (session === undefined) throw citationRemoteFailure('session-not-found')
-    let citation
-    try {
-      citation = reconstructCitedAnswerEvidence(session.deriveMessages(), session)?.get(citationId)
-    } catch {
-      throw citationRemoteFailure('citation-invalid')
-    }
-    if (citation === undefined) throw citationRemoteFailure('citation-invalid')
+    const match = CITATION_ID_PATTERN.exec(citationId)
+    if (
+      citationId.length > 32
+      || match === null
+      || !Number.isSafeInteger(Number(match[1]))
+    ) throw citationRemoteFailure('citation-invalid')
     const toolCallId = randomUUID()
     const merged = AbortSignal.any([
       ...(signal === undefined ? [] : [signal]),
@@ -319,7 +318,7 @@ export class XAgentCitationRemoteService extends TypertRemoteService implements 
         sessionId: scope.sessionId,
         toolCallId,
         permissionRevision: scope.principal.permissionRevision,
-        citation,
+        citationId,
       },
       operationSignal,
     ))

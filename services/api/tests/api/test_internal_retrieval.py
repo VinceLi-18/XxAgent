@@ -766,6 +766,37 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
                     "consumed": issued_at,
                 },
             )
+            await session.execute(
+                text(
+                    "UPDATE xagent_sessions SET last_event_sequence = 1 "
+                    "WHERE id = :session"
+                ),
+                {"session": alice_private_xagent_session.id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO xagent_session_events "
+                    "(session_id, sequence, event_type, schema_version, payload, actor_id) "
+                    "VALUES (:session, 0, 'tool/result', 1, CAST('{}' AS jsonb), :actor), "
+                    "(:session, 1, 'tool/result', 1, CAST('{}' AS jsonb), :actor)"
+                ),
+                {"session": alice_private_xagent_session.id, "actor": alice.id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO xagent_cited_answer_evidence "
+                    "(session_id, citation_id, answer_event_sequence, admission_event_sequence, "
+                    "artifact_id, version_id, index_id, index_generation, chunk_id) "
+                    "VALUES (:session, '[资料1]', 1, 0, :artifact, :version, :index, 1, :chunk)"
+                ),
+                {
+                    "session": alice_private_xagent_session.id,
+                    "artifact": artifact_id,
+                    "version": version_id,
+                    "index": index_id,
+                    "chunk": chunk_id,
+                },
+            )
     user_token = await _login(client, seeded_database, alice)
     base_headers = {
         "X-XAgent-Service-Token": SERVICE_TOKEN,
@@ -798,7 +829,7 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
     resolved, resolve_token = await call(
         "/internal/xagent/retrieval/citations/resolve",
         alice_private_xagent_session.id, "resolve-real", "resolve_citation",
-        "resolve-real", {"citation": citation},
+        "resolve-real", {"citation_id": "[资料1]"},
     )
     replay = await client.post(
         "/internal/xagent/retrieval/citations/authorize",
@@ -815,7 +846,7 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
         json={
             "schema_version": 1, "session_id": str(alice_private_xagent_session.id),
             "tool_call_id": "resolve-real", "permission_revision": 1,
-            "citation": citation,
+            "citation_id": "[资料1]",
         },
     )
     resolve_mismatches = []
@@ -842,14 +873,14 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
                     "session_id": str(alice_private_xagent_session.id),
                     "tool_call_id": "resolve-binding-check",
                     "permission_revision": 1,
-                    "citation": citation,
+                    "citation_id": "[资料1]",
                 },
             )
         )
     cross_session, _ = await call(
         "/internal/xagent/retrieval/citations/resolve",
         other_session_id, "resolve-cross-session", "resolve_citation",
-        "resolve-cross-session", {"citation": citation},
+        "resolve-cross-session", {"citation_id": "[资料1]"},
     )
     unknown = {**citation, "chunk_id": str(UUID(int=999))}
     unknown_response, _ = await call(
@@ -884,7 +915,7 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
     resolve_commit_failure, _ = await call(
         "/internal/xagent/retrieval/citations/resolve",
         alice_private_xagent_session.id, "resolve-commit-failure", "resolve_citation",
-        "resolve-commit-failure", {"citation": citation},
+        "resolve-commit-failure", {"citation_id": "[资料1]"},
     )
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
@@ -899,7 +930,7 @@ async def test_real_http_citation_routes_enforce_endpoint_session_and_evidence_b
     revoked_response, _ = await call(
         "/internal/xagent/retrieval/citations/resolve",
         alice_private_xagent_session.id, "resolve-revoked", "resolve_citation",
-        "resolve-revoked", {"citation": citation},
+        "resolve-revoked", {"citation_id": "[资料1]"},
     )
 
     assert authorized.status_code == 200
@@ -1355,7 +1386,9 @@ async def test_citation_statement_failures_are_service_failures_not_invalid_evid
 
     monkeypatch.setattr("app.api.routes.internal_retrieval._verify_delegation", fake_verify)
     monkeypatch.setattr(
-        "app.api.routes.internal_retrieval.authorize_session_citations",
+        "app.api.routes.internal_retrieval.authorize_session_citations"
+        if request_type is CitationAuthorizeRequest
+        else "app.api.routes.internal_retrieval.resolve_session_citation",
         failing_authorization,
     )
     citation = {
@@ -1368,7 +1401,11 @@ async def test_citation_statement_failures_are_service_failures_not_invalid_evid
     }
     request = request_type(
         **common,
-        **({"citations": [citation]} if request_type is CitationAuthorizeRequest else {"citation": citation}),
+        **(
+            {"citations": [citation]}
+            if request_type is CitationAuthorizeRequest
+            else {"citation_id": citation["id"]}
+        ),
     )
 
     response = await route(request, context)
