@@ -1,12 +1,12 @@
+// @vitest-environment jsdom
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
-import Include, { type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
+import type { PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { boot, composeEntries, healProfilesModuleFallback, loadProfile } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
@@ -14,7 +14,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { TOOL_RUNTIME_CODE_SCHEMAS } from '@deepseek-ai/dsh-tools'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-const installAnchor = fileURLToPath(new URL('../package.json', import.meta.url))
+const installAnchor = join(process.cwd(), 'apps/cli/package.json')
 const actorId = '00000000-0000-0000-0000-000000000001'
 const authSessionId = '00000000-0000-0000-0000-000000000101'
 const projectId = '00000000-0000-0000-0000-000000000401'
@@ -416,6 +416,10 @@ const RETRIEVAL_PACKAGE_NAMES = [
   '@xagent/dsh-ui-citation',
 ] as const
 const RETRIEVAL_TOOL_NAMES = ['list_accessible_projects', 'search_artifacts', 'submit_cited_answer'] as const
+const FORBIDDEN_BROWSER_FIELDS = [
+  'serviceToken', 'userToken', 'receipt', 'embeddingOrigin',
+  'delegationPrivateKey', 'nonce', 'objectKey', 'signedUrl',
+] as const
 
 interface BrowserSlots {
   entries(name: string): Array<{
@@ -423,6 +427,135 @@ interface BrowserSlots {
     readonly registrant?: string
   }>
   register(options: unknown, component: () => null): () => void
+}
+
+interface ClientModuleHost {
+  graph(): WebBootGraph
+}
+
+interface WebBootGraph {
+  readonly rev: string
+  readonly entries: Array<{
+    readonly id: string
+    readonly url: string
+    readonly rev: string
+    readonly inject?: string[]
+    readonly immediately?: boolean
+  }>
+}
+
+interface BrowserModuleSystem {
+  prefetch(id: string): Promise<void>
+  registerStatic(id: string, module: unknown): void
+}
+
+interface ClientModulesRuntime {
+  readonly ClientModuleSystem: new (options: {
+    readonly modules: Array<{ readonly id: string; readonly url: string; readonly rev: string }>
+    readonly staticModules: Record<string, unknown>
+    readonly loadBundle: (url: string) => Promise<void>
+  }) => BrowserModuleSystem
+  parseBootManifest(graph: WebBootGraph): {
+    readonly modules: Array<{ readonly id: string; readonly url: string; readonly rev: string }>
+    readonly plugins: Array<{ readonly id: string; readonly immediately: boolean }>
+  }
+}
+
+interface BrowserModuleGlobals {
+  __ModuleLoader__?: unknown
+  __DSH_MODULES__?: BrowserModuleSystem
+}
+
+interface BrowserProfile {
+  readonly ctx: Context
+  readonly graph: WebBootGraph
+}
+
+function expectBrowserDataSafe(value: unknown, forbiddenValues: readonly string[]): void {
+  const keys: string[] = []
+  const strings: string[] = []
+  const visit = (candidate: unknown): void => {
+    if (typeof candidate === 'string') {
+      strings.push(candidate)
+      return
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit)
+      return
+    }
+    if (typeof candidate !== 'object' || candidate === null) return
+    for (const [key, item] of Object.entries(candidate as Record<string, unknown>)) {
+      keys.push(key.replaceAll(/[-_]/gu, '').toLowerCase())
+      visit(item)
+    }
+  }
+  visit(value)
+  for (const field of FORBIDDEN_BROWSER_FIELDS) {
+    expect(keys.some(key => key.includes(field.toLowerCase())), `Browser field ${field}`).toBe(false)
+  }
+  for (const forbidden of forbiddenValues) {
+    expect(strings.some(candidate => candidate.includes(forbidden)), `Browser value ${forbidden}`).toBe(false)
+  }
+}
+
+const MODULES_ID = '@deepseek-ai/dsh-client-modules'
+
+/** Read the registry-generated manifest from the same HTML endpoint as the production shell. */
+async function servedBootGraph(origin: string): Promise<WebBootGraph> {
+  const response = await fetch(origin)
+  if (!response.ok) throw new Error(`Browser manifest endpoint returned ${String(response.status)}`)
+  const html = await response.text()
+  const prefix = '<script>window.__DSH_BOOT__ = '
+  const start = html.indexOf(prefix)
+  const end = start < 0 ? -1 : html.indexOf('</script>', start + prefix.length)
+  if (start < 0 || end < 0) throw new Error('Browser manifest endpoint did not inject window.__DSH_BOOT__')
+  return JSON.parse(html.slice(start + prefix.length, end)) as WebBootGraph
+}
+
+/** Load every served graph row through the production Browser module system and Cordis Loader. */
+async function bootServedBrowser(origin: string, host: Context): Promise<BrowserProfile> {
+  const modulesSpecifier: string = '@deepseek-ai/dsh-client-modules/client'
+  const seedSpecifier: string = '@deepseek-ai/dsh-client-web/src/seed.ts'
+  const clientModules = await import(modulesSpecifier) as unknown as ClientModulesRuntime
+  const { getStaticModules } = await import(seedSpecifier) as unknown as {
+    readonly getStaticModules: () => Record<string, unknown>
+  }
+  const registry = host.get('clientModules') as ClientModuleHost | undefined
+  if (registry === undefined) throw new Error('Host profile has no ClientModuleRegistry')
+  const graph = await servedBootGraph(origin)
+  expect(graph).toEqual(registry.graph())
+  const manifest = clientModules.parseBootManifest(graph)
+  const win = globalThis as BrowserModuleGlobals
+  const modules = new clientModules.ClientModuleSystem({
+    modules: manifest.modules,
+    staticModules: getStaticModules(),
+    loadBundle: async (url) => {
+      const response = await fetch(new URL(url, origin))
+      if (!response.ok) throw new Error(`Browser bundle ${url} returned ${String(response.status)}`)
+      ;(0, eval)(await response.text())
+    },
+  })
+  modules.registerStatic(MODULES_ID, clientModules)
+  win.__DSH_MODULES__ = modules
+  await Promise.all(manifest.plugins.filter(row => row.immediately).map(row => modules.prefetch(row.id)))
+  const browser = new Context()
+  await browser.plugin(Loader)
+  browser.loader.internal = modules as unknown as NonNullable<typeof browser.loader.internal>
+  await browser.loader.create({ name: MODULES_ID })
+  await Promise.all(manifest.plugins
+    .filter(row => row.id !== MODULES_ID)
+    .map(row => browser.loader.create({ name: row.id })))
+  await browser.loader.await()
+  return { ctx: browser, graph }
+}
+
+/** Clear page-global module registration state after one Browser Loader graph. */
+async function disposeBrowser(browser: Context): Promise<void> {
+  await browser.fiber.dispose()
+  const win = globalThis as BrowserModuleGlobals
+  delete win.__ModuleLoader__
+  delete win.__DSH_MODULES__
+  document.head.querySelectorAll('style[data-plugin]').forEach((style) => { style.remove() })
 }
 
 async function bootNonBusinessProfile(profileName: string, home: string): Promise<{
@@ -458,65 +591,37 @@ async function bootNonBusinessProfile(profileName: string, home: string): Promis
   return { ctx, dump: JSON.stringify(rows) }
 }
 
-async function bootCitationBrowser(profileName: string, home: string): Promise<Context> {
-  const clientRuntimeSpecifier: string = '@deepseek-ai/dsh-client-runtime/client'
-  const citationSpecifier: string = '@xagent/dsh-ui-citation/client'
-  const clientRuntime = await import(clientRuntimeSpecifier) as unknown as {
-    readonly SlotRegistry: Parameters<Context['plugin']>[0]
-  }
-  const citationPlugin: unknown = await import(citationSpecifier)
+async function bootBrowserHostProfile(profileName: string, home: string): Promise<{
+  readonly ctx: Context
+  readonly origin?: string
+}> {
   const profile = loadProfile('dsh-test', profileName, installAnchor, home)
-  const rows = composeEntries([...profile.layers.map(layer => layer.patches), profile.patches])
-  const includesCitation = rows.some(row => row.name === '@xagent/dsh-ui-citation' && row.disabled !== true)
-  const directory = join(home, 'browser', profileName)
-  mkdirSync(directory, { recursive: true })
-  const configPath = join(directory, 'cordis.yml')
-  writeFileSync(configPath, [
-    "- name: 'test:xagent-client-prerequisites'",
-    ...includesCitation ? ["- name: '@xagent/dsh-ui-citation/client'"] : [],
-    '',
-  ].join('\n'))
-  const ctx = new Context()
-  ctx.baseUrl = `${pathToFileURL(directory).href}/`
-  const prerequisites = {
-    name: 'xagent-client-prerequisites',
-    async apply(scope: Context): Promise<() => void> {
-      await scope.plugin(clientRuntime.SlotRegistry).await()
-      const slots = scope.get('slots') as BrowserSlots
-      const releaseRoot = slots.register({
-        name: 'root', children: { 'tool.call.toolview': { kind: 'keyed', scope: 'session' } },
-      }, () => null)
-      scope.provide('remote', { $mount: async () => {
-        const dispose = scope.reflect.provide('remote.xagentCitation', { resolve: async () => ({ ok: false }) })
-        return async () => { await dispose() }
-      } } as never)
-      scope.provide('sessions', {
-        list: { getSnapshot: () => ({ current: 'session-isolation' }), subscribe: () => () => {} },
-      } as never)
-      scope.provide('xagentWorkbench', {
-        snapshot: { getSnapshot: () => ({ phase: 'ready', switching: false }), subscribe: () => () => {} },
-      } as never)
-      scope.provide('xagentArtifactCitationOpener', { openCitation: async () => {}, cancelCitation: () => {} } as never)
-      return releaseRoot
-    },
-  }
-  await ctx.plugin(Loader)
-  ctx.loader.builtins.include = Include
-  const modules = new Map<string, unknown>([
-    ['test:xagent-client-prerequisites', prerequisites],
-    ['@xagent/dsh-ui-citation/client', citationPlugin],
-  ])
-  ctx.loader.internal = {
-    version: 'v2',
-    async import(specifier: string) {
-      const module = modules.get(specifier)
-      if (module === undefined) throw new Error(`unexpected Browser Loader import: ${specifier}`)
-      return module
-    },
-  } as unknown as NonNullable<typeof ctx.loader.internal>
-  await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
-  await ctx.loader.await()
-  return ctx
+  mkdirSync(profile.dir, { recursive: true })
+  const rootConfig = join(profile.dir, 'cordis.yml')
+  writeFileSync(rootConfig, '[]\n')
+  healProfilesModuleFallback(installAnchor, home)
+  const web = profileName !== 'headless'
+  const port = web ? await freePort() : undefined
+  const patches: PatchOptions[] = [
+    ...profile.layers.flatMap(layer => layer.patches),
+    ...profile.patches,
+    { id: 'session-telemetry-otel', disabled: true },
+    ...(web ? [
+      { id: 'client-hmr', disabled: true },
+      { id: 'web-runtime', config: { printUrl: false, surfaceContext: false, trustedHosts: [] } },
+    ] : [
+      { id: 'headless-startup', disabled: true },
+      { id: 'headless-runner', disabled: true },
+    ]),
+  ]
+  const loaded = await boot('dsh-test', rootConfig, patches, (bootCtx) => {
+    bootCtx.provide('dshProfileDataPath', (...segments: string[]) => join(profile.dir, 'data', ...segments))
+    provideCmdline(bootCtx, {
+      args: port === undefined ? [] : ['--host', '127.0.0.1', '--port', String(port)],
+      exit: () => {},
+    })
+  })
+  return { ctx: loaded, ...(port === undefined ? {} : { origin: `http://127.0.0.1:${String(port)}` }) }
 }
 
 describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
@@ -569,7 +674,7 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
     const patches: PatchOptions[] = [
       ...profile.layers.flatMap(layer => layer.patches),
       ...profile.patches,
-      { id: 'web-runtime', disabled: true },
+      { id: 'web-runtime', config: { printUrl: false, surfaceContext: false, trustedHosts: [] } },
       {
         id: 'connection',
         name: '@deepseek-ai/dsh-client-connection',
@@ -577,7 +682,6 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
         config: { trustedHosts: [] },
       },
       { id: 'client-hmr', disabled: true },
-      { id: 'modules', disabled: true },
       { id: 'session-telemetry-otel', disabled: true },
       { id: 'llm-deepseek', config: { baseURL: modelOrigin } },
     ]
@@ -720,26 +824,58 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
   it('只在 Business Browser 安装 citation Remote 与 keyed Tool view', { retry: 0 }, async () => {
     const browserHome = join(root, 'browser-home')
     for (const profileName of ['xagent-business', 'xagent-developer', 'web', 'headless']) {
-      const browser = await bootCitationBrowser(profileName, browserHome)
+      const host = profileName === 'xagent-business'
+        ? { ctx: ctx!, origin }
+        : await bootBrowserHostProfile(profileName, browserHome)
+      const hostRoster = [...host.ctx.loader.entries()].map(entry => entry.options.name)
+      if (profileName === 'headless') {
+        try {
+          expect(host.ctx.get('clientModules')).toBeUndefined()
+          expect(host.origin).toBeUndefined()
+          for (const packageName of RETRIEVAL_PACKAGE_NAMES) {
+            expect(hostRoster, `headless Host package ${packageName}`).not.toContain(packageName)
+          }
+        } finally {
+          await host.ctx.fiber.dispose()
+        }
+        continue
+      }
+      if (host.origin === undefined) throw new Error(`${profileName} Host 缺少 Web origin`)
+      history.replaceState(null, '', '/?fixture')
+      const loaded = await bootServedBrowser(host.origin, host.ctx)
+      const browser = loaded.ctx
       try {
+        const roster = [...browser.loader.entries()].map(entry => entry.options.name)
+        expect(roster, `${profileName} production Browser roster`).toContain('@deepseek-ai/dsh-client-modules')
+        expect(roster, `${profileName} production Browser runtime`).toContain('@deepseek-ai/dsh-client-runtime')
+        expect([...roster].sort()).toEqual(loaded.graph.entries.map(entry => entry.id).sort())
         const slots = browser.get('slots') as BrowserSlots
         const entries = slots.entries('tool.call.toolview')
           .filter(entry => entry.options.key === 'submit_cited_answer')
         if (profileName === 'xagent-business') {
+          expect(roster).toContain('@xagent/dsh-ui-citation')
+          expect(roster).not.toContain('@xagent/dsh-ui-citation/client')
           expect(browser.get('remote.xagentCitation')).toBeDefined()
           expect(entries).toHaveLength(1)
           expect(entries[0]?.registrant).toBe('xagent-cited-answer')
-          const browserState = JSON.stringify([...browser.loader.entries()].map(entry => entry.options))
-          for (const hostSecret of [serviceToken, userToken, 'receipt_private_search_1', process.env.XAGENT_DELEGATION_PRIVATE_KEY]) {
-            if (hostSecret === undefined) throw new Error('Business Host 测试凭据缺失')
-            expect(browserState).not.toContain(hostSecret)
-          }
+          const privateKey = process.env.XAGENT_DELEGATION_PRIVATE_KEY
+          if (privateKey === undefined) throw new Error('Business Host 测试私钥缺失')
+          expectBrowserDataSafe({
+            graph: loaded.graph,
+            entries: [...browser.loader.entries()].map(entry => entry.options),
+          }, [serviceToken, userToken, 'receipt_private_search_1', privateKey])
         } else {
+          for (const packageName of RETRIEVAL_PACKAGE_NAMES) {
+            expect(hostRoster, `${profileName} Host package ${packageName}`).not.toContain(packageName)
+            expect(roster, `${profileName} Browser package ${packageName}`).not.toContain(packageName)
+          }
           expect(browser.get('remote.xagentCitation'), `${profileName} citation Remote`).toBeUndefined()
           expect(entries, `${profileName} citation Tool view`).toEqual([])
         }
       } finally {
-        await browser.fiber.dispose()
+        await disposeBrowser(browser)
+        history.replaceState(null, '', '/')
+        if (profileName !== 'xagent-business') await host.ctx.fiber.dispose()
       }
     }
   })

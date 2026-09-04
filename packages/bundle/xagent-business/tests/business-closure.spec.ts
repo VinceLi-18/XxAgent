@@ -1,6 +1,7 @@
 /** Validate the XAgent business bundle's static, deny-by-default patch. */
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,7 +13,7 @@ import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 interface PatchRow {
   id?: string
   name?: string
-  disabled?: boolean
+  disabled?: boolean | null
   config?: Record<string, unknown>
 }
 
@@ -62,6 +63,92 @@ const prohibitedRows = [
 const disabledHostRows = ['permission', 'ui-permission'] as const
 
 const disabledPresetRows = ['agent-presets', 'ui-agent-preset'] as const
+
+const forbiddenBrowserFields = [
+  'serviceToken',
+  'userToken',
+  'receipt',
+  'embeddingOrigin',
+  'delegationPrivateKey',
+  'nonce',
+  'objectKey',
+  'signedUrl',
+] as const
+
+const forbiddenBrowserValues = [
+  'xagent-retrieval-loader-service-token',
+  'xagent-retrieval-loader-user-token',
+  'receipt_private_search_1',
+  'https://embedding.example.test',
+  '-----BEGIN PRIVATE KEY-----',
+  'retrieval-nonce-fixture',
+  'private/object-key-fixture',
+  'https://objects.example.test/private?sig=fixture',
+] as const
+
+interface ClientDeclaration {
+  readonly inject?: string[]
+  readonly immediately?: boolean
+  readonly platform?: string
+}
+
+interface BrowserRow {
+  readonly row: PatchRow
+  readonly client: ClientDeclaration
+}
+
+const requireFromCli = createRequire(resolve(process.cwd(), 'apps/cli/package.json'))
+
+function clientDeclaration(name: string): ClientDeclaration | undefined {
+  let manifestPath: string
+  try {
+    manifestPath = requireFromCli.resolve(`${name}/package.json`)
+  } catch {
+    // Loader builtins and package subpath entries have no package-root client declaration.
+    return undefined
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    readonly dsh?: { readonly client?: ClientDeclaration }
+  }
+  return manifest.dsh?.client?.platform === 'web' ? manifest.dsh.client : undefined
+}
+
+function effectiveBusinessBrowserRows(home: string): BrowserRow[] {
+  const anchor = resolve(process.cwd(), 'apps/cli/package.json')
+  const profile = loadProfile('dsh-test', 'xagent-business', anchor, home)
+  const rows = composeEntries([...profile.layers.map(layer => layer.patches), profile.patches])
+  return rows.flatMap((row) => {
+    if (row.disabled === true) return []
+    const client = clientDeclaration(row.name)
+    return client === undefined ? [] : [{ row, client }]
+  })
+}
+
+function assertNoForbiddenBrowserData(value: unknown): void {
+  const failures: string[] = []
+  const visit = (candidate: unknown, path: string): void => {
+    if (typeof candidate === 'string') {
+      for (const forbidden of forbiddenBrowserValues) {
+        if (candidate.includes(forbidden)) failures.push(`${path} contains ${JSON.stringify(forbidden)}`)
+      }
+      return
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach((item, index) => { visit(item, `${path}[${String(index)}]`) })
+      return
+    }
+    if (typeof candidate !== 'object' || candidate === null) return
+    for (const [key, item] of Object.entries(candidate as Record<string, unknown>)) {
+      const normalized = key.replaceAll(/[-_]/gu, '').toLowerCase()
+      for (const forbidden of forbiddenBrowserFields) {
+        if (normalized.includes(forbidden.toLowerCase())) failures.push(`${path}.${key} uses forbidden field ${forbidden}`)
+      }
+      visit(item, `${path}.${key}`)
+    }
+  }
+  visit(value, '$')
+  if (failures.length > 0) throw new Error(failures.join('\n'))
+}
 
 function loadPatch(path: string): EntryPatch[] {
   const parsed = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
@@ -250,22 +337,34 @@ describe('xagent business bundle', () => {
   })
 
   it('keeps retrieval credentials and opaque references out of every Browser row', () => {
-    const root = fileURLToPath(new URL('..', import.meta.url))
-    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
-    const browserRows = patch.find(row => row.id === 'web-app')?.insert ?? []
-    const serialized = JSON.stringify(browserRows).toLowerCase()
+    const home = mkdtempSync(resolve(tmpdir(), 'xagent-business-browser-rows-'))
+    try {
+      const browserRows = effectiveBusinessBrowserRows(home)
+      const graph = browserRows.map(({ row, client }) => ({
+        id: row.name,
+        inject: client.inject ?? [],
+        immediately: client.immediately === true,
+      }))
+      expect(browserRows.map(({ row }) => row.id)).toContain('xagent-ui-citation')
+      expect(() => { assertNoForbiddenBrowserData({ rows: browserRows.map(item => item.row), graph }) }).not.toThrow()
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
 
-    for (const forbidden of [
-      'serviceToken',
-      'userToken',
-      'receipt',
-      'embeddingOrigin',
-      'delegationPrivateKey',
-      'nonce',
-      'objectKey',
-      'signedUrl',
-    ]) {
-      expect(serialized).not.toContain(forbidden.toLowerCase())
+  it('rejects a nested secret added to a real citation Browser row', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'xagent-business-browser-mutation-'))
+    try {
+      const browserRows = structuredClone(effectiveBusinessBrowserRows(home).map(item => item.row))
+      const citation = browserRows.find(row => row.id === 'xagent-ui-citation')
+      expect(citation, 'the mutation must target the effective citation Browser row').toBeDefined()
+      if (citation === undefined) return
+      citation.config = { transport: { signedUrl: '/artifact/content' } }
+      expect(() => { assertNoForbiddenBrowserData(browserRows) }).toThrow(/signedUrl/u)
+      citation.config = { transport: { href: 'https://objects.example.test/private?sig=fixture' } }
+      expect(() => { assertNoForbiddenBrowserData(browserRows) }).toThrow(/contains/u)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
     }
   })
 
