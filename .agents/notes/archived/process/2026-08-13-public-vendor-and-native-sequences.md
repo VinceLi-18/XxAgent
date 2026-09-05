@@ -1,6 +1,7 @@
 # Agent Note: npm access per release sequence: the vendored framework and the native packages publish publicly
 
 Status: implemented
+Archived: 2026-09-06
 
 English | [中文](2026-08-13-public-vendor-and-native-sequences.zh.md)
 

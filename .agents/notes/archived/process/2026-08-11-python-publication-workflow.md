@@ -1,6 +1,7 @@
 # Agent Note: Python public publication workflow
 
 Status: implemented
+Archived: 2026-09-06
 
 English | [中文](2026-08-11-python-publication-workflow.zh.md)
 

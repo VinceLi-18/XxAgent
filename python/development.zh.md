@@ -2,7 +2,7 @@
 
 [English](development.md) | 中文
 
-根据所需的贡献者成果选择工作流：构建运行时产物、验证 SDK、从源码运行或构建分发包。包行为分别见 [SDK 参考](sdk/README.md) 和[运行时载体参考](sdk-runtime/README.md)。
+根据所需的贡献者成果选择工作流：构建运行时产物、验证 SDK、从源码运行或构建私有 wheel 产物。包行为分别见 [SDK 参考](sdk/README.md) 和[运行时载体参考](sdk-runtime/README.md)。
 
 ## 构建运行时产物
 
@@ -54,7 +54,7 @@ with DeepSeekHarness() as harness:
 
 完整的源码模式调用见 `python/sdk/tests/manual_sdk_agent_smoke.py`。
 
-## 构建分发包
+## 构建私有 wheel 产物
 
 根目录 `package.json` 的版本是两个 Python 分发包的权威版本。暂存脚本会将该版本注入两个 wheel 包，并将 SDK 固定到同版本的 `deepseek-harness-runtime-bin`。
 
@@ -67,12 +67,12 @@ python scripts/build-python-release.py --package runtime --platform macos-arm64 
 pip install --find-links dist-python deepseek-harness-sdk=="$version"
 ```
 
-运行时分发包仅提供 wheel 包。发布流水线会连同纯 SDK wheel 包一起发布三个平台 wheel 包：Linux x64、Linux arm64 和 macOS 14 或更高版本的 arm64。只有与仓库版本匹配时，才接受 `python-v<repository-version>` 标签；`0.0.1-rc.1` 之类的仓库预发布版本在 wheel 包文件名和元数据中使用规范化的 PEP 440 写法，例如 `0.0.1rc1`。
+运行时载体仅提供 wheel 包。一套完整的私有产物包含纯 SDK wheel 包，以及 Linux x64、Linux arm64 和 macOS 14 或更高版本的 arm64 运行时 wheel 包。只有与仓库版本匹配时，GitLab 才接受 `python-v<repository-version>` 标签；`0.0.1-rc.1` 之类的仓库预发布版本在 wheel 包文件名和元数据中使用规范化的 PEP 440 写法，例如 `0.0.1rc1`。
 
-## 验证候选发行版
+## 验证应用载体
 
-为拉取请求添加 `python-release-dry-run` 标签，或手动运行 GitHub 的 `Release (Python)` 工作流并设置 `publish=false`，即可构建全部四个 wheel 包，在 Python 3.10 和 3.14 上安装 Linux 发行集合，检查精确文件名和元数据，执行 PyPI 默认单文件大小限制，并保留一份带 SHA-256 哈希的汇总产物。两条路径都没有注册表凭据，拉取请求运行无法进入任何发布作业。
+必需的 GitHub `python-runtime` job 会在每个拉取请求上构建 Linux x64 executable 与 wheel 包组合，在干净环境中安装它，并运行 SDK 和直接运行时场景。可复用的 `build-exe-for-python-sdk.yml` 工作流可以手动构建所选平台。匹配的 `python-v<repository-version>` GitLab 标签会在各原生 runner 上构建全部四个 wheel 包，并作为私有 CI 产物保留一周。
 
-公开发布从私有自动化仓库运行；包元数据指向独立的只读公开源码镜像，该镜像不运行发布 Actions。私有仓库把仓库变量 `PYPI_PUBLISHER_REPOSITORY` 定义为自身的 `owner/name`，并且只在有意发布期间把 `PUBLIC_PYPI_RELEASE_ENABLED` 从 `false` 改为 `true`。
+这些工作流没有 npm 或 PyPI 上传步骤，也不需要 registry 发布凭据。它们验证 Python 载体来自与 Node 应用和后端服务相同的授权 XxAgent revision。
 
-独立的运行时与 SDK 作业使 SDK 上传失败后可以继续执行，而无需重新发送不可变的运行时文件。只有工作流从配置的发布仓库、匹配的 `python-v*` 标签运行，且受保护的 `pypi-runtime` 和 `pypi` 环境分别批准运行时与 SDK 作业时，才接受 `publish=true`。PyPI Trusted Publishing 仍会提供短期 OIDC 凭据，但公开 attestation 会披露私有发布仓库身份，因此将其禁用。
+这些 wheel 包是应用构建产物，不是独立发行的 Python 产品。只能从当前 checkout 或该 revision 保留的产物集合安装；仓库不承诺 registry 可用性或跨 revision 兼容性。

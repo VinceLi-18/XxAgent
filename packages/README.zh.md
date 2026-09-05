@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-npm scope 为 `@deepseek-ai/dsh-*`；Cordis `Service` 子类和函数插件通过 `ctx.effect()`、`ctx.on()` 或 `ctx.waterfall()` 注册。规则见[包](AGENTS.md)与[根规则](../AGENTS.md#conventions)。
+内部包作用域仍为 `@deepseek-ai/dsh-*` 与 `@xagent/dsh-*`；所有 workspace 均为私有，并从这个合并仓库解析内部依赖。Cordis `Service` 子类和函数插件通过 `ctx.effect()`、`ctx.on()` 或 `ctx.waterfall()` 注册。规则见[包](AGENTS.md)与[根规则](../AGENTS.md#conventions)。
 
 ## 层级结构
 

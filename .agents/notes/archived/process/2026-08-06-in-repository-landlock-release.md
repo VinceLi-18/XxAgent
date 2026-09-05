@@ -1,6 +1,7 @@
 # Agent Note: In-repository Landlock release
 
 Status: implemented
+Archived: 2026-09-06
 
 English | [中文](2026-08-06-in-repository-landlock-release.zh.md)
 

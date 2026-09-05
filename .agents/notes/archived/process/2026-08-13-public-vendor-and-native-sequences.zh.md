@@ -1,6 +1,7 @@
 # Agent Note: 按发布序列区分 npm access:vendored 框架与 native 包公开发布
 
 Status: implemented
+Archived: 2026-09-06
 
 [English](2026-08-13-public-vendor-and-native-sequences.md) | 中文
 

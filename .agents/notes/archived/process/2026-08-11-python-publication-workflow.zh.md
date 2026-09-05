@@ -1,6 +1,7 @@
 # Agent Note: Python 公开发布工作流
 
 Status: implemented
+Archived: 2026-09-06
 
 [English](2026-08-11-python-publication-workflow.md) | 中文
 

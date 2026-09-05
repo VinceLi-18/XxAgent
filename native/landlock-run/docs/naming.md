@@ -1,8 +1,8 @@
 # Naming
 
-## npm packages
+## Internal package names
 
-The public package family belongs to the `@deepseek-ai` scope and uses the `node-addon-landlock-run` package prefix; platform packages append platform information only:
+The private workspace family uses the inherited `@deepseek-ai` scope and the `node-addon-landlock-run` package prefix; platform packages append platform information only:
 
 ```text
 @deepseek-ai/node-addon-landlock-run
@@ -23,7 +23,7 @@ The `NALR_` prefix (Node Addon Landlock Run) is reserved for build/test orchestr
 NALR_REQUIRE_LANDLOCK   test-only: an unenforcing kernel fails instead of skipping
 ```
 
-Runtime binaries and entry packages read NO environment variables — a runtime safety rule ([AGENTS.md](../AGENTS.md)), not a naming convention. Do not include the npm scope in environment variable names.
+Runtime binaries and entry packages read NO environment variables — a runtime safety rule ([AGENTS.md](../AGENTS.md)), not a naming convention. Do not include the package scope in environment variable names.
 
 ## C symbols
 

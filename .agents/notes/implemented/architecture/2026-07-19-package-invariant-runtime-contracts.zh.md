@@ -16,7 +16,7 @@ Status: implemented
 
 ### 注册必须全覆盖；断言必须有意义
 
-每个 workspace 包都发布单独构建的 `./invariant` companion，并用完整 npm 包名注册。companion 只能采用以下两种形式之一：
+每个 workspace 包都导出单独构建的 `./invariant` companion，并用完整内部包名注册。companion 只能采用以下两种形式之一：
 
 - 安装包自有的事件流或相关可变数据结构检查，并通过绑定的 `fail(message)` 报告器报告违规；或
 - 使用空安装器，并在其声明前写一条该包专属的 `No runtime invariant:` 注释，说明为什么该包没有合理的运行时关系可供观测。

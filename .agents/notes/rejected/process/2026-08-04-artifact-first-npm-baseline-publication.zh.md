@@ -1,6 +1,6 @@
 # Agent Note: 以产物为先的 NPM 基线发布
 
-Status: proposed
+Status: rejected — XxAgent 作为一个私有应用交付，而不是以包 registry 基线交付。
 
 [English](2026-08-04-artifact-first-npm-baseline-publication.md) | 中文
 

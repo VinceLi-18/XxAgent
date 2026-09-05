@@ -3,6 +3,11 @@
   "description": "Dependency-only deploy root defining the executable and Python runtime closure; pnpm deploy materializes this manifest and node_modules.",
   "version": "0.0.1",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VinceLi-18/XxAgent.git",
+    "directory": "python/sdk-runtime"
+  },
   "type": "module",
   "dependencies": {
     "@deepseek-ai/cordis-plugin-group": "workspace:^",

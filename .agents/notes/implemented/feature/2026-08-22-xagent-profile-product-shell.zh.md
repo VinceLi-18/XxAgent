@@ -16,7 +16,7 @@ XAgent 需要具备不同本地状态和面向产品的 Web 身份的业务、�
 
 XAgent Web 产品壳提供 XAgent 名称、图标、主题和欢迎文案。一个 Web 服务进程只启动一个 Profile；浏览器不切换 Profile。Profile 目录仅组织本地运行时状态，不是认证、授权、租户或项目数据的安全边界。
 
-XAgent 运行时包是随本 fork 交付的私有 workspace，不属于 npm 发布成员。各包 manifest 指向 XxAgent 仓库中的精确包目录，workspace constraints 门禁逐一显式登记这些包。因此，在 `packages/xagent/` 下添加包时必须有意增加登记项；私有包政策不使用目录通配自动扩展。
+所有 DSH 与 XAgent 运行时 package 都是从同一个授权 XxAgent revision 交付的私有 workspace，不属于 npm 发布成员。各自的 manifest 指向 XxAgent repository 中的精确 package 目录，workspace constraints 门禁逐一显式登记 XAgent package 标识。因此，在 `packages/xagent/` 下添加 package 时必须有意增加政策条目；该归属列表不使用目录通配自动扩展。[私有应用发行决策](../process/2026-09-06-private-application-distribution.md)负责仓库级规则。
 
 ## 考虑过的替代方案
 

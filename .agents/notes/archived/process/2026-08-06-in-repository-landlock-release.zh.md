@@ -1,6 +1,7 @@
 # Agent Note: 仓库内 Landlock 发布
 
 Status: implemented
+Archived: 2026-09-06
 
 [English](2026-08-06-in-repository-landlock-release.md) | 中文
 

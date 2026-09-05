@@ -1,7 +1,12 @@
 {
   "name": "dsh-examples",
-  "private": true,
   "version": "0.0.1",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VinceLi-18/XxAgent.git",
+    "directory": "examples"
+  },
   "type": "module",
   "description": "Workspace umbrella for runnable demos and example-owned test compositions: declares their cordis.yml packages so plain Node resolves real exports→lib. Not a build target.",
   "dependencies": {

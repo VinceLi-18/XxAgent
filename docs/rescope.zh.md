@@ -2,11 +2,11 @@
 
 [English](rescope.md) | 中文
 
-Cordis 框架及其基础库以源码形式 vendored 在 [`vendor/`](../vendor/README.md) 下，并以 `@deepseek-ai` scope 发布：每个 harness 包都把框架声明为 peer dependency，发布 harness 就会连带发布这一层，用上游名发布等于在 registry 上占用别人的名字。本页是名字映射表；决策与影响见 [改名 Agent Note](../.agents/notes/implemented/process/2026-08-10-vendor-package-rescope.md)，上游 commit 见 [`vendor/README.md`](../vendor/README.md)。
+Cordis 框架及其基础库以源码形式 vendored 在 [`vendor/`](../vendor/README.md) 下，并使用私有 `@deepseek-ai` workspace 名。独立的内部名称将 vendored 源码图与普通上游依赖分开，并让每个应用 import 都解析到经过审阅的 checkout。本页是名字映射表；决策与影响见[改名 Agent Note](../.agents/notes/implemented/process/2026-08-10-vendor-package-rescope.md)，上游 commit 见 [`vendor/README.md`](../vendor/README.md)。
 
 ## 名字映射
 
-| 目录 | 上游名 | 发布名 | 版本 | 角色 |
+| 目录 | 上游名 | 内部名 | 版本 | 角色 |
 |---|---|---|---|---|
 | `vendor/cordis/` | `cordis` | `@deepseek-ai/cordis` | 4.0.0-rc.7 | 框架核心：`Context`、`Service`、`Fiber`、事件 |
 | `vendor/cosmokit/` | `cosmokit` | `@deepseek-ai/cosmokit` | 1.8.1 | 框架与 Schemastery 共用的基础工具 |

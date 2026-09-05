@@ -1,6 +1,6 @@
 # Agent Note: Artifact-first NPM baseline publication
 
-Status: proposed
+Status: rejected — XxAgent ships as one private application rather than a package-registry baseline.
 
 English | [中文](2026-08-04-artifact-first-npm-baseline-publication.zh.md)
 

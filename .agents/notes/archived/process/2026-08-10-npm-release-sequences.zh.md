@@ -1,6 +1,7 @@
 # Agent Note: 三条独立序列的私有 NPM 发布
 
 Status: implemented
+Archived: 2026-09-06
 
 [English](2026-08-10-npm-release-sequences.md) | 中文
 
