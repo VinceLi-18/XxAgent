@@ -27,7 +27,7 @@ describe('CI workflow', () => {
     }
   })
 
-  it('keeps a required Wine Windows job, a non-blocking native Windows job with failover, and a master-only standby', () => {
+  it('keeps required Windows coverage on runners available to the private repository', () => {
     const workflow = loadWorkflow('.github/workflows/ci.yml')
     if (!isRecord(workflow.jobs)
       || !isRecord(workflow.jobs.windows)
@@ -62,14 +62,13 @@ describe('CI workflow', () => {
     expect(windows.if).toBe("github.event_name == 'pull_request'")
     expect(commandSteps.some(step => step.run.includes('wine-windows-gates.sh'))).toBe(true)
 
-    // windows-native: non-blocking native job with failover, runs windows-complete.
-    // Its pool is resolved by the Windows-specific switch.
+    // windows-native stays non-blocking but must have a usable default pool.
     expect(typeof windowsNative['runs-on']).toBe('string')
     expect(windowsNative['runs-on']).toContain('DSH_CI_FAILOVER_WINDOWS')
     expect(windowsNative['runs-on']).not.toContain('DSH_CI_FAILOVER_LINUX')
     expect(windowsNative['runs-on']).toContain('self-hosted')
     expect(windowsNative['runs-on']).toContain('dsh-win-ci')
-    expect(windowsNative['runs-on']).toContain('dsh-windows-2025-16core')
+    expect(windowsNative['runs-on']).toContain('windows-latest')
     expect(windowsNative.name).toBe('windows node 24 / native complete')
     expect(windowsNative.if).toBe("github.event_name == 'pull_request'")
     expect(windowsNative.env).toMatchObject({
@@ -94,15 +93,25 @@ describe('CI workflow', () => {
     expect(aggregate.needs).not.toContain('windows-native')
     expect(aggregate.needs).not.toContain('serial-windows')
 
-    // Linux failover is a separate switch: the three required Linux workers
-    // and the verdict job resolve their pool through DSH_CI_FAILOVER_LINUX,
-    // never the Windows switch.
+    // Linux failover remains available, while the default uses standard
+    // GitHub-hosted capacity that belongs to this repository.
     for (const [jobName, job] of [['node-24', node24], ['node-24-coverage', node24Coverage], ['node-24-consumers', node24Consumers]] as const) {
       expect(typeof job['runs-on']).toBe('string')
       expect(job['runs-on'], `${jobName} runs-on must use the Linux failover switch`).toContain('DSH_CI_FAILOVER_LINUX')
       expect(job['runs-on'], `${jobName} runs-on must not use the Windows failover switch`).not.toContain('DSH_CI_FAILOVER_WINDOWS')
       expect(job['runs-on']).toContain('vm-backup')
+      expect(job['runs-on']).toContain('ubuntu-latest')
     }
+    if (!isRecord(node24.env) || !isRecord(node24Coverage.env) || !isRecord(node24Consumers.env)) {
+      throw new TypeError('required Linux jobs must define environment limits')
+    }
+    expect(node24.env.DSH_GATE_CONCURRENCY).toContain("'8' || '2'")
+    expect(node24Coverage.env.DSH_COVERAGE_MAX_WORKERS).toContain("'8' || '2'")
+    expect(node24Coverage.env.DSH_GATE_CONCURRENCY).toContain("'3' || '2'")
+    expect(node24Consumers.env.DSH_GATE_CONCURRENCY).toContain("'8' || '2'")
+    expect(node24Consumers.env.DSH_OXLINT_THREADS).toContain("'8' || '2'")
+    expect(node24Consumers.env.DSH_PUBLINT_CONCURRENCY).toContain("'8' || '2'")
+    expect(node24Consumers.env.DSH_SNAPSHOT_MAX_CONCURRENCY).toContain("'12' || '4'")
     expect(aggregate['runs-on']).toContain('DSH_CI_FAILOVER_LINUX')
     expect(aggregate['runs-on']).not.toContain('DSH_CI_FAILOVER_WINDOWS')
     expect(aggregate['runs-on']).toContain('vm-backup')
@@ -641,21 +650,52 @@ describe('Python release workflows', () => {
 })
 
 describe('Issue lifecycle workflow', () => {
-  it('uses explicit review handoff events without rerunning when a draft becomes ready', () => {
+  it('uses the XxAgent repository and keeps mutation disabled without explicit credentials', () => {
     const lifecycle = loadWorkflow('.github/workflows/issue-lifecycle.yml')
     const lifecyclePullRequest = workflowEvent(lifecycle, 'pull_request')
     const lifecycleReview = workflowEvent(lifecycle, 'pull_request_review')
     const lifecycleJob = workflowJob(lifecycle, 'lifecycle')
     const policy = loadWorkflow('.github/workflows/issue-policy.yml')
     const policyPullRequest = workflowEvent(policy, 'pull_request')
+    const issueConfig = JSON.parse(
+      readFileSync(resolve(root, '.github/issue-management/config.json'), 'utf8'),
+    ) as unknown
+    if (!isRecord(issueConfig) || !Array.isArray(lifecycleJob.steps)) {
+      throw new TypeError('Issue policy config and lifecycle steps must be defined')
+    }
+    const tokenStep = lifecycleJob.steps
+      .filter(isRecord)
+      .find(step => step.name === 'Create project token')
+    if (!isRecord(tokenStep) || !isRecord(tokenStep.with)) {
+      throw new TypeError('Issue lifecycle workflow must define the project token step')
+    }
 
     expect(lifecyclePullRequest.types).not.toContain('ready_for_review')
     expect(lifecyclePullRequest.types).toContain('review_requested')
     expect(lifecycleReview.types).toEqual(['submitted'])
-    expect(lifecycleJob.if).toBe(
-      "${{ github.event_name != 'pull_request_review' || (github.event.action == 'submitted' && github.event.review.state == 'changes_requested') }}",
-    )
+    expect(lifecycleJob.if).toContain("vars.XAGENT_ISSUE_LIFECYCLE_ENABLED == 'true'")
+    expect(lifecycleJob.if).toContain("github.event_name != 'pull_request_review'")
+    expect(tokenStep.with.owner).toBe('${{ github.repository_owner }}')
+    expect(tokenStep.with.repositories).toBe('${{ github.event.repository.name }}')
+    expect(issueConfig).toMatchObject({ organization: 'VinceLi-18', repository: 'XxAgent' })
     expect(policyPullRequest.types).toContain('ready_for_review')
+  })
+})
+
+describe('Real API e2e workflow', () => {
+  it('requires repository opt-in before allocating a secret-bearing runner', () => {
+    const workflow = loadWorkflow('.github/workflows/e2e.yml')
+    const job = workflowJob(workflow, 'e2e')
+    if (!Array.isArray(job.steps)) throw new TypeError('Real API e2e job must define steps')
+
+    expect(job.if).toContain("vars.XAGENT_REAL_API_E2E_ENABLED == 'true'")
+    expect(job.if).toContain("github.event_name != 'pull_request'")
+    const preflight = job.steps
+      .filter(isRecord)
+      .find(step => step.name === 'Preflight (require DEEPSEEK_API_KEY)')
+    expect(preflight).toMatchObject({
+      env: { DEEPSEEK_API_KEY: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}' },
+    })
   })
 })
 
