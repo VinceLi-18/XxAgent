@@ -18,7 +18,7 @@ XAgent 继承的 DeepSeek Harness 工作流假定存在上游企业环境的默�
 
 覆盖率门禁会在 Host-for-Client Remote 生成产物出现前执行 Client 插件生命周期测试。Vitest 把两个 XAgent 生成式 Remote 入口映射到保留所属包标识的惰性贡献，生命周期测试自行提供命名空间实现。Typert 生成器测试和构建后应用冒烟测试继续验证生成描述符，因此源代码测试替代项不替代产物验证。
 
-项目工作台浏览器场景在完整生命周期内拥有唯一命名的 PostgreSQL Compose 项目和动态分配的主机端口。场景通过 Compose 服务名创建角色与数据库，并在清理阶段删除项目和卷。因此，该场景既不依赖自托管 runner 上持久存在的容器，也不会与独立拥有的资料生命周期栈冲突。模型可见快照夹具记录当前组装的翻译请求、PowerShell 工具 schema 与后台任务术语。
+项目工作台浏览器场景在完整生命周期内拥有唯一命名的 PostgreSQL Compose 项目和动态分配的主机端口。场景通过 Compose 服务名创建角色与数据库，并在清理阶段删除项目和卷。因此，该场景既不依赖自托管 runner 上持久存在的容器，也不会与独立拥有的资料生命周期栈冲突。consumer 通道会在场景执行 API migration 前安装 Python 3.11 和仓库固定版本的 uv。模型可见快照夹具记录当前组装的翻译请求、PowerShell 工具 schema 与后台任务术语。
 
 本决策只覆盖从[大型托管 runner](2026-07-22-evidence-based-larger-hosted-runners.md)、[CI 故障切换操作手册](2026-07-26-ci-failover-runbook.md)、[原生 Windows PR CI](2026-08-08-native-windows-pull-request-ci.md)、[真实 API e2e CI](../testing/2026-06-19-real-api-e2e-ci.md)和[事件驱动的 PR 审查状态](2026-08-10-event-directed-pr-review-status.md)继承的默认 runner 分配和自动启用假设。这些 Agent Note 继续保持活跃，因为其任务拆分、信任规则、故障切换设计与生命周期语义仍约束对应机制。
 

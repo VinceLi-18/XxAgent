@@ -117,6 +117,34 @@ describe('CI workflow', () => {
     expect(aggregate['runs-on']).toContain('vm-backup')
   })
 
+  it('prepares Python API tooling before browser-backed consumer gates', () => {
+    const workflow = loadWorkflow('.github/workflows/ci.yml')
+    if (!isRecord(workflow.jobs) || !isRecord(workflow.jobs['node-24-consumers'])) {
+      throw new TypeError('CI workflow must define the node-24-consumers job')
+    }
+    const job = workflow.jobs['node-24-consumers']
+    if (!Array.isArray(job.steps)) throw new TypeError('node-24-consumers must define steps')
+
+    const pythonIndex = job.steps.findIndex(step => (
+      isRecord(step)
+      && step.uses === 'actions/setup-python@v6.3.0'
+      && isRecord(step.with)
+      && step.with['python-version'] === '3.11'
+    ))
+    const uvIndex = job.steps.findIndex(step => (
+      isRecord(step)
+      && step.name === 'Install uv'
+      && step.run === 'python -m pip install uv==0.11.23'
+    ))
+    const consumersIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Run compatibility, snapshot, and artifact gates'
+    ))
+
+    expect(pythonIndex).toBeGreaterThanOrEqual(0)
+    expect(uvIndex).toBeGreaterThan(pythonIndex)
+    expect(consumersIndex).toBeGreaterThan(uvIndex)
+  })
+
   it('exempts push from cancellation, so one master merge does not cancel the running drill', () => {
     const workflow = loadWorkflow('.github/workflows/ci.yml')
     if (!isRecord(workflow.jobs) || !isRecord(workflow.concurrency)) {
