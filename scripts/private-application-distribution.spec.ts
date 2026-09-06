@@ -42,7 +42,15 @@ function readManifest(path: string): PackageManifest {
   return JSON.parse(readFileSync(resolve(root, path), 'utf8')) as PackageManifest
 }
 
+function manifestDirectory(path: string): string {
+  return path.replaceAll('\\', '/').slice(0, -'/package.json'.length)
+}
+
 describe('private application distribution', () => {
+  it('normalizes workspace manifest directories across host platforms', () => {
+    expect(manifestDirectory('apps\\cli\\package.json')).toBe('apps/cli')
+  })
+
   it('keeps every JavaScript workspace package private and source-owned by XxAgent', () => {
     const manifests = globSync([...workspaceManifestPatterns], { cwd: root }).sort()
 
@@ -55,7 +63,7 @@ describe('private application distribution', () => {
       expect(manifest.repository, `${path} must identify the private source repository`).toEqual({
         type: 'git',
         url: xagentRepositoryUrl,
-        directory: path.slice(0, -'/package.json'.length),
+        directory: manifestDirectory(path),
       })
     }
   })
