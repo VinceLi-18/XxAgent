@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/process/2026-09-06-xagent-private-repository-ci.md
-2026-09-06-xagent-private-repository-ci.md: 589bc86271827d6cc0ed76175974552d7524a619
-2026-09-06-xagent-private-repository-ci.zh.md: 3618fb31e9341c46c000b9d3ddbc03058a8198e0
+2026-09-06-xagent-private-repository-ci.md: cf17916e76f0146cc48f8df8a627edf8ac356e24
+2026-09-06-xagent-private-repository-ci.zh.md: 145c12534ea1e5a087403f8f4b434fd098ff9811
