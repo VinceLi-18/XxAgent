@@ -17,7 +17,7 @@ describe('XAgent 资料 E2E 辅助生命周期', () => {
     expect(owned.child.exitCode).toBe(0)
   })
 
-  it('直接子进程 exit 后仍等待继承 stdio 的后代触发 close', async () => {
+  it.skipIf(process.platform === 'win32')('POSIX 直接子进程 exit 后仍等待继承 stdio 的后代触发 close', async () => {
     const owned = spawnOwnedChild(process.execPath, ['-e', [
       "const { spawn } = require('node:child_process')",
       "spawn(process.execPath, ['-e', 'setTimeout(() => {}, 750)'], { stdio: ['ignore', 'inherit', 'ignore'] })",
@@ -51,7 +51,7 @@ describe('XAgent 资料 E2E 辅助生命周期', () => {
     }
   })
 
-  it('强制停止后等待子进程 close 再返回', async () => {
+  it.skipIf(process.platform === 'win32')('POSIX 强制停止后等待子进程 close 再返回', async () => {
     const owned = spawnOwnedChild(process.execPath, ['-e', [
       "process.on('SIGTERM', () => {})",
       "process.stdout.write('ready\\n')",

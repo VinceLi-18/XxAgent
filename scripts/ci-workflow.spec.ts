@@ -27,7 +27,7 @@ describe('CI workflow', () => {
     }
   })
 
-  it('keeps a required Wine Windows job, a non-blocking native Windows job with failover, and a master-only standby', () => {
+  it('keeps required Windows coverage on runners available to the private repository', () => {
     const workflow = loadWorkflow('.github/workflows/ci.yml')
     if (!isRecord(workflow.jobs)
       || !isRecord(workflow.jobs.windows)
@@ -62,14 +62,13 @@ describe('CI workflow', () => {
     expect(windows.if).toBe("github.event_name == 'pull_request'")
     expect(commandSteps.some(step => step.run.includes('wine-windows-gates.sh'))).toBe(true)
 
-    // windows-native: non-blocking native job with failover, runs windows-complete.
-    // Its pool is resolved by the Windows-specific switch.
+    // windows-native stays non-blocking but must have a usable default pool.
     expect(typeof windowsNative['runs-on']).toBe('string')
     expect(windowsNative['runs-on']).toContain('DSH_CI_FAILOVER_WINDOWS')
     expect(windowsNative['runs-on']).not.toContain('DSH_CI_FAILOVER_LINUX')
     expect(windowsNative['runs-on']).toContain('self-hosted')
     expect(windowsNative['runs-on']).toContain('dsh-win-ci')
-    expect(windowsNative['runs-on']).toContain('dsh-windows-2025-16core')
+    expect(windowsNative['runs-on']).toContain('windows-latest')
     expect(windowsNative.name).toBe('windows node 24 / native complete')
     expect(windowsNative.if).toBe("github.event_name == 'pull_request'")
     expect(windowsNative.env).toMatchObject({
@@ -94,18 +93,56 @@ describe('CI workflow', () => {
     expect(aggregate.needs).not.toContain('windows-native')
     expect(aggregate.needs).not.toContain('serial-windows')
 
-    // Linux failover is a separate switch: the three required Linux workers
-    // and the verdict job resolve their pool through DSH_CI_FAILOVER_LINUX,
-    // never the Windows switch.
+    // Linux failover remains available, while the default uses standard
+    // GitHub-hosted capacity that belongs to this repository.
     for (const [jobName, job] of [['node-24', node24], ['node-24-coverage', node24Coverage], ['node-24-consumers', node24Consumers]] as const) {
       expect(typeof job['runs-on']).toBe('string')
       expect(job['runs-on'], `${jobName} runs-on must use the Linux failover switch`).toContain('DSH_CI_FAILOVER_LINUX')
       expect(job['runs-on'], `${jobName} runs-on must not use the Windows failover switch`).not.toContain('DSH_CI_FAILOVER_WINDOWS')
       expect(job['runs-on']).toContain('vm-backup')
+      expect(job['runs-on']).toContain('ubuntu-latest')
     }
+    if (!isRecord(node24.env) || !isRecord(node24Coverage.env) || !isRecord(node24Consumers.env)) {
+      throw new TypeError('required Linux jobs must define environment limits')
+    }
+    expect(node24.env.DSH_GATE_CONCURRENCY).toContain("'8' || '2'")
+    expect(node24Coverage.env.DSH_COVERAGE_MAX_WORKERS).toContain("'8' || '2'")
+    expect(node24Coverage.env.DSH_GATE_CONCURRENCY).toContain("'3' || '2'")
+    expect(node24Consumers.env.DSH_GATE_CONCURRENCY).toContain("'8' || '2'")
+    expect(node24Consumers.env.DSH_OXLINT_THREADS).toContain("'8' || '2'")
+    expect(node24Consumers.env.DSH_PUBLINT_CONCURRENCY).toContain("'8' || '2'")
+    expect(node24Consumers.env.DSH_SNAPSHOT_MAX_CONCURRENCY).toContain("'12' || '4'")
     expect(aggregate['runs-on']).toContain('DSH_CI_FAILOVER_LINUX')
     expect(aggregate['runs-on']).not.toContain('DSH_CI_FAILOVER_WINDOWS')
     expect(aggregate['runs-on']).toContain('vm-backup')
+  })
+
+  it('prepares Python API tooling before browser-backed consumer gates', () => {
+    const workflow = loadWorkflow('.github/workflows/ci.yml')
+    if (!isRecord(workflow.jobs) || !isRecord(workflow.jobs['node-24-consumers'])) {
+      throw new TypeError('CI workflow must define the node-24-consumers job')
+    }
+    const job = workflow.jobs['node-24-consumers']
+    if (!Array.isArray(job.steps)) throw new TypeError('node-24-consumers must define steps')
+
+    const pythonIndex = job.steps.findIndex(step => (
+      isRecord(step)
+      && step.uses === 'actions/setup-python@v6.3.0'
+      && isRecord(step.with)
+      && step.with['python-version'] === '3.11'
+    ))
+    const uvIndex = job.steps.findIndex(step => (
+      isRecord(step)
+      && step.name === 'Install uv'
+      && step.run === 'python -m pip install uv==0.11.23'
+    ))
+    const consumersIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Run compatibility, snapshot, and artifact gates'
+    ))
+
+    expect(pythonIndex).toBeGreaterThanOrEqual(0)
+    expect(uvIndex).toBeGreaterThan(pythonIndex)
+    expect(consumersIndex).toBeGreaterThan(uvIndex)
   })
 
   it('exempts push from cancellation, so one master merge does not cancel the running drill', () => {
@@ -250,13 +287,7 @@ describe('CI workflow', () => {
   it('deploys the artifact worker with isolated credentials and healthy dependencies', () => {
     const compose = loadWorkflow('services/api/compose.yml')
     const environmentExample = readFileSync(resolve(root, 'services/api/.env.example'), 'utf8')
-    const api = composeService(compose, 'api')
-    const worker = composeService(compose, 'worker')
-    const postgres = composeService(compose, 'postgres')
-    const roles = composeService(compose, 'roles')
-    const migrate = composeService(compose, 'migrate')
-    const minio = composeService(compose, 'minio')
-    const clamav = composeService(compose, 'clamav')
+    const { api, worker, postgres, roles, migrate, minio, clamav } = artifactComposeServices(compose)
     if (!isRecord(api.environment)
       || !isRecord(worker.environment)
       || !isRecord(postgres.environment)
@@ -324,9 +355,7 @@ describe('CI workflow', () => {
       POSTGRES_WORKER_USER: '${POSTGRES_WORKER_USER}',
       POSTGRES_WORKER_PASSWORD: '${POSTGRES_WORKER_PASSWORD}',
     })
-    expect(roles.depends_on).toMatchObject({
-      postgres: { condition: 'service_healthy' },
-    })
+    expectArtifactLifecycleOrder({ roles, migrate, worker })
     expect(postgres.healthcheck.test).toEqual([
       'CMD-SHELL',
       'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
@@ -337,14 +366,6 @@ describe('CI workflow', () => {
     })
     expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
     expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
-    expect(migrate.depends_on).toMatchObject({
-      roles: { condition: 'service_completed_successfully' },
-    })
-    expect(worker.depends_on).toMatchObject({
-      migrate: { condition: 'service_completed_successfully' },
-      minio: { condition: 'service_healthy' },
-      clamav: { condition: 'service_healthy' },
-    })
     expect(durationSeconds(worker.stop_grace_period)).toBeGreaterThanOrEqual(90)
     expect(minio.healthcheck.test).toEqual(['CMD', 'mc', 'ready', 'local'])
     expect(clamav.image).toMatch(/^clamav\/clamav-debian:1\.4(?:$|\.)/)
@@ -354,13 +375,7 @@ describe('CI workflow', () => {
   it('assembles an isolated real artifact pipeline for Docker tests', () => {
     const compose = loadWorkflow('services/api/compose.test.yml')
     const packageJson = loadWorkflow('package.json')
-    const api = composeService(compose, 'api')
-    const worker = composeService(compose, 'worker')
-    const postgres = composeService(compose, 'postgres')
-    const roles = composeService(compose, 'roles')
-    const migrate = composeService(compose, 'migrate')
-    const minio = composeService(compose, 'minio')
-    const clamav = composeService(compose, 'clamav')
+    const { api, worker, postgres, roles, migrate, minio, clamav } = artifactComposeServices(compose)
     if (!isRecord(packageJson.scripts)
       || !isRecord(api.environment)
       || !isRecord(worker.environment)
@@ -409,9 +424,7 @@ describe('CI workflow', () => {
       POSTGRES_WORKER_USER: 'xagent_e2e_worker',
       POSTGRES_WORKER_PASSWORD: 'p@ss:word/%-e2e-worker',
     })
-    expect(roles.depends_on).toMatchObject({
-      postgres: { condition: 'service_healthy' },
-    })
+    expectArtifactLifecycleOrder({ roles, migrate, worker })
     expect(postgres.healthcheck.test).toEqual([
       'CMD-SHELL',
       'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
@@ -423,14 +436,6 @@ describe('CI workflow', () => {
     })
     expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
     expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
-    expect(migrate.depends_on).toMatchObject({
-      roles: { condition: 'service_completed_successfully' },
-    })
-    expect(worker.depends_on).toMatchObject({
-      migrate: { condition: 'service_completed_successfully' },
-      minio: { condition: 'service_healthy' },
-      clamav: { condition: 'service_healthy' },
-    })
     expect(api.depends_on).toMatchObject({
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
@@ -641,21 +646,52 @@ describe('Python release workflows', () => {
 })
 
 describe('Issue lifecycle workflow', () => {
-  it('uses explicit review handoff events without rerunning when a draft becomes ready', () => {
+  it('uses the XxAgent repository and keeps mutation disabled without explicit credentials', () => {
     const lifecycle = loadWorkflow('.github/workflows/issue-lifecycle.yml')
     const lifecyclePullRequest = workflowEvent(lifecycle, 'pull_request')
     const lifecycleReview = workflowEvent(lifecycle, 'pull_request_review')
     const lifecycleJob = workflowJob(lifecycle, 'lifecycle')
     const policy = loadWorkflow('.github/workflows/issue-policy.yml')
     const policyPullRequest = workflowEvent(policy, 'pull_request')
+    const issueConfig = JSON.parse(
+      readFileSync(resolve(root, '.github/issue-management/config.json'), 'utf8'),
+    ) as unknown
+    if (!isRecord(issueConfig) || !Array.isArray(lifecycleJob.steps)) {
+      throw new TypeError('Issue policy config and lifecycle steps must be defined')
+    }
+    const tokenStep = lifecycleJob.steps
+      .filter(isRecord)
+      .find(step => step.name === 'Create project token')
+    if (!isRecord(tokenStep) || !isRecord(tokenStep.with)) {
+      throw new TypeError('Issue lifecycle workflow must define the project token step')
+    }
 
     expect(lifecyclePullRequest.types).not.toContain('ready_for_review')
     expect(lifecyclePullRequest.types).toContain('review_requested')
     expect(lifecycleReview.types).toEqual(['submitted'])
-    expect(lifecycleJob.if).toBe(
-      "${{ github.event_name != 'pull_request_review' || (github.event.action == 'submitted' && github.event.review.state == 'changes_requested') }}",
-    )
+    expect(lifecycleJob.if).toContain("vars.XAGENT_ISSUE_LIFECYCLE_ENABLED == 'true'")
+    expect(lifecycleJob.if).toContain("github.event_name != 'pull_request_review'")
+    expect(tokenStep.with.owner).toBe('${{ github.repository_owner }}')
+    expect(tokenStep.with.repositories).toBe('${{ github.event.repository.name }}')
+    expect(issueConfig).toMatchObject({ organization: 'VinceLi-18', repository: 'XxAgent' })
     expect(policyPullRequest.types).toContain('ready_for_review')
+  })
+})
+
+describe('Real API e2e workflow', () => {
+  it('requires repository opt-in before allocating a secret-bearing runner', () => {
+    const workflow = loadWorkflow('.github/workflows/e2e.yml')
+    const job = workflowJob(workflow, 'e2e')
+    if (!Array.isArray(job.steps)) throw new TypeError('Real API e2e job must define steps')
+
+    expect(job.if).toContain("vars.XAGENT_REAL_API_E2E_ENABLED == 'true'")
+    expect(job.if).toContain("github.event_name != 'pull_request'")
+    const preflight = job.steps
+      .filter(isRecord)
+      .find(step => step.name === 'Preflight (require DEEPSEEK_API_KEY)')
+    expect(preflight).toMatchObject({
+      env: { DEEPSEEK_API_KEY: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}' },
+    })
   })
 })
 
@@ -702,6 +738,35 @@ function composeService(compose: Record<string, unknown>, service: string): Reco
     throw new TypeError(`compose must define the ${service} service`)
   }
   return compose.services[service]
+}
+
+function artifactComposeServices(compose: Record<string, unknown>): Record<
+  'api' | 'worker' | 'postgres' | 'roles' | 'migrate' | 'minio' | 'clamav',
+  Record<string, unknown>
+> {
+  return {
+    api: composeService(compose, 'api'),
+    worker: composeService(compose, 'worker'),
+    postgres: composeService(compose, 'postgres'),
+    roles: composeService(compose, 'roles'),
+    migrate: composeService(compose, 'migrate'),
+    minio: composeService(compose, 'minio'),
+    clamav: composeService(compose, 'clamav'),
+  }
+}
+
+function expectArtifactLifecycleOrder(services: {
+  roles: Record<string, unknown>
+  migrate: Record<string, unknown>
+  worker: Record<string, unknown>
+}): void {
+  expect(services.roles.depends_on).toMatchObject({ postgres: { condition: 'service_healthy' } })
+  expect(services.migrate.depends_on).toMatchObject({ roles: { condition: 'service_completed_successfully' } })
+  expect(services.worker.depends_on).toMatchObject({
+    migrate: { condition: 'service_completed_successfully' },
+    minio: { condition: 'service_healthy' },
+    clamav: { condition: 'service_healthy' },
+  })
 }
 
 function composeServiceNames(compose: Record<string, unknown>): string[] {

@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Browser, Page } from 'playwright'
@@ -9,7 +9,6 @@ import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { probeFreePort, REPO_ROOT, requireDist, saveFailureShot, ZH_BROWSER_LOCALE } from './support.ts'
 
-const POSTGRES_CONTAINER = 'xagent-api-test-postgres-1'
 const POSTGRES_PASSWORD = 'xagent-api-test'
 const APP_PASSWORD = 'phase3a-app-password'
 const SERVICE_TOKEN = 'xagent-phase3a-service-token-00000001'
@@ -93,10 +92,22 @@ async function stop(child: ChildProcess | undefined): Promise<void> {
   ])
 }
 
-function dockerPsql(sql: string, database = 'postgres'): string {
+function composePostgres(project: string, override: string, args: readonly string[]): string {
   return execFileSync('docker', [
-    'exec', POSTGRES_CONTAINER, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', database, '-Atc', sql,
-  ], { encoding: 'utf8' }).trim()
+    'compose', '--project-name', project,
+    '--file', join(REPO_ROOT, 'services/api/compose.test.yml'),
+    '--file', override,
+    ...args,
+  ], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 180_000 }).trim()
+}
+
+function dockerPsql(project: string, override: string, sql: string, database = 'postgres'): string {
+  return execFileSync('docker', [
+    'compose', '--project-name', project,
+    '--file', join(REPO_ROOT, 'services/api/compose.test.yml'),
+    '--file', override,
+    'exec', '-T', 'postgres', 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', database, '-Atc', sql,
+  ], { cwd: REPO_ROOT, encoding: 'utf8' }).trim()
 }
 
 function runApiCommand(environment: NodeJS.ProcessEnv, args: readonly string[], input?: string): string {
@@ -181,16 +192,14 @@ async function dismissOnboarding(page: Page): Promise<void> {
 
 describe('XAgent 项目工作台真实双账号流程', () => {
   const suffix = randomUUID().replaceAll('-', '').slice(0, 10)
+  const composeProject = `xagent-phase3a-${suffix}`
   const database = `xagent_phase3a_${suffix}_test`
   const applicationRole = `xagent_phase3a_${suffix}_app`
   const workerRole = `xagent_phase3a_${suffix}_worker`
   const root = mkdtempSync(join(tmpdir(), 'xagent-phase3a-e2e-'))
-  const adminUrl = `postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@127.0.0.1:55432/${database}`
-  const applicationUrl = `postgresql+asyncpg://${applicationRole}:${APP_PASSWORD}@127.0.0.1:55432/${database}`
+  const composeOverride = join(root, 'compose.override.yml')
   const apiEnvironment: NodeJS.ProcessEnv = {
     ...process.env,
-    DATABASE_URL: applicationUrl,
-    DATABASE_ADMIN_URL: adminUrl,
     POSTGRES_APP_USER: applicationRole,
     POSTGRES_WORKER_USER: workerRole,
     JWT_SECRET_KEY: 'phase3a-e2e-jwt-secret-not-for-production',
@@ -213,15 +222,22 @@ describe('XAgent 项目工作台真实双账号流程', () => {
   let databaseCreated = false
   let roleCreated = false
   let workerRoleCreated = false
+  let composeOwned = false
   const browserDiagnostics: string[] = []
 
   beforeAll(async () => {
     requireDist()
-    dockerPsql(`CREATE ROLE ${applicationRole} LOGIN PASSWORD '${APP_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`)
+    const postgresPort = await probeFreePort()
+    writeFileSync(composeOverride, `services:\n  postgres:\n    ports: !override\n      - 127.0.0.1:${postgresPort}:5432\n`)
+    composeOwned = true
+    composePostgres(composeProject, composeOverride, ['up', '--detach', '--wait', 'postgres'])
+    apiEnvironment.DATABASE_ADMIN_URL = `postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${postgresPort}/${database}`
+    apiEnvironment.DATABASE_URL = `postgresql+asyncpg://${applicationRole}:${APP_PASSWORD}@127.0.0.1:${postgresPort}/${database}`
+    dockerPsql(composeProject, composeOverride, `CREATE ROLE ${applicationRole} LOGIN PASSWORD '${APP_PASSWORD}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`)
     roleCreated = true
-    dockerPsql(`CREATE ROLE ${workerRole} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`)
+    dockerPsql(composeProject, composeOverride, `CREATE ROLE ${workerRole} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS`)
     workerRoleCreated = true
-    dockerPsql(`CREATE DATABASE ${database}`)
+    dockerPsql(composeProject, composeOverride, `CREATE DATABASE ${database}`)
     databaseCreated = true
     runApiCommand(apiEnvironment, ['alembic', '-c', join(REPO_ROOT, 'services/api/alembic.ini'), 'upgrade', 'head'])
     runApiCommand(apiEnvironment, ['xagent-api', 'account', 'create', '--email', MANAGER_EMAIL, '--role', 'manager'])
@@ -285,10 +301,17 @@ describe('XAgent 项目工作台真实双账号流程', () => {
     await browser?.close().catch(() => {})
     await stop(dsh)
     await stop(api)
-    if (databaseCreated) dockerPsql(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`)
-    if (workerRoleCreated) dockerPsql(`DROP ROLE IF EXISTS ${workerRole}`)
-    if (roleCreated) dockerPsql(`DROP ROLE IF EXISTS ${applicationRole}`)
-    rmSync(root, { recursive: true, force: true })
+    try {
+      if (databaseCreated) dockerPsql(composeProject, composeOverride, `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`)
+      if (workerRoleCreated) dockerPsql(composeProject, composeOverride, `DROP ROLE IF EXISTS ${workerRole}`)
+      if (roleCreated) dockerPsql(composeProject, composeOverride, `DROP ROLE IF EXISTS ${applicationRole}`)
+    } finally {
+      try {
+        if (composeOwned) composePostgres(composeProject, composeOverride, ['down', '--volumes', '--remove-orphans'])
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
   })
 
   it('隔离 Manager 与 Specialist 的登录、项目能力、上下文和 Session 范围', async () => {

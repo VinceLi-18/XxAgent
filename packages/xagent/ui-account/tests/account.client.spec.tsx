@@ -11,8 +11,15 @@ import { AccountOverlay } from '../src/client/AccountOverlay.tsx'
 import { apply, inject } from '../src/client/index.ts'
 import type { AccountWorkbenchBridge } from '../src/client/service.ts'
 
-function bridge() {
-  let state: ReturnType<AccountWorkbenchBridge['snapshot']['getSnapshot']> = { phase: 'empty' }
+type WorkbenchState = ReturnType<AccountWorkbenchBridge['snapshot']['getSnapshot']>
+
+const readyWorkbench: WorkbenchState = {
+  phase: 'ready', account: { id: 'account-1', email: 'manager@example.com', role: 'manager' },
+}
+
+function bridge(bootstrapStates: readonly WorkbenchState[] = [readyWorkbench]) {
+  let state: WorkbenchState = { phase: 'empty' }
+  const pendingStates = [...bootstrapStates]
   const listeners = new Set<() => void>()
   return {
     snapshot: {
@@ -20,7 +27,7 @@ function bridge() {
       subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
     },
     bootstrap: vi.fn(async () => {
-      state = { phase: 'ready', account: { id: 'account-1', email: 'manager@example.com', role: 'manager' } }
+      state = pendingStates.shift() ?? readyWorkbench
       listeners.forEach((listener) => { listener() })
     }),
     reset: vi.fn(() => {
@@ -128,6 +135,25 @@ describe('XAgent 正式账号界面', () => {
     }))
     expect(workbench.reset).toHaveBeenCalledWith(undefined)
     expect(workbench.bootstrap).toHaveBeenCalledOnce()
+  })
+
+  it('成功登录后重试一次短暂失败的工作台 Bootstrap', async () => {
+    const workbench = bridge([
+      { phase: 'unavailable' },
+      readyWorkbench,
+    ])
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response('unauthenticated', { status: 401, headers: { 'x-xagent-auth': '1' } }))
+      .mockResolvedValueOnce(Response.json({ csrf_token: 'csrf-login', expires_at: '2026-08-25T18:00:00Z' }))
+    const controller = new AccountController(workbench, fetcher)
+    mount(controller)
+    await act(async () => { await controller.start() })
+
+    await act(async () => { await controller.login('manager@example.com', 'correct horse battery staple') })
+
+    expect(screen.getByText('manager@example.com')).toBeTruthy()
+    expect(workbench.bootstrap).toHaveBeenCalledTimes(2)
+    expect(workbench.reset).toHaveBeenCalledTimes(3)
   })
 
   it('错误凭据和服务不可用只显示稳定中文文案', async () => {

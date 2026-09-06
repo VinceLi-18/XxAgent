@@ -1,6 +1,6 @@
 # XAgent Principal
 
-`@xagent/dsh-principal` 定义 `ctx.xagentPrincipal` 服务、不可变 `XAgentPrincipal` 和共享 `XAgentAuthenticatedRequestScope`。Principal 只接受 FastAPI introspection 的账号、角色、权限版本和登录记录，再绑定 Host 为当前物理连接生成的 `connectionId`。共享 scope 只组合完整 Principal、opaque 用户令牌和同一连接标识；请求正文、查询参数、身份头和模型内容不能构造这些身份值。
+`@xagent/dsh-principal` 定义 `ctx.xagentPrincipal` 服务、不可变 `XAgentPrincipal` 和共享 `XAgentAuthenticatedRequestScope`。Principal 只接受 FastAPI introspection 的账号、角色、权限版本和登录记录，再绑定 Host 为当前物理连接生成的 `connectionId`。共享 scope 只组合完整 Principal、opaque 用户令牌和同一连接标识；`isXAgentAuthenticatedRequestScope()` 统一验证 Principal、令牌与连接关系，请求正文、查询参数、身份头和模型内容不能构造这些身份值。
 
 ## Model Experience
 

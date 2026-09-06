@@ -227,6 +227,24 @@ describe('XAgent FastAPI Session Persistence', () => {
     await expect(persistence.append(id, [event])).rejects.toThrow('unauthenticated')
   })
 
+  test('接受服务端确认的项目 Session 范围并建立写入租约', async () => {
+    const value = backend()
+    value.sessions.create = vi.fn(async () => ({
+      schema_version: 1,
+      session: {
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+      },
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await persistence.withUserToken('alice-token', () => persistence.create(header))
+    await persistence.append(id, [event])
+
+    expect(value.calls.find(call => call.name === 'append')?.args[0]).toBe('alice-token')
+  })
+
   test('事件追加使用消息 rpcId 绑定的发起者，而不是最后一次访问者', async () => {
     const value = backend()
     const persistence = new XAgentSessionPersistence(new Context(), value)

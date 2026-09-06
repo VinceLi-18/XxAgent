@@ -34,6 +34,9 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "unauthenticated"},
         ) from None
+    # FastAPI finalizes yielded dependencies after response delivery. Commit
+    # before exposing a token that another connection must introspect.
+    await session.commit()
     return LoginResponse(
         access_token=issued.access_token,
         expires_at=issued.expires_at,

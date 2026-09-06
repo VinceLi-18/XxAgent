@@ -14,7 +14,10 @@ import {
   XAgentBackendError,
   type XAgentArtifactBackend,
 } from '@xagent/dsh-backend-client'
-import type { XAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
+import {
+  isXAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedRequestScope,
+} from '@xagent/dsh-principal'
 import type {
   XAgentArtifactCompleteInput,
   XAgentArtifactDetail,
@@ -27,7 +30,6 @@ import type {
 
 export type * from './types.ts'
 
-const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const ARTIFACT_CONTENT_ROUTE = '/api/v1/xagent/artifact-content'
 const ARTIFACT_CONTENT_PATH = new RegExp(`^${ARTIFACT_CONTENT_ROUTE}/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$`, 'i')
 const CONTENT_RESPONSE_HEADERS = ['content-type', 'content-disposition', 'content-length'] as const
@@ -47,6 +49,7 @@ interface RequestScopeState {
   active: boolean
 }
 
+/* jscpd:ignore-start -- Project and Artifact intentionally expose the same backend transport configuration. */
 /** XAgent Artifact Host plugin configuration. */
 export interface Config {
   /** FastAPI 服务的绝对 HTTP origin。 */
@@ -59,6 +62,7 @@ export const Config: z<Config> = z.object({
   backendOrigin: z.string().required(),
   serviceToken: z.string().required(),
 })
+/* jscpd:ignore-end */
 
 export const name = 'xagent-artifact'
 export const inject = ['webServer']
@@ -67,18 +71,6 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     xagentArtifact: XAgentArtifactService
   }
-}
-
-function validScope(scope: XAgentAuthenticatedRequestScope): boolean {
-  const role: unknown = scope.principal.role
-  return UUID_PATTERN.test(scope.principal.actorId)
-    && (role === 'manager' || role === 'specialist')
-    && Number.isSafeInteger(scope.principal.permissionRevision)
-    && scope.principal.permissionRevision >= 1
-    && UUID_PATTERN.test(scope.principal.authSessionId)
-    && scope.principal.connectionId === scope.connectionId
-    && scope.userToken.length > 0
-    && scope.connectionId.length > 0
 }
 
 function finish(response: ServerResponse, status: number): void {
@@ -218,7 +210,7 @@ export class XAgentArtifactService extends TypertRemoteService implements XAgent
    */
   async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
     if (this.disposed) throw new Error('xagent artifact service is disposed')
-    if (!validScope(scope)) throw new Error('invalid xagent authenticated request scope')
+    if (!isXAgentAuthenticatedRequestScope(scope)) throw new Error('invalid xagent authenticated request scope')
     if (this.requestScope.getStore()?.active === true) throw new Error('nested xagent artifact request scope')
     const state: RequestScopeState = { scope, active: true }
     try {

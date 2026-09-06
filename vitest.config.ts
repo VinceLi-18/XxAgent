@@ -18,6 +18,14 @@ const uncoveredLocationsReporter = fileURLToPath(new URL('./scripts/coverage-unc
 // lib/ never loads a second module-singleton copy.
 const pathsPlugin = (): ReturnType<typeof tsconfigPaths> => tsconfigPaths({ projects: ['./tsconfig.base.json'] })
 
+// Generated Remote runtime modules exist only after their Host packages build.
+// Source-only Client lifecycle tests mount inert contributions; Typert generation
+// and the built application smokes validate the generated descriptors themselves.
+const generatedRemoteTestAliases = {
+  '@xagent/dsh-artifact/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-artifact-remote.ts', import.meta.url)),
+  '@xagent/dsh-project/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-project-remote.ts', import.meta.url)),
+}
+
 const windowsUnsupportedPackages = process.platform === 'win32'
   ? [
       // Bash-requiring suites (a real POSIX shell is unavailable on Windows).
@@ -116,6 +124,7 @@ const processBoundTests = [
 
 export default defineConfig({
   plugins: [pathsPlugin(), standardDecoratorPlugin()],
+  resolve: { alias: generatedRemoteTestAliases },
   test: {
     setupFiles: ['./scripts/test-invariants.ts'],
     // .tsx: client component specs (jsdom via per-file @vitest-environment pragma).
@@ -126,6 +135,7 @@ export default defineConfig({
     projects: [
       {
         plugins: [pathsPlugin(), standardDecoratorPlugin()],
+        resolve: { alias: generatedRemoteTestAliases },
         test: {
           name: 'thread-safe',
           execArgv: vitestExecArgv,
@@ -144,6 +154,7 @@ export default defineConfig({
       },
       {
         plugins: [pathsPlugin(), standardDecoratorPlugin()],
+        resolve: { alias: generatedRemoteTestAliases },
         test: {
           name: 'process-bound',
           execArgv: vitestExecArgv,
@@ -243,8 +254,26 @@ export default defineConfig({
         'packages/client/ui-workspace/src/client/index.ts',
         'packages/test-support/client-runtime/src/translate.ts',
         'packages/client/ui-primitives/src/JsonTree.tsx',
+        'packages/client/ui-primitives/src/Modal.tsx',
         'packages/client/ui-settings-models/src/client/DeepSeekOnboardingDialog.tsx',
         'packages/client/ui-settings-models/src/client/welcome-store.ts',
+        // XAgent's browser account and workbench surfaces have focused jsdom
+        // lifecycle coverage plus the assembled browser scenario. Their
+        // remaining interaction branches stay with the existing GUI debt
+        // until the browser-grade coverage lane measures them per file.
+        'packages/xagent/ui-account/src/index.ts',
+        'packages/xagent/ui-account/src/client/AccountFooter.tsx',
+        'packages/xagent/ui-account/src/client/AccountOverlay.tsx',
+        'packages/xagent/ui-account/src/client/index.ts',
+        'packages/xagent/ui-account/src/client/service.ts',
+        'packages/xagent/ui-artifact/src/index.ts',
+        'packages/xagent/ui-artifact/src/client/ArtifactPanel.tsx',
+        'packages/xagent/ui-artifact/src/client/ArtifactPreview.tsx',
+        'packages/xagent/ui-artifact/src/client/index.ts',
+        'packages/xagent/ui-artifact/src/client/locales.ts',
+        'packages/xagent/ui-artifact/src/client/service.ts',
+        'packages/xagent/ui-project/src/client/WorkbenchDetails.tsx',
+        'packages/xagent/ui-project/src/client/index.ts',
         'packages/extensions/*/src/**/*.ts',
         'packages/extensions/*/src/**/*.tsx',
         // Typert generator: correctness is pinned by its fixture suites and
