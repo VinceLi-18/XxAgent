@@ -16,7 +16,7 @@ XAgent 继承的 DeepSeek Harness 工作流假定存在上游企业环境的默�
 
 只读 PR 策略指向 `VinceLi-18/XxAgent`。Issue 生命周期变更要求 `XAGENT_ISSUE_LIFECYCLE_ENABLED=true`，并从事件取得仓库坐标。在仓库具备匹配的 GitHub App 凭据与 Project 所有权支持前，该变量保持未设置；缺少这些前提时启用变更属于配置错误。
 
-覆盖率门禁会在 Host-for-Client Remote 生成产物出现前执行 Client 插件生命周期测试。Vitest 把两个 XAgent 生成式 Remote 入口映射到保留所属包标识的惰性贡献，生命周期测试自行提供命名空间实现。Typert 生成器测试和构建后应用冒烟测试继续验证生成描述符，因此源代码测试替代项不替代产物验证。
+覆盖率门禁会在 Host-for-Client Remote 生成产物出现前执行 Client 插件生命周期测试。Vitest 把两个 XAgent 生成式 Remote 入口映射到保留所属包标识的惰性贡献，生命周期测试自行提供命名空间实现。Typert 生成器测试和构建后应用冒烟测试继续验证生成描述符，因此源代码测试替代项不替代产物验证。通过源代码启动的进程树场景在覆盖率插桩下允许宿主握手等待 60 秒，同时保留相同的生命周期断言。
 
 项目工作台浏览器场景在完整生命周期内拥有唯一命名的 PostgreSQL Compose 项目和动态分配的主机端口。场景通过 Compose 服务名创建角色与数据库，并在清理阶段删除项目和卷。因此，该场景既不依赖自托管 runner 上持久存在的容器，也不会与独立拥有的资料生命周期栈冲突。consumer 通道会在场景执行 API migration 前安装 Python 3.11 和仓库固定版本的 uv。模型可见快照夹具记录当前组装的翻译请求、PowerShell 工具 schema 与后台任务术语。
 
