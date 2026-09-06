@@ -493,6 +493,7 @@ describe('CI workflow', () => {
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml up -d --build --wait')
     expect(e2eStep.run).toContain('tests/e2e/test_artifact_pipeline.py')
     expect(e2eStep.run).toContain('tests/e2e/test_compose_upgrade.py')
+    expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml build api embedding')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml logs')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
     expect(e2eStep.run).toContain('verify_model_snapshot.py --allow-absent')
