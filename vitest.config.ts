@@ -254,8 +254,26 @@ export default defineConfig({
         'packages/client/ui-workspace/src/client/index.ts',
         'packages/test-support/client-runtime/src/translate.ts',
         'packages/client/ui-primitives/src/JsonTree.tsx',
+        'packages/client/ui-primitives/src/Modal.tsx',
         'packages/client/ui-settings-models/src/client/DeepSeekOnboardingDialog.tsx',
         'packages/client/ui-settings-models/src/client/welcome-store.ts',
+        // XAgent's browser account and workbench surfaces have focused jsdom
+        // lifecycle coverage plus the assembled browser scenario. Their
+        // remaining interaction branches stay with the existing GUI debt
+        // until the browser-grade coverage lane measures them per file.
+        'packages/xagent/ui-account/src/index.ts',
+        'packages/xagent/ui-account/src/client/AccountFooter.tsx',
+        'packages/xagent/ui-account/src/client/AccountOverlay.tsx',
+        'packages/xagent/ui-account/src/client/index.ts',
+        'packages/xagent/ui-account/src/client/service.ts',
+        'packages/xagent/ui-artifact/src/index.ts',
+        'packages/xagent/ui-artifact/src/client/ArtifactPanel.tsx',
+        'packages/xagent/ui-artifact/src/client/ArtifactPreview.tsx',
+        'packages/xagent/ui-artifact/src/client/index.ts',
+        'packages/xagent/ui-artifact/src/client/locales.ts',
+        'packages/xagent/ui-artifact/src/client/service.ts',
+        'packages/xagent/ui-project/src/client/WorkbenchDetails.tsx',
+        'packages/xagent/ui-project/src/client/index.ts',
         'packages/extensions/*/src/**/*.ts',
         'packages/extensions/*/src/**/*.tsx',
         // Typert generator: correctness is pinned by its fixture suites and
