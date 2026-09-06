@@ -259,13 +259,7 @@ describe('CI workflow', () => {
   it('deploys the artifact worker with isolated credentials and healthy dependencies', () => {
     const compose = loadWorkflow('services/api/compose.yml')
     const environmentExample = readFileSync(resolve(root, 'services/api/.env.example'), 'utf8')
-    const api = composeService(compose, 'api')
-    const worker = composeService(compose, 'worker')
-    const postgres = composeService(compose, 'postgres')
-    const roles = composeService(compose, 'roles')
-    const migrate = composeService(compose, 'migrate')
-    const minio = composeService(compose, 'minio')
-    const clamav = composeService(compose, 'clamav')
+    const { api, worker, postgres, roles, migrate, minio, clamav } = artifactComposeServices(compose)
     if (!isRecord(api.environment)
       || !isRecord(worker.environment)
       || !isRecord(postgres.environment)
@@ -333,9 +327,7 @@ describe('CI workflow', () => {
       POSTGRES_WORKER_USER: '${POSTGRES_WORKER_USER}',
       POSTGRES_WORKER_PASSWORD: '${POSTGRES_WORKER_PASSWORD}',
     })
-    expect(roles.depends_on).toMatchObject({
-      postgres: { condition: 'service_healthy' },
-    })
+    expectArtifactLifecycleOrder({ roles, migrate, worker })
     expect(postgres.healthcheck.test).toEqual([
       'CMD-SHELL',
       'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
@@ -346,14 +338,6 @@ describe('CI workflow', () => {
     })
     expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
     expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
-    expect(migrate.depends_on).toMatchObject({
-      roles: { condition: 'service_completed_successfully' },
-    })
-    expect(worker.depends_on).toMatchObject({
-      migrate: { condition: 'service_completed_successfully' },
-      minio: { condition: 'service_healthy' },
-      clamav: { condition: 'service_healthy' },
-    })
     expect(durationSeconds(worker.stop_grace_period)).toBeGreaterThanOrEqual(90)
     expect(minio.healthcheck.test).toEqual(['CMD', 'mc', 'ready', 'local'])
     expect(clamav.image).toMatch(/^clamav\/clamav-debian:1\.4(?:$|\.)/)
@@ -363,13 +347,7 @@ describe('CI workflow', () => {
   it('assembles an isolated real artifact pipeline for Docker tests', () => {
     const compose = loadWorkflow('services/api/compose.test.yml')
     const packageJson = loadWorkflow('package.json')
-    const api = composeService(compose, 'api')
-    const worker = composeService(compose, 'worker')
-    const postgres = composeService(compose, 'postgres')
-    const roles = composeService(compose, 'roles')
-    const migrate = composeService(compose, 'migrate')
-    const minio = composeService(compose, 'minio')
-    const clamav = composeService(compose, 'clamav')
+    const { api, worker, postgres, roles, migrate, minio, clamav } = artifactComposeServices(compose)
     if (!isRecord(packageJson.scripts)
       || !isRecord(api.environment)
       || !isRecord(worker.environment)
@@ -418,9 +396,7 @@ describe('CI workflow', () => {
       POSTGRES_WORKER_USER: 'xagent_e2e_worker',
       POSTGRES_WORKER_PASSWORD: 'p@ss:word/%-e2e-worker',
     })
-    expect(roles.depends_on).toMatchObject({
-      postgres: { condition: 'service_healthy' },
-    })
+    expectArtifactLifecycleOrder({ roles, migrate, worker })
     expect(postgres.healthcheck.test).toEqual([
       'CMD-SHELL',
       'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}',
@@ -432,14 +408,6 @@ describe('CI workflow', () => {
     })
     expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
     expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
-    expect(migrate.depends_on).toMatchObject({
-      roles: { condition: 'service_completed_successfully' },
-    })
-    expect(worker.depends_on).toMatchObject({
-      migrate: { condition: 'service_completed_successfully' },
-      minio: { condition: 'service_healthy' },
-      clamav: { condition: 'service_healthy' },
-    })
     expect(api.depends_on).toMatchObject({
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
@@ -742,6 +710,35 @@ function composeService(compose: Record<string, unknown>, service: string): Reco
     throw new TypeError(`compose must define the ${service} service`)
   }
   return compose.services[service]
+}
+
+function artifactComposeServices(compose: Record<string, unknown>): Record<
+  'api' | 'worker' | 'postgres' | 'roles' | 'migrate' | 'minio' | 'clamav',
+  Record<string, unknown>
+> {
+  return {
+    api: composeService(compose, 'api'),
+    worker: composeService(compose, 'worker'),
+    postgres: composeService(compose, 'postgres'),
+    roles: composeService(compose, 'roles'),
+    migrate: composeService(compose, 'migrate'),
+    minio: composeService(compose, 'minio'),
+    clamav: composeService(compose, 'clamav'),
+  }
+}
+
+function expectArtifactLifecycleOrder(services: {
+  roles: Record<string, unknown>
+  migrate: Record<string, unknown>
+  worker: Record<string, unknown>
+}): void {
+  expect(services.roles.depends_on).toMatchObject({ postgres: { condition: 'service_healthy' } })
+  expect(services.migrate.depends_on).toMatchObject({ roles: { condition: 'service_completed_successfully' } })
+  expect(services.worker.depends_on).toMatchObject({
+    migrate: { condition: 'service_completed_successfully' },
+    minio: { condition: 'service_healthy' },
+    clamav: { condition: 'service_healthy' },
+  })
 }
 
 function composeServiceNames(compose: Record<string, unknown>): string[] {

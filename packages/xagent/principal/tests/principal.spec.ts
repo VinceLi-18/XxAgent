@@ -1,6 +1,9 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, test } from 'vitest'
-import XAgentPrincipalService, { parseXAgentPrincipal } from '../src/index.ts'
+import XAgentPrincipalService, {
+  isXAgentAuthenticatedRequestScope,
+  parseXAgentPrincipal,
+} from '../src/index.ts'
 
 const valid = {
   actor_id: '00000000-0000-0000-0000-000000000001',
@@ -48,5 +51,15 @@ describe('XAgent Principal', () => {
     await expect(service.resolve()).resolves.toMatchObject({ connectionId: 'connection-1' })
     expect(service).toBeInstanceOf(XAgentPrincipalService)
     await ctx.fiber.dispose()
+  })
+
+  test('认证请求范围保持 Principal 与物理连接的关系', () => {
+    const principal = parseXAgentPrincipal(valid, 'connection-1')
+    expect(isXAgentAuthenticatedRequestScope({ principal, userToken: 'token', connectionId: 'connection-1' }))
+      .toBe(true)
+    expect(isXAgentAuthenticatedRequestScope({ principal, userToken: '', connectionId: 'connection-1' }))
+      .toBe(false)
+    expect(isXAgentAuthenticatedRequestScope({ principal, userToken: 'token', connectionId: 'connection-2' }))
+      .toBe(false)
   })
 })

@@ -9,7 +9,10 @@ import {
   XAgentBackendError,
   type XAgentWorkbenchBackend,
 } from '@xagent/dsh-backend-client'
-import type { XAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
+import {
+  isXAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedRequestScope,
+} from '@xagent/dsh-principal'
 import type {
   XAgentProjectDetail,
   XAgentProjectRemote,
@@ -20,7 +23,6 @@ import type {
 
 export type * from './types.ts'
 
-const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 const PROJECT_FAILURE_CODES = new Set([
   'unauthenticated', 'forbidden', 'not-found', 'idempotency-conflict', 'unsupported-version', 'service-unavailable',
 ])
@@ -30,6 +32,7 @@ interface RequestScopeState {
   active: boolean
 }
 
+/* jscpd:ignore-start -- Project and Artifact intentionally expose the same backend transport configuration. */
 /** XAgent Project Host plugin configuration. */
 export interface Config {
   /** FastAPI 服务的绝对 HTTP origin。 */
@@ -42,6 +45,7 @@ export const Config: z<Config> = z.object({
   backendOrigin: z.string().required(),
   serviceToken: z.string().required(),
 })
+/* jscpd:ignore-end */
 
 export const name = 'xagent-project'
 
@@ -49,18 +53,6 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     xagentProject: XAgentProjectService
   }
-}
-
-function validScope(scope: XAgentAuthenticatedRequestScope): boolean {
-  const role: unknown = scope.principal.role
-  return UUID_PATTERN.test(scope.principal.actorId)
-    && (role === 'manager' || role === 'specialist')
-    && Number.isSafeInteger(scope.principal.permissionRevision)
-    && scope.principal.permissionRevision >= 1
-    && UUID_PATTERN.test(scope.principal.authSessionId)
-    && scope.principal.connectionId === scope.connectionId
-    && scope.userToken.length > 0
-    && scope.connectionId.length > 0
 }
 
 /** 将账号绑定请求转发给 FastAPI 的项目工作台服务。 */
@@ -81,7 +73,7 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
    */
   async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
     if (this.disposed) throw new Error('xagent project service is disposed')
-    if (!validScope(scope)) throw new Error('invalid xagent project request scope')
+    if (!isXAgentAuthenticatedRequestScope(scope)) throw new Error('invalid xagent project request scope')
     const current = this.requestScope.getStore()
     if (current?.active === true) throw new Error('nested xagent project request scope')
     const state: RequestScopeState = { scope, active: true }
