@@ -1,6 +1,7 @@
 import hashlib
 import os
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 import jwt
 import pytest
@@ -8,9 +9,28 @@ from argon2 import PasswordHasher
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.routes import auth as auth_routes
 from app.models.auth import XAgentAuthSession
+from app.services.auth import IssuedLogin
 
 PASSWORD = "correct horse battery staple"
+
+
+@pytest.mark.anyio
+async def test_login_commits_the_auth_session_before_returning_the_token(monkeypatch) -> None:
+    expires_at = datetime(2026, 8, 25, 18, tzinfo=UTC)
+    issued = IssuedLogin(access_token="signed-token", expires_at=expires_at, csrf_token="csrf-token")
+    authenticate = AsyncMock(return_value=issued)
+    monkeypatch.setattr(auth_routes, "authenticate", authenticate)
+    session = AsyncMock(spec=AsyncSession)
+
+    response = await auth_routes.login(
+        auth_routes.LoginRequest(email="alice@example.test", password=PASSWORD),
+        session,
+    )
+
+    session.commit.assert_awaited_once_with()
+    assert response.access_token == "signed-token"
 
 
 async def _set_password(engine, account_id, password: str = PASSWORD) -> None:

@@ -262,9 +262,8 @@ function sseResponse(
           const payload = options?.authorizer?.filterEvent === undefined || options.requestContext === undefined
             ? narrow.payload
             : await options.authorizer.filterEvent(endpoint, narrow.payload, options.requestContext, signal)
-          if (payload !== undefined) {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(fullFrame({ ...narrow, payload: payload as MuxFrame | HostFrame }))}\n\n`))
-          }
+          if (payload === undefined) continue
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(fullFrame({ ...narrow, payload: payload as MuxFrame | HostFrame }))}\n\n`))
         }
       } catch (error: unknown) {
         // Mid-stream impl failure → one stream/error frame, then close: the client must see

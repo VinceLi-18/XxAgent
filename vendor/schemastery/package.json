@@ -2,12 +2,10 @@
   "name": "@deepseek-ai/schemastery",
   "description": "Type driven schema validator",
   "version": "3.18.1",
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "url": "git+https://github.com/VinceLi-18/XxAgent.git",
     "directory": "vendor/schemastery"
   },
   "type": "module",

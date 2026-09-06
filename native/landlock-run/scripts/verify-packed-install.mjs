@@ -2,7 +2,7 @@
 /**
  * Publish-path rehearsal without publishing: verify the packed tarballs are
  * exactly what a consumer install needs. `pnpm pack` already produced the
- * bytes `pnpm publish` would upload; this script checks the payload
+ * package payload the private application stages; this script checks the payload
  * (coverage, concrete dependency versions, NO lifecycle install scripts —
  * this family has no install fallback on purpose), unpacks the entry plus
  * THIS host's platform tarball into a throwaway consumer OUTSIDE the repo,

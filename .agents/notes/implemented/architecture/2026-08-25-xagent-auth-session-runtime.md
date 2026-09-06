@@ -8,7 +8,7 @@ Business Profile 面向多个真实用户时，本地 Profile 目录、浏览器
 
 ## Decision
 
-浏览器只持有 Host 写入的安全 Cookie。Host 向 FastAPI introspection 当前登录，生成绑定物理连接的不可变 Principal，并将 Principal 显式传入 RPC 与事件订阅。XAgent 授权服务采用封闭方法表，先验证连接、Principal 和用户令牌一致，再由 FastAPI 在当前用户事务与 PostgreSQL RLS 下决定 Session read 或 edit 权限。
+浏览器只持有 Host 写入的安全 Cookie。Host 向 FastAPI introspection 当前登录，生成绑定物理连接的不可变 Principal，并将 Principal 显式传入 RPC 与事件订阅。Principal 包统一验证 Project 与 Artifact 请求中的 Principal 字段、非空用户令牌和物理连接标识关系，各消费方只拥有自己的请求生命周期状态。XAgent 授权服务采用封闭方法表，先验证连接、Principal 和用户令牌一致，再由 FastAPI 在当前用户事务与 PostgreSQL RLS 下决定 Session read 或 edit 权限。
 
 FastAPI 是 Business 会话 Header 与仅追加事件的唯一持久化权威。远端不可用、身份失效或授权不明时全部失败关闭，不回退本地 JSONL。私有会话只允许 owner 访问，Manager 也不能读取其他用户私有会话；不可见与不存在使用同一 not-found 结果。
 

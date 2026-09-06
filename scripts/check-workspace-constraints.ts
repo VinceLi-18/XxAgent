@@ -31,25 +31,16 @@ const vendoredPackages = new Set([
   '@deepseek-ai/cordis-plugin-hmr',
   '@deepseek-ai/cordis-plugin-logger-console',
 ])
-const publicLandlockPackages = new Set([
+const landlockPackages = new Set([
   '@deepseek-ai/node-addon-landlock-run',
   '@deepseek-ai/node-addon-landlock-run-linux-arm64',
   '@deepseek-ai/node-addon-landlock-run-linux-x64',
 ])
 /** Deliberate source payloads whose exact bytes are part of the package's audit surface. */
-const publicationSourceAllowlist: Readonly<Record<string, readonly string[]>> = {
+const packageSourceAllowlist: Readonly<Record<string, readonly string[]>> = {
   '@deepseek-ai/node-addon-landlock-run': ['src/main.c'],
 }
-const repositoryUrl = 'git+https://github.com/deepseek-harness/deepseek-harness.git'
-/**
- * Source home the published packages point consumers at. It differs from
- * {@link repositoryUrl}, which the Landlock packages keep because npm resolves
- * their trusted publishing against the repository that runs the workflow.
- */
-const publishedRepositoryUrl = 'git+https://github.com/deepseek-ai/deepseek-harness.git'
-/** Directories whose packages this repository publishes: one release member each. */
-const releaseMemberDirectory = /^(?:packages\/[^/]+\/[^/]+|apps\/[^/]+|vendor\/[^/]+)$/
-/** Fork-owned runtime bundles that ship inside XAgent rather than through npm. */
+/** Fork-owned runtime bundles whose package identities stay explicit. */
 export const privateXagentPackages: Readonly<Record<string, string>> = {
   'packages/bundle/xagent-business': '@xagent/dsh-business',
   'packages/bundle/xagent-developer': '@xagent/dsh-developer',
@@ -73,8 +64,8 @@ const xagentRepositoryUrl = 'git+https://github.com/VinceLi-18/XxAgent.git'
 const localArtifactDirs = new Set(['node_modules'])
 const appPackageFiles: Readonly<Record<string, readonly string[]>> = {
   '@deepseek-ai/dsh': ['lib/*.js', 'config'],
-  // The Web build emits sourcemaps for browser debugging; publishing them is
-  // what the payload policy forbids, so the bundle ships without them.
+  // The Web build emits sourcemaps for browser debugging; the application
+  // payload policy forbids them, so the bundle is staged without them.
   '@deepseek-ai/dsh-web-frontend': ['dist', '!dist/**/*.map'],
 }
 
@@ -151,12 +142,12 @@ function workspaceManifests(): WorkspaceManifest[] {
 }
 
 const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
-  // Profile bundles publish their dsh.bundle.patch layer beside the lib.
+  // Profile bundles stage their dsh.bundle.patch layer beside the lib.
   '@deepseek-ai/dsh-base': ['cordis.patch.yml'],
   '@deepseek-ai/dsh-web-app': ['cordis.patch.yml'],
   '@deepseek-ai/dsh-headless': ['cordis.patch.yml'],
   '@deepseek-ai/dsh-client-ui-theme': ['lib/styles'],
-  // The Python runtime uses a distinct closed-resolution bin; the public CLI
+  // The Python runtime uses a distinct closed-resolution bin; the application CLI
   // keeps config-owned bare-package resolution through lib/bin.js.
   '@deepseek-ai/dsh-sdk-jsonrpc-demo': ['lib/packaged-bin.js'],
   // The argv-prefix runner entry ships beside the lib as its own bundle;
@@ -175,7 +166,7 @@ function expectedDshPackageFiles(manifest: PackageManifest): readonly string[] {
   const extras = manifest.name ? packageFileExtras[manifest.name] ?? [] : []
   return [
     'lib/index.js',
-    // Every package publishes its invariant ownership companion as a separate
+    // Every package stages its invariant ownership companion as a separate
     // bundle; the package-invariant gate validates the companion itself.
     'lib/invariant.js',
     ...manifest.bin ? ['lib/bin.js'] : [],
@@ -195,7 +186,7 @@ function expectedDshPackageFiles(manifest: PackageManifest): readonly string[] {
     ...extras,
     // Subpaths whose runtime default is the tsc-emitted tree (lib/types/*.js —
     // browser-safe source channels rehomed off src so plain Node can import
-    // them without type stripping) publish the emitted JS alongside the
+    // them without type stripping) stage the emitted JS alongside the
     // declarations.
     ...usesEmittedTreeDefaults(manifest) ? ['lib/types/**/*.js'] : [],
     'lib/types/**/*.d.ts',
@@ -243,60 +234,27 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
   const errors: string[] = []
   const label = manifest.name ?? dir
   const isLandlockPackageDir = dir.startsWith('native/landlock-run/packages/')
-  const isPublicLandlockPackage = isLandlockPackageDir
+  const isLandlockPackage = isLandlockPackageDir
     && manifest.name !== undefined
-    && publicLandlockPackages.has(manifest.name)
+    && landlockPackages.has(manifest.name)
 
-  if (isPublicLandlockPackage) {
-    if (manifest.private === true) {
-      errors.push(`${label}: published Landlock package must not set "private": true`)
-    }
-    if (manifest.publishConfig?.access !== 'public') {
-      errors.push(`${label}: published Landlock package must set publishConfig.access to "public"`)
-    }
-    const expectedDirectory = dir
-    if (manifest.repository?.type !== 'git'
-      || manifest.repository.url !== repositoryUrl
-      || manifest.repository.directory !== expectedDirectory) {
-      errors.push(`${label}: published Landlock package repository must use ${repositoryUrl} with directory ${expectedDirectory} for trusted publishing`)
-    }
-  } else if (privateXagentPackages[dir] !== undefined) {
+  if (manifest.private !== true) {
+    errors.push(`${label}: private application package must set "private": true`)
+  }
+  if (manifest.publishConfig !== undefined) {
+    errors.push(`${label}: private application package must not declare publishConfig`)
+  }
+  if (dir !== '.' && (manifest.repository?.type !== 'git'
+    || manifest.repository.url !== xagentRepositoryUrl
+    || manifest.repository.directory !== dir)) {
+    errors.push(`${label}: private application package repository must use ${xagentRepositoryUrl} with directory ${dir}`)
+  }
+
+  if (privateXagentPackages[dir] !== undefined) {
     const expectedName = privateXagentPackages[dir]
     if (manifest.name !== expectedName) {
       errors.push(`${label}: private XAgent package must use name ${expectedName}`)
     }
-    if (manifest.private !== true) {
-      errors.push(`${label}: private XAgent package must set "private": true`)
-    }
-    if (manifest.repository?.type !== 'git'
-      || manifest.repository.url !== xagentRepositoryUrl
-      || manifest.repository.directory !== dir) {
-      errors.push(`${label}: private XAgent package repository must use ${xagentRepositoryUrl} with directory ${dir}`)
-    }
-  } else if (releaseMemberDirectory.test(dir)) {
-    // Release members state that they are publishable: npm refuses a private
-    // package, and the repository field is how a consumer finds the source of
-    // the package it installed.
-    //
-    // Access is per release sequence, not per scope: the vendored framework and
-    // the Landlock packages publish publicly because outside consumers install
-    // them, while the dsh family stays restricted until its own sequence goes
-    // public. A mixed scope is why no publish path passes `--access` — one flag
-    // cannot serve both, so each packed manifest decides
-    // ([rationale](../.agents/notes/implemented/process/2026-08-13-public-vendor-and-native-sequences.md)).
-    if (manifest.private === true) {
-      errors.push(`${label}: release member must not set "private": true`)
-    }
-    if (manifest.publishConfig?.access !== 'public') {
-      errors.push(`${label}: release member must set publishConfig.access to "public"`)
-    }
-    if (manifest.repository?.type !== 'git'
-      || manifest.repository.url !== publishedRepositoryUrl
-      || manifest.repository.directory !== dir) {
-      errors.push(`${label}: release member repository must use ${publishedRepositoryUrl} with directory ${dir}`)
-    }
-  } else if (manifest.private !== true) {
-    errors.push(`${label}: package.json must set "private": true`)
   }
 
   if (manifest.name && vendoredPackages.has(manifest.name)) {
@@ -304,10 +262,10 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
   }
 
   if (manifest.name?.startsWith('@deepseek-ai/')) {
-    const allowedSources = publicationSourceAllowlist[manifest.name] ?? []
+    const allowedSources = packageSourceAllowlist[manifest.name] ?? []
     for (const file of manifest.files ?? []) {
       if (isForbiddenPublicationFile(file) && !allowedSources.includes(file)) {
-        errors.push(`${label}: package.json files must not publish ${JSON.stringify(file)}`)
+        errors.push(`${label}: package.json files must not stage ${JSON.stringify(file)}`)
       }
     }
   }
@@ -315,15 +273,15 @@ function checkWorkspace({ dir, manifest }: WorkspaceManifest): string[] {
   if (dir.startsWith('apps/') && manifest.name?.startsWith('@deepseek-ai/')) {
     const expectedFiles = appPackageFiles[manifest.name]
     if (expectedFiles === undefined) {
-      errors.push(`${label}: app package has no publication files policy`)
+      errors.push(`${label}: app package has no application files policy`)
     } else if (!sameStringList(manifest.files, expectedFiles)) {
       errors.push(`${label}: package.json files must be ${JSON.stringify(expectedFiles)}`)
     }
   }
 
   if (isLandlockPackageDir) {
-    if (!isPublicLandlockPackage) {
-      errors.push(`${label}: unexpected package in the public Landlock package family`)
+    if (!isLandlockPackage) {
+      errors.push(`${label}: unexpected package in the Landlock package family`)
     }
     if (manifest.version !== landlockVersion) {
       errors.push(`${label}: package.json version must match Landlock workspace version ${landlockVersion ?? '(missing)'}`)
@@ -406,24 +364,24 @@ function checkHierarchyShape(): string[] {
 }
 
 function checkRepositoryVersion(): string[] {
-  // The root carries the dsh release family's version, so a prerelease such as
-  // 0.0.1-rc.1 is a valid state between `release:dsh` and its publication.
+  // The root carries the private application's version. Prerelease revisions
+  // use the same semver form as stable revisions.
   if (repositoryVersion && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(repositoryVersion)) return []
   return ['package.json: version must be X.Y.Z with an optional prerelease segment']
 }
 
-/** Dependency sections whose ranges reach a published tarball or a local install. */
+/** Dependency sections whose ranges participate in workspace resolution. */
 const dependencySections = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const
 
 /**
- * Require the `workspace:` protocol for every reference to a workspace member.
+ * Require every private application namespace dependency to exist in this
+ * repository and every workspace-member reference to use `workspace:`.
  *
- * A hand-written range says nothing about the version the workspace actually
- * carries, and `pnpm pack` leaves it alone: `^0.0.1` published from version
- * `0.0.2` names a version that does not exist. The protocol makes pack
- * substitute the member's real version, so no release step rewrites ranges.
+ * A hand-written range may resolve a registry package instead of the source in
+ * this private application. The protocol makes the repository checkout the
+ * only valid provider and keeps every build on one reviewed source revision.
  * @param manifests - every workspace manifest.
- * @returns One error per reference that names a workspace member without the protocol.
+ * @returns One error per missing private member or workspace reference without the protocol.
  */
 function checkWorkspaceProtocol(manifests: readonly WorkspaceManifest[]): string[] {
   const members = new Set(manifests.map(entry => entry.manifest.name).filter(name => name !== undefined))
@@ -431,6 +389,11 @@ function checkWorkspaceProtocol(manifests: readonly WorkspaceManifest[]): string
   for (const { dir, manifest } of manifests) {
     for (const section of dependencySections) {
       for (const [name, range] of Object.entries(manifest[section] ?? {})) {
+        const privateApplicationName = name.startsWith('@deepseek-ai/') || name.startsWith('@xagent/')
+        if (privateApplicationName && !members.has(name)) {
+          errors.push(`${manifest.name ?? dir}: ${section}.${name} must exist in the merged workspace`)
+          continue
+        }
         if (!members.has(name) || range.startsWith('workspace:')) continue
         errors.push(`${manifest.name ?? dir}: ${section}.${name} must use the workspace: protocol, got ${range}`)
       }

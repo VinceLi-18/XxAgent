@@ -5,8 +5,11 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { XAgentPrincipal, XAgentPrincipalResolver } from './types.ts'
-import type { XAgentAuthenticatedRequestScope } from './types.ts'
+import type {
+  XAgentAuthenticatedRequestScope,
+  XAgentPrincipal,
+  XAgentPrincipalResolver,
+} from './types.ts'
 
 export type {
   XAgentAuthenticatedRequestScope,
@@ -49,6 +52,23 @@ export function runWithoutXAgentAuthenticatedRequestScope<T>(operation: () => T)
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Verify that a typed request scope still matches the authenticated connection relationships.
+ * @param scope - request scope assembled by the authenticated Web connection.
+ * @returns whether all principal, token, and connection relationships remain valid.
+ */
+export function isXAgentAuthenticatedRequestScope(scope: XAgentAuthenticatedRequestScope): boolean {
+  const role: unknown = scope.principal.role
+  return UUID_PATTERN.test(scope.principal.actorId)
+    && (role === 'manager' || role === 'specialist')
+    && Number.isSafeInteger(scope.principal.permissionRevision)
+    && scope.principal.permissionRevision >= 1
+    && UUID_PATTERN.test(scope.principal.authSessionId)
+    && scope.principal.connectionId === scope.connectionId
+    && scope.userToken.length > 0
+    && scope.connectionId.length > 0
+}
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

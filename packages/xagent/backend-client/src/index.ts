@@ -436,8 +436,7 @@ function parseArtifactDetail(value: unknown): XAgentArtifactDetail {
     versionNumbers.add(version.version)
     previousVersion = version.version
   }
-  const latest = versions[0]
-  if (latest === undefined) failSchema()
+  const latest = versions[0] as XAgentArtifactVersionSummary
   if (summary.latestVersion !== latest.version || summary.latestStatus !== latest.status) failSchema()
   const latestClean = versions.find(version => version.status === 'clean')
   if (summary.latestCleanVersion !== latestClean?.version) failSchema()

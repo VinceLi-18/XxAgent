@@ -18,7 +18,7 @@ Package ownership must also be exhaustive. Without a mechanical repository rule,
 
 `@deepseek-ai/dsh-invariants` is a product-independent Cordis service plugin that registers `ctx.invariants`. It owns configuration, registration uniqueness, child-fiber lifecycle, and package-attributed failures. It imports no session, agent, scope, or agent-loop package and contains none of their checks.
 
-Every workspace package publishes a `./invariant` companion plugin that registers its exact full npm name. A companion checks a meaningful event or mutable-data relationship when its owner has one; otherwise it carries an owner-specific explanation for its empty installer. Generated ownership placeholders and synthetic API-shape assertions are forbidden by the follow-up [runtime-contract Agent Note](2026-07-19-package-invariant-runtime-contracts.md). Package root entrypoints do not import or register diagnostics implicitly, so loading a root package does not change runtime checking or require the invariant service.
+Every workspace package exports a `./invariant` companion plugin that registers its exact full internal package name. A companion checks a meaningful event or mutable-data relationship when its owner has one; otherwise it carries an owner-specific explanation for its empty installer. Generated ownership placeholders and synthetic API-shape assertions are forbidden by the follow-up [runtime-contract Agent Note](2026-07-19-package-invariant-runtime-contracts.md). Package root entrypoints do not import or register diagnostics implicitly, so loading a root package does not change runtime checking or require the invariant service.
 
 ### Configuration and selection
 

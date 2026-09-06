@@ -2,7 +2,7 @@
 
 English | [中文](python-sdk.zh.md)
 
-This tutorial is the programmatic alternative to the Web UI. It installs the published Python SDK, runs a checked-in agent composition, and shows how to call the same API from your own program.
+This tutorial is the programmatic alternative to the Web UI. It installs the private Python carrier built from an authorized XxAgent revision, runs a checked-in agent composition, and shows how to call the same API from your own program.
 
 ## Prerequisites
 
@@ -14,17 +14,19 @@ This tutorial is the programmatic alternative to the Web UI. It installs the pub
 
 ## Install the SDK
 
-Clone the repository for its runnable example, create a virtual environment, and install the SDK with its same-version bundled runtime:
+Obtain the authorized repository revision and its matching private Python artifact set. Create a virtual environment, then install the SDK with its bundled runtime without consulting a package registry:
 
 ```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
+git clone <authorized-xagent-repository-url> XxAgent
+cd XxAgent
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install deepseek-harness-sdk
+python -m pip install --no-index \
+  --find-links /path/to/xagent-python-artifacts \
+  deepseek-harness-sdk
 ```
 
-The installed runtime needs no system Node.js. Repository contributors who need to build the runtime or wheels from source should use the [Python contributor workflows](../../../python/development.md).
+The installed runtime needs no system Node.js. Repository contributors who need to produce the matching executable and wheel set should use the [Python contributor workflows](../../../python/development.md). Do not combine SDK and runtime wheels from different repository revisions.
 
 ## Run the checked-in example
 

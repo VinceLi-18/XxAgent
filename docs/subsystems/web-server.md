@@ -207,7 +207,7 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 @Remote async download(versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>
 ```
 
-Source: [`packages/xagent/artifact/src/index.ts:204`](../../packages/xagent/artifact/src/index.ts)
+Source: [`packages/xagent/artifact/src/index.ts:196`](../../packages/xagent/artifact/src/index.ts)
 
 <a id="ctxxagentcitation--xagentcitationremoteservice"></a>
 
@@ -260,7 +260,7 @@ XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspectio
 abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 ```
 
-Source: [`packages/xagent/principal/src/index.ts:95`](../../packages/xagent/principal/src/index.ts)
+Source: [`packages/xagent/principal/src/index.ts:115`](../../packages/xagent/principal/src/index.ts)
 
 <a id="ctxxagentproject--xagentprojectservice"></a>
 
@@ -310,7 +310,7 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 @Remote('project') async project(projectId: string, signal?: AbortSignal): Promise<XAgentProjectDetail>
 ```
 
-Source: [`packages/xagent/project/src/index.ts:67`](../../packages/xagent/project/src/index.ts)
+Source: [`packages/xagent/project/src/index.ts:59`](../../packages/xagent/project/src/index.ts)
 
 <a id="ctxxagentretrieval--xagentretrieval-abstract-seam"></a>
 

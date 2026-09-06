@@ -135,7 +135,7 @@ export class AccountController implements HostObservable<AccountState> {
       }
       this.csrfToken = (value as { csrf_token: string }).csrf_token
       this.workbench.reset(undefined)
-      await this.bootstrap(epoch, signal)
+      await this.bootstrap(epoch, signal, true)
     } catch {
       if (epoch === this.epoch) this.publish({ phase: 'login', message: '登录服务暂时不可用' })
     }
@@ -167,11 +167,17 @@ export class AccountController implements HostObservable<AccountState> {
     }
   }
 
-  private async bootstrap(epoch: number, signal: AbortSignal): Promise<void> {
+  private async bootstrap(epoch: number, signal: AbortSignal, retryAfterLogin = false): Promise<void> {
     try {
       await this.workbench.bootstrap(signal)
       if (epoch !== this.epoch) return
-      const snapshot = this.workbench.snapshot.getSnapshot()
+      let snapshot = this.workbench.snapshot.getSnapshot()
+      if (retryAfterLogin && (snapshot.phase !== 'ready' || snapshot.account === undefined)) {
+        this.workbench.reset(undefined)
+        await this.workbench.bootstrap(signal)
+        if (epoch !== this.epoch) return
+        snapshot = this.workbench.snapshot.getSnapshot()
+      }
       if (snapshot.phase !== 'ready' || snapshot.account === undefined) throw new Error('workbench unavailable')
       this.publish({ phase: 'authenticated', account: snapshot.account })
     } catch {

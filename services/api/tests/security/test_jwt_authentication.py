@@ -8,9 +8,15 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.db import engine as app_engine
 from app.core.db_context import set_actor_context
+from app.core.db import engine as app_engine
 from app.core.security import Actor
 from app.models.identity import Role
+
+
+def test_application_engine_uses_the_application_database_role(application_role: str) -> None:
+    assert app_engine.url.username == application_role
 
 
 def _signed_token(

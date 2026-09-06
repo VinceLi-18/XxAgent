@@ -1061,12 +1061,17 @@ describe('XAgent 后端客户端', () => {
     [{ ...bootstrapResponse, schema_version: 2 }],
     [{ ...bootstrapResponse, extra: true }],
     [{ ...bootstrapResponse, account: { ...bootstrapResponse.account, permission_revision: 0 } }],
+    [{ ...bootstrapResponse, capabilities: null }],
     [{ ...bootstrapResponse, capabilities: ['project.delete'] }],
+    [{ ...bootstrapResponse, capabilities: ['project.create', 'project.create'] }],
     [{ ...bootstrapResponse, context: { kind: 'project', project_id: null } }],
-    [{ ...bootstrapResponse, projects: [{ ...bootstrapResponse.projects[0], created_at: '' }] }],
+    [{ ...bootstrapResponse, context: { kind: 'shared', project_id: null } }],
+    [{ ...bootstrapResponse, projects: null }],
+    [{ ...bootstrapResponse, projects: [{ ...bootstrapResponse.projects[0], created_at: 'not-a-date' }] }],
     [{ ...bootstrapResponse, session_scopes: null }],
     [{ ...bootstrapResponse, session_scopes: [{ session_id: 'bad', visibility: 'private', project_id: null }] }],
     [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: null }] }],
+    [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'shared', project_id: null }] }],
     [{ ...bootstrapResponse, session_scopes: [...bootstrapResponse.session_scopes, { session_id: '00000000-0000-0000-0000-000000000301', visibility: 'private', project_id: null }] }],
     [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: '00000000-0000-0000-0000-000000000999' }] }],
     [{ ...bootstrapResponse, session_summary: { private_count: -1, project_counts: {} } }],
@@ -1147,6 +1152,57 @@ describe('XAgent 后端客户端', () => {
       sessionId: '00000000-0000-0000-0000-000000000301',
       projectIds: ['00000000-0000-0000-0000-000000000201'],
       idempotencyKey: 'refs-1',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+
+    for (const value of [
+      {
+        schema_version: 2,
+        account_id: bootstrapResponse.account.id,
+        context: { kind: 'workbench', project_id: null },
+      },
+      {
+        schema_version: 2,
+        account_id: bootstrapResponse.account.id,
+        project: projectResponse.project,
+        context: { kind: 'project', project_id: projectResponse.project.id },
+      },
+      {
+        schema_version: 1,
+        account_id: bootstrapResponse.account.id,
+        project: projectResponse.project,
+        context: { kind: 'workbench', project_id: null },
+      },
+    ]) {
+      const invalid = new XAgentBackendClient({
+        origin: 'https://api.example.test',
+        serviceToken: 'service-secret',
+        fetch: async () => Response.json(value),
+      })
+      const operation = Object.hasOwn(value, 'project')
+        ? invalid.workbench.createProject('token', { name: 'Alpha', idempotencyKey: 'create-1' })
+        : invalid.workbench.selectContext('token', { kind: 'workbench' })
+      await expect(operation).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    const crossedCreateResponses = [
+      Response.json({
+        schema_version: 1,
+        account_id: bootstrapResponse.account.id,
+        project: projectResponse.project,
+        context: { kind: 'project', project_id: projectResponse.project.id },
+      }),
+      Response.json({
+        ...bootstrapResponse,
+        account: { ...bootstrapResponse.account, id: '00000000-0000-0000-0000-000000000002' },
+      }),
+    ]
+    const crossedCreate = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => crossedCreateResponses.shift()!,
+    })
+    await expect(crossedCreate.workbench.createProject('token', {
+      name: 'Alpha', idempotencyKey: 'create-1',
     })).rejects.toMatchObject({ code: 'service-unavailable' })
   })
 
@@ -1345,6 +1401,7 @@ describe('XAgent 后端客户端', () => {
     [{ ...privateArtifactSummary, latest_status: 'clean', latest_clean_version: 1 }],
     [{ ...privateArtifactSummary, latest_clean_version: 2 }],
     [{ ...privateArtifactSummary, scope: { kind: 'private', project_id: projectResponse.project.id } }],
+    [{ ...privateArtifactSummary, scope: { kind: 'shared' } }],
     [{ ...privateArtifactSummary, scope: { kind: 'project' } }],
     [{ ...privateArtifactSummary, scope: { kind: 'project', project_id: 'bad' } }],
   ])('拒绝畸形 Artifact 摘要 %#', async (value) => {
@@ -1440,6 +1497,7 @@ describe('XAgent 后端客户端', () => {
       ],
     }],
     [{ ...artifactDetailResponse, latest_version: 1 }],
+    [{ ...artifactDetailResponse, latest_status: 'quarantined' }],
     [{ ...artifactDetailResponse, latest_status: 'clean' }],
     [{ ...artifactDetailResponse, latest_clean_version: 2 }],
     [(({ latest_clean_version: _removed, ...value }) => value)(artifactDetailResponse)],
@@ -1456,6 +1514,23 @@ describe('XAgent 后端客户端', () => {
     })
     await expect(client.artifacts.detail('token', artifactIds.private))
       .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('接受 Artifact Version 省略可选正文元数据', async () => {
+    const { size: _size, content_type: _contentType, ...latest } = artifactDetailResponse.versions[0]!
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json({
+        ...artifactDetailResponse,
+        versions: [latest, artifactDetailResponse.versions[1]],
+      }),
+    })
+
+    const detail = await client.artifacts.detail('token', artifactIds.private)
+    expect(detail.versions).toMatchObject([{ version: 2 }, { version: 1 }])
+    expect(detail.versions[0]).not.toHaveProperty('size')
+    expect(detail.versions[0]).not.toHaveProperty('contentType')
   })
 
   test.each([
@@ -1530,6 +1605,7 @@ describe('XAgent 后端客户端', () => {
     ['/content?signature=合同%25'],
     ['/content?signature=100%25valid&name=%25E5%2590%2588'],
     ['/content?name=%25E5%2590%2588&signature=100%25valid'],
+    [`/content?signature=%${'25'.repeat(15)}41`],
     ['https://notxagent-private.storage.example.test/opaque'],
     ['/prefixxagent-private/content?name=notxagent-privatevalue'],
   ])('接受相对或绝对 opaque 读取 URL 且不读取其正文 %#', async (url) => {
@@ -1547,12 +1623,15 @@ describe('XAgent 后端客户端', () => {
     [{ url: 'relative/content' }],
     [{ url: '//evil.example.test/content' }],
     [{ url: 'javascript:alert(1)' }],
+    [{ url: 'http://[' }],
     [{ url: 'https://user:pass@api.example.test/content' }],
     [{ url: 'https://api.example.test/artifacts/00000000-0000-0000-0000-000000000401/00000000-0000-0000-0000-000000000412' }],
     [{ url: '/%61rtifacts%2F00000000-0000-0000-0000-000000000401%2F00000000-0000-0000-0000-000000000412' }],
     [{ url: '/artifacts%25252F00000000-0000-0000-0000-000000000401%25252F00000000-0000-0000-0000-000000000412' }],
     [{ url: '/%61rtifacts%2525252f00000000-0000-0000-0000-000000000401%2525252F00000000-0000-0000-0000-000000000412' }],
     [{ url: `/artifacts%${'25'.repeat(16)}2F00000000-0000-0000-0000-000000000401/opaque` }],
+    [{ url: `/content?signature=%${'25'.repeat(17)}41` }],
+    [{ url: `/content?signature=${'x'.repeat(16_384)}` }],
     [{ url: '/api/%0a/content' }],
     [{ url: '/api/%00/content' }],
     [{ url: '/api/%5C/content' }],
@@ -1706,5 +1785,45 @@ describe('XAgent 后端客户端', () => {
       fetch: async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status }),
     })
     await expect(client.artifacts.list('token')).rejects.toMatchObject({ code })
+  })
+
+  test.each([
+    [410, 'upload-expired', 'upload-expired'],
+    [422, 'upload-rejected', 'upload-rejected'],
+    [418, 'not-found', 'service-unavailable'],
+  ])('通用后端错误映射校验 %i %s', async (status, code, expected) => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json({ detail: { code } }, { status }),
+    })
+
+    await expect(client.sessions.list('token')).rejects.toMatchObject({ code: expected })
+  })
+
+  test('选择项目上下文会发送项目标识', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({
+        schema_version: 1,
+        account_id: bootstrapResponse.account.id,
+        context: { kind: 'project', project_id: projectResponse.project.id },
+      }))
+      .mockResolvedValueOnce(Response.json(bootstrapResponse))
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: fetcher,
+    })
+
+    const selected = await client.workbench.selectContext('token', {
+      kind: 'project', projectId: projectResponse.project.id,
+    })
+    expect(selected.account.id).toBe(bootstrapResponse.account.id)
+    const body = fetcher.mock.calls[0]?.[1]?.body
+    expect(typeof body).toBe('string')
+    if (typeof body !== 'string') throw new TypeError('Expected a JSON request body')
+    expect(JSON.parse(body)).toMatchObject({
+      kind: 'project', project_id: projectResponse.project.id,
+    })
   })
 })

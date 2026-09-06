@@ -33,7 +33,8 @@ describe('XAgent Artifact UI 插件', () => {
       'complete-upload': vi.fn(), retry: vi.fn(), preview: vi.fn(), download: vi.fn(),
     }
     const disposeNamespace = ctx.reflect.provide('remote.xagentArtifact', remote)
-    ctx.provide('remote', { $mount: vi.fn(async () => async () => { await disposeNamespace() }) } as never)
+    const mount = vi.fn(async () => async () => { await disposeNamespace() })
+    ctx.provide('remote', { $mount: mount } as never)
     const sessionListeners = new Set<() => void>()
     let currentSession: string | undefined = 'session-1'
     ctx.provide('sessions', { list: {
@@ -53,6 +54,7 @@ describe('XAgent Artifact UI 插件', () => {
       readonly openCitation: (target: { artifactId: string; versionId: string; lineStart: number; lineEnd: number }) => Promise<void>
     }
     const cancelCitation = vi.spyOn(opener, 'cancelCitation')
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ package: '@xagent/dsh-artifact' }))
     expect(slots.entries('xagent.workbench.artifacts')[0]?.component).toBe(ArtifactPanel)
     await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(1) })
     await opener.openCitation({ artifactId: 'artifact-1', versionId: 'version-1', lineStart: 1, lineEnd: 2 })

@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-npm scope: `@deepseek-ai/dsh-*`; Cordis `Service` subclasses and function plugins contribute through `ctx.effect()`, `ctx.on()`, or `ctx.waterfall()`. Rules: [package](AGENTS.md), [root](../AGENTS.md#conventions).
+Internal package scopes remain `@deepseek-ai/dsh-*` and `@xagent/dsh-*`; every workspace is private and resolves internal dependencies from this merged repository. Cordis `Service` subclasses and function plugins contribute through `ctx.effect()`, `ctx.on()`, or `ctx.waterfall()`. Rules: [package](AGENTS.md), [root](../AGENTS.md#conventions).
 
 ## Hierarchy
 

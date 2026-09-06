@@ -6,7 +6,7 @@ Status: implemented
 
 ## 问题
 
-`vendor/` 下的九个包此前保留上游 npm 名（`cordis`、`cosmokit`、`schemastery`、`@cordisjs/plugin-*`）。这个前提在发布时不成立：每个 harness 包都把 `cordis` 声明成 peer dependency，装了 `@deepseek-ai/dsh-*` 的消费者必须能从 registry 解析到它，所以发布 harness 必然连带发布这一层框架。用上游名发布就是在 registry 上占用别人的名字；若该 registry 对 npmjs 做上游代理，本名条目还会遮蔽真正的上游包，把错误的框架装进无关项目。
+`vendor/` 下的九个包最初保留上游 npm 名（`cordis`、`cosmokit`、`schemastery`、`@cordisjs/plugin-*`）。私有应用也会从 registry 使用普通第三方依赖，因此为经过本地修改的框架源码复用上游标识会让依赖归属含混，还可能在 workspace link 缺失时回退到无关的 registry 包。Vendored 图需要始终标识经过审阅的 XxAgent 副本的名称，同时另行保留上游来源。
 
 ## 决定
 
@@ -32,20 +32,20 @@ Markdown 按「读者拿它做什么」一分为二。围栏一律跟着改，�
 
 ## 影响
 
-- 发布集里不再有任何上游名：`publish-npm-baseline.ts` 现在无条件要求每个待发包都是 `@deepseek-ai/*`，vendored 包不再豁免，改名一旦回退就会在打包前失败。
+- 没有 vendored workspace 使用上游 package 标识。Workspace 约束与 `verify-vendored-links` 要求 scoped 名称解析到 checkout 中的源码，因此本地 link 缺失会直接失败，而不会回退到 registry 副本。
 - `vendor/README.md` 的清单表新增「上游名」列，`gen-third-party-notices` 随之解析六列并把上游名渲进 `THIRD_PARTY_NOTICES.md`；MIT 归属指向 fork 的来源，而不是我们的 scope。
 - `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 删去 `cordis` 与 `@cordisjs/plugin-loader` 两条：改名后这两个名字永远不从 registry 取。`knip.json` 的 `@cordisjs/.+` 忽略模式同理删除，已被 `@deepseek-ai/.+` 覆盖。
 - 上游 sync 照 `vendor/README.md` 的流程走，第 3 步多一项：对拷进来的源码重跑 `pnpm run rescope-vendor --apply`，脚本里的映射与清单表两列名字必须一致。
-- **要回到官方上游包**时反着跑这份映射——`pnpm run rescope-vendor --apply --reverse`——再补回 `minimumReleaseAgeExclude` 两条、放开发布集对 `@deepseek-ai/*` 的断言。改写量约 1300 个文件，用脚本重放而不是手改。
+- **要回到官方上游包**时反着跑这份映射——`pnpm run rescope-vendor --apply --reverse`——再补回 `minimumReleaseAgeExclude` 两条，并替换私有 workspace 标识检查。改写量约 1300 个文件，用脚本重放而不是手改。
 
 改名这件事由 `scripts/rescope-vendor.ts` 承载：映射、带定界符的 token 规则、名字其实是目录而非包时的逐文件豁免、上面那批精确改写，以及一个断言「零残留、每条精确改写都落上、幂等」的 `--check` 模式——它由 `hygiene` 门在每次 CI 上执行。rebase 时重放它，而不是去解一个 1300 文件的冲突；上游动了任一被钉住的点位，脚本会响亮失败而不是静默漏改。
 
 ## 考虑过的替代方案
 
-**保留上游名，把 `vendor/` 排除在发布集之外。** 否决：每个 harness 包都声明 `cordis` 为 peer dependency，装好的 `@deepseek-ai/dsh-*` 会解析不到框架。
+**让 vendored workspace 保留上游名。** 否决：应用无法区分经过审阅的本地修改与普通上游依赖，而且损坏的 workspace link 可能静默改变框架来源。
 
-**只在打包时改名。** 否决：发出去的名字与源码树不一致，所有模块 specifier 得在发布路径里现改，本地也没有任何一次运行能复现发布出去的东西。
+**只在暂存应用产物时改名。** 否决：暂存名称会与源码树不一致，所有 module specifier 都需要后期改写，本地开发也无法复现构建图。
 
-**目录名与版本号一并改。** 否决：目录名不是发布标识，改它会连带项目引用、tsdown glob 与文档路径，收益为零；版本号并入 `0.0.1` 后不再满足保留下来的 `^4.0.0-rc.7` range，pnpm 会转去 registry 找副本，`verify-vendored-links` 直接红。
+**目录名与版本号一并改。** 否决：目录名不是 module 标识，改它会连带项目引用、tsdown glob 与文档路径，收益为零；版本号并入 `0.0.1` 后不再满足保留下来的 `^4.0.0-rc.7` range，pnpm 会转去 registry 找副本，`verify-vendored-links` 直接红。
 
 **`docs/` 之外的散文与历史 Agent Note 一起改。** 否决：它们记录的是写作当时的事实，而且那里的裸 `cordis` 同样可能是 SDK 选项名或某个 preset id，未必是包；面向读者的映射由 `docs/rescope.md` 承载。

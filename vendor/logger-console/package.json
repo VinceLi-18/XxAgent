@@ -2,12 +2,10 @@
   "name": "@deepseek-ai/cordis-plugin-logger-console",
   "description": "Console logger exporter for cordis",
   "version": "1.0.1",
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "url": "git+https://github.com/VinceLi-18/XxAgent.git",
     "directory": "vendor/logger-console"
   },
   "type": "module",

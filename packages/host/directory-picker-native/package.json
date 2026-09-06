@@ -2,12 +2,10 @@
   "name": "@deepseek-ai/dsh-host-directory-picker-native",
   "description": "Native-OS-chooser backend of the directory-picker seam for the DeepSeek Harness web GUI host",
   "version": "0.1.0-rc.7",
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "url": "git+https://github.com/VinceLi-18/XxAgent.git",
     "directory": "packages/host/directory-picker-native"
   },
   "type": "module",

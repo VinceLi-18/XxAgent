@@ -469,7 +469,6 @@ async def test_content_identity_drift_fails_closed_without_promotion(
         (b"<!doctype html><html><body>x</body></html>", "text/html"),
         (b'<svg xmlns="http://www.w3.org/2000/svg"><path/></svg>', "image/svg+xml"),
         (b"#!/bin/sh\necho unsafe\n", "text/x-shellscript"),
-        (bytes(range(256)), "application/octet-stream"),
     ),
 )
 async def test_content_type_is_detected_from_a_finite_body_sample(

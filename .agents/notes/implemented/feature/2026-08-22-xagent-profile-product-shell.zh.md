@@ -16,7 +16,7 @@ XAgent 需要具备不同本地状态和面向产品的 Web 身份的业务、�
 
 XAgent Web 产品壳提供 XAgent 名称、图标、主题、欢迎文案与仅限 Business 的已引用回答 Tool view。只有 Host 接收后端服务身份与委托签名密钥。Browser 在已认证连接作用域内挂载 `xagentCitation`，只发送当前 Session 与 citation 身份，也只接收不可变的 Artifact、Version、Chunk 和行身份。一个 Web 服务进程只启动一个 Profile；浏览器不切换 Profile。Profile 目录仅组织本地运行时状态，不是认证、授权、租户或项目数据的安全边界。
 
-XAgent 运行时包是随本 fork 交付的私有 workspace，不属于 npm 发布成员。各包 manifest 指向 XxAgent 仓库中的精确包目录，workspace constraints 门禁逐一显式登记这些包。因此，在 `packages/xagent/` 下添加包时必须有意增加登记项；私有包政策不使用目录通配自动扩展。
+所有 DSH 与 XAgent 运行时 package 都是从同一个授权 XxAgent revision 交付的私有 workspace，不属于 npm 发布成员。各自的 manifest 指向 XxAgent repository 中的精确 package 目录，workspace constraints 门禁逐一显式登记 XAgent package 标识。因此，在 `packages/xagent/` 下添加 package 时必须有意增加政策条目；该归属列表不使用目录通配自动扩展。[私有应用发行决策](../process/2026-09-06-private-application-distribution.md)负责仓库级规则。
 
 组合完整性也包含包元数据。检索提供方声明 `sessions` Cordis 注入，因为 citation 解析会读取权威 Session 日志；其发布文件包含主入口与 invariant 入口导入的 `cited-answer-*` 运行时生成 chunk。只由 Loader 读取的 YAML 依赖和 subprocess fixture 入口在 KNIP 中声明，而不使用人为源码 import 表示。
 

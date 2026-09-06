@@ -25,12 +25,18 @@ DELEGATION_PUBLIC_KEY = base64.b64encode(
 ).decode()
 
 _test_database_url = os.environ["JX_TEST_DATABASE_URL"]
+_application_user = "xagent_api_test_app"
+_application_password = "jiaxin-task2-test-app-password"
+_application_database_url = make_url(_test_database_url).set(
+    username=_application_user,
+    password=_application_password,
+).render_as_string(hide_password=False)
 os.environ.update(
     {
-        "DATABASE_URL": _test_database_url,
+        "DATABASE_URL": _application_database_url,
         "DATABASE_ADMIN_URL": _test_database_url,
-        "POSTGRES_APP_USER": "xagent_api_test_app",
-        "POSTGRES_APP_PASSWORD": "jiaxin-task2-test-app-password",
+        "POSTGRES_APP_USER": _application_user,
+        "POSTGRES_APP_PASSWORD": _application_password,
         "POSTGRES_WORKER_USER": "xagent_api_test_worker",
         "POSTGRES_WORKER_PASSWORD": "xagent-artifact-worker-test-password",
         "JWT_SECRET_KEY": "test-signing-key-not-for-production",

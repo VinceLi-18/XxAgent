@@ -71,6 +71,7 @@ describe('XAgent Project UI 插件', () => {
     const workbench = ctx.get('xagentWorkbench')!
     await workbench.bootstrap()
     expect(mount).toHaveBeenCalledTimes(1)
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ package: '@xagent/dsh-project' }))
     const browser = slots.entries('sidebar.workspaces')[0]!.inject!() as unknown as ProjectBrowserInjected
     await browser.selectContext({ kind: 'workbench' })
     await browser.createProject('Alpha')

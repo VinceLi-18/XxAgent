@@ -1,8 +1,8 @@
 /**
  * Rescope the vendored Cordis packages into the `@deepseek-ai` scope, and undo
  * that rescope with `--reverse`. Every harness package declares `cordis` as a
- * peer dependency, so publication carries this framework layer too; publishing
- * it under the upstream names would squat them on the registry
+ * peer dependency, so the private application resolves one pinned framework
+ * identity without falling back to registry copies
  * ([rationale](../.agents/notes/implemented/process/2026-08-10-vendor-package-rescope.md),
  * [name mapping](../docs/rescope.md)).
  *
@@ -262,19 +262,10 @@ const EXACT_EDITS: readonly ExactEdit[] = [
     expect: 1,
   },
   {
-    id: 'publication-set-scope-assertion',
-    file: 'scripts/publish-npm-baseline.ts',
-    find: '      if (!isVendored && !name.startsWith(\'@deepseek-ai/\')) {',
-    replace: `      // Vendored packages are rescoped too (vendor/README.md), so publication
-      // never carries an upstream name that would squat it on the registry.
-      if (!name.startsWith('@deepseek-ai/')) {`,
-    expect: 1,
-  },
-  {
     id: 'vendor-readme-preamble',
     file: 'vendor/README.md',
     find: 'All vendored packages keep their **original npm names** and are marked `private: true` — they are never published from this repo. `pnpm-workspace.yaml#linkWorkspacePackages` makes matching upstream semver ranges resolve these pinned workspaces, including imports from built `lib/`; disabling it substitutes npm copies behind the same names.',
-    replace: 'All vendored packages are **renamed into the `@deepseek-ai` scope** (`cordis` → `@deepseek-ai/cordis`, `@cordisjs/plugin-<x>` → `@deepseek-ai/cordis-plugin-<x>`): every harness package declares `cordis` as a peer dependency, so publishing the harness publishes this framework layer too, and a publication under the upstream names would squat them on the registry. Directory names and upstream version numbers are deliberately unchanged, so the manifest below still reads as an upstream snapshot. `pnpm-workspace.yaml#linkWorkspacePackages` makes those preserved semver ranges resolve these pinned workspaces, including imports from built `lib/`.',
+    replace: 'All vendored packages are **renamed into the `@deepseek-ai` scope** (`cordis` → `@deepseek-ai/cordis`, `@cordisjs/plugin-<x>` → `@deepseek-ai/cordis-plugin-<x>`), marked private, and resolved only from this application workspace. Directory names and upstream version numbers remain unchanged, so the manifest below still identifies the pinned upstream snapshot. `pnpm-workspace.yaml#linkWorkspacePackages` makes those preserved semver ranges resolve these sources, including imports from built `lib/`; XxAgent never publishes the vendored packages to a registry.',
     expect: 1,
   },
   {
@@ -422,7 +413,7 @@ const VENDORED_LIBRARY = /^@deepseek-ai\\/(cosmokit|schemastery)(\\/|$)/
     id: 'notices-vendored-section',
     file: 'scripts/gen-third-party-notices.ts',
     find: 'The Cordis framework and its foundation libraries are source-vendored into this repository rather than consumed from npm. All are MIT-licensed',
-    replace: 'The Cordis framework and its foundation libraries are source-vendored into this repository rather than consumed from npm, and republished under the \\`@deepseek-ai\\` scope. All are MIT-licensed',
+    replace: 'The Cordis framework and its foundation libraries are source-vendored into this repository rather than consumed from npm, and use private \\`@deepseek-ai\\` workspace names. All are MIT-licensed',
     expect: 1,
   },
   {
