@@ -16,6 +16,8 @@ Real-API e2e runs require the repository variable `XAGENT_REAL_API_E2E_ENABLED=t
 
 Read-only pull request policy targets `VinceLi-18/XxAgent`. Issue lifecycle mutation requires `XAGENT_ISSUE_LIFECYCLE_ENABLED=true` and obtains its repository coordinates from the event. The variable remains unset until this repository has matching GitHub App credentials and Project ownership support; enabling mutation without those prerequisites is a configuration error.
 
+Coverage executes Client plugin lifecycle tests before generated Host-for-Client Remote artifacts exist. Vitest maps the two XAgent generated Remote entry points to inert contributions that retain the owning package identities; the lifecycle tests provide their own namespace implementations. Typert generator tests and built application smokes continue to validate the generated descriptors, so the source-only substitute does not stand in for artifact validation.
+
 This decision overrides only the default runner assignment and automatic activation assumptions inherited from [larger hosted runners](2026-07-22-evidence-based-larger-hosted-runners.md), the [CI failover runbook](2026-07-26-ci-failover-runbook.md), [native Windows pull-request CI](2026-08-08-native-windows-pull-request-ci.md), [real-API e2e CI](../testing/2026-06-19-real-api-e2e-ci.md), and [event-directed pull-request review status](2026-08-10-event-directed-pr-review-status.md). Those notes remain active because their job decomposition, trust rules, failover design, and lifecycle semantics still govern their mechanisms.
 
 ## Alternatives considered
@@ -30,4 +32,4 @@ Enable Issue lifecycle mutation before configuring its App and Project. Rejected
 
 ## Consequences
 
-XAgent pull requests obtain results from runner pools available to the repository, at lower parallelism than the upstream enterprise installation. Real-API provider coverage and automatic Issue lifecycle mutation are intentionally absent until a maintainer provisions their prerequisites and enables the corresponding repository variable. Workflow tests pin the standard runner defaults, bounded concurrency, repository coordinates, and both opt-in conditions.
+XAgent pull requests obtain results from runner pools available to the repository, at lower parallelism than the upstream enterprise installation. Real-API provider coverage and automatic Issue lifecycle mutation are intentionally absent until a maintainer provisions their prerequisites and enables the corresponding repository variable. Workflow tests pin the standard runner defaults, bounded concurrency, repository coordinates, and both opt-in conditions. Clean-tree Client coverage no longer depends on stale generated `lib/` output.

@@ -18,6 +18,14 @@ const uncoveredLocationsReporter = fileURLToPath(new URL('./scripts/coverage-unc
 // lib/ never loads a second module-singleton copy.
 const pathsPlugin = (): ReturnType<typeof tsconfigPaths> => tsconfigPaths({ projects: ['./tsconfig.base.json'] })
 
+// Generated Remote runtime modules exist only after their Host packages build.
+// Source-only Client lifecycle tests mount inert contributions; Typert generation
+// and the built application smokes validate the generated descriptors themselves.
+const generatedRemoteTestAliases = {
+  '@xagent/dsh-artifact/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-artifact-remote.ts', import.meta.url)),
+  '@xagent/dsh-project/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-project-remote.ts', import.meta.url)),
+}
+
 const windowsUnsupportedPackages = process.platform === 'win32'
   ? [
       // Bash-requiring suites (a real POSIX shell is unavailable on Windows).
@@ -116,6 +124,7 @@ const processBoundTests = [
 
 export default defineConfig({
   plugins: [pathsPlugin(), standardDecoratorPlugin()],
+  resolve: { alias: generatedRemoteTestAliases },
   test: {
     setupFiles: ['./scripts/test-invariants.ts'],
     // .tsx: client component specs (jsdom via per-file @vitest-environment pragma).
@@ -126,6 +135,7 @@ export default defineConfig({
     projects: [
       {
         plugins: [pathsPlugin(), standardDecoratorPlugin()],
+        resolve: { alias: generatedRemoteTestAliases },
         test: {
           name: 'thread-safe',
           execArgv: vitestExecArgv,
@@ -144,6 +154,7 @@ export default defineConfig({
       },
       {
         plugins: [pathsPlugin(), standardDecoratorPlugin()],
+        resolve: { alias: generatedRemoteTestAliases },
         test: {
           name: 'process-bound',
           execArgv: vitestExecArgv,

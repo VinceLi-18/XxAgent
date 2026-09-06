@@ -32,12 +32,14 @@ describe('XAgent Artifact UI 插件', () => {
       'complete-upload': vi.fn(), retry: vi.fn(), preview: vi.fn(), download: vi.fn(),
     }
     const disposeNamespace = ctx.reflect.provide('remote.xagentArtifact', remote)
-    ctx.provide('remote', { $mount: vi.fn(async () => async () => { await disposeNamespace() }) } as never)
+    const mount = vi.fn(async () => async () => { await disposeNamespace() })
+    ctx.provide('remote', { $mount: mount } as never)
     ctx.provide('xagentWorkbench', workbench as never)
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
 
     expect((ctx as Context & { xagentArtifacts?: unknown }).xagentArtifacts).toBeUndefined()
+    expect(mount).toHaveBeenCalledWith(expect.objectContaining({ package: '@xagent/dsh-artifact' }))
     expect(slots.entries('xagent.workbench.artifacts')[0]?.component).toBe(ArtifactPanel)
     await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(1) })
     const firstSignal = (list.mock.calls as unknown as readonly [AbortSignal][])[0]![0]
