@@ -3121,7 +3121,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/retrieval/src/index.ts:68`](../packages/xagent/retrieval/src/index.ts)
+来源：[`packages/xagent/retrieval/src/index.ts:91`](../packages/xagent/retrieval/src/index.ts)
 
 <a id="xagentdsh-session-persistence-api"></a>
 

@@ -241,7 +241,7 @@ async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: (
 async dispose(): Promise<void>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:247`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:270`](../../packages/xagent/retrieval/src/index.ts)
 
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 
@@ -334,5 +334,5 @@ abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promi
 abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:135`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:158`](../../packages/xagent/retrieval/src/index.ts)
 <!-- END GENERATED cordis-surface -->
