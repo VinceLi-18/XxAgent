@@ -2,6 +2,16 @@
 
 from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion, StagingUpload
 from app.models.auth import XAgentAccountCredential, XAgentAuthSession, XAgentPermissionRevision
+from app.models.retrieval import (
+    ArtifactIndexJob,
+    ArtifactSearchHead,
+    ArtifactTextChunk,
+    ArtifactTextIndex,
+    XAgentAdmittedEvidence,
+    XAgentDelegationNonce,
+    XAgentCitedAnswerEvidence,
+    XAgentRetrievalReceipt,
+)
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
 from app.models.workbench import (
     XAgentAccountCapabilityGrant,
@@ -18,6 +28,14 @@ __all__ = (
     "XAgentAccountCredential",
     "XAgentAuthSession",
     "XAgentPermissionRevision",
+    "ArtifactIndexJob",
+    "ArtifactSearchHead",
+    "ArtifactTextChunk",
+    "ArtifactTextIndex",
+    "XAgentAdmittedEvidence",
+    "XAgentDelegationNonce",
+    "XAgentCitedAnswerEvidence",
+    "XAgentRetrievalReceipt",
     "XAgentIdempotencyKey",
     "XAgentSession",
     "XAgentSessionEvent",

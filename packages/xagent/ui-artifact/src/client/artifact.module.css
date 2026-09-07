@@ -253,3 +253,16 @@
     scroll-behavior: auto;
   }
 }
+.citationLocation {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+[data-citation-version='true'] {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+[data-citation-line='true'] {
+  background: var(--dsw-alias-bg-layer-1);
+}

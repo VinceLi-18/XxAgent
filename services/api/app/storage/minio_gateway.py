@@ -175,3 +175,24 @@ class MinioGateway:
                 response.close()
             finally:
                 response.release_conn()
+
+    def stream_bounded(self, key: str, *, max_bytes: int) -> Iterator[bytes]:
+        """Stream one private object and stop before content can exceed `max_bytes`.
+
+        @param key Exact private object key owned by the caller's durable record.
+        @param max_bytes Maximum aggregate bytes yielded from the response.
+        @returns Object chunks whose aggregate size does not exceed the limit.
+        @raises ValueError If metadata or streamed bytes exceed the limit.
+        """
+
+        if max_bytes < 0:
+            raise ValueError("object stream limit cannot be negative")
+        metadata = self.stat(key)
+        if metadata.size > max_bytes:
+            raise ValueError("object exceeds the stream limit")
+        total = 0
+        for chunk in self.stream(key):
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("object exceeds the stream limit")
+            yield chunk

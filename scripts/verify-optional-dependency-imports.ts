@@ -21,8 +21,8 @@
  * deliberately conservative in one direction — a value binding the compiler
  * would elide because nothing references it in a value position is still
  * reported, and the fix it asks for (`import type`, or dropping the binding) is
- * what the published package wants regardless. Both compiler faces are scanned,
- * and only files that ship — a published package's `src` — are subject.
+ * what the staged package payload wants regardless. Both compiler faces are scanned,
+ * and only source files included in that application payload are subject.
  */
 
 import { existsSync, readFileSync } from 'node:fs'
@@ -32,7 +32,7 @@ import { TypeScriptProject, type CompilerFace } from './ts-project.ts'
 
 const root = resolve(import.meta.dirname, '..')
 
-/** Directories whose `src` ships as a published package. */
+/** Directories whose `src` is included in the staged application package. */
 const PUBLISHED_SOURCE = /^(?:packages\/[^/]+\/[^/]+|apps\/[^/]+)\/src\//
 
 /** How a manifest marked a dependency optional, for the violation message. */

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Pack every published package into release tarballs, in publish order
+ * Pack every application package into rehearsal tarballs, in staging order
  * (platform packages first, then the entries that optionally depend on
- * them), and write `publish-order.txt` next to them. `pnpm pack` produces
- * the EXACT bytes `pnpm publish` would upload and runs each package's
+ * them), and write the legacy-named `publish-order.txt` next to them. `pnpm pack` produces
+ * the exact package payload the private application stages and runs each package's
  * `prepack` gate, so a missing binary or unbuilt `lib/` refuses here.
  *
  * Usage: `node scripts/pack-release.mjs [dest] [--current-platform-only]`.

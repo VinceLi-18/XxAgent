@@ -2,7 +2,7 @@
 
 [English](python-sdk.md) | 中文
 
-本教程介绍 Web UI 之外的程序化使用方式：安装已发布的 Python SDK、运行仓库内置的 agent（智能体）组合，并在自己的程序中调用同一套 API。
+本教程介绍 Web UI 之外的程序化使用方式：安装从授权 XxAgent revision 构建的私有 Python 载体、运行仓库内置的 agent（智能体）组合，并在自己的程序中调用同一套 API。
 
 ## 前置要求
 
@@ -14,17 +14,19 @@
 
 ## 安装 SDK
 
-克隆仓库以使用其中的可运行示例，创建虚拟环境，并安装 SDK 及其同版本内置运行时：
+取得授权仓库 revision 及其匹配的私有 Python 产物集合。创建虚拟环境，然后在不查询 package registry 的情况下安装 SDK 及其内置运行时：
 
 ```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
+git clone <authorized-xagent-repository-url> XxAgent
+cd XxAgent
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install deepseek-harness-sdk
+python -m pip install --no-index \
+  --find-links /path/to/xagent-python-artifacts \
+  deepseek-harness-sdk
 ```
 
-安装后的运行时不需要系统提供 Node.js。需要从源码构建运行时或 wheel 包的仓库贡献者应使用 [Python 贡献者工作流](../../../python/development.md)。
+安装后的运行时不需要系统提供 Node.js。需要生成匹配 executable 与 wheel 包集合的仓库贡献者应使用 [Python 贡献者工作流](../../../python/development.md)。不要混用来自不同仓库 revision 的 SDK 与运行时 wheel 包。
 
 ## 运行仓库内置示例
 

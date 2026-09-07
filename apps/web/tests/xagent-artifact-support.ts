@@ -25,6 +25,35 @@ const DEFAULT_STOP_OPTIONS: StopChildOptions = {
 }
 
 /**
+ * 解析资料浏览器验收的模型联网策略。
+ * @param environment - 测试进程环境。
+ * @returns 传给 Compose 的 Hugging Face 离线布尔字符串。
+ */
+export function resolveArtifactEmbeddingOffline(
+  environment: Readonly<Record<string, string | undefined>>,
+): 'true' | 'false' {
+  const value = environment.XAGENT_TASK10_HF_HUB_OFFLINE ?? 'true'
+  if (value === 'true' || value === 'false') return value
+  throw new Error('XAGENT_TASK10_HF_HUB_OFFLINE 必须是 true 或 false')
+}
+
+/**
+ * 解析资料浏览器验收挂载的模型缓存目录。
+ * @param environment - 测试进程环境。
+ * @param fallback - 未配置 CI 缓存时使用的仓库内目录。
+ * @returns Compose 应挂载的主机目录。
+ */
+export function resolveArtifactEmbeddingCacheDir(
+  environment: Readonly<Record<string, string | undefined>>,
+  fallback: string,
+): string {
+  const configured = environment.XAGENT_EMBEDDING_CACHE_DIR
+  if (configured === undefined) return fallback
+  if (configured.length === 0) throw new Error('XAGENT_EMBEDDING_CACHE_DIR 不能为空')
+  return configured
+}
+
+/**
  * 启动并立即跟踪 Task10 E2E 拥有的子进程。
  * @param command - 可执行文件路径。
  * @param args - 传给可执行文件的参数。

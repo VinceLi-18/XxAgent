@@ -24,8 +24,9 @@ async def _insert_session(
             await session.execute(
                 text(
                     "INSERT INTO xagent_sessions "
-                    "(id, owner_id, project_id, visibility, permission_revision_created, title) "
-                    "VALUES (:id, :owner_id, :project_id, :visibility, 1, 'New session')"
+                    "(id, owner_id, project_id, visibility, permission_revision_created, "
+                    "title, next_citation_ordinal) "
+                    "VALUES (:id, :owner_id, :project_id, :visibility, 1, 'New session', 1)"
                 ),
                 {
                     "id": session_id,
@@ -139,8 +140,9 @@ async def test_session_scope_constraints_reject_incoherent_rows(
                     await session.execute(
                         text(
                             "INSERT INTO xagent_sessions "
-                            "(id, owner_id, project_id, visibility, permission_revision_created, title) "
-                            "VALUES (:id, :owner_id, :project_id, :visibility, 1, 'invalid')"
+                            "(id, owner_id, project_id, visibility, permission_revision_created, "
+                            "title, next_citation_ordinal) "
+                            "VALUES (:id, :owner_id, :project_id, :visibility, 1, 'invalid', 1)"
                         ),
                         {
                             "id": uuid4(),
@@ -164,8 +166,9 @@ async def test_application_role_cannot_create_a_private_session_for_another_acto
             await actor_session.execute(
                 text(
                     "INSERT INTO xagent_sessions "
-                    "(id, owner_id, visibility, permission_revision_created, title) "
-                    "VALUES (:id, :owner_id, 'private', 1, 'forged')"
+                    "(id, owner_id, visibility, permission_revision_created, title, "
+                    "next_citation_ordinal) "
+                    "VALUES (:id, :owner_id, 'private', 1, 'forged', 1)"
                 ),
                 {"id": uuid4(), "owner_id": bob.id},
             )
@@ -184,8 +187,9 @@ async def test_session_scope_is_immutable_while_title_and_archive_remain_editabl
     await actor_session.execute(
         text(
             "INSERT INTO xagent_sessions "
-            "(id, owner_id, visibility, permission_revision_created, title) "
-            "VALUES (:id, :owner_id, 'private', 1, 'before')"
+            "(id, owner_id, visibility, permission_revision_created, title, "
+            "next_citation_ordinal) "
+            "VALUES (:id, :owner_id, 'private', 1, 'before', 1)"
         ),
         {"id": session_id, "owner_id": alice.id},
     )
@@ -212,8 +216,9 @@ async def test_session_events_are_append_only_and_sequence_unique(
     await actor_session.execute(
         text(
             "INSERT INTO xagent_sessions "
-            "(id, owner_id, visibility, permission_revision_created, title) "
-            "VALUES (:id, :owner_id, 'private', 1, 'events')"
+            "(id, owner_id, visibility, permission_revision_created, title, "
+            "next_citation_ordinal) "
+            "VALUES (:id, :owner_id, 'private', 1, 'events', 1)"
         ),
         {"id": session_id, "owner_id": alice.id},
     )

@@ -209,6 +209,40 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 
 Source: [`packages/xagent/artifact/src/index.ts:196`](../../packages/xagent/artifact/src/index.ts)
 
+<a id="ctxxagentcitation--xagentcitationremoteservice"></a>
+
+### `ctx.xagentCitation` — `XAgentCitationRemoteService`
+
+Request-scoped citation locator backed by durable provenance and current-actor authorization.
+
+```ts cordis-catalog
+/**
+ * Run one Remote operation inside the Host-authenticated Session scope.
+ * @param scope - current physical connection, actor, revision, and Session identity.
+ * @param operation - complete downstream Remote operation.
+ * @returns the downstream result after request-local identity is cleared.
+ */
+async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * Resolve one durable cited-answer ID through server-owned provenance and
+ * current-actor authorization.
+ * @param sessionId - current Browser Session id.
+ * @param citationId - persisted short citation id.
+ * @param signal - Browser request cancellation.
+ * @returns immutable Artifact, Version, Chunk, and line identities without a URL.
+ */
+@Remote async resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget>
+
+/**
+ * Close admission, abort every resolution, and await their settlement.
+ * @returns when all owned backend operations have settled.
+ */
+async dispose(): Promise<void>
+```
+
+Source: [`packages/xagent/retrieval/src/index.ts:270`](../../packages/xagent/retrieval/src/index.ts)
+
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 
 ### `ctx.xagentPrincipal` — `XAgentPrincipalService` (abstract seam)
@@ -226,7 +260,7 @@ XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspectio
 abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 ```
 
-Source: [`packages/xagent/principal/src/index.ts:81`](../../packages/xagent/principal/src/index.ts)
+Source: [`packages/xagent/principal/src/index.ts:115`](../../packages/xagent/principal/src/index.ts)
 
 <a id="ctxxagentproject--xagentprojectservice"></a>
 
@@ -277,4 +311,28 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 ```
 
 Source: [`packages/xagent/project/src/index.ts:59`](../../packages/xagent/project/src/index.ts)
+
+<a id="ctxxagentretrieval--xagentretrieval-abstract-seam"></a>
+
+### `ctx.xagentRetrieval` — `XAgentRetrieval` (abstract seam)
+
+Service Definition consumed by model tools and the terminal cited-answer runtime.
+
+```ts cordis-catalog
+/**
+ * Discover accessible projects for the exact authenticated Private Session.
+ * @param input - immutable Session/tool identity and optional bounded name query.
+ * @returns at most twenty accessible projects and the public payload hash.
+ */
+abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promise<XAgentAccessibleProjects>
+
+/**
+ * Search Artifact evidence within the exact authenticated Session scope.
+ * @param input - immutable identity, query, and explicit Private Session selectors.
+ * @returns authorized citation excerpts and the public payload hash.
+ */
+abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>
+```
+
+Source: [`packages/xagent/retrieval/src/index.ts:158`](../../packages/xagent/retrieval/src/index.ts)
 <!-- END GENERATED cordis-surface -->

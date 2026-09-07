@@ -1,5 +1,29 @@
 import type { XAgentPrincipal } from '@xagent/dsh-principal'
 
+/** Opaque receipt attached only to its matching Session append event. */
+export interface XAgentSessionRetrievalReceiptAttachment {
+  readonly event_sequence: number
+  readonly tool_call_id: string
+  readonly receipt: string
+  readonly payload_hash: string
+}
+
+/** Closed Session append request including its private retrieval sidecar. */
+export interface XAgentSessionAppendInput {
+  readonly schema_version: 1
+  readonly expected_sequence: number
+  readonly idempotency_key: string
+  readonly events: readonly unknown[]
+  readonly retrieval_receipts: readonly XAgentSessionRetrievalReceiptAttachment[]
+}
+
+/** Closed acknowledgement for one committed Session append batch. */
+export interface XAgentSessionAppendResult {
+  readonly schema_version: 1
+  readonly last_event_sequence: number
+  readonly version: number
+}
+
 /** Stable error vocabulary exposed across the Host/FastAPI boundary. */
 export type XAgentBackendErrorCode =
   | 'unauthenticated'
@@ -10,6 +34,11 @@ export type XAgentBackendErrorCode =
   | 'idempotency-conflict'
   | 'upload-expired'
   | 'upload-rejected'
+  | 'invalid-retrieval-scope'
+  | 'retrieval-unavailable'
+  | 'evidence-expired'
+  | 'evidence-conflict'
+  | 'citation-invalid'
   | 'unsupported-version'
   | 'service-unavailable'
 
@@ -19,7 +48,12 @@ export interface XAgentSessionBackend {
   create(userToken: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   open(userToken: string, sessionId: string, signal?: AbortSignal): Promise<unknown>
   events(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
-  append(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
+  append(
+    userToken: string,
+    sessionId: string,
+    body: XAgentSessionAppendInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentSessionAppendResult>
   fork(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   archive(userToken: string, sessionId: string, body: unknown, signal?: AbortSignal): Promise<unknown>
   authorize(
@@ -204,6 +238,107 @@ export interface XAgentArtifactBackend {
   download(userToken: string, versionId: string, signal?: AbortSignal): Promise<{ readonly url: string }>
 }
 
+/** Identity shared by citation authorization and resolution requests. */
+export interface XAgentCitationIdentity {
+  readonly id: string
+  readonly artifactId: string
+  readonly versionId: string
+  readonly chunkId: string
+}
+
+/** Common identifiers bound by one retrieval delegation token and request body. */
+export interface XAgentRetrievalOperationInput {
+  readonly sessionId: string
+  readonly toolCallId: string
+  readonly permissionRevision: number
+}
+
+/** Project discovery request for a Private Session. */
+export interface XAgentProjectDiscoveryInput extends XAgentRetrievalOperationInput {
+  readonly query?: string
+}
+
+/** Explicit Artifact search request with a mandatory local digest for Private Session scope. */
+export type XAgentArtifactSearchInput = XAgentRetrievalOperationInput & { readonly query: string } & (
+  | { readonly projectIds?: never; readonly includePrivate: false; readonly scopeHash?: never }
+  | { readonly projectIds: readonly string[]; readonly includePrivate: boolean; readonly scopeHash: string }
+)
+
+/** Authorized project identity returned by project discovery. */
+export interface XAgentRetrievalProject {
+  readonly projectId: string
+  readonly name: string
+}
+
+/** Model-visible citation payload returned by Artifact search. */
+export interface XAgentRetrievalCitation extends XAgentCitationIdentity {
+  readonly displayName: string
+  readonly versionNumber: number
+  readonly lineStart: number
+  readonly lineEnd: number
+  readonly text: string
+  readonly scope: 'private' | 'project'
+}
+
+/** Project discovery payload plus its opaque persistence receipt. */
+export interface XAgentProjectDiscoveryResult {
+  readonly projects: readonly XAgentRetrievalProject[]
+  readonly receipt: string
+  readonly payloadHash: string
+}
+
+/** Artifact search payload plus its opaque persistence receipt. */
+export interface XAgentArtifactSearchResult {
+  readonly citations: readonly XAgentRetrievalCitation[]
+  readonly receipt: string
+  readonly payloadHash: string
+}
+
+/** Inputs for validating all citations before answer release. */
+export interface XAgentAuthorizeCitationsInput extends XAgentRetrievalOperationInput {
+  readonly citations: readonly XAgentCitationIdentity[]
+}
+
+/** Input that lets FastAPI resolve one durable citation without caller-supplied evidence identity. */
+export interface XAgentResolveCitationInput extends XAgentRetrievalOperationInput {
+  /** Session-local short ID whose exact immutable evidence is server-owned. */
+  readonly citationId: string
+}
+
+/** Reauthorized Artifact navigation target without a storage URL. */
+export interface XAgentResolvedCitation extends XAgentCitationIdentity {
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
+/** Strict Host operations for FastAPI retrieval routes. */
+export interface XAgentRetrievalBackend {
+  projects(
+    userToken: string,
+    delegationToken: string,
+    input: XAgentProjectDiscoveryInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentProjectDiscoveryResult>
+  search(
+    userToken: string,
+    delegationToken: string,
+    input: XAgentArtifactSearchInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentArtifactSearchResult>
+  authorizeCitations(
+    userToken: string,
+    delegationToken: string,
+    input: XAgentAuthorizeCitationsInput,
+    signal?: AbortSignal,
+  ): Promise<void>
+  resolveCitation(
+    userToken: string,
+    delegationToken: string,
+    input: XAgentResolveCitationInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentResolvedCitation>
+}
+
 /** Authentication, Session, workbench, and Artifact operations implemented by the XAgent FastAPI client. */
 export interface XAgentBackend {
   login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin>
@@ -212,4 +347,5 @@ export interface XAgentBackend {
   readonly sessions: XAgentSessionBackend
   readonly workbench?: XAgentWorkbenchBackend
   readonly artifacts?: XAgentArtifactBackend
+  readonly retrieval?: XAgentRetrievalBackend
 }

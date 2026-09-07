@@ -16,7 +16,7 @@ Some packages genuinely own no continuously observable relation. Pure utilities,
 
 ### Registration is exhaustive; assertions must be meaningful
 
-Every workspace package publishes a separately built `./invariant` companion and registers its exact npm package name. A companion does one of two things:
+Every workspace package exports a separately built `./invariant` companion and registers its exact internal package name. A companion does one of two things:
 
 - installs a package-owned check over an event stream or relevant mutable data structure and reports violations through its bound `fail(message)` reporter; or
 - uses an empty installer whose declaration has an owner-specific `No runtime invariant:` comment explaining why the package has no plausible runtime relation to observe.

@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import { execFileSync, spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -257,6 +257,7 @@ describe('XAgent 项目工作台真实双账号流程', () => {
 
     const dshPort = await probeFreePort()
     baseUrl = `http://127.0.0.1:${dshPort}`
+    const { privateKey } = generateKeyPairSync('ed25519')
     dsh = spawn(process.execPath, [
       join(REPO_ROOT, 'apps/cli/lib/bin.js'), '--profile', 'xagent-business', '--host', '127.0.0.1', '--port', String(dshPort),
     ], {
@@ -269,6 +270,9 @@ describe('XAgent 项目工作台真实双账号流程', () => {
         XAGENT_SERVICE_TOKEN: SERVICE_TOKEN,
         XAGENT_ALLOWED_ORIGINS: baseUrl,
         XAGENT_ALLOW_INSECURE_COOKIE: '1',
+        XAGENT_DELEGATION_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+        XAGENT_DELEGATION_ISSUER: 'xagent-project-workbench-e2e',
+        XAGENT_DELEGATION_AUDIENCE: 'xagent-fastapi-project-workbench-e2e',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })

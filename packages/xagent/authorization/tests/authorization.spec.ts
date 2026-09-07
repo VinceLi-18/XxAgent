@@ -4,8 +4,12 @@ import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { XAgentBackend, XAgentSessionBackend } from '@xagent/dsh-backend-client'
 import { XAgentBackendError } from '@xagent/dsh-backend-client'
 import type { XAgentArtifactScopeRunner } from '../../artifact/src/index.ts'
-import type { XAgentAuthenticatedRequestScope } from '../../principal/src/index.ts'
+import {
+  currentXAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedRequestScope,
+} from '../../principal/src/index.ts'
 import type { XAgentProjectScopeRunner } from '../../project/src/index.ts'
+import type { XAgentCitationScopeRunner } from '../../retrieval/src/index.ts'
 import { describe, expect, test, vi } from 'vitest'
 import * as authorizationModule from '../src/index.ts'
 import {
@@ -30,7 +34,12 @@ function backend(authorize: XAgentSessionBackend['authorize'] = vi.fn(async () =
   return {
     login: vi.fn(), introspect: vi.fn(), revoke: vi.fn(),
     sessions: {
-      list: vi.fn(async () => ({ schema_version: 1, sessions: [] })),
+      list: vi.fn(async () => ({ schema_version: 1, sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'private',
+        project_id: null,
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }] })),
       create: vi.fn(), open: vi.fn(), events: vi.fn(), append: vi.fn(), fork: vi.fn(), archive: vi.fn(),
       authorize,
     },
@@ -86,7 +95,66 @@ function artifactScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => voi
   }
 }
 
+function citationScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => void): XAgentCitationScopeRunner & {
+  readonly active: () => XAgentAuthenticatedRequestScope | undefined
+} {
+  let active: XAgentAuthenticatedRequestScope | undefined
+  return {
+    active: () => active,
+    async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
+      if (active !== undefined) throw new Error('nested citation request scope')
+      active = scope
+      onScope?.(scope)
+      try {
+        return await operation()
+      } finally {
+        active = undefined
+      }
+    },
+  }
+}
+
 describe('XAgent Session 授权', () => {
+  test('prompt admission propagates one immutable physical and Session scope into detached agent work', async () => {
+    const value = backend()
+    value.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const auth = new XAgentAuthorization(value, persistence())
+    const request = new AbortController()
+    const connection = new AbortController()
+    let resolveDetached!: (scope: unknown) => void
+    const detached = new Promise<unknown>((resolve) => { resolveDetached = resolve })
+
+    await auth.run(
+      'session/prompt',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      { ...context, requestId: 'rpc-1', lifetime: connection.signal },
+      request.signal,
+      async () => {
+        void new Promise<void>(resolve => setImmediate(resolve))
+          .then(() => { resolveDetached(currentXAgentAuthenticatedRequestScope()) })
+        return { ok: true, value: 'ok' }
+      },
+    )
+
+    await expect(detached).resolves.toMatchObject({
+      principal: context.principal,
+      userToken: 'alice-token',
+      connectionId: 'connection-1',
+      sessionId: '00000000-0000-0000-0000-000000000701',
+      visibility: 'project',
+      projectId: '00000000-0000-0000-0000-000000000401',
+      requestSignal: request.signal,
+      connectionSignal: connection.signal,
+    })
+  })
   test('模块插件入口只暴露带配置的安装函数', () => {
     expect('default' in authorizationModule).toBe(false)
     expect(typeof authorizationModule.apply).toBe('function')
@@ -505,6 +573,172 @@ describe('XAgent Session 授权', () => {
     expect(first.active()).toBeUndefined()
   })
 
+  test('唯一 citation resolve endpoint 在当前物理连接与 Session scope 内运行', async () => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const scopes: XAgentAuthenticatedRequestScope[] = []
+    const runner = citationScope(value => scopes.push(value))
+    const operation = vi.fn(async (): Promise<RpcResult<string>> => {
+      const active = runner.active()
+      expect(active).toMatchObject({
+        principal: context.principal,
+        userToken: 'alice-token',
+        connectionId: 'connection-1',
+        sessionId: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        projectId: '00000000-0000-0000-0000-000000000401',
+      })
+      expect(active?.requestSignal).toBeInstanceOf(AbortSignal)
+      expect(active?.connectionSignal).toBeInstanceOf(AbortSignal)
+      return { ok: true, value: 'ok' }
+    })
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, undefined, runner)
+
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+    expect(operation).toHaveBeenCalledOnce()
+    expect(scopes).toHaveLength(1)
+    expect(runner.active()).toBeUndefined()
+  })
+
+  test('citation namespace 对未知方法、匿名、串号 Session 与缺失 service 失败关闭', async () => {
+    const operation = vi.fn(success)
+    const runner = citationScope()
+    const auth = new XAgentAuthorization(backend(), persistence(), undefined, undefined, runner)
+    await expect(auth.run('xagentCitation.unknown', {}, context, new AbortController().signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run('xagentCitation.resolve', {}, context, new AbortController().signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000999', citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'session-not-found' } })
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } },
+      { connectionId: 'anonymous' },
+      new AbortController().signal,
+      operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    const missing = new XAgentAuthorization(backend(), persistence())
+    await expect(missing.run(
+      'xagentCitation/resolve',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toEqual({
+      ok: false,
+      error: { code: 'internal', message: 'citation service unavailable', details: {} },
+    })
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['bad', backend(), 'internal'],
+    ['session-00000000-0000-0000-0000-000000000701', null, 'internal'],
+    ['session-00000000-0000-0000-0000-000000000701', {}, 'internal'],
+    ['session-00000000-0000-0000-0000-000000000701', { sessions: null }, 'internal'],
+    ['session-00000000-0000-0000-0000-000000000701', { sessions: [null] }, 'session-not-found'],
+    ['session-00000000-0000-0000-0000-000000000701', { sessions: [{
+      id: 1,
+      visibility: 'private',
+      project_id: null,
+      runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+    }] }, 'internal'],
+    ['session-00000000-0000-0000-0000-000000000701', { sessions: [{
+      id: '00000000-0000-0000-0000-000000000702',
+      visibility: 'private',
+      project_id: null,
+      runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+    }] }, 'internal'],
+    ['session-00000000-0000-0000-0000-000000000701', { sessions: [{
+      id: '00000000-0000-0000-0000-000000000701',
+      visibility: 'private',
+      project_id: '00000000-0000-0000-0000-000000000401',
+      runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+    }] }, 'internal'],
+  ])('citation 拒绝畸形 Session scope 响应 %#', async (sessionId, response, code) => {
+    const remote = backend()
+    if ('sessions' in remote) remote.sessions.list = vi.fn(async () => response as never)
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, undefined, citationScope())
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: { sessionId, citationId: '[资料1]' } },
+      context,
+      new AbortController().signal,
+      success,
+    )).resolves.toMatchObject({ ok: false, error: { code } })
+  })
+
+  test('citation 将后端认证失效映射为统一未认证错误', async () => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => { throw new XAgentBackendError('unauthenticated') })
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, undefined, citationScope())
+    await expect(auth.run(
+      'xagentCitation/resolve',
+      { args: {
+        sessionId: 'session-00000000-0000-0000-0000-000000000701',
+        citationId: '[资料1]',
+      } },
+      context,
+      new AbortController().signal,
+      success,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+  })
+
+  test('citation resolver replacement、取消与异常不会保留旧请求 scope', async () => {
+    const first = citationScope()
+    let current: XAgentCitationScopeRunner | undefined = first
+    const remote = backend()
+    const auth = new XAgentAuthorization(remote, persistence(), undefined, undefined, () => current)
+    const payload = { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' } }
+    await expect(auth.run(
+      'xagentCitation/resolve', payload, context, new AbortController().signal,
+      async () => { throw new DOMException('cancelled', 'AbortError') },
+    )).resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+    expect(first.active()).toBeUndefined()
+
+    current = undefined
+    await expect(auth.run('xagentCitation/resolve', payload, context, new AbortController().signal, success))
+      .resolves.toMatchObject({ ok: false, error: { message: 'citation service unavailable' } })
+    const replacement = citationScope()
+    current = replacement
+    await expect(auth.run('xagentCitation/resolve', payload, context, new AbortController().signal, success))
+      .resolves.toEqual({ ok: true, value: 'ok' })
+    expect(first.active()).toBeUndefined()
+  })
+
   test.each([
     [{ userToken: undefined }],
     [{ userToken: '' }],
@@ -535,6 +769,14 @@ describe('XAgent Session 授权', () => {
     const auth = new XAgentAuthorization(backend(), persistence())
     await expect(auth.run('session.history', payload, context, new AbortController().signal, success))
       .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+  })
+
+  test('prompt 在进入令牌作用域前拒绝缺失的 Session 标识', async () => {
+    const operation = vi.fn(success)
+    const auth = new XAgentAuthorization(backend(), persistence())
+    await expect(auth.run('session.prompt', { args: {} }, context, new AbortController().signal, operation))
+      .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    expect(operation).not.toHaveBeenCalled()
   })
 
   test('点式 Session 方法、创建与未登记方法遵守封闭权限表', async () => {
@@ -648,6 +890,11 @@ describe('XAgent Session 授权', () => {
     await expect(mountedAuthorizer?.run(
       'xagentArtifact/list', {}, context, new AbortController().signal, success,
     )).resolves.toMatchObject({ ok: false, error: { message: 'artifact service unavailable' } })
+    await expect(mountedAuthorizer?.run(
+      'xagentCitation/resolve', {
+        args: { sessionId: 'session-00000000-0000-0000-0000-000000000701', citationId: '[资料1]' },
+      }, context, new AbortController().signal, success,
+    )).resolves.toMatchObject({ ok: false, error: { message: 'citation service unavailable' } })
     await mounted.fiber.dispose()
   })
 })

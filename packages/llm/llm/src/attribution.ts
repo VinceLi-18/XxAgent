@@ -10,15 +10,15 @@
 import { createRequire } from 'node:module'
 
 // The package's own manifest is the single source of the version so the
-// User-Agent cannot drift from what is published (`./package.json` is an
+// User-Agent cannot drift from the staged application (`./package.json` is an
 // export of this package; the relative path resolves from both `src/` and
 // the bundled `lib/`).
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string }
 
 /**
- * Static public application identity sent to LLM providers.
+ * Static non-secret application identity sent to LLM providers.
  *
- * Every field is a public product fact, safe on every request: no secrets,
+ * Every field is a non-secret product fact, safe on every request: no secrets,
  * local paths, session ids, prompt text, or per-user identifiers belong here,
  * and nothing per-request may influence the values.
  */
@@ -40,7 +40,7 @@ export interface AppIdentity {
 export const APP_IDENTITY: AppIdentity = {
   product: 'deepseek-harness',
   version,
-  url: 'https://github.com/deepseek-ai/deepseek-harness',
+  url: 'https://github.com/VinceLi-18/XxAgent',
 }
 
 /**

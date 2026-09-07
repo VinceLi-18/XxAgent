@@ -10,10 +10,16 @@ import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
 import type { XAgentArtifactScopeRunner } from '@xagent/dsh-artifact'
-import type { XAgentAuthenticatedRequestScope, XAgentPrincipal } from '@xagent/dsh-principal'
+import {
+  runWithXAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedSessionRequestScope,
+  type XAgentPrincipal,
+} from '@xagent/dsh-principal'
 import type {
   XAgentProjectScopeRunner,
 } from '@xagent/dsh-project'
+import type { XAgentCitationScopeRunner } from '@xagent/dsh-retrieval'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
@@ -100,6 +106,14 @@ function artifactMethod(endpoint: string): string | undefined {
   return ARTIFACT_METHODS.has(method) ? method : undefined
 }
 
+function citationNamespace(endpoint: string): boolean {
+  return endpoint.startsWith('xagentCitation/') || endpoint.startsWith('xagentCitation.')
+}
+
+function citationMethod(endpoint: string): 'resolve' | undefined {
+  return endpoint === 'xagentCitation/resolve' ? 'resolve' : undefined
+}
+
 function sessionPermission(
   endpoint: string,
   values: Record<string, unknown> | undefined,
@@ -166,6 +180,39 @@ function visibleSessionIds(value: unknown): ReadonlySet<string> {
   return ids
 }
 
+function authenticatedSessionScope(
+  value: unknown,
+  expectedRuntimeId: string,
+  scope: XAgentAuthenticatedRequestScope,
+): XAgentAuthenticatedSessionRequestScope {
+  const expectedMatch = SESSION_ID_PATTERN.exec(expectedRuntimeId)
+  if (expectedMatch?.[1] === undefined) throw new TypeError('invalid session scope response')
+  const canonicalRuntimeId = `session-${expectedMatch[1].toLowerCase()}`
+  if (typeof value !== 'object' || value === null) throw new TypeError('invalid session scope response')
+  const sessions = (value as Record<string, unknown>).sessions
+  if (!Array.isArray(sessions)) throw new TypeError('invalid session scope response')
+  const matches = sessions.filter((item) => {
+    if (typeof item !== 'object' || item === null) return false
+    const header = (item as Record<string, unknown>).runtime_header
+    return typeof header === 'object' && header !== null
+      && (header as Record<string, unknown>).id === canonicalRuntimeId
+  })
+  if (matches.length !== 1) throw new XAgentBackendError('not-found')
+  const row = matches[0] as Record<string, unknown>
+  const id = row.id
+  const visibility = row.visibility
+  const projectId = row.project_id
+  if (typeof id !== 'string' || !UUID_PATTERN.test(id)) throw new TypeError('invalid session scope response')
+  if (`session-${id.toLowerCase()}` !== canonicalRuntimeId) throw new TypeError('invalid session scope response')
+  if (visibility === 'private' && projectId === null) {
+    return Object.freeze({ ...scope, sessionId: id.toLowerCase(), visibility, projectId })
+  }
+  if (visibility === 'project' && typeof projectId === 'string' && UUID_PATTERN.test(projectId)) {
+    return Object.freeze({ ...scope, sessionId: id.toLowerCase(), visibility, projectId: projectId.toLowerCase() })
+  }
+  throw new TypeError('invalid session scope response')
+}
+
 function filterVisible<T>(result: RpcResult<T>, visible: ReadonlySet<string>): RpcResult<T> {
   if (!result.ok || typeof result.value !== 'object' || result.value === null) return result
   const value = result.value as Record<string, unknown>
@@ -185,6 +232,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     private readonly persistence: TokenScopedPersistence,
     private readonly project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
     private readonly artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
+    private readonly citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
   ) {}
 
   async run<T>(
@@ -194,6 +242,36 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     signal: AbortSignal,
     operation: () => Promise<RpcResult<T>>,
   ): Promise<RpcResult<T>> {
+    if (citationNamespace(endpoint)) {
+      if (!authenticated(request)) return unauthenticated()
+      if (citationMethod(endpoint) === undefined) return unauthenticated()
+      const values = args(payload)
+      const sessionId = values?.sessionId
+      const citationId = values?.citationId
+      if (typeof sessionId !== 'string' || typeof citationId !== 'string') return unauthenticated()
+      const citation = typeof this.citation === 'function' ? this.citation() : this.citation
+      if (citation === undefined) {
+        return { ok: false, error: { code: 'internal', message: 'citation service unavailable', details: {} } }
+      }
+      try {
+        return await this.persistence.withUserToken(request.userToken, async () => {
+          const requestScope = authenticatedScope(request, signal)
+          const scoped = authenticatedSessionScope(
+            await this.backend.sessions.list(request.userToken, signal), sessionId, requestScope,
+          )
+          return citation.withRequest(scoped, operation)
+        })
+      } catch (error) {
+        if (error instanceof XAgentBackendError && error.code === 'unauthenticated') return unauthenticated()
+        if (error instanceof XAgentBackendError && error.code === 'not-found') {
+          return {
+            ok: false,
+            error: { code: 'session-not-found', message: 'session not found', details: { sessionId: sessionId as never } },
+          }
+        }
+        return { ok: false, error: { code: 'internal', message: 'citation operation unavailable', details: {} } }
+      }
+    }
     if (artifactNamespace(endpoint)) {
       if (!authenticated(request)) return unauthenticated()
       if (artifactMethod(endpoint) === undefined) return unauthenticated()
@@ -233,6 +311,8 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     }
     if (!authenticated(request)) return unauthenticated()
     if (permission === undefined) return unauthenticated()
+    const promptSessionId = method === 'prompt' ? values?.sessionId : undefined
+    if (method === 'prompt' && typeof promptSessionId !== 'string') return unauthenticated()
     try {
       return await this.persistence.withUserToken(request.userToken, async () => {
         let visible: ReadonlySet<string> | undefined
@@ -250,7 +330,16 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
             request.userToken,
           )
         }
-        const result = await operation()
+        let result: RpcResult<T>
+        if (method === 'prompt') {
+          const requestScope = authenticatedScope(request, signal)
+          const scoped = authenticatedSessionScope(
+            await this.backend.sessions.list(request.userToken, signal), promptSessionId as string, requestScope,
+          )
+          result = await runWithXAgentAuthenticatedRequestScope(scoped, operation)
+        } else {
+          result = await operation()
+        }
         return visible === undefined ? result : filterVisible(result, visible)
       })
     } catch (error) {
@@ -311,11 +400,14 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
 
 function authenticatedScope(
   request: ConnectionRequestContext & { readonly principal: XAgentPrincipal; readonly userToken: string },
+  signal?: AbortSignal,
 ): XAgentAuthenticatedRequestScope {
   return Object.freeze({
     principal: request.principal,
     userToken: request.userToken,
     connectionId: request.connectionId,
+    ...signal === undefined ? {} : { requestSignal: signal },
+    ...signal === undefined ? {} : { connectionSignal: request.lifetime ?? signal },
   })
 }
 
@@ -335,9 +427,10 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     persistence: TokenScopedPersistence,
     project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
     artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
+    citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
   ) {
     super(ctx, 'connectionRequestAuthorizer')
-    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact)
+    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact, citation)
   }
 
   /**
@@ -389,5 +482,6 @@ export function apply(ctx: Context, config: Config): void {
     persistence,
     () => ctx.get('xagentProject'),
     () => ctx.get('xagentArtifact'),
+    () => ctx.get('xagentCitation'),
   )
 }

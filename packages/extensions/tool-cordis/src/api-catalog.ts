@@ -1072,6 +1072,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: '_session', description: 'the fully seeded but still unpublished Session.' }],
       },
       {
+        signature: 'fork( _sourceId: SessionId, _throughSequence: number, _operationId: SessionForkOperationId, ): Promise<SessionHeader | undefined>',
+        description: 'Atomically derive a durable child from an authorized source prefix when this backend owns Session scope and identity. The backend, not the caller, chooses the child identity and copies every backend-owned authorization relation. Local stores return `undefined`, allowing the Host to use its ordinary in-process seed path.',
+        parameters: [{ name: '_sourceId', description: 'authorized source Session identity.' }, { name: '_throughSequence', description: 'inclusive final source event sequence.' }, { name: '_operationId', description: 'Host-owned RPC identity shared by every retry of this fork.' }],
+        returns: 'the durable child header, or `undefined` when unsupported.',
+      },
+      {
+        signature: 'isForkRetryable(_error: unknown): boolean',
+        description: 'Classify a provider-owned failure for the Host\'s single immediate fork recovery attempt. The default rejects every failure; remote providers may admit only errors whose operation is safe to replay with the same SessionForkOperationId.',
+        parameters: [{ name: '_error', description: 'failure raised while deriving or resuming the durable child.' }],
+        returns: 'whether the Host may repeat only the failed phase once.',
+      },
+      {
         signature: 'abstract create(meta: SessionHeader): Promise<void>',
         description: 'Register a new session\'s metadata. A backend MAY defer the physical write until the first append (lazy materialization), in which case a created-but-never-appended session is absent from list — abandoned sessions leave nothing behind.',
         parameters: [{ name: 'meta', description: 'the immutable header (id, version, cwd, lineage) to record.' }],
@@ -2264,6 +2276,31 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'xagentCitation',
+    summary: 'Request-scoped citation locator backed by durable provenance and current-actor authorization.',
+    description: 'Request-scoped citation locator backed by durable provenance and current-actor authorization.',
+    methods: [
+      {
+        signature: 'async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: 'Run one Remote operation inside the Host-authenticated Session scope.',
+        parameters: [{ name: 'scope', description: 'current physical connection, actor, revision, and Session identity.' }, { name: 'operation', description: 'complete downstream Remote operation.' }],
+        returns: 'the downstream result after request-local identity is cleared.',
+      },
+      {
+        signature: '@Remote async resolve(sessionId: string, citationId: string, signal?: AbortSignal): Promise<XAgentCitationTarget>',
+        description: 'Resolve one durable cited-answer ID through server-owned provenance and current-actor authorization.',
+        parameters: [{ name: 'sessionId', description: 'current Browser Session id.' }, { name: 'citationId', description: 'persisted short citation id.' }, { name: 'signal', description: 'Browser request cancellation.' }],
+        returns: 'immutable Artifact, Version, Chunk, and line identities without a URL.',
+      },
+      {
+        signature: 'async dispose(): Promise<void>',
+        description: 'Close admission, abort every resolution, and await their settlement.',
+        parameters: [],
+        returns: 'when all owned backend operations have settled.',
+      },
+    ],
+  },
+  {
     key: 'xagentPrincipal',
     summary: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
     description: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
@@ -2310,6 +2347,30 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: '读取当前账号可见的一个项目详情。',
         parameters: [{ name: 'projectId', description: '当前账号请求查看的项目 UUID。' }, { name: 'signal', description: '物理请求的取消信号。' }],
         returns: '与请求 Principal 账号一致的项目详情。',
+      },
+    ],
+  },
+  {
+    key: 'xagentRetrieval',
+    summary: 'Service Definition consumed by model tools and the terminal cited-answer runtime.',
+    description: 'Service Definition consumed by model tools and the terminal cited-answer runtime.',
+    methods: [
+      {
+        signature: 'abstract readonly receipts: XAgentReceiptRegistry',
+        description: 'Opaque receipt lifetime consumed only by XAgent Session persistence.',
+        parameters: [],
+      },
+      {
+        signature: 'abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promise<XAgentAccessibleProjects>',
+        description: 'Discover accessible projects for the exact authenticated Private Session.',
+        parameters: [{ name: 'input', description: 'immutable Session/tool identity and optional bounded name query.' }],
+        returns: 'at most twenty accessible projects and the public payload hash.',
+      },
+      {
+        signature: 'abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>',
+        description: 'Search Artifact evidence within the exact authenticated Session scope.',
+        parameters: [{ name: 'input', description: 'immutable identity, query, and explicit Private Session selectors.' }],
+        returns: 'authorized citation excerpts and the public payload hash.',
       },
     ],
   },
@@ -3954,6 +4015,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionEventWindow {\n    session: SessionHeader;\n    target: SessionEvent;\n    events: SessionEvent[];\n    startSeq: number;\n    endSeq: number;\n}',
   },
   {
+    name: 'SessionForkOperationId',
+    declaration: 'export type SessionForkOperationId = Branded<\'SessionForkOperationId\'>;',
+  },
+  {
     name: 'SessionForkSource',
     declaration: 'export type SessionForkSource = Session | SessionId;',
   },
@@ -4515,7 +4580,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolDefinition',
-    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly output: ToolOutputDefinition;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n}',
+    declaration: 'export interface ToolDefinition extends ToolSchema {\n    readonly output: ToolOutputDefinition;\n    readonly nativeOnly?: true;\n    execute(args: unknown, exec: ToolRunContext): Promise<unknown>;\n    finalizeContent?(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>): ContentBlock[] | undefined;\n    timeoutMs?: number;\n    isConcurrencySafe?(args: unknown): boolean;\n    presentCall?(args: unknown): ToolCallView | undefined;\n    presentResult?(args: unknown, result: ToolResult): ToolResultView | undefined;\n}',
   },
   {
     name: 'ToolDispatchExecution',
@@ -4603,7 +4668,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    readonly [TOOL_RUNTIME_CODE_SCHEMAS]: (scope?: ScopeKey) => ToolSchema[];\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',
@@ -4810,16 +4875,68 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type WorkflowStopReason = \'completed\' | \'cancelled\' | \'error\';',
   },
   {
+    name: 'XAgentAccessibleProjects',
+    declaration: 'export interface XAgentAccessibleProjects {\n    readonly projects: readonly XAgentRetrievalProject[];\n    readonly payloadHash: string;\n}',
+  },
+  {
+    name: 'XAgentArtifactSearch',
+    declaration: 'export interface XAgentArtifactSearch {\n    readonly citations: readonly XAgentRetrievalCitation[];\n    readonly payloadHash: string;\n}',
+  },
+  {
     name: 'XAgentAuthenticatedRequestScope',
-    declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n}',
+    declaration: 'export interface XAgentAuthenticatedRequestScope {\n    readonly principal: XAgentPrincipal;\n    readonly userToken: string;\n    readonly connectionId: string;\n    readonly requestSignal?: AbortSignal;\n    readonly connectionSignal?: AbortSignal;\n}',
+  },
+  {
+    name: 'XAgentAuthenticatedSessionRequestScope',
+    declaration: 'export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestScope & ({\n    readonly sessionId: string;\n    readonly visibility: \'private\';\n    readonly projectId: null;\n} | {\n    readonly sessionId: string;\n    readonly visibility: \'project\';\n    readonly projectId: string;\n});',
+  },
+  {
+    name: 'XAgentCitationIdentity',
+    declaration: 'export interface XAgentCitationIdentity {\n    readonly id: string;\n    readonly artifactId: string;\n    readonly versionId: string;\n    readonly chunkId: string;\n}',
+  },
+  {
+    name: 'XAgentCitationTarget',
+    declaration: 'export interface XAgentCitationTarget {\n    readonly artifactId: string;\n    readonly versionId: string;\n    readonly chunkId: string;\n    readonly lineStart: number;\n    readonly lineEnd: number;\n}',
+  },
+  {
+    name: 'XAgentListAccessibleProjectsInput',
+    declaration: 'export interface XAgentListAccessibleProjectsInput extends XAgentRetrievalCall {\n    readonly query?: string;\n}',
   },
   {
     name: 'XAgentPrincipal',
     declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
   },
   {
+    name: 'XAgentReceiptRegistry',
+    declaration: 'export class XAgentReceiptRegistry implements XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    publish(sessionId: string, toolCallId: string, payloadHash: string): void;\n    discard(sessionId: string, toolCallId: string): boolean;\n    discardSession(sessionId: string): void;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    async dispose(): Promise<void>;\n}',
+  },
+  {
+    name: 'XAgentReceiptRegistryContract',
+    declaration: 'export interface XAgentReceiptRegistryContract {\n    register(input: {\n        sessionId: string;\n        toolCallId: string;\n        receipt: string;\n        payloadHash: string;\n    }): void;\n    publish(sessionId: string, toolCallId: string, payloadHash: string): void;\n    discard(sessionId: string, toolCallId: string): boolean;\n    bindEvent(sessionId: string, toolCallId: string, eventSequence: number, payloadHash?: string): void;\n    attachments(sessionId: string, fromSequence: number, toSequence: number): readonly XAgentRetrievalReceiptAttachment[];\n    commit(sessionId: string, throughSequence: number): void;\n    dispose(): Promise<void>;\n}',
+  },
+  {
+    name: 'XAgentRetrievalCall',
+    declaration: 'export interface XAgentRetrievalCall {\n    readonly sessionId: SessionId;\n    readonly toolCallId: string;\n    readonly signal?: AbortSignal;\n}',
+  },
+  {
+    name: 'XAgentRetrievalCitation',
+    declaration: 'export interface XAgentRetrievalCitation extends XAgentCitationIdentity {\n    readonly displayName: string;\n    readonly versionNumber: number;\n    readonly lineStart: number;\n    readonly lineEnd: number;\n    readonly text: string;\n    readonly scope: \'private\' | \'project\';\n}',
+  },
+  {
+    name: 'XAgentRetrievalProject',
+    declaration: 'export interface XAgentRetrievalProject {\n    readonly projectId: string;\n    readonly name: string;\n}',
+  },
+  {
+    name: 'XAgentRetrievalReceiptAttachment',
+    declaration: 'export interface XAgentRetrievalReceiptAttachment {\n    readonly eventSequence: number;\n    readonly toolCallId: string;\n    readonly receipt: string;\n    readonly payloadHash: string;\n}',
+  },
+  {
     name: 'XAgentRole',
     declaration: 'export type XAgentRole = \'manager\' | \'specialist\';',
+  },
+  {
+    name: 'XAgentSearchArtifactsInput',
+    declaration: 'export interface XAgentSearchArtifactsInput extends XAgentRetrievalCall {\n    readonly query: string;\n    readonly projectIds?: readonly string[];\n    readonly includePrivate: boolean;\n}',
   },
 ]
 

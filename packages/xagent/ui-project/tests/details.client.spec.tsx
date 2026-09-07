@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useSyncExternalStore } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppFrame } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
 import { createLayoutStore } from '@deepseek-ai/dsh-client-ui-layout/src/client/stores.ts'
@@ -8,7 +8,12 @@ import type { XAgentWorkbenchBootstrap } from '@xagent/dsh-project/types'
 import { ContextMarker } from '../src/client/ContextMarker.tsx'
 import { WorkbenchDetails } from '../src/client/WorkbenchDetails.tsx'
 import { WorkbenchOperationShield } from '../src/client/WorkbenchOperationShield.tsx'
-import { XAgentWorkbenchStore, type XAgentWorkbenchState } from '../src/client/store.ts'
+import {
+  XAgentWorkbenchDetailsStore,
+  XAgentWorkbenchStore,
+  type XAgentWorkbenchDetailsTab,
+  type XAgentWorkbenchState,
+} from '../src/client/store.ts'
 
 const PROJECT_ID = '00000000-0000-0000-0000-000000000201'
 
@@ -30,6 +35,12 @@ function hook(store: XAgentWorkbenchStore) {
   }
 }
 
+function detailsHook(store: XAgentWorkbenchDetailsStore) {
+  return function useDetailsTab<S>(selector: (value: XAgentWorkbenchDetailsTab) => S): S {
+    return selector(useSyncExternalStore(store.subscribe, store.getSnapshot))
+  }
+}
+
 function layoutHook(store: ReturnType<ReturnType<typeof createLayoutStore>['create']>) {
   return function useLayout<S>(selector: (value: ReturnType<typeof store.getSnapshot>) => S): S {
     return selector(useSyncExternalStore(
@@ -46,6 +57,8 @@ function renderArtifacts() {
 const standard = {
   useSessions: vi.fn() as never,
   useWorkspaces: vi.fn() as never,
+  useDetailsTab: ((selector: (value: 'overview') => unknown) => selector('overview')) as never,
+  selectDetailsTab: vi.fn(),
   renderSlot: vi.fn((name: string) => name === 'xagent.workbench.artifacts' ? renderArtifacts() : null) as never,
 }
 
@@ -96,6 +109,23 @@ describe('XAgent 工作台上下文与详情', () => {
     expect(standard.renderSlot).toHaveBeenCalledWith('xagent.workbench.artifacts', {})
   })
 
+  it('citation 的外部页签选择会显示资料子 Slot', () => {
+    const store = new XAgentWorkbenchStore()
+    const details = new XAgentWorkbenchDetailsStore()
+    store.replace(ready({ kind: 'workbench' }))
+    render(<WorkbenchDetails
+      {...standard}
+      useWorkbench={hook(store)}
+      useDetailsTab={detailsHook(details)}
+      loadProject={vi.fn(async () => {})}
+    />)
+
+    act(() => { details.replace('artifacts') })
+
+    expect(screen.getByRole('tab', { name: '资料' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText('资料插件内容')).toBeTruthy()
+  })
+
   it('页签支持方向键、Home 和 End 切换并跟随焦点', () => {
     const store = new XAgentWorkbenchStore()
     store.replace(ready({ kind: 'workbench' }))
@@ -134,7 +164,7 @@ describe('XAgent 工作台上下文与详情', () => {
     expect(screen.getByText('当前范围暂无资料功能')).toBeTruthy()
     fireEvent.click(screen.getByRole('tab', { name: '协作收件箱' }))
     expect(screen.getByText('暂无待处理协作')).toBeTruthy()
-    expect(renderSlot).toHaveBeenCalledTimes(1)
+    expect(renderSlot).toHaveBeenCalledWith('xagent.workbench.artifacts', {})
   })
 
   it('窄屏保留 Agent 对话中栏，并以抽屉承载真实资料详情', () => {

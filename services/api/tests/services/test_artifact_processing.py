@@ -755,12 +755,16 @@ async def test_cleanup_worker_removes_w1_version_without_harming_published_w2(
             version_id=lease.version_id,
         )
 
+    async def index_processor(_lease) -> None:
+        pass
+
     sessions = async_sessionmaker(worker_engine, expire_on_commit=False)
     await _run_worker_loop(
         sessions,
         once=True,
         processor=lambda _lease: None,
         cleanup_processor=cleanup_processor,
+        index_processor=index_processor,
         lease_seconds=60,
         heartbeat_seconds=20,
         poll_seconds=0,

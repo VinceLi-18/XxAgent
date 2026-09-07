@@ -13,6 +13,13 @@ from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion
 from app.models.base import Base
 from app.models.identity import Account
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
+from app.models.retrieval import (
+    ArtifactIndexJob,
+    ArtifactSearchHead,
+    ArtifactTextChunk,
+    ArtifactTextIndex,
+    XAgentRetrievalReceipt,
+)
 from app.models.workbench import (
     XAgentAccountCapabilityGrant,
     XAgentSessionProjectRef,

@@ -5,7 +5,7 @@ name: Build single-exe
 # A full target run retains one SDK wheel and three runtime wheels; subset
 # dispatch retains the SDK wheel and selected runtime wheels. Bare executables
 # and source closures are test inputs. Run manually, label a PR `build-exe`
-# (remove and reapply to rerun), or call it from the Python release workflow.
+# (remove and reapply to rerun), or call it for a private multi-platform artifact build.
 # Checkout uses the triggering ref, so dispatch needs no separate ref input.
 on:
   workflow_call:
@@ -16,7 +16,7 @@ on:
         required: false
         default: ''
       release:
-        description: Run as the native builder for the Python release workflow.
+        description: Run as the native builder for a private application artifact set.
         type: boolean
         required: false
         default: false

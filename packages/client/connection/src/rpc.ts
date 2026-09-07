@@ -18,6 +18,8 @@ export interface ConnectionRequestContext {
   readonly connectionId: string
   /** Host-decoded RPC correlation id; absent on event-stream connections. */
   readonly requestId?: string
+  /** Authenticated physical connection lifetime, when supplied by the resolver. */
+  readonly lifetime?: AbortSignal
 }
 
 /** 可选认证服务返回的字段；Host 独占 connectionId。 */

@@ -10,6 +10,8 @@
 
 只有 `clean` 且 worker 识别 MIME 为 PDF、纯文本类、PNG、JPEG 或 WebP 的版本会请求预览地址。PDF 使用内联框架，图片使用图片元素，文本读取后作为纯文本渲染；Office、HTML、SVG 和未知二进制不请求预览，也不会进入 iframe。全屏预览会使应用背景不可达，把 Tab 顺序封闭在对话框内，并在关闭后恢复到实际触发按钮；父文档支持 Escape，始终显示的关闭按钮覆盖 PDF 内联框架可能自行消费按键的情况。关闭、范围切换或面板卸载都会丢弃短期读取地址与文本正文；它们和上传授权不会写入 Session、日志或持久缓存。
 
+`xagentArtifactCitationOpener` 接受 Host 已解析的不可变 Artifact ID、Version ID 与行范围。它先选择工作台的“资料”页签并打开第三栏，再重新读取详情，要求目标版本仍为 `clean` 文本，最后请求该精确版本的短期预览并逐行高亮；PDF、图片及其他无法逐行高亮的 citation 会关闭式失败，普通浏览仍可预览受支持的 PDF 与图片。它不接受 citation label、文件名或 URL。账号或项目变化和 dispose 会取消整个资料范围；Session 变化只取消 citation 拥有的导航，不清除普通选择或停止普通扫描轮询。
+
 ## Model Experience
 
 ### Artifact panel（资料右栏）

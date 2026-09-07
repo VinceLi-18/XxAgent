@@ -2,17 +2,17 @@
 
 English | [中文](README.zh.md)
 
-A [Landlock](https://landlock.io/) self-restrict-then-exec launcher for confining subprocesses on Linux, distributed as prebuilt per-platform npm packages plus a thin JS entry package that resolves the binary and speaks its CLI contract. Built for agent harnesses and other hosts that need to run untrusted commands under a filesystem allow-list without confining themselves.
+A [Landlock](https://landlock.io/) self-restrict-then-exec launcher for confining subprocesses on Linux, staged inside XxAgent as a prebuilt platform package plus a thin JS entry package that resolves the binary and speaks its CLI contract. Built for agent harnesses and other hosts that need to run untrusted commands under a filesystem allow-list without confining themselves.
 
 The tool is **`landlock-run`** — a self-restrict-then-exec [Landlock](https://landlock.io/) launcher (~300 lines of C11 over the raw kernel UAPI, statically linked against musl). It installs a Landlock ruleset on itself and `exec`s the wrapped command; the ruleset is inherited across `execve`, so the command and every process it spawns run confined while the invoking process stays unrestricted. Fail-closed: if the kernel cannot enforce, it exits without running the command.
 
-## Install
+## Workspace use
 
 ```sh
-npm install @deepseek-ai/node-addon-landlock-run
+pnpm install --frozen-lockfile
 ```
 
-Published packages use an entry package plus platform optional packages:
+The private application workspace uses an entry package plus platform optional packages:
 
 ```text
 @deepseek-ai/node-addon-landlock-run
@@ -20,7 +20,7 @@ Published packages use an entry package plus platform optional packages:
 @deepseek-ai/node-addon-landlock-run-linux-arm64
 ```
 
-npm's `os`/`cpu` fields make installers fetch only the matching platform package. There is no install-time build fallback on purpose: on a host without a platform package the resolved path never exists, the probe reports `unusable`, and the consumer falls closed.
+The `os`/`cpu` fields make pnpm stage only the matching platform package. There is no install-time build fallback on purpose: on a host without a platform package the resolved path never exists, the probe reports `unusable`, and the consumer falls closed.
 
 ## Usage
 
@@ -57,4 +57,4 @@ pnpm build:native    # this Linux architecture's binaries (apt-get install musl-
 pnpm test
 ```
 
-Binaries are git-ignored and built natively per architecture — locally for your own machine, by CI's per-arch runners as the builders of record. Release flow: [docs/release.md](docs/release.md).
+Binaries are git-ignored and built natively per architecture — locally for your own machine, by CI's per-arch runners as the builders of record. Private artifact validation: [docs/release.md](docs/release.md).

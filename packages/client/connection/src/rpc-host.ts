@@ -225,6 +225,7 @@ async function resolveRequestContext(
   return Object.freeze({
     ...resolved.principal === undefined ? {} : { principal: resolved.principal },
     ...resolved.userToken === undefined ? {} : { userToken: resolved.userToken },
+    ...resolved.lifetime === undefined ? {} : { lifetime: resolved.lifetime },
     connectionId,
   })
 }

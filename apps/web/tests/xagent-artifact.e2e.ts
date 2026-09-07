@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { generateKeyPairSync, randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +11,8 @@ import { probeFreePort, REPO_ROOT, requireDist, saveFailureShot, ZH_BROWSER_LOCA
 import {
   browserDiagnosticUrl,
   redactBrowserDiagnosticText,
+  resolveArtifactEmbeddingCacheDir,
+  resolveArtifactEmbeddingOffline,
   spawnOwnedChild,
   stopChildProcess,
   type OwnedChildProcess,
@@ -33,6 +35,14 @@ function compose(project: string, override: string, args: readonly string[], inp
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: 600_000,
+    env: {
+      ...process.env,
+      HF_HUB_OFFLINE: resolveArtifactEmbeddingOffline(process.env),
+      XAGENT_EMBEDDING_CACHE_DIR: resolveArtifactEmbeddingCacheDir(
+        process.env,
+        join(REPO_ROOT, 'services/api/.cache/huggingface'),
+      ),
+    },
     ...(input === undefined ? {} : { input }),
   }).trim()
 }
@@ -136,6 +146,7 @@ describe('XAgent Business 真实资料生命周期', () => {
         JX_TEST_DATABASE_URL: '不得进入 DSH',
         PGPASSWORD: '不得进入 DSH',
       }
+      const { privateKey } = generateKeyPairSync('ed25519')
       const dshEnvironment = {
         ...withoutInfrastructureCredentials(inheritedEnvironment),
         DSH_HOME: join(root, 'home'),
@@ -144,6 +155,9 @@ describe('XAgent Business 真实资料生命周期', () => {
         XAGENT_SERVICE_TOKEN: SERVICE_TOKEN,
         XAGENT_ALLOWED_ORIGINS: baseUrl,
         XAGENT_ALLOW_INSECURE_COOKIE: '1',
+        XAGENT_DELEGATION_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+        XAGENT_DELEGATION_ISSUER: 'xagent-artifact-web-e2e',
+        XAGENT_DELEGATION_AUDIENCE: 'xagent-fastapi-artifact-web-e2e',
       }
       expect(Object.keys(dshEnvironment).filter(isInfrastructureCredential)).toEqual([])
       dsh = spawnOwnedChild(process.execPath, [
@@ -178,7 +192,7 @@ describe('XAgent Business 真实资料生命周期', () => {
       await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
       await page.getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
     } catch (error) {
-      const logs = compose(project, override, ['logs', '--no-color']).slice(-12_000)
+      const logs = compose(project, override, ['logs', '--no-color', '--tail', '200']).slice(-12_000)
       throw new Error(`真实资料栈启动失败：${String(error)}\n${logs}`)
     }
   }, 600_000)
@@ -207,7 +221,7 @@ describe('XAgent Business 真实资料生命周期', () => {
   it('上传、扫描、详情、预览、新版本、栏位折叠和账号切换均保持服务器范围', async () => {
     onTestFailed(async () => {
       if (page !== undefined) await saveFailureShot(page, 'xagent-artifact')
-      browserDiagnostics.push(compose(project, override, ['logs', '--no-color']).slice(-12_000))
+      browserDiagnostics.push(compose(project, override, ['logs', '--no-color', '--tail', '200']).slice(-12_000))
     })
     const activePage = page!
     await login(activePage, managerEmail)

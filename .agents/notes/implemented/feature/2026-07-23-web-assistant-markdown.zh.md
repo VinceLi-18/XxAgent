@@ -22,6 +22,8 @@ Web 对话通过会话事件、历史回放与流式累积保留 assistant Markd
 
 assistant 生成的链接目标地址仅限绝对 HTTP、HTTPS 与 mailto URL。HTTP(S) 链接会在新标签页中打开，并带有 `rel="noopener noreferrer"`；相对目标地址与其他协议会渲染为不可导航的文本。Markdown 图片遵循独立的[远程图片策略](2026-07-30-web-remote-markdown-images.md)。由于流水线中未引入 HTML 解析器，原始 HTML 仍是不会生效的源文本。Shiki 输出是由围栏文本生成的静态 span 树（不含脚本或用户 HTML）。
 
+无法授予 assistant 生成目标地址导航权限的呈现会设置 `linkPolicy="inert"`。直接链接、引用链接、自动链接与 URL 形态的行内代码会保留标签，但不生成锚点。默认值仍是 assistant 对话使用的安全链接策略。
+
 围栏代码与 GFM 表格各自处理横向溢出，因此较长内容无法撑宽对话栏。
 
 ## 考虑过的替代方案
@@ -42,4 +44,4 @@ assistant 生成的链接目标地址仅限绝对 HTTP、HTTPS 与 mailto URL。
 
 ## 后果
 
-assistant 回复在流式输出与回放期间都会一致地渲染为语义化 Markdown，而工具卡片、推理行、交互、用户气泡和宿主协议保持不变。每次累积更新后，流式输出只重新解析不稳定的尾部；未完成的 Markdown 可能暂时改变尾部结构，但独立的尾部会限定 React 失效范围，最终事件也不会切换渲染器。URL 形态的行内代码会在不改变其可见字面文本的情况下变得可导航，而采用不安全 scheme 或混有其他内容的代码仍不可交互。代码围栏与工具及详情表层共用同一外框与复制路径。初始 Web shell 包含 Markdown 解析器、GFM 运行时、KaTeX 与 shiki 允许列表；citation、anchor 和 thinking-small 表层仍暂缓。
+assistant 回复在流式输出与回放期间都会一致地渲染为语义化 Markdown，而工具卡片、推理行、交互、用户气泡和宿主协议保持不变。每次累积更新后，流式输出只重新解析不稳定的尾部；未完成的 Markdown 可能暂时改变尾部结构，但独立的尾部会限定 React 失效范围，最终事件也不会切换渲染器。在默认策略下，URL 形态的行内代码会在不改变其可见字面文本的情况下变得可导航，而采用不安全 scheme 或混有其他内容的代码仍不可交互。显式不可交互的呈现保留相同的生成标签，但不提供导航。代码围栏与工具及详情表层共用同一外框与复制路径。初始 Web shell 包含 Markdown 解析器、GFM 运行时、KaTeX 与 shiki 允许列表；标题锚点和 thinking-small 表层仍暂缓。

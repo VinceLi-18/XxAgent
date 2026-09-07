@@ -96,6 +96,18 @@
         backendOrigin: !!js process.env.XAGENT_API_ORIGIN
         serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
 
+    - id: xagent-retrieval
+      name: '@xagent/dsh-retrieval'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+        delegationPrivateKey: !!js process.env.XAGENT_DELEGATION_PRIVATE_KEY
+        delegationIssuer: !!js process.env.XAGENT_DELEGATION_ISSUER
+        delegationAudience: !!js process.env.XAGENT_DELEGATION_AUDIENCE
+
+    - id: xagent-tool-retrieval
+      name: '@xagent/dsh-tool-retrieval'
+
     - id: xagent-project
       name: '@xagent/dsh-project'
       config:
@@ -110,3 +122,6 @@
 
     - id: xagent-ui-artifact
       name: '@xagent/dsh-ui-artifact'
+
+    - id: xagent-ui-citation
+      name: '@xagent/dsh-ui-citation'

@@ -42,6 +42,7 @@ class ArtifactVersion(Base):
             "actual_size IS NULL OR actual_size BETWEEN 0 AND 52428800",
             name="ck_artifact_version_actual_size",
         ),
+        UniqueConstraint("id", "artifact_id", name="uq_artifact_version_id_artifact"),
         UniqueConstraint("artifact_id", "version_number", name="uq_artifact_version_number"),
     )
 

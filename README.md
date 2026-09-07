@@ -1,8 +1,8 @@
-# DeepSeek Harness
+# XxAgent
 
 English | [中文](README.zh.md)
 
-DeepSeek Harness (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
+XxAgent is a privately distributed agent application that integrates its DeepSeek Harness and XAgent business sources in one repository.
 
 It uses an architecture where **everything is a plugin**, and is powered by [Cordis](https://github.com/cordiverse/cordis), whose design is described in [_A Programming Paradigm for Spatiotemporal Composability_](https://github.com/cordiverse/paper).
 
@@ -10,39 +10,29 @@ It uses an architecture where **everything is a plugin**, and is powered by [Cor
 
 DeepSeek Harness is currently in _developer preview_ and is iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
 
-## Run
+## Distribution
 
-### Run from `npm`
+An authorized repository revision is the release unit. The JavaScript workspaces, vendored Cordis sources, native launcher, Python runtime, FastAPI services, workers, and deployment configuration are internal application components and are not published to npm or PyPI.
 
-Install `Node.js`, then run:
+The inherited `@deepseek-ai/*` and XAgent-owned `@xagent/*` package names remain internal module identifiers. Every internal dependency resolves through the current workspace rather than an external DSH package release.
 
-```sh
-npx @deepseek-ai/dsh web
-```
+## Run from source
 
-The command starts the Web UI, served at `http://127.0.0.1:3080` by default. See [Web UI guide](docs/user/guide/index.md).
-
-### Run from source
-
-To run from a repository checkout:
+Install the repository's supported Node.js and pnpm versions, then run:
 
 ```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run build
 pnpm dsh web
 ```
 
-## Community and support
+The command starts the Web UI, served at `http://127.0.0.1:3080` by default. See [Web UI guide](docs/user/guide/index.md).
 
-- Feel free to submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
-- Add the [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic to your plugin repository for discoverability.
-- Join <a href="https://discord.gg/Ycq5dCaS4">DeepSeek Harness Discord community</a>.
+The complete Business deployment also needs the FastAPI, PostgreSQL, MinIO, ClamAV, worker, and embedding services described in the [API service guide](services/api/README.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Authorized contributors should follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Development
 

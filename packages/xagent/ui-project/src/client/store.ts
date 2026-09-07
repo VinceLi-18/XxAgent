@@ -4,6 +4,31 @@ import type {
   XAgentWorkbenchBootstrap,
 } from '@xagent/dsh-project/types'
 
+/** 工作台第三栏可选择的页签。 */
+export type XAgentWorkbenchDetailsTab = 'overview' | 'artifacts' | 'inbox'
+
+/** 工作台第三栏当前页签的包内可写快照。 */
+export class XAgentWorkbenchDetailsStore implements HostObservable<XAgentWorkbenchDetailsTab> {
+  private state: XAgentWorkbenchDetailsTab = 'overview'
+  private readonly listeners = new Set<() => void>()
+
+  readonly getSnapshot = (): XAgentWorkbenchDetailsTab => this.state
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /**
+   * 选择第三栏页签。
+   * @param tab 要显示的页签。
+   */
+  replace(tab: XAgentWorkbenchDetailsTab): void {
+    if (tab === this.state) return
+    this.state = tab
+    this.listeners.forEach((listener) => { listener() })
+  }
+}
+
 interface XAgentWorkbenchInteractionState {
   readonly switching: boolean
   readonly creating: boolean

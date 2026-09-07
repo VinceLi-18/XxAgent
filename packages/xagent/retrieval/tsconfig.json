@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types" },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../../vendor/schemastery" },
+    { "path": "../../core/agent" },
+    { "path": "../../llm/llm" },
+    { "path": "../../core/session" },
+    { "path": "../../core/tools" },
+    { "path": "../../typert/protocol" },
+    { "path": "../../runtime-diagnostics/invariants" },
+    { "path": "../backend-client" },
+    { "path": "../delegation-token" },
+    { "path": "../principal" }
+  ]
+}

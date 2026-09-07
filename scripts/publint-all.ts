@@ -94,7 +94,7 @@ function addPath(path: string, paths: Set<string>): void {
   if (stat.isDirectory()) {
     // readdirSync, not globSync: `**/*` skips dot-prefixed segments, but npm
     // pack publishes dotfiles inside included directories, and this view must
-    // match what npm publishes.
+    // match the package payload staged by the application build.
     for (const entry of readdirSync(path, { recursive: true, withFileTypes: true })) {
       if (entry.isFile()) paths.add(resolve(entry.parentPath, entry.name))
     }

@@ -145,6 +145,52 @@ describe('CI workflow', () => {
     expect(consumersIndex).toBeGreaterThan(uvIndex)
   })
 
+  it('restores or cold-seeds the pinned embedding cache before browser-backed artifact acceptance', () => {
+    const workflow = loadWorkflow('.github/workflows/ci.yml')
+    const job = workflowJob(workflow, 'node-24-consumers')
+    if (!Array.isArray(job.steps)) throw new TypeError('node-24-consumers must define steps')
+
+    const restoreIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Restore pinned BGE-M3 cache for browser acceptance'
+    ))
+    const restore: unknown = job.steps[restoreIndex]
+    const prepareIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Prepare browser acceptance model cache'
+    ))
+    const prepare: unknown = job.steps[prepareIndex]
+    const consumersIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Run compatibility, snapshot, and artifact gates'
+    ))
+    const verifyIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Verify browser acceptance model cache'
+    ))
+    const verify: unknown = job.steps[verifyIndex]
+
+    expect(restore).toMatchObject({
+      id: 'browser-bge-cache',
+      uses: 'actions/cache@v4',
+      with: {
+        path: '${{ runner.temp }}/xagent-huggingface',
+        key: "bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}",
+      },
+    })
+    if (!isRecord(prepare) || typeof prepare.run !== 'string') {
+      throw new TypeError('consumer job must prepare its private model cache')
+    }
+    expect(prepare.run).toContain('verify_model_snapshot.py --allow-absent')
+    expect(prepare.run).toContain('steps.browser-bge-cache.outputs.cache-hit')
+    expect(prepare.run).toContain('XAGENT_TASK10_HF_HUB_OFFLINE=false')
+    expect(prepare.run).toContain('XAGENT_TASK10_HF_HUB_OFFLINE=true')
+    expect(prepare.run).toContain('XAGENT_EMBEDDING_CACHE_DIR=')
+    expect(verify).toMatchObject({
+      run: 'python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"',
+    })
+    expect(restoreIndex).toBeGreaterThanOrEqual(0)
+    expect(prepareIndex).toBeGreaterThan(restoreIndex)
+    expect(consumersIndex).toBeGreaterThan(prepareIndex)
+    expect(verifyIndex).toBeGreaterThan(consumersIndex)
+  })
+
   it('exempts push from cancellation, so one master merge does not cancel the running drill', () => {
     const workflow = loadWorkflow('.github/workflows/ci.yml')
     if (!isRecord(workflow.jobs) || !isRecord(workflow.concurrency)) {
@@ -261,7 +307,7 @@ describe('CI workflow', () => {
       },
       services: {
         postgres: {
-          image: 'postgres:16-alpine',
+          image: 'pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b',
           env: {
             POSTGRES_DB: 'xagent_api_test',
             POSTGRES_USER: 'postgres',
@@ -395,6 +441,7 @@ describe('CI workflow', () => {
     expect(composeServiceNames(compose).sort()).toEqual([
       'api',
       'clamav',
+      'embedding',
       'migrate',
       'minio',
       'postgres',
@@ -409,7 +456,12 @@ describe('CI workflow', () => {
       POSTGRES_APP_PASSWORD: 'p@ss:word/%-e2e-app',
       POSTGRES_PASSWORD: 'xagent-api-test',
     })
-    expect(worker.command).toEqual(['xagent-api', 'worker'])
+    expect(worker.command).toEqual([
+      'xagent-api', 'worker',
+      '--lease-seconds', '8',
+      '--heartbeat-seconds', '2',
+      '--poll-seconds', '0.2',
+    ])
     expect(worker.environment).toMatchObject({
       DATABASE_WORKER_URL: 'postgresql+asyncpg://xagent_e2e_worker@postgres:5432/xagent_api_test',
       POSTGRES_WORKER_PASSWORD: 'p@ss:word/%-e2e-worker',
@@ -439,6 +491,7 @@ describe('CI workflow', () => {
     expect(api.depends_on).toMatchObject({
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
+      embedding: { condition: 'service_healthy' },
     })
     expect(minio.healthcheck.test).toEqual(['CMD', 'mc', 'ready', 'local'])
     expect(clamav.image).toMatch(/^clamav\/clamav-debian:1\.4(?:$|\.)/)
@@ -456,7 +509,7 @@ describe('CI workflow', () => {
     expect(artifactE2e).toMatchObject({
       if: "github.event_name == 'pull_request'",
       name: 'python 3.11 / xagent artifact docker e2e',
-      'timeout-minutes': 20,
+      'timeout-minutes': 45,
     })
     const e2eStep = (artifactE2e.steps as unknown[]).find(
       step => isRecord(step) && step.name === 'Run real artifact pipeline',
@@ -468,9 +521,262 @@ describe('CI workflow', () => {
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml up -d --build --wait')
     expect(e2eStep.run).toContain('tests/e2e/test_artifact_pipeline.py')
     expect(e2eStep.run).toContain('tests/e2e/test_compose_upgrade.py')
+    expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml build api embedding')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml logs')
     expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --allow-absent')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --cache-dir')
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --allow-absent')).toBeLessThan(
+      e2eStep.run.indexOf('docker compose -f services/api/compose.test.yml up -d --build --wait'),
+    )
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --cache-dir')).toBeLessThan(
+      e2eStep.run.indexOf('pytest tests/e2e/test_artifact_pipeline.py'),
+    )
     expect(aggregate.needs).toContain('xagent-artifact-e2e')
+
+    const restoreCache: unknown = (artifactE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Restore pinned BGE-M3 cache',
+    )
+    const prepareCache: unknown = (artifactE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Prepare private model cache',
+    )
+    if (!isRecord(restoreCache) || !isRecord(restoreCache.with)
+      || !isRecord(prepareCache) || typeof prepareCache.run !== 'string') {
+      throw new TypeError('Artifact E2E must restore and prepare the private model cache')
+    }
+    expect(restoreCache.with.key).toBe(
+      "bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}",
+    )
+    expect(prepareCache.run).toContain('install -d -o 65532 -g 65532 -m 0755')
+    expect(prepareCache.run).toContain('chmod -R u=rwX,go=rX')
+    expect(prepareCache.run).not.toContain('0777')
+    expect(prepareCache.run).not.toContain('a+rwX')
+  })
+
+  it('assembles a health-ordered private CPU retrieval topology', () => {
+    const production = loadWorkflow('services/api/compose.yml')
+    const test = loadWorkflow('services/api/compose.test.yml')
+    const packageJson = loadWorkflow('package.json')
+    if (!isRecord(packageJson.scripts)) {
+      throw new TypeError('package.json must define retrieval test scripts')
+    }
+
+    for (const [name, compose] of [['production', production], ['test', test]] as const) {
+      const api = composeService(compose, 'api')
+      const worker = composeService(compose, 'worker')
+      const postgres = composeService(compose, 'postgres')
+      const embedding = composeService(compose, 'embedding')
+      if (!isRecord(api.environment)
+        || !isRecord(worker.environment)
+        || !isRecord(api.depends_on)
+        || !isRecord(worker.depends_on)
+        || !isRecord(embedding.build)
+        || !isRecord(embedding.environment)
+        || !isRecord(embedding.healthcheck)
+        || !isRecord(embedding.deploy)
+        || !isRecord(embedding.deploy.resources)
+        || !isRecord(embedding.deploy.resources.limits)) {
+        throw new TypeError(`${name} retrieval deployment must define bounded service wiring`)
+      }
+
+      expect(postgres.image).toMatch(/^pgvector\/pgvector:pg16@sha256:[0-9a-f]{64}$/)
+      expect(embedding.build.context).toBe('../embedding')
+      expect(embedding).not.toHaveProperty('ports')
+      expect(embedding.environment).toMatchObject({
+        HF_HUB_OFFLINE: '${HF_HUB_OFFLINE:-false}',
+        OMP_NUM_THREADS: '2',
+        MKL_NUM_THREADS: '2',
+        TOKENIZERS_PARALLELISM: 'false',
+      })
+      expect(embedding.deploy.resources.limits).toMatchObject({ cpus: '2', memory: '6G' })
+      expect(embedding.healthcheck.test).toEqual([
+        'CMD',
+        'python',
+        '-c',
+        expect.stringContaining("assert len(body['vectors'][0]) == 1024"),
+      ])
+      expect(durationSeconds(embedding.healthcheck.timeout)).toBeLessThanOrEqual(120)
+      expect(durationSeconds(embedding.healthcheck.interval)).toBeLessThanOrEqual(15)
+      expect(embedding.healthcheck.retries).toBeLessThanOrEqual(20)
+      expect(durationSeconds(embedding.healthcheck.start_period)).toBeLessThanOrEqual(600)
+      expect(api.environment.EMBEDDING_URL).toBe('http://embedding:8000')
+      expect(api.environment.HF_HOME).toBe('/tmp/xagent-huggingface')
+      expect(api.environment.HF_HUB_OFFLINE).toBe('${HF_HUB_OFFLINE:-false}')
+      expect(api.volumes).toEqual([
+        '${XAGENT_EMBEDDING_CACHE_DIR:-./.cache/huggingface}:/tmp/xagent-huggingface:ro',
+      ])
+      expect(worker.environment.EMBEDDING_URL).toBe('http://embedding:8000')
+      expect(worker.environment.HF_HOME).toBe('/tmp/xagent-huggingface')
+      expect(worker.environment.HF_HUB_OFFLINE).toBe('${HF_HUB_OFFLINE:-false}')
+      expect(worker.volumes).toEqual([
+        '${XAGENT_EMBEDDING_CACHE_DIR:-./.cache/huggingface}:/tmp/xagent-huggingface:ro',
+      ])
+      expect(api.environment).not.toHaveProperty('DATABASE_WORKER_URL')
+      expect(api.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
+      expect(api.depends_on).toMatchObject({ embedding: { condition: 'service_healthy' } })
+      expect(worker.depends_on).toMatchObject({
+        postgres: { condition: 'service_healthy' },
+        migrate: { condition: 'service_completed_successfully' },
+        minio: { condition: 'service_healthy' },
+        clamav: { condition: 'service_healthy' },
+        embedding: { condition: 'service_healthy' },
+      })
+    }
+
+    expect(packageJson.scripts['api:test:retrieval']).toBe(
+      'python3 services/embedding/verify_model_snapshot.py --cache-dir "${XAGENT_EMBEDDING_CACHE_DIR:-services/api/.cache/huggingface}" && JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes XAGENT_RETRIEVAL_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_retrieval_pipeline.py tests/e2e/test_retrieval_worker_recovery.py',
+    )
+    expect(readFileSync(resolve(root, 'services/api/.dockerignore'), 'utf8').split('\n')).toContain('.cache/')
+    expect(readFileSync(resolve(root, 'services/api/pyproject.toml'), 'utf8')).toContain(
+      'exclude = ["/.cache"]',
+    )
+
+    const embeddingDockerfile = readFileSync(
+      resolve(root, 'services/embedding/Dockerfile'),
+      'utf8',
+    )
+    const baseImages = embeddingDockerfile.match(/^(?:FROM\s+|COPY --from=)\S+/gm) ?? []
+    expect(baseImages).toHaveLength(2)
+    expect(baseImages).toEqual([
+      'FROM python:3.11-slim@sha256:9c900dea9e8fb7e16277c179b555cc72d29a352dbc33cff48ad5a0412fd5bfc7',
+      'COPY --from=ghcr.io/astral-sh/uv:0.8.15@sha256:a5727064a0de127bdb7c9d3c1383f3a9ac307d9f2d8a391edc7896c54289ced0',
+    ])
+    expect(readFileSync(resolve(root, 'services/embedding/.dockerignore'), 'utf8').split('\n')).toEqual(
+      expect.arrayContaining(['.venv/', '.pytest_cache/', '**/__pycache__/', 'tests/']),
+    )
+
+    const modelManifest = loadWorkflow('services/embedding/bge-m3-snapshot.json')
+    expect(modelManifest).toMatchObject({
+      schema_version: 1,
+      model_id: 'BAAI/bge-m3',
+      revision: '5617a9f61b028005a4858fdac845db406aefb181',
+      source: 'https://huggingface.co/api/models/BAAI/bge-m3/revision/5617a9f61b028005a4858fdac845db406aefb181?blobs=true',
+    })
+    if (!Array.isArray(modelManifest.files)) {
+      throw new TypeError('BGE-M3 manifest must define the complete runtime file set')
+    }
+    const manifestFiles = modelManifest.files as unknown[]
+    expect(manifestFiles.map(file => isRecord(file) ? file.path : undefined)).toEqual([
+      '1_Pooling/config.json',
+      'README.md',
+      'config.json',
+      'config_sentence_transformers.json',
+      'modules.json',
+      'pytorch_model.bin',
+      'sentence_bert_config.json',
+      'sentencepiece.bpe.model',
+      'special_tokens_map.json',
+      'tokenizer.json',
+      'tokenizer_config.json',
+    ])
+    for (const file of manifestFiles) {
+      if (!isRecord(file)) throw new TypeError('BGE-M3 manifest entries must be objects')
+      expect(typeof file.path).toBe('string')
+      expect(typeof file.size).toBe('number')
+      expect(file.sha256).toMatch(/^[0-9a-f]{64}$/)
+      expect(file.huggingface_blob_id).toMatch(/^[0-9a-f]{40}$/)
+    }
+  })
+
+  it('runs a bounded retrieval lane and proves exact Compose cleanup', () => {
+    const workflow = loadWorkflow('.github/workflows/ci.yml')
+    const retrievalE2e = workflowJob(workflow, 'xagent-retrieval-e2e')
+    const aggregate = workflowJob(workflow, 'all-checks-passed')
+    if (!Array.isArray(retrievalE2e.steps) || !Array.isArray(aggregate.needs)) {
+      throw new TypeError('Retrieval E2E and aggregate jobs must define steps and dependencies')
+    }
+
+    expect(retrievalE2e).toMatchObject({
+      if: "github.event_name == 'pull_request'",
+      name: 'python 3.11 / xagent retrieval docker e2e',
+      'timeout-minutes': 45,
+      env: {
+        XAGENT_RETRIEVAL_E2E: '1',
+        XAGENT_RETRIEVAL_E2E_URL: 'http://127.0.0.1:58000',
+        XAGENT_RETRIEVAL_E2E_SERVICE_TOKEN: 'xagent-e2e-service-token-test-only-0001',
+      },
+    })
+    const e2eStep = (retrievalE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Run real retrieval pipeline',
+    )
+    if (!isRecord(e2eStep) || typeof e2eStep.run !== 'string') {
+      throw new TypeError('Retrieval E2E job must run the real pipeline')
+    }
+    expect(e2eStep.run).toContain('trap cleanup EXIT')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --allow-absent')
+    expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml up -d --build --wait')
+    expect(e2eStep.run).toContain('verify_model_snapshot.py --cache-dir')
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --allow-absent')).toBeLessThan(
+      e2eStep.run.indexOf('docker compose -f services/api/compose.test.yml up -d --build --wait'),
+    )
+    expect(e2eStep.run.indexOf('verify_model_snapshot.py --cache-dir')).toBeLessThan(
+      e2eStep.run.indexOf('pytest tests/e2e/test_retrieval_pipeline.py'),
+    )
+    expect(e2eStep.run).toContain('tests/e2e/test_retrieval_pipeline.py')
+    expect(e2eStep.run).toContain('tests/e2e/test_retrieval_worker_recovery.py')
+    expect(e2eStep.run).toContain('docker compose -f services/api/compose.test.yml down --volumes --remove-orphans')
+    expect(e2eStep.run).toContain('docker rm --force xagent-stale-worker')
+    expect(e2eStep.run).toContain(
+      'docker container ls --all -q --filter label=com.docker.compose.project=xagent-api-test',
+    )
+    expect(e2eStep.run).toContain(
+      'docker volume ls -q --filter label=com.docker.compose.project=xagent-api-test',
+    )
+    expect(e2eStep.run).toContain(
+      'docker network ls -q --filter label=com.docker.compose.project=xagent-api-test',
+    )
+    expect(aggregate.needs).toContain('xagent-retrieval-e2e')
+
+    const prepareCache: unknown = (retrievalE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Prepare private model cache',
+    )
+    if (!isRecord(prepareCache) || typeof prepareCache.run !== 'string') {
+      throw new TypeError('Retrieval E2E must prepare the private model cache')
+    }
+    expect(prepareCache.run).toContain('install -d -o 65532 -g 65532 -m 0755')
+    expect(prepareCache.run).toContain('chmod -R u=rwX,go=rX')
+    expect(prepareCache.run).not.toContain('0777')
+    expect(prepareCache.run).not.toContain('a+rwX')
+
+    const restoreCache: unknown = (retrievalE2e.steps as unknown[]).find(
+      step => isRecord(step) && step.name === 'Restore pinned BGE-M3 cache',
+    )
+    if (!isRecord(restoreCache) || !isRecord(restoreCache.with)) {
+      throw new TypeError('Retrieval E2E must restore the pinned model cache')
+    }
+    expect(restoreCache.with.key).toBe(
+      "bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}",
+    )
+  })
+
+  it('keeps the real retrieval acceptance adversarial and branch-observable', () => {
+    const pipeline = readFileSync(
+      resolve(root, 'services/api/tests/e2e/test_retrieval_pipeline.py'),
+      'utf8',
+    )
+    const recovery = readFileSync(
+      resolve(root, 'services/api/tests/e2e/test_retrieval_worker_recovery.py'),
+      'utf8',
+    )
+    const hybridUnit = readFileSync(
+      resolve(root, 'services/api/tests/retrieval/test_hybrid_search.py'),
+      'utf8',
+    )
+
+    expect(pipeline).toContain('test_real_hybrid_branches_and_final_domain_tie_break')
+    expect(pipeline).toContain('vector_top_40')
+    expect(pipeline).toContain('lexical_rank')
+    expect(pipeline).toContain('trigram_score')
+    expect(pipeline).toContain('candidate_count')
+    expect(pipeline).toContain('artifact_order_opposes_lower_keys')
+    expect(pipeline).toContain('ordinal_order_opposes_chunk_id')
+    expect(hybridUnit).toContain('test_rrf_version_fallback_for_unreachable_live_head_pair')
+    expect(recovery).toContain('xagent-stale-worker')
+    expect(recovery).toContain('active-replacement')
+    expect(recovery).toContain('superseded')
+    expect(recovery).toContain('stale-owner-resumed')
+    expect(recovery).toContain('failed:invalid-utf8:dead:invalid-utf8')
+    expect(recovery).not.toContain('{"failed:invalid-utf8", "none"}')
   })
 
   it('keeps every Vitest project process-isolated on native Windows', () => {
@@ -509,84 +815,6 @@ describe('E2B e2e workflow', () => {
 })
 
 describe('Python release workflows', () => {
-  it('keeps complete wheel validation separate from protected public publication', () => {
-    const workflow = loadWorkflow('.github/workflows/python-release.yml')
-    const dispatch = workflowEvent(workflow, 'workflow_dispatch')
-    const pullRequest = workflowEvent(workflow, 'pull_request')
-    const build = workflowJob(workflow, 'build')
-    const pythonCompat = workflowJob(workflow, 'python-compat')
-    const validate = workflowJob(workflow, 'validate')
-    const publishRuntime = workflowJob(workflow, 'publish-runtime')
-    const publishSdk = workflowJob(workflow, 'publish-sdk')
-    if (!isRecord(dispatch.inputs)
-      || !isRecord(dispatch.inputs.publish)
-      || !Array.isArray(pythonCompat.steps)
-      || !Array.isArray(validate.steps)
-      || !Array.isArray(publishRuntime.steps)
-      || !Array.isArray(publishSdk.steps)) {
-      throw new TypeError('Python release workflow must define publish input and release steps')
-    }
-
-    expect(dispatch.inputs.publish).toMatchObject({ type: 'boolean', default: false })
-    expect(pullRequest).toEqual({ types: ['labeled'] })
-    expect(build).toMatchObject({
-      if: "github.event_name == 'workflow_dispatch' || github.event.label.name == 'python-release-dry-run'",
-      uses: './.github/workflows/build-exe-for-python-sdk.yml',
-      with: {
-        targets: 'node24-linux-x64,node24-linux-arm64,node24-macos-arm64',
-        release: true,
-      },
-    })
-    expect(pythonCompat.strategy).toMatchObject({ matrix: { python: ['3.10', '3.14'] } })
-    expect(JSON.stringify(pythonCompat.steps)).toContain('deepseek-harness-sdk==${{ steps.compatibility-version.outputs.version }}')
-    const validateSteps = JSON.stringify(validate.steps)
-    const authorize = validate.steps.filter(isRecord).find(step => step.name === 'Authorize publication request')
-    if (!isRecord(authorize) || typeof authorize.run !== 'string') {
-      throw new TypeError('Python release validation must authorize publication requests')
-    }
-    expect(validateSteps).toContain('PUBLIC_PYPI_RELEASE_ENABLED')
-    expect(authorize).toMatchObject({
-      env: {
-        PYPI_PUBLISHER_REPOSITORY: '${{ vars.PYPI_PUBLISHER_REPOSITORY }}',
-        REPOSITORY: '${{ github.repository }}',
-      },
-    })
-    expect(authorize.run).toContain('[ "$REPOSITORY" = "$PYPI_PUBLISHER_REPOSITORY" ]')
-    expect(validateSteps).toContain('100000000')
-    expect(publishRuntime).toMatchObject({
-      if: "github.event_name == 'workflow_dispatch' && inputs.publish",
-      needs: 'validate',
-      environment: 'pypi-runtime',
-      permissions: { contents: 'read', 'id-token': 'write' },
-    })
-    expect(publishSdk).toMatchObject({
-      if: "github.event_name == 'workflow_dispatch' && inputs.publish",
-      needs: ['validate', 'publish-runtime'],
-      environment: 'pypi',
-      permissions: { contents: 'read', 'id-token': 'write' },
-    })
-    const runtimeSteps = publishRuntime.steps.filter(isRecord)
-    const sdkSteps = publishSdk.steps.filter(isRecord)
-    const runtimePublish = runtimeSteps.find(step => step.name === 'Publish runtime wheels')
-    const sdkPublish = sdkSteps.find(step => step.name === 'Publish SDK wheel')
-    const runtimeHashes = runtimeSteps.find(step => step.name === 'Verify release artifact hashes')
-    const sdkHashes = sdkSteps.find(step => step.name === 'Verify release artifact hashes')
-    expect([...runtimeSteps, ...sdkSteps].some(
-      step => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'),
-    )).toBe(false)
-    expect([...runtimeSteps, ...sdkSteps].filter(
-      step => step.uses === 'pypa/gh-action-pypi-publish@release/v1',
-    )).toHaveLength(2)
-    expect(runtimePublish).toMatchObject({
-      with: { 'packages-dir': 'dist/runtime/', attestations: false },
-    })
-    expect(sdkPublish).toMatchObject({
-      with: { 'packages-dir': 'dist/sdk/', attestations: false },
-    })
-    expect(runtimeHashes).toMatchObject({ run: 'cd dist && sha256sum -c SHA256SUMS' })
-    expect(sdkHashes).toMatchObject({ run: 'cd dist && sha256sum -c SHA256SUMS' })
-  })
-
   it('exposes the native wheel builder to the release caller with normalized versions', () => {
     const workflow = loadWorkflow('.github/workflows/build-exe-for-python-sdk.yml')
     const call = workflowEvent(workflow, 'workflow_call')
@@ -766,6 +994,7 @@ function expectArtifactLifecycleOrder(services: {
     migrate: { condition: 'service_completed_successfully' },
     minio: { condition: 'service_healthy' },
     clamav: { condition: 'service_healthy' },
+    embedding: { condition: 'service_healthy' },
   })
 }
 

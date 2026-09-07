@@ -1,6 +1,7 @@
 /** Validate the XAgent business bundle's static, deny-by-default patch. */
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,7 +13,7 @@ import { entryListSchema } from '@deepseek-ai/cordis-plugin-include'
 interface PatchRow {
   id?: string
   name?: string
-  disabled?: boolean
+  disabled?: boolean | null
   config?: Record<string, unknown>
 }
 
@@ -62,6 +63,92 @@ const prohibitedRows = [
 const disabledHostRows = ['permission', 'ui-permission'] as const
 
 const disabledPresetRows = ['agent-presets', 'ui-agent-preset'] as const
+
+const forbiddenBrowserFields = [
+  'serviceToken',
+  'userToken',
+  'receipt',
+  'embeddingOrigin',
+  'delegationPrivateKey',
+  'nonce',
+  'objectKey',
+  'signedUrl',
+] as const
+
+const forbiddenBrowserValues = [
+  'xagent-retrieval-loader-service-token',
+  'xagent-retrieval-loader-user-token',
+  'receipt_private_search_1',
+  'https://embedding.example.test',
+  '-----BEGIN PRIVATE KEY-----',
+  'retrieval-nonce-fixture',
+  'private/object-key-fixture',
+  'https://objects.example.test/private?sig=fixture',
+] as const
+
+interface ClientDeclaration {
+  readonly inject?: string[]
+  readonly immediately?: boolean
+  readonly platform?: string
+}
+
+interface BrowserRow {
+  readonly row: PatchRow
+  readonly client: ClientDeclaration
+}
+
+const requireFromCli = createRequire(resolve(process.cwd(), 'apps/cli/package.json'))
+
+function clientDeclaration(name: string): ClientDeclaration | undefined {
+  let manifestPath: string
+  try {
+    manifestPath = requireFromCli.resolve(`${name}/package.json`)
+  } catch {
+    // Loader builtins and package subpath entries have no package-root client declaration.
+    return undefined
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    readonly dsh?: { readonly client?: ClientDeclaration }
+  }
+  return manifest.dsh?.client?.platform === 'web' ? manifest.dsh.client : undefined
+}
+
+function effectiveBusinessBrowserRows(home: string): BrowserRow[] {
+  const anchor = resolve(process.cwd(), 'apps/cli/package.json')
+  const profile = loadProfile('dsh-test', 'xagent-business', anchor, home)
+  const rows = composeEntries([...profile.layers.map(layer => layer.patches), profile.patches])
+  return rows.flatMap((row) => {
+    if (row.disabled === true) return []
+    const client = clientDeclaration(row.name)
+    return client === undefined ? [] : [{ row, client }]
+  })
+}
+
+function assertNoForbiddenBrowserData(value: unknown): void {
+  const failures: string[] = []
+  const visit = (candidate: unknown, path: string): void => {
+    if (typeof candidate === 'string') {
+      for (const forbidden of forbiddenBrowserValues) {
+        if (candidate.includes(forbidden)) failures.push(`${path} contains ${JSON.stringify(forbidden)}`)
+      }
+      return
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach((item, index) => { visit(item, `${path}[${String(index)}]`) })
+      return
+    }
+    if (typeof candidate !== 'object' || candidate === null) return
+    for (const [key, item] of Object.entries(candidate as Record<string, unknown>)) {
+      const normalized = key.replaceAll(/[-_]/gu, '').toLowerCase()
+      for (const forbidden of forbiddenBrowserFields) {
+        if (normalized.includes(forbidden.toLowerCase())) failures.push(`${path}.${key} uses forbidden field ${forbidden}`)
+      }
+      visit(item, `${path}.${key}`)
+    }
+  }
+  visit(value, '$')
+  if (failures.length > 0) throw new Error(failures.join('\n'))
+}
 
 function loadPatch(path: string): EntryPatch[] {
   const parsed = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
@@ -216,7 +303,72 @@ describe('xagent business bundle', () => {
     })
   })
 
-  it('keeps Artifact packages out of every shipped non-Business Profile dump', () => {
+  it('composes authenticated retrieval before its tools and citation Browser consumer', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = patch.flatMap(row => row.insert ?? [row])
+    const byId = new Map(rows.map(row => [row.id, row]))
+    const index = (id: string): number => rows.findIndex(row => row.id === id)
+
+    expect(index('xagent-retrieval')).toBeGreaterThan(index('xagent-session-persistence-api'))
+    expect(index('xagent-retrieval')).toBeGreaterThan(index('xagent-connection-auth'))
+    expect(index('xagent-tool-retrieval')).toBeGreaterThan(index('xagent-retrieval'))
+    expect(index('xagent-ui-citation')).toBeGreaterThan(index('xagent-ui-project'))
+    expect(index('xagent-ui-citation')).toBeGreaterThan(index('xagent-ui-artifact'))
+    expect(byId.get('xagent-retrieval')).toEqual({
+      id: 'xagent-retrieval',
+      name: '@xagent/dsh-retrieval',
+      config: {
+        backendOrigin: { __jsExpr: 'process.env.XAGENT_API_ORIGIN' },
+        serviceToken: { __jsExpr: 'process.env.XAGENT_SERVICE_TOKEN' },
+        delegationPrivateKey: { __jsExpr: 'process.env.XAGENT_DELEGATION_PRIVATE_KEY' },
+        delegationIssuer: { __jsExpr: 'process.env.XAGENT_DELEGATION_ISSUER' },
+        delegationAudience: { __jsExpr: 'process.env.XAGENT_DELEGATION_AUDIENCE' },
+      },
+    })
+    expect(byId.get('xagent-tool-retrieval')).toEqual({
+      id: 'xagent-tool-retrieval',
+      name: '@xagent/dsh-tool-retrieval',
+    })
+    expect(byId.get('xagent-ui-citation')).toEqual({
+      id: 'xagent-ui-citation',
+      name: '@xagent/dsh-ui-citation',
+    })
+  })
+
+  it('keeps retrieval credentials and opaque references out of every Browser row', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'xagent-business-browser-rows-'))
+    try {
+      const browserRows = effectiveBusinessBrowserRows(home)
+      const graph = browserRows.map(({ row, client }) => ({
+        id: row.name,
+        inject: client.inject ?? [],
+        immediately: client.immediately === true,
+      }))
+      expect(browserRows.map(({ row }) => row.id)).toContain('xagent-ui-citation')
+      expect(() => { assertNoForbiddenBrowserData({ rows: browserRows.map(item => item.row), graph }) }).not.toThrow()
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a nested secret added to a real citation Browser row', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'xagent-business-browser-mutation-'))
+    try {
+      const browserRows = structuredClone(effectiveBusinessBrowserRows(home).map(item => item.row))
+      const citation = browserRows.find(row => row.id === 'xagent-ui-citation')
+      expect(citation, 'the mutation must target the effective citation Browser row').toBeDefined()
+      if (citation === undefined) return
+      citation.config = { transport: { signedUrl: '/artifact/content' } }
+      expect(() => { assertNoForbiddenBrowserData(browserRows) }).toThrow(/signedUrl/u)
+      citation.config = { transport: { href: 'https://objects.example.test/private?sig=fixture' } }
+      expect(() => { assertNoForbiddenBrowserData(browserRows) }).toThrow(/contains/u)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps Artifact and retrieval packages out of every shipped non-Business Profile dump', () => {
     const home = mkdtempSync(resolve(tmpdir(), 'xagent-artifact-profile-dumps-'))
     const anchor = fileURLToPath(new URL('../../../../apps/cli/package.json', import.meta.url))
     try {
@@ -227,6 +379,9 @@ describe('xagent business bundle', () => {
         const names = rows.map(row => row.name)
         expect(names, `${profileName} Host dump`).not.toContain('@xagent/dsh-artifact')
         expect(names, `${profileName} Browser dump`).not.toContain('@xagent/dsh-ui-artifact')
+        expect(names, `${profileName} retrieval provider dump`).not.toContain('@xagent/dsh-retrieval')
+        expect(names, `${profileName} retrieval tools dump`).not.toContain('@xagent/dsh-tool-retrieval')
+        expect(names, `${profileName} citation Browser dump`).not.toContain('@xagent/dsh-ui-citation')
         expect(warnings, `${profileName} dump warnings`).toEqual([])
       }
     } finally {
@@ -245,16 +400,20 @@ describe('xagent business bundle', () => {
       '@xagent/dsh-artifact': 'workspace:^',
       '@xagent/dsh-backend-client': 'workspace:^',
       '@xagent/dsh-connection-auth': 'workspace:^',
+      '@xagent/dsh-delegation-token': 'workspace:^',
       '@xagent/dsh-principal': 'workspace:^',
       '@xagent/dsh-project': 'workspace:^',
+      '@xagent/dsh-retrieval': 'workspace:^',
       '@xagent/dsh-session-persistence-api': 'workspace:^',
+      '@xagent/dsh-tool-retrieval': 'workspace:^',
       '@xagent/dsh-ui-account': 'workspace:^',
       '@xagent/dsh-ui-artifact': 'workspace:^',
+      '@xagent/dsh-ui-citation': 'workspace:^',
       '@xagent/dsh-ui-project': 'workspace:^',
     })
   })
 
-  it('keeps both Artifact packages in the CLI resolver manifest', () => {
+  it('keeps every Artifact and retrieval package in the CLI resolver manifest', () => {
     const manifest = JSON.parse(readFileSync(
       fileURLToPath(new URL('../../../../apps/cli/package.json', import.meta.url)),
       'utf8',
@@ -262,7 +421,11 @@ describe('xagent business bundle', () => {
 
     expect(manifest.dependencies).toMatchObject({
       '@xagent/dsh-artifact': 'workspace:^',
+      '@xagent/dsh-delegation-token': 'workspace:^',
+      '@xagent/dsh-retrieval': 'workspace:^',
+      '@xagent/dsh-tool-retrieval': 'workspace:^',
       '@xagent/dsh-ui-artifact': 'workspace:^',
+      '@xagent/dsh-ui-citation': 'workspace:^',
     })
   })
 })

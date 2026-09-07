@@ -4,7 +4,12 @@ import type {
   XAgentWorkbenchBootstrap,
   XAgentWorkbenchContext,
 } from '@xagent/dsh-project/types'
-import { XAgentWorkbenchStore, type XAgentWorkbenchState } from './store.ts'
+import {
+  XAgentWorkbenchDetailsStore,
+  XAgentWorkbenchStore,
+  type XAgentWorkbenchDetailsTab,
+  type XAgentWorkbenchState,
+} from './store.ts'
 
 /** 浏览器调用的生成式 XAgent Project Remote 子集。 */
 export interface XAgentProjectRemoteClient {
@@ -22,10 +27,15 @@ export interface XAgentSessionActions {
 /** 账号界面和项目组件使用的工作台服务。 */
 export interface IXAgentWorkbench {
   readonly snapshot: XAgentWorkbenchStore
+  readonly details: XAgentWorkbenchDetailsStore
   bootstrap(signal?: AbortSignal): Promise<void>
   selectContext(context: XAgentWorkbenchContext, signal?: AbortSignal): Promise<void>
   createProject(name: string, signal?: AbortSignal): Promise<void>
   loadProject(projectId: string, signal?: AbortSignal): Promise<void>
+  /** @param tab 用户选择的第三栏页签。 */
+  selectDetailsTab(tab: XAgentWorkbenchDetailsTab): void
+  /** 显示 citation 定位所需的资料页签和第三栏。 */
+  openArtifacts(): void
   reset(nextAccountId?: string): void
   dispose(): void
 }
@@ -52,6 +62,7 @@ function readyState(value: XAgentWorkbenchBootstrap): Extract<XAgentWorkbenchSta
 /** 以服务器 Bootstrap 为唯一账号工作台事实源的客户端控制器。 */
 export class XAgentWorkbenchController implements IXAgentWorkbench {
   readonly snapshot = new XAgentWorkbenchStore()
+  readonly details = new XAgentWorkbenchDetailsStore()
   private epoch = 0
   private operation: AbortController | undefined
   private bootstrapTask: Promise<void> | undefined
@@ -60,7 +71,22 @@ export class XAgentWorkbenchController implements IXAgentWorkbench {
     private readonly remote: XAgentProjectRemoteClient,
     private readonly sessions: XAgentSessionActions,
     private readonly createIdempotencyKey: () => string = () => crypto.randomUUID(),
+    private readonly openDetails: () => void = () => {},
   ) {}
+
+  /**
+   * 选择工作台第三栏中的一个页签。
+   * @param tab 要显示的页签。
+   */
+  selectDetailsTab(tab: XAgentWorkbenchDetailsTab): void {
+    this.details.replace(tab)
+  }
+
+  /** 打开第三栏并显示资料页签。 */
+  openArtifacts(): void {
+    this.details.replace('artifacts')
+    this.openDetails()
+  }
 
   /**
    * 装载当前账号的完整服务器工作台；同一 epoch 共享一个请求。
@@ -155,6 +181,7 @@ export class XAgentWorkbenchController implements IXAgentWorkbench {
     this.snapshot.replace({
       phase: 'empty', accountId: nextAccountId, switching: false, creating: false,
     })
+    this.details.replace('overview')
     this.sessions.clear()
   }
 

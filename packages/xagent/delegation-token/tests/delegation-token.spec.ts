@@ -1,6 +1,11 @@
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { describe, expect, test } from 'vitest'
-import { issueDelegationToken, verifyDelegationToken } from '../src/index.ts'
+import {
+  canonicalizeRetrievalDelegationScope,
+  newDelegationNonce,
+  issueDelegationToken,
+  verifyDelegationToken,
+} from '../src/index.ts'
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519')
 const now = 1_787_500_000
@@ -38,6 +43,56 @@ const verifyOptions = {
 }
 
 describe('XAgent Ed25519 委托令牌', () => {
+  test('为每次 Host 工具调用生成独立非空 nonce', () => {
+    const nonces = new Set(Array.from({ length: 128 }, () => newDelegationNonce()))
+    expect(nonces.size).toBe(128)
+    expect([...nonces].every(nonce => /^[A-Za-z0-9_-]{43}$/.test(nonce))).toBe(true)
+  })
+
+  test('规范化个人会话检索范围但不把范围字段加入 compact token', () => {
+    const first = '00000000-0000-0000-0000-000000000202'
+    const second = '00000000-0000-0000-0000-000000000201'
+    const retrieval = canonicalizeRetrievalDelegationScope({
+      projectIds: [first, second, first],
+      includePrivate: true,
+    })
+    expect(retrieval).toEqual({
+      projectIds: [second, first],
+      includePrivate: true,
+      scopeHash: '26938e10e93a26eda11810023fd0e52f1602532e0c8685937d7770f4e27dd148',
+    })
+
+    const token = issueDelegationToken({
+      ...scope,
+      toolName: 'search_artifacts',
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+      now, expiresInSeconds: 30, nonce: 'nonce-retrieval',
+    })
+    const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8')) as Record<string, unknown>
+    expect(Object.keys(claims).sort()).toEqual([
+      'actor_id', 'aud', 'exp', 'iat', 'iss', 'nonce', 'permission_revision',
+      'project_id', 'session_id', 'tool_call_id', 'tool_name',
+    ])
+    expect(claims.project_id).toBeNull()
+  })
+
+  test.each([
+    [{ projectIds: null, includePrivate: true }],
+    [{ projectIds: [], includePrivate: 1 }],
+    [{ projectIds: [], includePrivate: false }],
+    [{ projectIds: ['bad'], includePrivate: true }],
+    [{ projectIds: Array.from({ length: 21 }, () => crypto.randomUUID()), includePrivate: false }],
+  ])('拒绝无效的个人会话检索范围 %#', (input) => {
+    expect(() => canonicalizeRetrievalDelegationScope(input as never)).toThrow('delegation rejected')
+  })
+
+  test('按 FastAPI UUID 表示规范化大小写后计算范围摘要', () => {
+    expect(canonicalizeRetrievalDelegationScope({
+      projectIds: ['AAAAAAAA-0000-0000-0000-000000000001'],
+      includePrivate: false,
+    }).projectIds).toEqual(['aaaaaaaa-0000-0000-0000-000000000001'])
+  })
+
   test('签发并验证限定范围、60 秒内有效的单次令牌', async () => {
     const token = issueDelegationToken({
       ...scope,
@@ -142,6 +197,7 @@ describe('XAgent Ed25519 委托令牌', () => {
   })
 
   test.each([
+    [{ extra: 'unknown-claim' }],
     [{ iss: 'wrong' }],
     [{ aud: 'wrong' }],
     [{ actor_id: 'bad' }],

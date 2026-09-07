@@ -3,6 +3,7 @@
  * @module @xagent/dsh-principal
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type {
   XAgentAuthenticatedRequestScope,
@@ -12,10 +13,43 @@ import type {
 
 export type {
   XAgentAuthenticatedRequestScope,
+  XAgentAuthenticatedSessionRequestScope,
   XAgentPrincipal,
   XAgentPrincipalResolver,
   XAgentRole,
 } from './types.ts'
+
+const authenticatedRequestScope = new AsyncLocalStorage<XAgentAuthenticatedRequestScope | undefined>()
+
+/**
+ * Propagate one immutable physical authentication scope through work spawned by its request.
+ * @param scope - Principal, opaque user token, connection, and optional Session facts.
+ * @param operation - request admission or downstream work created by that admission.
+ * @returns the operation result while descendants inherit the same immutable scope.
+ */
+export function runWithXAgentAuthenticatedRequestScope<T>(
+  scope: XAgentAuthenticatedRequestScope,
+  operation: () => T,
+): T {
+  return authenticatedRequestScope.run(Object.freeze(scope), operation)
+}
+
+/**
+ * Read the authenticated physical request that created the current async work.
+ * @returns the immutable request scope, or undefined outside authenticated work.
+ */
+export function currentXAgentAuthenticatedRequestScope(): XAgentAuthenticatedRequestScope | undefined {
+  return authenticatedRequestScope.getStore()
+}
+
+/**
+ * Suppress any inherited physical request while running work with no admitted prompt scope.
+ * @param operation - downstream work that must fail closed instead of inheriting an older request.
+ * @returns the operation result outside every authenticated request scope.
+ */
+export function runWithoutXAgentAuthenticatedRequestScope<T>(operation: () => T): T {
+  return authenticatedRequestScope.run(undefined, operation)
+}
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

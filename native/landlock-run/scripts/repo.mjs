@@ -38,7 +38,7 @@ export function entryDirs() {
     .map((name) => path.join('packages', name));
 }
 
-/** All published packages in publish order: platform packages before the entries that optionally depend on them. */
+/** All application packages in staging order: platform packages before the entries that optionally depend on them. */
 export function packageDirs() {
   return [...platformDirs(), ...entryDirs()];
 }

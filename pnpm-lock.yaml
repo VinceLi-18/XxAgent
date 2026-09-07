@@ -306,18 +306,30 @@ importers:
       '@xagent/dsh-business':
         specifier: workspace:^
         version: link:../../packages/bundle/xagent-business
+      '@xagent/dsh-delegation-token':
+        specifier: workspace:^
+        version: link:../../packages/xagent/delegation-token
       '@xagent/dsh-developer':
         specifier: workspace:^
         version: link:../../packages/bundle/xagent-developer
       '@xagent/dsh-project':
         specifier: workspace:^
         version: link:../../packages/xagent/project
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../../packages/xagent/retrieval
+      '@xagent/dsh-tool-retrieval':
+        specifier: workspace:^
+        version: link:../../packages/xagent/tool-retrieval
       '@xagent/dsh-ui-account':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-account
       '@xagent/dsh-ui-artifact':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-artifact
+      '@xagent/dsh-ui-citation':
+        specifier: workspace:^
+        version: link:../../packages/xagent/ui-citation
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-project
@@ -334,6 +346,12 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: workspace:^
         version: link:../../packages/core/agent
+      '@deepseek-ai/dsh-client-modules':
+        specifier: workspace:^
+        version: link:../../packages/client/modules
+      '@deepseek-ai/dsh-client-web':
+        specifier: workspace:^
+        version: link:../../packages/client/web
       '@deepseek-ai/dsh-host-apiproxy':
         specifier: workspace:^
         version: link:../../packages/host/apiproxy
@@ -370,9 +388,15 @@ importers:
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       execa:
         specifier: ^10.0.0
         version: 10.0.0
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
 
   apps/web:
     dependencies:
@@ -761,6 +785,15 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:*
         version: link:../packages/workflow/workflow-worker-thread
+      '@xagent/dsh-principal':
+        specifier: workspace:*
+        version: link:../packages/xagent/principal
+      '@xagent/dsh-retrieval':
+        specifier: workspace:*
+        version: link:../packages/xagent/retrieval
+      '@xagent/dsh-tool-retrieval':
+        specifier: workspace:*
+        version: link:../packages/xagent/tool-retrieval
 
   native/landlock-run:
     devDependencies:
@@ -1496,21 +1529,33 @@ importers:
       '@xagent/dsh-connection-auth':
         specifier: workspace:^
         version: link:../../xagent/connection-auth
+      '@xagent/dsh-delegation-token':
+        specifier: workspace:^
+        version: link:../../xagent/delegation-token
       '@xagent/dsh-principal':
         specifier: workspace:^
         version: link:../../xagent/principal
       '@xagent/dsh-project':
         specifier: workspace:^
         version: link:../../xagent/project
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../../xagent/retrieval
       '@xagent/dsh-session-persistence-api':
         specifier: workspace:^
         version: link:../../xagent/session-persistence-api
+      '@xagent/dsh-tool-retrieval':
+        specifier: workspace:^
+        version: link:../../xagent/tool-retrieval
       '@xagent/dsh-ui-account':
         specifier: workspace:^
         version: link:../../xagent/ui-account
       '@xagent/dsh-ui-artifact':
         specifier: workspace:^
         version: link:../../xagent/ui-artifact
+      '@xagent/dsh-ui-citation':
+        specifier: workspace:^
+        version: link:../../xagent/ui-citation
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../../xagent/ui-project
@@ -8451,6 +8496,9 @@ importers:
       '@xagent/dsh-project':
         specifier: workspace:^
         version: link:../project
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../retrieval
 
   packages/xagent/backend-client:
     devDependencies:
@@ -8529,6 +8577,46 @@ importers:
         specifier: workspace:^
         version: link:../principal
 
+  packages/xagent/retrieval:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+      '@deepseek-ai/dsh-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: workspace:^
+        version: link:../../typert/protocol
+      '@xagent/dsh-backend-client':
+        specifier: workspace:^
+        version: link:../backend-client
+      '@xagent/dsh-delegation-token':
+        specifier: workspace:^
+        version: link:../delegation-token
+      '@xagent/dsh-principal':
+        specifier: workspace:^
+        version: link:../principal
+
   packages/xagent/session-persistence-api:
     dependencies:
       '@deepseek-ai/schemastery':
@@ -8550,6 +8638,36 @@ importers:
       '@xagent/dsh-backend-client':
         specifier: workspace:^
         version: link:../backend-client
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../retrieval
+
+  packages/xagent/tool-retrieval:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../../llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: workspace:^
+        version: link:../../core/system-prompt
+      '@deepseek-ai/dsh-tools':
+        specifier: workspace:^
+        version: link:../../core/tools
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../retrieval
 
   packages/xagent/ui-account:
     devDependencies:
@@ -8610,6 +8728,66 @@ importers:
       '@xagent/dsh-artifact':
         specifier: workspace:^
         version: link:../artifact
+      '@xagent/dsh-ui-project':
+        specifier: workspace:^
+        version: link:../ui-project
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
+
+  packages/xagent/ui-citation:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/cordis-plugin-include':
+        specifier: workspace:^
+        version: link:../../../vendor/include
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: workspace:^
+        version: link:../../../vendor/loader
+      '@deepseek-ai/dsh-client-locale':
+        specifier: workspace:^
+        version: link:../../client/locale
+      '@deepseek-ai/dsh-client-runtime':
+        specifier: workspace:^
+        version: link:../../client/runtime
+      '@deepseek-ai/dsh-client-test-runtime':
+        specifier: workspace:^
+        version: link:../../test-support/client-runtime
+      '@deepseek-ai/dsh-client-ui-conversation':
+        specifier: workspace:^
+        version: link:../../client/ui-conversation
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: workspace:^
+        version: link:../../client/ui-primitives
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: workspace:^
+        version: link:../../client/ui-slots
+      '@deepseek-ai/dsh-client-ui-tool':
+        specifier: workspace:^
+        version: link:../../client/ui-tool
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: workspace:^
+        version: link:../../typert/protocol
+      '@testing-library/react':
+        specifier: ^16.1.0
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../retrieval
+      '@xagent/dsh-ui-artifact':
+        specifier: workspace:^
+        version: link:../ui-artifact
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../ui-project

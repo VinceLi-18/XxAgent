@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
-import LlmRuntime, { CallId, type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, MessageId, type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import SessionPersistence from '@deepseek-ai/dsh-session-persistence'
@@ -81,6 +81,33 @@ describe('session-checkpoint-policy request boundary', () => {
     gate.resolve(undefined)
     await pending
     expect(order).toEqual(['flush:start', 'flush:end', 'adapter'])
+  })
+
+  it('makes a retrieval result durable before constructing its evidence-bearing follow-up request', async () => {
+    const ctx = await setup()
+    const session = ctx.sessions.create(SessionId('retrieval-follow-up-checkpoint'))
+    session.append('tool/result', {
+      turn: 1,
+      step: 1,
+      message: {
+        id: MessageId('retrieval-result'), role: 'user', source: { kind: 'tool', callId: CallId('search-1') },
+        content: [{
+          type: 'tool-result', toolCallId: CallId('search-1'), isError: false,
+          content: [{ type: 'text', text: '{"citations":[{"id":"[资料1]"}]}' }],
+        }],
+      },
+      meta: { kind: 'xagent-retrieval', payloadHash: 'a'.repeat(64), citations: ['[资料1]'] },
+    }, { surfaceOp: 'append' })
+    const order: string[] = []
+    ctx.on('session/flush', async (current) => {
+      expect(current.events.at(-1)).toMatchObject({ type: 'tool/result' })
+      order.push('evidence:durable')
+    })
+    ctx.llm.registerAdapter(['mock'], new RecordingAdapter(order))
+    await drain(ctx.llm.stream({
+      provider: 'mock', model: 'mock', messages: session.deriveMessages(), sessionId: session.id,
+    }))
+    expect(order).toEqual(['evidence:durable', 'adapter'])
   })
 
   it('delegates a request without a live session without checkpointing', async () => {

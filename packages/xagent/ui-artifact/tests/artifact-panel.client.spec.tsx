@@ -101,6 +101,24 @@ function integratedProps(controller: XAgentArtifactController) {
 afterEach(cleanup)
 
 describe('资料右栏', () => {
+  it('显示不可变 citation 版本并高亮文本行范围', () => {
+    const store = new XAgentArtifactStore()
+    store.replace({
+      phase: 'ready', accountId: 'alice', contextKey: 'project:project-1', items: [summary],
+      selectedId: ARTIFACT_ID, detail,
+      citation: { versionId: CLEAN_VERSION_ID, lineStart: 2, lineEnd: 3 },
+      preview: {
+        versionId: CLEAN_VERSION_ID, filename: '项目说明.txt', kind: 'text', url: '/preview/opaque',
+        text: '第一行\n第二行\n第三行\n第四行',
+      },
+    })
+    const { container } = render(<ArtifactPanel {...props(store)} />)
+    expect(screen.getAllByText(/已定位/)).toHaveLength(2)
+    expect(container.querySelectorAll('[data-citation-version="true"]')).toHaveLength(1)
+    expect(document.querySelectorAll('[data-citation-line="true"]')).toHaveLength(2)
+    expect(document.querySelector('pre')?.textContent).toBe('第一行\n第二行\n第三行\n第四行')
+  })
+
   it('列表显示服务端扫描状态，选择后进入详情并可返回原行焦点', async () => {
     const store = new XAgentArtifactStore()
     store.replace({

@@ -21,6 +21,7 @@ describe('XAgent Artifact UI 插件', () => {
       phase: 'ready', accountId: 'alice', switching: false, context: { kind: 'workbench' },
     }
     const workbench = {
+      openArtifacts: vi.fn(),
       snapshot: {
         getSnapshot: () => workbenchState,
         subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
@@ -34,14 +35,30 @@ describe('XAgent Artifact UI 插件', () => {
     const disposeNamespace = ctx.reflect.provide('remote.xagentArtifact', remote)
     const mount = vi.fn(async () => async () => { await disposeNamespace() })
     ctx.provide('remote', { $mount: mount } as never)
+    const sessionListeners = new Set<() => void>()
+    let currentSession: string | undefined = 'session-1'
+    ctx.provide('sessions', { list: {
+      getSnapshot: () => ({ current: currentSession }),
+      subscribe: (listener: () => void) => {
+        sessionListeners.add(listener)
+        return () => { sessionListeners.delete(listener) }
+      },
+    } } as never)
     ctx.provide('xagentWorkbench', workbench as never)
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
 
     expect((ctx as Context & { xagentArtifacts?: unknown }).xagentArtifacts).toBeUndefined()
+    const opener = ctx.get('xagentArtifactCitationOpener') as unknown as {
+      readonly cancelCitation: () => void
+      readonly openCitation: (target: { artifactId: string; versionId: string; lineStart: number; lineEnd: number }) => Promise<void>
+    }
+    const cancelCitation = vi.spyOn(opener, 'cancelCitation')
     expect(mount).toHaveBeenCalledWith(expect.objectContaining({ package: '@xagent/dsh-artifact' }))
     expect(slots.entries('xagent.workbench.artifacts')[0]?.component).toBe(ArtifactPanel)
     await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(1) })
+    await opener.openCitation({ artifactId: 'artifact-1', versionId: 'version-1', lineStart: 1, lineEnd: 2 })
+    expect(workbench.openArtifacts).toHaveBeenCalledOnce()
     const firstSignal = (list.mock.calls as unknown as readonly [AbortSignal][])[0]![0]
 
     workbenchState = { phase: 'empty', accountId: 'bob', switching: false }
@@ -58,6 +75,10 @@ describe('XAgent Artifact UI 插件', () => {
     }
     listeners.forEach((listener) => { listener() })
     await vi.waitFor(() => { expect(list).toHaveBeenCalledTimes(2) })
+
+    currentSession = 'session-2'
+    sessionListeners.forEach((listener) => { listener() })
+    expect(cancelCitation).toHaveBeenCalledOnce()
 
     const pendingList = Promise.withResolvers<{ ok: true; value: never[] }>()
     list.mockImplementationOnce(() => pendingList.promise)
@@ -76,6 +97,7 @@ describe('XAgent Artifact UI 插件', () => {
     await disposing
     expect(slots.entries('xagent.workbench.artifacts')).toHaveLength(0)
     expect(listeners).toHaveLength(0)
+    expect(sessionListeners).toHaveLength(0)
     declareDetails()
     declareRoot()
   })

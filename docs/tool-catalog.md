@@ -15,6 +15,7 @@ This table connects model-visible tool names to the plugin package and service s
 
 | Tool package | Model-visible names | Requires | Writes / affects | Shipped aliases | Deployment note |
 | --- | --- | --- | --- | --- | --- |
+| `@xagent/dsh-tool-retrieval` | `list_accessible_projects`, `search_artifacts` | `ctx.tools`, `ctx.xagentRetrieval and an owning Agent at execution time` | `tool/call`, `tool/result` | - | Native-only XAgent Business project discovery and read-only Artifact evidence search; Code SDKs and nested Code dispatch exclude both tools. Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project. |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`, `ctx.userQuestions` | `tool/call`, `tool/result after a UI/provider answers the question` | - | ask_user_question pauses the tool call until the active UI provider returns a human answer. |
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`, `ctx.codeRuntime (execution time)`, `ctx.systemPrompt` | `tool/call`, `one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`, `tool/result` | - | Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: code` / `mode: both` (see the Code Mode Agent Note). Under `code` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result. |
 | `@deepseek-ai/dsh-plan-mode` | `exit_plan_mode` | `ctx.tools`, `ctx.systemPrompt`, `ctx.userQuestions (execution time, opportunistic)` | `tool/call`, `plan/mode inactive on an approved review`, `tool/result` | - | exit_plan_mode stays in the model-facing schema while planning is inactive so transitions add no tool-catalog churn on top of the plan-policy change. Its execute path rejects calls outside plan mode; in plan mode it presents the plan over the user-questions seam (approve / keep planning with feedback), and approval logs plan mode inactive at the step boundary. |
@@ -39,6 +40,64 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
+
+<a id="xagentdsh-tool-retrieval"></a>
+
+## `@xagent/dsh-tool-retrieval`
+
+### `list_accessible_projects`
+
+List up to 20 projects accessible to the current private session. Use the optional name query to narrow ambiguous names. Ask the user when names are ambiguous; never choose the first match automatically.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Optional bounded project-name query."
+    }
+  },
+  "additionalProperties": false
+}
+```
+
+Source: [`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts)
+
+### `search_artifacts`
+
+Search authorized Artifact evidence for the current session. Private sessions require explicit project_ids and/or include_private=true; there is no implicit all-project scope. Ask the user when the intended projects or private scope are ambiguous.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Non-empty evidence query, at most 512 BGE tokens."
+    },
+    "project_ids": {
+      "type": "array",
+      "description": "Explicit Project UUIDs for a private session; at most 20 with no aliases or duplicates.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "include_private": {
+      "type": "boolean",
+      "description": "Explicitly include private Artifacts in a private session."
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "additionalProperties": false
+}
+```
+
+Source: [`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts)
+
+Native-only XAgent Business project discovery and read-only Artifact evidence search; Code SDKs and nested Code dispatch exclude both tools. Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project.
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 

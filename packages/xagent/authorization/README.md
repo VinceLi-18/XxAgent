@@ -4,6 +4,8 @@
 
 list 和 search 通过 FastAPI 可见列表预检；history、models、fork 和 attachment 要求 read；selectModel、rename、prompt、updateQueue 和 cancel 要求 edit。未知 Session 方法默认拒绝。不可见与不存在统一返回 `session-not-found`，认证失效返回 `unauthenticated`，后端细节不会进入响应。
 
+prompt 在 edit 预检后从同一用户令牌的可见 Session 列表解析唯一 Session ID、可见性和固定项目，再把这些事实与物理连接 Principal 一起包围消息 admission operation。下游在 inbox 插入时捕获该冻结值，并在消息被认领时重新激活；长寿命 Agent driver 的继承值不作为后续排队 prompt 的身份。缺失、重复或不一致的 Session 记录均失败关闭。
+
 `xagentProject/*` 只接受四个固定认证方法。Authorizer 从连接 Principal 建立项目请求 scope 并包围完整 Remote operation；缺少项目服务、缺少认证、未知方法或 scope 异常都失败关闭。非 XAgent 项目 endpoint 不进入该 scope。
 
 `xagentArtifact/*` 只接受八个固定认证方法。Authorizer 使用同一物理连接 Principal 建立共享只读 scope，但让 Artifact Service 使用独立作用域存储。Artifact Service 未装配、已 dispose、未知方法、缺少认证或 operation 异常都返回稳定失败，不保留旧 Service 引用。

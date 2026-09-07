@@ -286,6 +286,29 @@ readRaw(_id: SessionId, signal?: AbortSignal): Promise<SessionRawArtifact | unde
 preparePublication(_session: Session): Promise<void>
 
 /**
+ * Atomically derive a durable child from an authorized source prefix when
+ * this backend owns Session scope and identity. The backend, not the caller,
+ * chooses the child identity and copies every backend-owned authorization
+ * relation. Local stores return `undefined`, allowing the Host to use its
+ * ordinary in-process seed path.
+ * @param _sourceId - authorized source Session identity.
+ * @param _throughSequence - inclusive final source event sequence.
+ * @param _operationId - Host-owned RPC identity shared by every retry of this fork.
+ * @returns the durable child header, or `undefined` when unsupported.
+ */
+fork( _sourceId: SessionId, _throughSequence: number, _operationId: SessionForkOperationId, ): Promise<SessionHeader | undefined>
+
+/**
+ * Classify a provider-owned failure for the Host's single immediate fork
+ * recovery attempt. The default rejects every failure; remote providers may
+ * admit only errors whose operation is safe to replay with the same
+ * {@link SessionForkOperationId}.
+ * @param _error - failure raised while deriving or resuming the durable child.
+ * @returns whether the Host may repeat only the failed phase once.
+ */
+isForkRetryable(_error: unknown): boolean
+
+/**
  * Register a new session's metadata. A backend MAY defer the physical write
  * until the first {@link append} (lazy materialization), in which case a
  * created-but-never-appended session is absent from {@link list}
@@ -400,5 +423,5 @@ abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot
 
 Types: [Session](session.md) · [SessionEvent](session.md) · [SessionId](core.md)
 
-Source: [`packages/session/session-persistence/src/index.ts:84`](../../packages/session/session-persistence/src/index.ts)
+Source: [`packages/session/session-persistence/src/index.ts:86`](../../packages/session/session-persistence/src/index.ts)
 <!-- END GENERATED cordis-surface -->

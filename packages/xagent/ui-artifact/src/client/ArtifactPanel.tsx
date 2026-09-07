@@ -183,6 +183,9 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
       {state.detail.canEdit && <FileInput label={text.uploadVersion} onFile={props.uploadNewVersion} />}
     </div>
     <UploadProgress state={state} />
+    {state.citation !== undefined && <p className={css.citationLocation}>
+      已定位安全版本，第 {state.citation.lineStart}–{state.citation.lineEnd} 行
+    </p>}
     {state.detailError !== undefined && <p className={css.error} role="alert">{state.detailError}</p>}
     <div className={css.currentStatus} data-status={state.detail.latestStatus}>
       <span>{artifactStatusText(state.detail.latestStatus)}</span>
@@ -208,7 +211,8 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
     <section className={css.versionSection}>
       <h4>{text.versions}</h4>
       <ol className={css.versionList}>
-        {state.detail.versions.map(version => <li key={version.id} data-status={version.status}>
+        {state.detail.versions.map(version => <li key={version.id} data-status={version.status}
+          data-citation-version={version.id === state.citation?.versionId || undefined}>
           <div className={css.versionHeader}>
             <strong>v{version.version}</strong>
             <span>{artifactStatusText(version.status)}</span>
@@ -226,6 +230,10 @@ export function ArtifactPanel(props: ArtifactPanelProps) {
         </li>)}
       </ol>
     </section>
-    {state.preview !== undefined && <ArtifactPreview preview={state.preview} onClose={props.closePreview} />}
+    {state.preview !== undefined && <ArtifactPreview
+      preview={state.preview}
+      citation={state.preview.versionId === state.citation?.versionId ? state.citation : undefined}
+      onClose={props.closePreview}
+    />}
   </div>
 }

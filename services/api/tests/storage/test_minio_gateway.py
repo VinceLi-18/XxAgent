@@ -313,3 +313,39 @@ def test_gateway_proxies_private_object_operations() -> None:
     gateway.copy("staging/upload-id", "artifacts/id/version")
     gateway.remove("staging/upload-id")
     assert list(gateway.stream("artifacts/id/version")) == [b"private", b"-content"]
+
+
+def test_gateway_bounded_stream_checks_metadata_and_streamed_bytes() -> None:
+    closed: list[str] = []
+
+    class ObjectClient:
+        def stat_object(self, bucket: str, key: str) -> SimpleNamespace:
+            return SimpleNamespace(size=4, content_type="text/plain", etag="etag")
+
+        def get_object(self, bucket: str, key: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                stream=lambda _size: iter((b"ab", b"cde")),
+                close=lambda: closed.append("closed"),
+                release_conn=lambda: closed.append("released"),
+            )
+
+    gateway = MinioGateway(ObjectClient(), bucket="jiaxin-private")
+
+    with pytest.raises(ValueError, match="stream limit"):
+        list(gateway.stream_bounded("artifacts/id/version", max_bytes=4))
+
+    assert closed == ["closed", "released"]
+
+
+def test_gateway_bounded_stream_rejects_oversized_metadata_before_get() -> None:
+    class OversizedObject:
+        def stat_object(self, bucket: str, key: str) -> SimpleNamespace:
+            return SimpleNamespace(size=5, content_type="text/plain", etag="etag")
+
+        def get_object(self, bucket: str, key: str) -> SimpleNamespace:
+            raise AssertionError("oversized object must not be opened")
+
+    gateway = MinioGateway(OversizedObject(), bucket="jiaxin-private")
+
+    with pytest.raises(ValueError, match="stream limit"):
+        list(gateway.stream_bounded("artifacts/id/version", max_bytes=4))

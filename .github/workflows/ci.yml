@@ -232,6 +232,26 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
+      - name: Restore pinned BGE-M3 cache for browser acceptance
+        id: browser-bge-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xagent-huggingface
+          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}
+
+      - name: Prepare browser acceptance model cache
+        run: |
+          sudo install -d -o 65532 -g 65532 -m 0755 "${{ runner.temp }}/xagent-huggingface"
+          sudo chown -R 65532:65532 "${{ runner.temp }}/xagent-huggingface"
+          sudo chmod -R u=rwX,go=rX "${{ runner.temp }}/xagent-huggingface"
+          python3 services/embedding/verify_model_snapshot.py --allow-absent --cache-dir "${{ runner.temp }}/xagent-huggingface"
+          echo "XAGENT_EMBEDDING_CACHE_DIR=${{ runner.temp }}/xagent-huggingface" >> "$GITHUB_ENV"
+          if [ "${{ steps.browser-bge-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "XAGENT_TASK10_HF_HUB_OFFLINE=true" >> "$GITHUB_ENV"
+          else
+            echo "XAGENT_TASK10_HF_HUB_OFFLINE=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Install dependencies and prepare bubblewrap
         run: |
           pnpm install --frozen-lockfile &
@@ -257,6 +277,9 @@ jobs:
 
       - name: Run compatibility, snapshot, and artifact gates
         run: pnpm run check:ci:consumers
+
+      - name: Verify browser acceptance model cache
+        run: python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
 
 
   node-compat:
@@ -321,7 +344,7 @@ jobs:
     name: python 3.11 / xagent api
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_DB: xagent_api_test
           POSTGRES_USER: postgres
@@ -361,7 +384,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     name: python 3.11 / xagent artifact docker e2e
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       JX_TEST_DATABASE_URL: postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test
       JX_ALLOW_SCHEMA_DROP: 'yes'
@@ -381,6 +404,19 @@ jobs:
 
       - name: Sync immutable API environment
         run: uv sync --python 3.11 --project services/api --extra dev --frozen
+
+      - name: Restore pinned BGE-M3 cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xagent-huggingface
+          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}
+
+      - name: Prepare private model cache
+        run: |
+          sudo install -d -o 65532 -g 65532 -m 0755 "${{ runner.temp }}/xagent-huggingface"
+          sudo chown -R 65532:65532 "${{ runner.temp }}/xagent-huggingface"
+          sudo chmod -R u=rwX,go=rX "${{ runner.temp }}/xagent-huggingface"
+          echo "XAGENT_EMBEDDING_CACHE_DIR=${{ runner.temp }}/xagent-huggingface" >> "$GITHUB_ENV"
 
       - name: Run real artifact pipeline
         shell: bash
@@ -404,10 +440,86 @@ jobs:
           trap cleanup EXIT
           docker compose -f services/api/compose.test.yml down --volumes --remove-orphans
           docker compose --project-name xagent-api-upgrade -f services/api/compose.test.yml down --volumes --remove-orphans
-          docker compose -f services/api/compose.test.yml build api
+          python3 services/embedding/verify_model_snapshot.py --allow-absent --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
+          docker compose -f services/api/compose.test.yml build api embedding
           XAGENT_COMPOSE_UPGRADE_E2E=1 uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_compose_upgrade.py
           docker compose -f services/api/compose.test.yml up -d --build --wait
+          python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
           uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_artifact_pipeline.py
+
+  xagent-retrieval-e2e:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    name: python 3.11 / xagent retrieval docker e2e
+    timeout-minutes: 45
+    env:
+      JX_TEST_DATABASE_URL: postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test
+      JX_ALLOW_SCHEMA_DROP: 'yes'
+      XAGENT_RETRIEVAL_E2E: '1'
+      XAGENT_RETRIEVAL_E2E_URL: http://127.0.0.1:58000
+      XAGENT_RETRIEVAL_E2E_SERVICE_TOKEN: xagent-e2e-service-token-test-only-0001
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: python -m pip install uv==0.11.23
+
+      - name: Sync immutable API environment
+        run: uv sync --python 3.11 --project services/api --extra dev --frozen
+
+      - name: Restore pinned BGE-M3 cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xagent-huggingface
+          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}
+
+      - name: Prepare private model cache
+        run: |
+          sudo install -d -o 65532 -g 65532 -m 0755 "${{ runner.temp }}/xagent-huggingface"
+          sudo chown -R 65532:65532 "${{ runner.temp }}/xagent-huggingface"
+          sudo chmod -R u=rwX,go=rX "${{ runner.temp }}/xagent-huggingface"
+          echo "XAGENT_EMBEDDING_CACHE_DIR=${{ runner.temp }}/xagent-huggingface" >> "$GITHUB_ENV"
+
+      - name: Run real retrieval pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ]; then
+              docker compose -f services/api/compose.test.yml ps --all || true
+              docker compose -f services/api/compose.test.yml logs --no-color --tail 200 || true
+            fi
+            cleanup_status=0
+            docker rm --force xagent-stale-worker 2>/dev/null || true
+            docker compose -f services/api/compose.test.yml down --volumes --remove-orphans || cleanup_status=$?
+            stale_worker=$(docker container ls --all -q --filter 'name=^/xagent-stale-worker$')
+            containers=$(docker container ls --all -q --filter label=com.docker.compose.project=xagent-api-test)
+            volumes=$(docker volume ls -q --filter label=com.docker.compose.project=xagent-api-test)
+            networks=$(docker network ls -q --filter label=com.docker.compose.project=xagent-api-test)
+            if [ -n "$stale_worker" ] || [ -n "$containers" ] || [ -n "$volumes" ] || [ -n "$networks" ]; then
+              echo "::error::Compose cleanup left stale_worker='$stale_worker' containers='$containers' volumes='$volumes' networks='$networks'"
+              cleanup_status=1
+            fi
+            if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
+              status=$cleanup_status
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          docker rm --force xagent-stale-worker 2>/dev/null || true
+          docker compose -f services/api/compose.test.yml down --volumes --remove-orphans
+          python3 services/embedding/verify_model_snapshot.py --allow-absent --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
+          docker compose -f services/api/compose.test.yml up -d --build --wait
+          python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
+          uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_retrieval_pipeline.py tests/e2e/test_retrieval_worker_recovery.py
 
   # One native target makes the complete release-shaped Python path required
   # without duplicating platform-independent behavior across the release matrix.
@@ -1021,7 +1133,7 @@ jobs:
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
           || 'ubuntu-latest' }}
-    needs: [node-24, node-24-coverage, node-24-consumers, node-compat, python-sdk, python-runtime, windows, xagent-api, xagent-artifact-e2e]
+    needs: [node-24, node-24-coverage, node-24-consumers, node-compat, python-sdk, python-runtime, windows, xagent-api, xagent-artifact-e2e, xagent-retrieval-e2e]
     if: always() && github.event_name == 'pull_request'
     steps:
       - name: Fail if any needed job did not succeed

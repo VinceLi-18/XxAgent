@@ -91,6 +91,74 @@ async def test_idempotent_replay_returns_the_original_result_and_rejects_new_pay
 
 
 @pytest.mark.anyio
+async def test_fork_replay_after_committed_response_loss_keeps_exactly_one_child(
+    client,
+    seeded_database,
+    alice,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    session_id = await _create(client, token, key="fork-loss-source")
+    appended = await client.post(
+        f"/internal/xagent/sessions/{session_id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "fork-loss-source-event",
+            "events": [
+                {"event_type": "once", "schema_version": 1, "payload": {"n": 1}}
+            ],
+        },
+    )
+    assert appended.status_code == 200
+    request = {
+        "schema_version": 1,
+        "through_sequence": 0,
+        "title": "recovered fork",
+        "idempotency_key": "host-rpc-fork-loss",
+    }
+
+    committed_without_observing_response = await client.post(
+        f"/internal/xagent/sessions/{session_id}/fork",
+        headers=_headers(token),
+        json=request,
+    )
+    replay = await client.post(
+        f"/internal/xagent/sessions/{session_id}/fork",
+        headers=_headers(token),
+        json=request,
+    )
+    conflict = await client.post(
+        f"/internal/xagent/sessions/{session_id}/fork",
+        headers=_headers(token),
+        json={**request, "through_sequence": -1},
+    )
+
+    assert committed_without_observing_response.status_code == 201
+    assert replay.status_code == 200
+    assert replay.json() == committed_without_observing_response.json()
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": {"code": "idempotency-conflict"}}
+    child_id = replay.json()["session"]["id"]
+    async with AsyncSession(seeded_database) as session:
+        durable_children = await session.scalar(
+            text(
+                "SELECT count(*) FROM xagent_sessions "
+                "WHERE owner_id = :actor_id AND title = 'recovered fork'"
+            ),
+            {"actor_id": alice.id},
+        )
+        child_events = await session.scalar(
+            text(
+                "SELECT count(*) FROM xagent_session_events WHERE session_id = :child_id"
+            ),
+            {"child_id": child_id},
+        )
+    assert durable_children == 1
+    assert child_events == 1
+
+
+@pytest.mark.anyio
 async def test_idempotent_replays_still_check_project_reference_access(
     client,
     seeded_database,

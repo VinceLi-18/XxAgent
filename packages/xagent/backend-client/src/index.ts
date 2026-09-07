@@ -1,6 +1,6 @@
 /** 固定访问 XAgent FastAPI 内部接口的 Host 客户端。 @module @xagent/dsh-backend-client */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { parseXAgentPrincipal, type XAgentPrincipal } from '@xagent/dsh-principal'
 import type {
   XAgentBackend,
@@ -15,8 +15,13 @@ import type {
   XAgentCapability,
   XAgentIssuedLogin,
   XAgentProjectDetail,
+  XAgentProjectDiscoveryResult,
   XAgentProjectSummary,
+  XAgentResolvedCitation,
+  XAgentRetrievalBackend,
+  XAgentRetrievalCitation,
   XAgentSessionBackend,
+  XAgentSessionAppendResult,
   XAgentSessionScopeSummary,
   XAgentWorkbenchBackend,
   XAgentWorkbenchBootstrap,
@@ -38,8 +43,23 @@ export type {
   XAgentCapability,
   XAgentIssuedLogin,
   XAgentProjectDetail,
+  XAgentProjectDiscoveryInput,
+  XAgentProjectDiscoveryResult,
   XAgentProjectSummary,
+  XAgentResolveCitationInput,
+  XAgentResolvedCitation,
+  XAgentRetrievalBackend,
+  XAgentRetrievalCitation,
+  XAgentRetrievalOperationInput,
+  XAgentRetrievalProject,
+  XAgentArtifactSearchInput,
+  XAgentArtifactSearchResult,
+  XAgentAuthorizeCitationsInput,
+  XAgentCitationIdentity,
   XAgentSessionBackend,
+  XAgentSessionAppendInput,
+  XAgentSessionAppendResult,
+  XAgentSessionRetrievalReceiptAttachment,
   XAgentSessionProjectRefsInput,
   XAgentSessionScopeSummary,
   XAgentWorkbenchBackend,
@@ -56,6 +76,11 @@ const STABLE_CODES = new Set<XAgentBackendErrorCode>([
   'idempotency-conflict',
   'upload-expired',
   'upload-rejected',
+  'invalid-retrieval-scope',
+  'retrieval-unavailable',
+  'evidence-expired',
+  'evidence-conflict',
+  'citation-invalid',
   'unsupported-version',
   'service-unavailable',
 ])
@@ -504,6 +529,227 @@ function parseArtifactList(value: unknown): readonly XAgentArtifactSummary[] {
   return artifacts
 }
 
+const CITATION_ID_PATTERN = /^\[资料([1-9][0-9]*)\]$/
+const OPAQUE_RECEIPT_PATTERN = /^[A-Za-z0-9_-]+$/
+const MAX_RETRIEVAL_PROJECTS = 20
+const MAX_RETRIEVAL_SEARCH_CITATIONS = 8
+const MAX_RETRIEVAL_AUTHORIZATION_CITATIONS = 64
+const MAX_RETRIEVAL_TEXT_BYTES = 32 * 1024
+
+function payloadHash(value: unknown): string {
+  if (typeof value !== 'string' || !SHA256_PATTERN.test(value)) failSchema()
+  return value
+}
+
+function opaqueReceipt(value: unknown): string {
+  const result = boundedString(value, 1_024)
+  if (!OPAQUE_RECEIPT_PATTERN.test(result)) failSchema()
+  return result
+}
+
+function citationOrdinal(value: unknown): number {
+  if (typeof value !== 'string') failSchema()
+  const match = CITATION_ID_PATTERN.exec(value)
+  if (match === null) failSchema()
+  const ordinal = Number(match[1])
+  if (!Number.isSafeInteger(ordinal) || ordinal < 1) failSchema()
+  return ordinal
+}
+
+function citationIdValue(value: unknown): string {
+  citationOrdinal(value)
+  return value as string
+}
+
+function citationIdentity(value: unknown): {
+  readonly id: string
+  readonly ordinal: number
+  readonly artifactId: string
+  readonly versionId: string
+  readonly chunkId: string
+} {
+  const row = exactRecord(value, ['id', 'artifact_id', 'version_id', 'chunk_id'])
+  const ordinal = citationOrdinal(row.id)
+  return {
+    id: row.id as string,
+    ordinal,
+    artifactId: requiredUuid(row.artifact_id),
+    versionId: requiredUuid(row.version_id),
+    chunkId: requiredUuid(row.chunk_id),
+  }
+}
+
+function parseRetrievalProject(value: unknown): { readonly projectId: string; readonly name: string } {
+  const row = exactRecord(value, ['project_id', 'name'])
+  return { projectId: requiredUuid(row.project_id), name: boundedString(row.name, 255) }
+}
+
+function parseProjectDiscovery(value: unknown): XAgentProjectDiscoveryResult {
+  const row = exactRecord(value, ['schema_version', 'projects', 'receipt', 'payload_sha256'])
+  if (row.schema_version !== 1 || !Array.isArray(row.projects) || row.projects.length > MAX_RETRIEVAL_PROJECTS) {
+    failSchema()
+  }
+  const projects = row.projects.map(parseRetrievalProject)
+  if (new Set(projects.map(project => project.projectId)).size !== projects.length) failSchema()
+  const hash = payloadHash(row.payload_sha256)
+  if (canonicalPayloadHash({ schema_version: 1, projects: row.projects }) !== hash) failSchema()
+  return {
+    projects,
+    receipt: opaqueReceipt(row.receipt),
+    payloadHash: hash,
+  }
+}
+
+function parseRetrievalCitation(value: unknown): XAgentRetrievalCitation {
+  const row = exactRecord(value, [
+    'id', 'artifact_id', 'version_id', 'chunk_id', 'display_name', 'version_number',
+    'line_start', 'line_end', 'text', 'scope',
+  ])
+  const identity = citationIdentity(Object.fromEntries(
+    Object.entries(row).filter(([key]) => ['id', 'artifact_id', 'version_id', 'chunk_id'].includes(key)),
+  ))
+  const lineStart = positiveInteger(row.line_start)
+  const lineEnd = positiveInteger(row.line_end)
+  if (lineEnd < lineStart || (row.scope !== 'private' && row.scope !== 'project')) failSchema()
+  const text = requiredString(row.text)
+  return {
+    id: identity.id,
+    artifactId: identity.artifactId,
+    versionId: identity.versionId,
+    chunkId: identity.chunkId,
+    displayName: boundedString(row.display_name, 255),
+    versionNumber: positiveInteger(row.version_number),
+    lineStart,
+    lineEnd,
+    text,
+    scope: row.scope,
+  }
+}
+
+function parseArtifactSearch(value: unknown): {
+  readonly citations: readonly XAgentRetrievalCitation[]
+  readonly receipt: string
+  readonly payloadHash: string
+} {
+  const row = exactRecord(value, ['schema_version', 'citations', 'receipt', 'payload_sha256'])
+  if (row.schema_version !== 1 || !Array.isArray(row.citations) || row.citations.length > MAX_RETRIEVAL_SEARCH_CITATIONS) {
+    failSchema()
+  }
+  if (
+    new TextEncoder().encode(JSON.stringify({ schema_version: 1, citations: row.citations })).byteLength
+      > MAX_RETRIEVAL_TEXT_BYTES
+  ) failSchema()
+  const citations = row.citations.map(parseRetrievalCitation)
+  if (
+    new Set(citations.map(citation => citation.id)).size !== citations.length
+    || new Set(citations.map(citation => citation.chunkId)).size !== citations.length
+  ) failSchema()
+  const ordinals = row.citations.map(citation => citationOrdinal(record(citation).id))
+  if (ordinals.some((ordinal, index) => {
+    const previous = ordinals[index - 1]
+    return previous !== undefined && ordinal !== previous + 1
+  })) failSchema()
+  const hash = payloadHash(row.payload_sha256)
+  if (canonicalPayloadHash({ schema_version: 1, citations: row.citations }) !== hash) failSchema()
+  return {
+    citations,
+    receipt: opaqueReceipt(row.receipt),
+    payloadHash: hash,
+  }
+}
+
+function retrievalOperation(input: {
+  readonly sessionId: string
+  readonly toolCallId: string
+  readonly permissionRevision: number
+}): Record<string, unknown> {
+  if (
+    !UUID_PATTERN.test(input.sessionId)
+    || input.toolCallId.length < 1
+    || Array.from(input.toolCallId).length > 255
+    || !Number.isSafeInteger(input.permissionRevision)
+    || input.permissionRevision < 1
+  ) failSchema()
+  return {
+    session_id: input.sessionId,
+    tool_call_id: input.toolCallId,
+    permission_revision: input.permissionRevision,
+  }
+}
+
+function canonicalRetrievalProjectIds(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) failSchema()
+  const supplied = value.map(requiredUuid)
+  const canonical = [...new Set(supplied.map(projectId => projectId.toLowerCase()))].sort()
+  if (
+    canonical.length > MAX_RETRIEVAL_PROJECTS
+    || supplied.length !== canonical.length
+    || supplied.some((projectId, index) => projectId !== canonical[index])
+  ) failSchema()
+  return Object.freeze(canonical)
+}
+
+function citationRequest(value: {
+  readonly id: string
+  readonly artifactId: string
+  readonly versionId: string
+  readonly chunkId: string
+}): Record<string, unknown> {
+  if (
+    !UUID_PATTERN.test(value.artifactId)
+    || !UUID_PATTERN.test(value.versionId)
+    || !UUID_PATTERN.test(value.chunkId)
+  ) failSchema()
+  citationOrdinal(value.id)
+  return {
+    id: value.id,
+    artifact_id: value.artifactId,
+    version_id: value.versionId,
+    chunk_id: value.chunkId,
+  }
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+      left < right ? -1 : 1)
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function canonicalPayloadHash(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex')
+}
+
+type RetrievalErrorPair = readonly [number, XAgentBackendErrorCode]
+
+const COMMON_RETRIEVAL_ERRORS: readonly RetrievalErrorPair[] = [
+  [401, 'unauthenticated'],
+  [404, 'session-not-found'],
+  [503, 'service-unavailable'],
+]
+const PROJECT_DISCOVERY_ERRORS = [...COMMON_RETRIEVAL_ERRORS, [400, 'invalid-retrieval-scope']] as const
+const SEARCH_ERRORS = [...COMMON_RETRIEVAL_ERRORS, [400, 'invalid-retrieval-scope'], [503, 'retrieval-unavailable']] as const
+const CITATION_ERRORS = [...COMMON_RETRIEVAL_ERRORS, [422, 'citation-invalid']] as const
+
+function retrievalErrorCode(
+  status: number,
+  value: unknown,
+  allowed: readonly RetrievalErrorPair[],
+): XAgentBackendErrorCode {
+  let code: unknown
+  try {
+    code = exactRecord(exactRecord(value, ['detail']).detail, ['code']).code
+  } catch {
+    return 'service-unavailable'
+  }
+  return allowed.some(([allowedStatus, allowedCode]) => allowedStatus === status && allowedCode === code)
+    ? code as XAgentBackendErrorCode
+    : 'service-unavailable'
+}
+
 async function readBounded(response: Response, limit: number): Promise<string> {
   if (response.body === null) return ''
   const reader = response.body.getReader()
@@ -529,7 +775,7 @@ async function readBounded(response: Response, limit: number): Promise<string> {
     body.set(chunk, offset)
     offset += chunk.byteLength
   }
-  return new TextDecoder().decode(body)
+  return new TextDecoder('utf-8', { fatal: true }).decode(body)
 }
 
 function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
@@ -551,6 +797,35 @@ function errorCode(status: number, value: unknown): XAgentBackendErrorCode {
     || status === 422 && code === 'upload-rejected'
     || status === 503 && code === 'service-unavailable'
   return accepted ? code : 'service-unavailable'
+}
+
+const SESSION_APPEND_ERRORS: readonly RetrievalErrorPair[] = [
+  [400, 'unsupported-version'],
+  [401, 'unauthenticated'],
+  [404, 'not-found'],
+  [404, 'session-not-found'],
+  [409, 'sequence-conflict'],
+  [409, 'idempotency-conflict'],
+  [409, 'evidence-conflict'],
+  [410, 'evidence-expired'],
+  [503, 'service-unavailable'],
+]
+
+function sessionAppendResult(
+  value: unknown,
+  expectedLastSequence: number,
+): XAgentSessionAppendResult {
+  const row = exactRecord(value, ['schema_version', 'last_event_sequence', 'version'])
+  if (
+    row.schema_version !== 1
+    || !Number.isSafeInteger(row.last_event_sequence)
+    || row.last_event_sequence !== expectedLastSequence
+  ) failSchema()
+  return {
+    schema_version: 1,
+    last_event_sequence: row.last_event_sequence,
+    version: positiveInteger(row.version),
+  }
 }
 
 const COMMON_ARTIFACT_ERROR_CODES: readonly (readonly [number, XAgentBackendErrorCode])[] = [
@@ -614,6 +889,7 @@ export class XAgentBackendClient implements XAgentBackend {
   readonly sessions: XAgentSessionBackend
   readonly workbench: XAgentWorkbenchBackend
   readonly artifacts: XAgentArtifactBackend
+  readonly retrieval: XAgentRetrievalBackend
 
   constructor(private readonly options: XAgentBackendClientOptions) {
     let origin: URL
@@ -636,7 +912,19 @@ export class XAgentBackendClient implements XAgentBackend {
       create: (token, body, signal) => this.request(token, '/internal/xagent/sessions', body, signal),
       open: (token, id, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/open`, { schema_version: 1 }, signal),
       events: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/events`, body, signal),
-      append: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/append`, body, signal),
+      append: async (token, id, body, signal) => sessionAppendResult(
+        await this.request(
+          token,
+          `/internal/xagent/sessions/${encodeURIComponent(id)}/append`,
+          body,
+          signal,
+          false,
+          true,
+          200,
+          (status, value) => retrievalErrorCode(status, value, SESSION_APPEND_ERRORS),
+        ),
+        body.expected_sequence + body.events.length,
+      ),
       fork: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/fork`, body, signal),
       archive: (token, id, body, signal) => this.request(token, `/internal/xagent/sessions/${encodeURIComponent(id)}/archive`, body, signal),
       authorize: async (token, id, operation, signal) => {
@@ -774,6 +1062,107 @@ export class XAgentBackendClient implements XAgentBackend {
       )),
     }
     this.artifacts = Object.freeze(artifacts)
+    const retrieval: XAgentRetrievalBackend = {
+      projects: async (token, delegation, input, signal) => {
+        if (input.query !== undefined) boundedString(input.query, 255)
+        return parseProjectDiscovery(await this.retrievalRequest(
+          token,
+          delegation,
+          '/internal/xagent/retrieval/projects',
+          {
+            schema_version: 1,
+            ...retrievalOperation(input),
+            ...(input.query === undefined ? {} : { query: input.query }),
+          },
+          PROJECT_DISCOVERY_ERRORS,
+          signal,
+        ))
+      },
+      search: async (token, delegation, input, signal) => {
+        boundedString(input.query, 8_192)
+        if (typeof input.includePrivate !== 'boolean') failSchema()
+        let projectIds: readonly string[] | undefined
+        if (input.projectIds !== undefined) {
+          projectIds = canonicalRetrievalProjectIds(input.projectIds)
+        }
+        if (projectIds !== undefined) {
+          if (
+            (projectIds.length === 0 && !input.includePrivate)
+            || input.scopeHash === undefined
+            || !SHA256_PATTERN.test(input.scopeHash)
+          ) failSchema()
+          const canonicalScope = JSON.stringify({
+            include_private: input.includePrivate,
+            kind: 'private',
+            project_ids: projectIds,
+          })
+          if (createHash('sha256').update(canonicalScope).digest('hex') !== input.scopeHash) failSchema()
+        } else if (input.includePrivate || input.scopeHash !== undefined) {
+          failSchema()
+        }
+        return parseArtifactSearch(await this.retrievalRequest(
+          token,
+          delegation,
+          '/internal/xagent/retrieval/search',
+          {
+            schema_version: 1,
+            ...retrievalOperation(input),
+            query: input.query,
+            ...(projectIds === undefined ? {} : { project_ids: projectIds }),
+            include_private: input.includePrivate,
+          },
+          SEARCH_ERRORS,
+          signal,
+        ))
+      },
+      authorizeCitations: async (token, delegation, input, signal) => {
+        if (
+          !Array.isArray(input.citations)
+          || input.citations.length < 1
+          || input.citations.length > MAX_RETRIEVAL_AUTHORIZATION_CITATIONS
+        ) failSchema()
+        const citations = input.citations.map(citationRequest)
+        if (
+          new Set(citations.map(citation => citation.id)).size !== citations.length
+          || new Set(citations.map(citation => citation.chunk_id)).size !== citations.length
+        ) failSchema()
+        const value = await this.retrievalRequest(
+          token,
+          delegation,
+          '/internal/xagent/retrieval/citations/authorize',
+          { schema_version: 1, ...retrievalOperation(input), citations },
+          CITATION_ERRORS,
+          signal,
+        )
+        const row = exactRecord(value, ['schema_version', 'authorized'])
+        if (row.schema_version !== 1 || row.authorized !== true) failSchema()
+      },
+      resolveCitation: async (token, delegation, input, signal): Promise<XAgentResolvedCitation> => {
+        const citationId = citationIdValue(input.citationId)
+        const value = await this.retrievalRequest(
+          token,
+          delegation,
+          '/internal/xagent/retrieval/citations/resolve',
+          { schema_version: 1, ...retrievalOperation(input), citation_id: citationId },
+          CITATION_ERRORS,
+          signal,
+        )
+        const row = exactRecord(value, [
+          'schema_version', 'artifact_id', 'version_id', 'chunk_id', 'line_start', 'line_end',
+        ])
+        const lineStart = positiveInteger(row.line_start)
+        const lineEnd = positiveInteger(row.line_end)
+        const artifactId = requiredUuid(row.artifact_id)
+        const versionId = requiredUuid(row.version_id)
+        const chunkId = requiredUuid(row.chunk_id)
+        if (
+          row.schema_version !== 1
+          || lineEnd < lineStart
+        ) failSchema()
+        return { id: citationId, artifactId, versionId, chunkId, lineStart, lineEnd }
+      },
+    }
+    this.retrieval = Object.freeze(retrieval)
   }
 
   async login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin> {
@@ -840,6 +1229,28 @@ export class XAgentBackendClient implements XAgentBackend {
     )
   }
 
+  private retrievalRequest(
+    userToken: string,
+    delegationToken: string,
+    path: string,
+    body: unknown,
+    allowedErrors: readonly RetrievalErrorPair[],
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (delegationToken.length === 0) return Promise.reject(new XAgentBackendError('service-unavailable'))
+    return this.request(
+      userToken,
+      path,
+      body,
+      signal,
+      false,
+      true,
+      200,
+      (status, value) => retrievalErrorCode(status, value, allowedErrors),
+      delegationToken,
+    )
+  }
+
   private async request(
     userToken: string | undefined,
     path: string,
@@ -849,6 +1260,7 @@ export class XAgentBackendClient implements XAgentBackend {
     internal = true,
     expectedStatus?: number,
     mapError = errorCode,
+    delegationToken?: string,
   ): Promise<unknown> {
     const timeout = AbortSignal.timeout(this.timeoutMs)
     const requestSignal = signal === undefined ? timeout : AbortSignal.any([timeout, signal])
@@ -859,6 +1271,7 @@ export class XAgentBackendClient implements XAgentBackend {
         if (userToken === undefined) throw new XAgentBackendError('unauthenticated')
         headers.set('authorization', `Bearer ${userToken}`)
         headers.set('x-xagent-service-token', this.options.serviceToken)
+        if (delegationToken !== undefined) headers.set('x-xagent-delegation', delegationToken)
       }
       const init: RequestInit = {
         method: 'POST',

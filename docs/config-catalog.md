@@ -2794,7 +2794,7 @@ export interface Config {
 export type ToolPresentationMode = 'native' | 'code' | 'both'
 ```
 
-Source: [`packages/core/tools/src/index.ts:654`](../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:658`](../packages/core/tools/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 
@@ -3055,7 +3055,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/authorization/src/index.ts:46`](../packages/xagent/authorization/src/index.ts)
+Source: [`packages/xagent/authorization/src/index.ts:52`](../packages/xagent/authorization/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 
@@ -3097,6 +3097,30 @@ export interface Config {
 
 Source: [`packages/xagent/project/src/index.ts:37`](../packages/xagent/project/src/index.ts)
 
+<a id="xagentdsh-retrieval"></a>
+
+## `@xagent/dsh-retrieval`
+
+Requires: `sessions`
+
+```ts config-catalog
+/** Host retrieval provider configuration. */
+export interface Config {
+  /** FastAPI service origin. */
+  backendOrigin: string
+  /** Host service identity for internal calls. */
+  serviceToken: string
+  /** Ed25519 private key PEM used only for per-call delegation. */
+  delegationPrivateKey: string
+  /** Exact delegation issuer accepted by FastAPI. */
+  delegationIssuer: string
+  /** Exact delegation audience accepted by FastAPI. */
+  delegationAudience: string
+}
+```
+
+Source: [`packages/xagent/retrieval/src/index.ts:91`](../packages/xagent/retrieval/src/index.ts)
+
 <a id="xagentdsh-session-persistence-api"></a>
 
 ## `@xagent/dsh-session-persistence-api`
@@ -3113,7 +3137,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/session-persistence-api/src/index.ts:28`](../packages/xagent/session-persistence-api/src/index.ts)
+Source: [`packages/xagent/session-persistence-api/src/index.ts:30`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## Loadable plugins with no config
 
@@ -3184,8 +3208,10 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-tool-subagent-control` — requires `tools` · `subagents` ([`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts))
 - `@deepseek-ai/dsh-user-questions` ([`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts))
 - `@deepseek-ai/dsh-workspace` — requires `storageDomain` · `sessionPersistence` ([`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts))
+- `@xagent/dsh-tool-retrieval` — requires `tools` ([`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts))
 - `@xagent/dsh-ui-account` ([`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts))
 - `@xagent/dsh-ui-artifact` ([`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts))
+- `@xagent/dsh-ui-citation` ([`packages/xagent/ui-citation/src/index.ts`](../packages/xagent/ui-citation/src/index.ts))
 - `@xagent/dsh-ui-project` ([`packages/xagent/ui-project/src/index.ts`](../packages/xagent/ui-project/src/index.ts))
 
 ## Seam packages (not directly loadable)

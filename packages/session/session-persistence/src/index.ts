@@ -8,10 +8,12 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { SessionPreparation } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
+import type { SessionForkOperationId } from './fork.ts'
 import type { SessionPersistenceRevision } from './revision.ts'
 
 // Re-export the metadata vocabulary so Consumers import it from the Service Definition.
 export type { SessionHeader } from '@deepseek-ai/dsh-session'
+export { SessionForkOperationId } from './fork.ts'
 export { SessionPersistenceRevision } from './revision.ts'
 
 /** Lightweight immutable source identity returned without loading a full log. */
@@ -132,6 +134,37 @@ export abstract class SessionPersistence extends Service {
    */
   preparePublication(_session: Session): Promise<void> {
     return Promise.resolve()
+  }
+
+  /**
+   * Atomically derive a durable child from an authorized source prefix when
+   * this backend owns Session scope and identity. The backend, not the caller,
+   * chooses the child identity and copies every backend-owned authorization
+   * relation. Local stores return `undefined`, allowing the Host to use its
+   * ordinary in-process seed path.
+   * @param _sourceId - authorized source Session identity.
+   * @param _throughSequence - inclusive final source event sequence.
+   * @param _operationId - Host-owned RPC identity shared by every retry of this fork.
+   * @returns the durable child header, or `undefined` when unsupported.
+   */
+  fork(
+    _sourceId: SessionId,
+    _throughSequence: number,
+    _operationId: SessionForkOperationId,
+  ): Promise<SessionHeader | undefined> {
+    return Promise.resolve(undefined)
+  }
+
+  /**
+   * Classify a provider-owned failure for the Host's single immediate fork
+   * recovery attempt. The default rejects every failure; remote providers may
+   * admit only errors whose operation is safe to replay with the same
+   * {@link SessionForkOperationId}.
+   * @param _error - failure raised while deriving or resuming the durable child.
+   * @returns whether the Host may repeat only the failed phase once.
+   */
+  isForkRetryable(_error: unknown): boolean {
+    return false
   }
 
   /**

@@ -51,6 +51,24 @@ interface ControllerOptions {
   readonly openUrl?: ((url: string) => void) | undefined
 }
 
+/** Cited answer 交给 Artifact 面板的持久身份；不含读取地址。 */
+export interface XAgentArtifactCitationTarget {
+  readonly artifactId: string
+  readonly versionId: string
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
+/** Browser citation 导航唯一允许调用的 Artifact seam。 */
+export interface XAgentArtifactCitationOpener {
+  /**
+   * 重新读取不可变资料版本并定位行范围。
+   * @param target Host 已重新授权的资料、版本和行身份。
+   * @returns 详情与短期预览读取结算后的 Promise。
+   */
+  openCitation(target: XAgentArtifactCitationTarget): Promise<void>
+}
+
 interface Operation {
   readonly controller: AbortController
   readonly epoch: number
@@ -155,6 +173,7 @@ export class XAgentArtifactController {
   private pollOperation: AbortController | undefined
   private pollHandle: number | undefined
   private selectionGeneration = 0
+  private citationSelectionGeneration: number | undefined
   private artifactOperationGeneration = 0
   private readonly activeTasks = new Set<Promise<void>>()
   private disposal: Promise<void> | undefined
@@ -238,12 +257,64 @@ export class XAgentArtifactController {
     return this.trackOperation(() => this.loadDetail(artifactId))
   }
 
+  /**
+   * 重新读取 citation 指定的 Artifact 和不可变版本，再发布短期预览。
+   * @param target Host 解析出的 Artifact、版本和行范围。
+   * @returns 详情与短期预览读取结算后的 Promise。
+   */
+  openCitation(target: XAgentArtifactCitationTarget): Promise<void> {
+    return this.trackOperation(() => this.loadCitation(target))
+  }
+
+  private async loadCitation(target: XAgentArtifactCitationTarget): Promise<void> {
+    const selectionGeneration = this.invalidateSelection()
+    const operation = this.begin('detail')
+    if (operation === undefined) return
+    this.citationSelectionGeneration = selectionGeneration
+    this.snapshot.replaceReady({
+      selectedId: target.artifactId, detail: undefined, detailLoading: true, detailError: undefined,
+      preview: undefined, citation: undefined,
+    })
+    try {
+      const result = await this.remote.detail(target.artifactId, operation.controller.signal)
+      if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, target.artifactId)) return
+      const version = result.ok && result.value.id === target.artifactId
+        ? result.value.versions.find(item => item.id === target.versionId)
+        : undefined
+      if (!result.ok || version?.status !== 'clean' || previewKind(version.contentType) !== 'text') {
+        this.snapshot.replaceReady({
+          selectedId: target.artifactId, detail: undefined, detailLoading: false,
+          detailError: '引用资料暂时不可用', preview: undefined, citation: undefined,
+        })
+        return
+      }
+      this.snapshot.replaceReady({
+        detail: result.value, detailLoading: false, detailError: undefined,
+        citation: { versionId: target.versionId, lineStart: target.lineStart, lineEnd: target.lineEnd },
+      })
+      await this.loadPreview(target.versionId)
+      if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, target.artifactId)
+        || this.citationSelectionGeneration !== selectionGeneration) return
+      const current = this.snapshot.getSnapshot()
+      if (current.phase === 'ready' && current.citation?.versionId === target.versionId
+        && current.preview?.versionId !== target.versionId) {
+        this.snapshot.replaceReady({ citation: undefined, preview: undefined })
+      }
+    } catch {
+      if (!operation.controller.signal.aborted && !this.isStale(operation)) {
+        this.snapshot.replaceReady({
+          detailLoading: false, detailError: '引用资料暂时不可用', preview: undefined, citation: undefined,
+        })
+      }
+    }
+  }
+
   private async loadDetail(artifactId: string): Promise<void> {
     const selectionGeneration = this.invalidateSelection()
     const operation = this.begin('detail')
     if (operation === undefined) return
     this.snapshot.replaceReady({
-      selectedId: artifactId, detail: undefined, detailLoading: true, detailError: undefined, preview: undefined,
+      selectedId: artifactId, detail: undefined, detailLoading: true, detailError: undefined, preview: undefined, citation: undefined,
     })
     if (this.isStale(operation) || !this.isCurrentSelection(selectionGeneration, artifactId)) return
     try {
@@ -266,7 +337,21 @@ export class XAgentArtifactController {
   backToList(): void {
     this.invalidateSelection()
     this.snapshot.replaceReady({
-      selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined, preview: undefined,
+      selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined, preview: undefined, citation: undefined,
+    })
+    this.armPollIfNeeded()
+  }
+
+  /** Session citation 范围变化时取消 handoff 并丢弃 locator 与短期 URL。 */
+  cancelCitation(): void {
+    const generation = this.citationSelectionGeneration
+    if (generation === undefined) return
+    this.citationSelectionGeneration = undefined
+    if (generation !== this.selectionGeneration) return
+    this.invalidateSelection()
+    this.snapshot.replaceReady({
+      selectedId: undefined, detail: undefined, detailLoading: false, detailError: undefined,
+      preview: undefined, citation: undefined,
     })
     this.armPollIfNeeded()
   }
@@ -497,6 +582,7 @@ export class XAgentArtifactController {
       detailLoading: false,
       detailError: undefined,
       preview: undefined,
+      citation: undefined,
     })
   }
 
@@ -595,6 +681,7 @@ export class XAgentArtifactController {
   }
 
   private invalidateSelection(): number {
+    this.citationSelectionGeneration = undefined
     ++this.selectionGeneration
     this.detailOperation?.abort()
     this.readOperation?.abort()

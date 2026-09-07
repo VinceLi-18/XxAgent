@@ -2,12 +2,10 @@
   "name": "@deepseek-ai/dsh",
   "description": "dsh CLI: profile boot, plugin management, and the browser UI alias",
   "version": "0.1.0-rc.7",
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+    "url": "git+https://github.com/VinceLi-18/XxAgent.git",
     "directory": "apps/cli"
   },
   "type": "module",
@@ -80,9 +78,13 @@
     "@xagent/dsh-business": "workspace:^",
     "@xagent/dsh-developer": "workspace:^",
     "@xagent/dsh-artifact": "workspace:^",
+    "@xagent/dsh-delegation-token": "workspace:^",
     "@xagent/dsh-project": "workspace:^",
+    "@xagent/dsh-retrieval": "workspace:^",
+    "@xagent/dsh-tool-retrieval": "workspace:^",
     "@xagent/dsh-ui-account": "workspace:^",
     "@xagent/dsh-ui-artifact": "workspace:^",
+    "@xagent/dsh-ui-citation": "workspace:^",
     "@xagent/dsh-ui-project": "workspace:^",
     "commander": "^15.0.0",
     "@deepseek-ai/cordis": "workspace:^",
@@ -91,6 +93,8 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-agent": "workspace:^",
+    "@deepseek-ai/dsh-client-modules": "workspace:^",
+    "@deepseek-ai/dsh-client-web": "workspace:^",
     "@deepseek-ai/dsh-host-frontend-static": "workspace:^",
     "@deepseek-ai/dsh-host-apiproxy": "workspace:^",
     "@deepseek-ai/dsh-host-webserver": "workspace:^",
@@ -103,6 +107,8 @@
     "@deepseek-ai/dsh-system-prompt": "workspace:^",
     "@deepseek-ai/dsh-tools": "workspace:^",
     "@types/js-yaml": "^4.0.9",
-    "execa": "^10.0.0"
+    "@types/ws": "^8.18.1",
+    "execa": "^10.0.0",
+    "ws": "^8.21.0"
   }
 }

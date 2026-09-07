@@ -1,0 +1,7 @@
+[
+  { "name": "latin-511", "unit": "data", "repeat": 511, "separator": " ", "tokens": 511 },
+  { "name": "latin-512", "unit": "data", "repeat": 512, "separator": " ", "tokens": 512 },
+  { "name": "latin-513", "unit": "data", "repeat": 513, "separator": " ", "tokens": 513 },
+  { "name": "cjk-512", "unit": "资料", "repeat": 256, "separator": " ", "tokens": 512 },
+  { "name": "whitespace-multibyte", "query": "data\t资料\n🚀", "tokens": 5 }
+]

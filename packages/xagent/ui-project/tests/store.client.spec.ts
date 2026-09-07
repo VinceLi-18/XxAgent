@@ -53,6 +53,20 @@ function sessions() {
 }
 
 describe('XAgent 项目工作台状态', () => {
+  it('citation 导航选择资料页签并打开详情栏', () => {
+    const openDetails = vi.fn()
+    const workbench = new XAgentWorkbenchController(remote(), sessions(), undefined, openDetails)
+
+    expect(workbench.details.getSnapshot()).toBe('overview')
+    workbench.openArtifacts()
+
+    expect(workbench.details.getSnapshot()).toBe('artifacts')
+    expect(openDetails).toHaveBeenCalledOnce()
+
+    const withoutLayout = new XAgentWorkbenchController(remote(), sessions())
+    expect(() => { withoutLayout.openArtifacts() }).not.toThrow()
+  })
+
   it('Bootstrap 是唯一初始化请求，且不读写任何浏览器缓存', async () => {
     const api = remote()
     const sessionActions = sessions()
@@ -79,6 +93,7 @@ describe('XAgent 项目工作台状态', () => {
     api.bootstrap.mockReturnValueOnce(first.promise)
     const workbench = new XAgentWorkbenchController(api, sessions())
     const pending = workbench.bootstrap()
+    workbench.selectDetailsTab('artifacts')
     workbench.reset('00000000-0000-0000-0000-000000000999')
     first.resolve(ok(bootstrap()))
     await pending
@@ -88,6 +103,7 @@ describe('XAgent 项目工作台状态', () => {
       switching: false,
       creating: false,
     })
+    expect(workbench.details.getSnapshot()).toBe('overview')
     await workbench.bootstrap()
     expect(workbench.snapshot.getSnapshot()).toMatchObject({ phase: 'unavailable', accountId: undefined })
   })

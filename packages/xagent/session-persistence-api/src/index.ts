@@ -5,6 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
   SessionPersistence,
+  type SessionForkOperationId,
   SessionPersistenceRevision,
   type SessionInspection,
   type SessionLocation,
@@ -19,7 +20,8 @@ import {
   type SessionHeader,
   type SessionId as SessionIdType,
 } from '@deepseek-ai/dsh-session'
-import { XAgentBackendClient, type XAgentBackend } from '@xagent/dsh-backend-client'
+import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
+import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -113,6 +115,56 @@ function validateCreatedSession(value: unknown, expectedId: string): void {
   throw new TypeError('invalid XAgent session create response')
 }
 
+function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: number): SessionHeader {
+  const row = object(value)
+  const session = object(row.session)
+  const runtimeHeader = object(session.runtime_header)
+  const id = session.id
+  const sessionKeys = new Set([
+    'id', 'owner_id', 'project_id', 'visibility', 'permission_revision_created',
+    'title', 'runtime_header', 'archived', 'last_event_sequence', 'version',
+    'created_at', 'updated_at',
+  ])
+  const runtimeHeaderKeys = new Set([
+    'version', 'id', 'createdAt', 'cwd', 'parentSession', 'seedLength',
+    'agentPreset', 'origin', 'delegationDepth',
+  ])
+  if (Object.keys(row).length !== 2 || !Object.hasOwn(row, 'schema_version')
+    || !Object.hasOwn(row, 'session')
+    || Object.keys(session).some(key => !sessionKeys.has(key))
+    || Object.keys(runtimeHeader).some(key => !runtimeHeaderKeys.has(key))
+    || row.schema_version !== 1 || typeof id !== 'string' || !UUID_PATTERN.test(id)
+    || session.last_event_sequence !== throughSequence) {
+    throw new TypeError('invalid XAgent session fork response')
+  }
+  if (!((session.visibility === 'private' && session.project_id === null)
+    || (session.visibility === 'project' && typeof session.project_id === 'string'
+      && UUID_PATTERN.test(session.project_id)))) {
+    throw new TypeError('invalid XAgent session fork response')
+  }
+  const header = headerFrom(runtimeHeader)
+  const expectedChildId = `session-${id.toLowerCase()}`
+  if (header.id !== expectedChildId || header.parentSession !== sourceId
+    || header.seedLength !== throughSequence + 1
+    || header.origin !== undefined || header.delegationDepth !== undefined) {
+    throw new TypeError('invalid XAgent session fork response')
+  }
+  return header
+}
+
+function validateAppendResult(value: unknown, expectedLastSequence: number): void {
+  const row = object(value)
+  if (
+    row.schema_version !== 1
+    || row.last_event_sequence !== expectedLastSequence
+    || !Number.isSafeInteger(row.version)
+    || (row.version as number) < 1
+    || Object.keys(row).length !== 3
+  ) {
+    throw new TypeError('invalid XAgent session append response')
+  }
+}
+
 function responseInspection(value: unknown): SessionInspection {
   const row = object(value)
   const session = object(row.session)
@@ -149,9 +201,9 @@ export class XAgentSessionPersistence extends SessionPersistence {
   private readonly turnTokens = new Map<SessionIdType, string>()
   private readonly writes = new Map<SessionIdType, {
     pending: SessionEvent[]
+    retry: SessionEvent[] | undefined
     flushing: Promise<void> | undefined
     timer: ReturnType<typeof setTimeout> | undefined
-    failure?: unknown
   }>()
   private scopeTail: Promise<void> = Promise.resolve()
   private activeToken: string | undefined
@@ -217,6 +269,47 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   /**
+   * Derive a scope-preserving child through FastAPI and lease its returned identity.
+   * @param sourceId - authorized source Session identity.
+   * @param throughSequence - inclusive final sequence in the copied source prefix.
+   * @param operationId - Host request identity shared by every transport retry.
+   * @returns the server-derived durable child Header.
+   */
+  override async fork(
+    sourceId: SessionIdType,
+    throughSequence: number,
+    operationId: SessionForkOperationId,
+  ): Promise<SessionHeader> {
+    if (!Number.isSafeInteger(throughSequence) || throughSequence < -1) {
+      throw new TypeError('throughSequence must be an integer greater than or equal to -1')
+    }
+    if (operationId.length === 0 || operationId.length > 250) {
+      throw new TypeError('operationId must contain between 1 and 250 characters')
+    }
+    const token = this.requireActiveToken()
+    await this.flushSession(sourceId)
+    const response = await this.backend.sessions.fork(token, backendSessionId(sourceId), {
+      schema_version: 1,
+      through_sequence: throughSequence,
+      idempotency_key: `fork:${operationId}`,
+    }, undefined)
+    const header = forkedHeader(response, sourceId, throughSequence)
+    this.leases.set(header.id, token)
+    return header
+  }
+
+  /**
+   * Admit only the backend's transient availability failure for one Host fork
+   * recovery attempt. Authorization, absence, conflict, and response-schema
+   * failures remain terminal.
+   * @param error - provider failure raised by fork or exact-child resume.
+   * @returns whether replay with the same fork operation identity is safe.
+   */
+  override isForkRetryable(error: unknown): boolean {
+    return error instanceof XAgentBackendError && error.code === 'service-unavailable'
+  }
+
+  /**
    * Flush queued events for one live Session before a remote authorization read.
    * @param id - Session whose pending append must settle.
    * @returns after the live Session flush completes or immediately when absent.
@@ -250,16 +343,27 @@ export class XAgentSessionPersistence extends SessionPersistence {
     for (let index = 0; index < events.length; index++) {
       if (events[index]?.seq !== first.seq + index) throw new TypeError('non-contiguous XAgent session append')
     }
-    await this.backend.sessions.append(token, backendSessionId(id), {
-      schema_version: 1,
+    const receipts = this.receiptRegistry()
+    const attachments = receipts?.attachments(String(id), first.seq, last.seq) ?? []
+    const body = {
+      schema_version: 1 as const,
       expected_sequence: first.seq - 1,
       idempotency_key: `append:${id}:${String(first.seq)}:${String(last.seq)}`,
       events: events.map(event => ({
         event_type: event.type,
-        schema_version: 1,
+        schema_version: 1 as const,
         payload: structuredClone(event),
       })),
-    }, undefined)
+      retrieval_receipts: attachments.map(attachment => ({
+        event_sequence: attachment.eventSequence,
+        tool_call_id: attachment.toolCallId,
+        receipt: attachment.receipt,
+        payload_hash: attachment.payloadHash,
+      })),
+    }
+    const response = await this.backend.sessions.append(token, backendSessionId(id), body, undefined)
+    validateAppendResult(response, last.seq)
+    receipts?.commit(String(id), last.seq)
     if (events.some(event => event.type === 'turn/end')) this.turnTokens.delete(id)
   }
 
@@ -363,6 +467,10 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return this.activeToken
   }
 
+  private receiptRegistry(): XAgentReceiptRegistryContract | undefined {
+    return this.ctx.get('xagentRetrieval')?.receipts
+  }
+
   private async readInspection(id: SessionIdType, signal?: AbortSignal): Promise<SessionInspection> {
     signal?.throwIfAborted()
     const token = this.tokenFor(id)
@@ -398,7 +506,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     this.ctx.on('session/event', (session, event) => {
       let state = this.writes.get(session.id)
       if (state === undefined) {
-        state = { pending: [], flushing: undefined, timer: undefined }
+        state = { pending: [], retry: undefined, flushing: undefined, timer: undefined }
         this.writes.set(session.id, state)
       }
       state.pending.push(structuredClone(event))
@@ -417,7 +525,6 @@ export class XAgentSessionPersistence extends SessionPersistence {
       void this.flushWrites(session.id).then(
         () => { this.releaseSession(session.id) },
         (error: unknown) => {
-          this.releaseSession(session.id)
           this.ctx.logger.warn(`xagent session persistence failed for "${session.id}": ${String(error)}`)
         },
       )
@@ -430,25 +537,24 @@ export class XAgentSessionPersistence extends SessionPersistence {
   private flushWrites(id: SessionIdType): Promise<void> {
     const state = this.writes.get(id)
     if (state === undefined) return Promise.resolve()
-    if (state.failure !== undefined) {
-      return Promise.reject(state.failure instanceof Error
-        ? state.failure
-        : new Error('session persistence write failed', { cause: state.failure }))
-    }
     if (state.timer !== undefined) {
       clearTimeout(state.timer)
       state.timer = undefined
     }
     if (state.flushing !== undefined) return state.flushing
+    if (state.retry === undefined && state.pending.length === 0) return Promise.resolve()
     state.flushing = (async () => {
       try {
-        while (state.pending.length > 0) {
-          const batch = state.pending.splice(0)
-          await this.append(id, batch)
+        while (state.retry !== undefined || state.pending.length > 0) {
+          const batch = state.retry ?? state.pending.splice(0)
+          try {
+            await this.append(id, batch)
+            state.retry = undefined
+          } catch (error) {
+            state.retry = batch
+            throw error
+          }
         }
-      } catch (error) {
-        state.failure = error
-        throw error
       } finally {
         state.flushing = undefined
       }

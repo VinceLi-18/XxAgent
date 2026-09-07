@@ -155,23 +155,31 @@ async def authenticate(email: str, password: str, session: AsyncSession) -> Issu
     )
 
 
-async def introspect(token: str, session: AsyncSession) -> Principal:
+async def introspect(
+    token: str,
+    session: AsyncSession,
+    *,
+    update_verification: bool = True,
+) -> Principal:
+    """Validate a login and optionally record its latest verification time."""
     claims = _decode_token(token)
     now = datetime.now(UTC)
-    row = (
-        await session.execute(
-            select(
-                XAgentAuthSession,
-                Account.email,
-                Account.role,
-                Account.is_active,
-                XAgentPermissionRevision.revision,
-            )
-            .join(Account, Account.id == XAgentAuthSession.account_id)
-            .join(XAgentPermissionRevision, XAgentPermissionRevision.account_id == Account.id)
-            .where(XAgentAuthSession.id == claims.auth_session_id)
-            .with_for_update(of=XAgentAuthSession)
+    statement = (
+        select(
+            XAgentAuthSession,
+            Account.email,
+            Account.role,
+            Account.is_active,
+            XAgentPermissionRevision.revision,
         )
+        .join(Account, Account.id == XAgentAuthSession.account_id)
+        .join(XAgentPermissionRevision, XAgentPermissionRevision.account_id == Account.id)
+        .where(XAgentAuthSession.id == claims.auth_session_id)
+    )
+    if update_verification:
+        statement = statement.with_for_update(of=XAgentAuthSession)
+    row = (
+        await session.execute(statement)
     ).one_or_none()
     if row is None:
         raise AuthenticationRejected
@@ -186,8 +194,9 @@ async def introspect(token: str, session: AsyncSession) -> Principal:
         or row.revision != claims.permission_revision
     ):
         raise AuthenticationRejected
-    auth_session.last_verified_at = now
-    await session.flush()
+    if update_verification:
+        auth_session.last_verified_at = now
+        await session.flush()
     return Principal(
         actor_id=claims.actor_id,
         role=row.role,

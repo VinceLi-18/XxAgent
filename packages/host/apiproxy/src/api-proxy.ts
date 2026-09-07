@@ -17,7 +17,7 @@ import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { isAppendSurfaceEvent, isJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue, Session, SessionEvent, SessionEventMap, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
-import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
+import { SessionForkOperationId, type SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
 import { SubagentError } from '@deepseek-ai/dsh-subagent'
 import type { SubagentListEntry as CatalogSubagentListEntry } from '@deepseek-ai/dsh-subagent'
@@ -119,6 +119,9 @@ const SESSION_SEARCH_PROVIDER_CALL_LIMIT = 100
 const COLD_SUMMARY_BATCH_SIZE = 16
 /** Default maximum artifact size eligible for one cold blankness read. */
 export const DEFAULT_COLD_BLANK_PROBE_MAX_BYTES = 1024
+
+/** Filesystem conditions eligible for one immediate, phase-local attachment retry. */
+const TRANSIENT_WORKSPACE_ATTACHMENT_CODES = new Set(['EAGAIN', 'EBUSY', 'ETIMEDOUT'])
 
 /** Conversation message event types (the pagination counting unit). */
 const MESSAGE_TYPES = new Set(['user/message', 'assistant/message'])
@@ -599,6 +602,24 @@ function directoryError(error: unknown): RpcError {
     return { code: error.code, message: error.message, details: { path: error.path } }
   }
   return { code: 'internal', message: error instanceof Error ? error.message : String(error), details: {} }
+}
+
+/** Execute one phase once more only when its owner classifies the first failure as transient. */
+async function recoverOnce<T>(operation: () => Promise<T>, retryable: (error: unknown) => boolean): Promise<T> {
+  try {
+    return await operation()
+  } catch (error: unknown) {
+    if (!retryable(error)) throw error
+    return operation()
+  }
+}
+
+/** Recognize the closed transient errno set for Workspace membership persistence. */
+function transientWorkspaceAttachment(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null
+    ? (error as { code?: unknown }).code
+    : undefined
+  return typeof code === 'string' && TRANSIENT_WORKSPACE_ATTACHMENT_CODES.has(code)
 }
 
 /** Resolved Agent model and project-directory defaults consumed by the API implementation. */
@@ -2403,28 +2424,62 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             details: {},
           })
         }
-        const childId = `session-${randomUUID()}` as SessionId
         // The child inherits the parent's composition for the same reason a
         // resumed session keeps its own: the seeded history was produced under
         // those tools, and composing anything else would strand the tool calls
         // it already carries. Now that no model-facing row sits in the host
         // plane, composing nothing would leave the child with no tools at all.
         const forkComposition = await composeAgent(resolveSessionPreset(source))
+        const persistence = ctx.get('sessionPersistence')
+        const operationId = SessionForkOperationId(request.rpcId)
+        const throughSequence = cut - 1
+        let childId: SessionId
         try {
-          await ctx.agents.create({
-            sessionId: childId,
-            seed: events.slice(0, cut),
-            meta: {
-              ...source.header.cwd === undefined ? {} : { cwd: source.header.cwd },
-              parentSession: source.id,
-              seedLength: cut,
-              ...forkComposition.agentPreset === undefined
-                ? {}
-                : { agentPreset: forkComposition.agentPreset },
-            },
-            agentOptions: agentOptions(),
-            setup: forkComposition.setup,
-          })
+          const durableChild = await recoverOnce(
+            () => persistence === undefined
+              ? Promise.resolve(undefined)
+              : persistence.fork(source.id, throughSequence, operationId),
+            error => persistence?.isForkRetryable(error) === true,
+          )
+          if (durableChild === undefined) {
+            childId = `session-${randomUUID()}` as SessionId
+            await ctx.agents.create({
+              sessionId: childId,
+              seed: events.slice(0, cut),
+              meta: {
+                ...source.header.cwd === undefined ? {} : { cwd: source.header.cwd },
+                parentSession: source.id,
+                seedLength: cut,
+                ...forkComposition.agentPreset === undefined
+                  ? {}
+                  : { agentPreset: forkComposition.agentPreset },
+              },
+              agentOptions: agentOptions(),
+              setup: forkComposition.setup,
+            })
+          } else {
+            childId = durableChild.id
+            await recoverOnce(async () => {
+              const existing = ctx.agents.get(childId)
+              if (existing === undefined) {
+                await ctx.agents.resume({
+                  resumeSessionId: childId,
+                  agentOptions: agentOptions(),
+                  setup: forkComposition.setup,
+                })
+              } else {
+                const left = existing.session.header
+                const right = durableChild
+                const fields = [
+                  'version', 'id', 'createdAt', 'cwd', 'parentSession', 'seedLength',
+                  'origin', 'delegationDepth', 'agentPreset',
+                ] as const
+                if (fields.some(field => left[field] !== right[field])) {
+                  throw new Error(`durable fork child "${childId}" conflicts with its live session`)
+                }
+              }
+            }, error => persistence?.isForkRetryable(error) === true)
+          }
         } catch (error: unknown) {
           return err(request, {
             code: 'internal',
@@ -2437,7 +2492,10 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         // ancestor instead. The child is already published if attach fails.
         if (workspace !== undefined) {
           try {
-            await workspace.attachSession(childId)
+            await recoverOnce(
+              () => workspace.attachSession(childId),
+              transientWorkspaceAttachment,
+            )
           } catch (error: unknown) {
             return err(request, {
               code: 'workspace-attach-failed',

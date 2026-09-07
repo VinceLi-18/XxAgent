@@ -32,6 +32,7 @@ python/**/__pycache__/
 python/**/.pytest_cache/
 services/api/**/__pycache__/
 services/api/**/.pytest_cache/
+services/embedding/**/__pycache__/
 apps/web/dist/
 .artifacts/
 .playwright-mcp/

@@ -210,6 +210,22 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Reads the user token only from the active connection request scope and forwards four fixed workbench operations to FastAPI.',
   },
   {
+    key: 'xagentRetrieval',
+    pkg: 'xagent-retrieval',
+    title: 'Authenticated XAgent retrieval seam',
+    mode: 'seam',
+    consumers: ['tool-retrieval', 'session-persistence-api'],
+    note: 'Consumes one immutable authenticated prompt scope, issues one exact delegation per call, and privately retains receipts until confirmed Session append.',
+  },
+  {
+    key: 'xagentCitation',
+    pkg: 'xagent-retrieval',
+    title: 'XAgent citation Remote',
+    mode: 'core',
+    consumers: ['xagent-authorization', 'api-gateway'],
+    note: 'Resolves only persisted citations from the authenticated current Session, mints a fresh delegation, and returns immutable Artifact navigation identities without a URL.',
+  },
+  {
     key: 'settings',
     pkg: 'settings',
     title: 'User-settings seam',

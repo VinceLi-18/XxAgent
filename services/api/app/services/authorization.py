@@ -52,3 +52,14 @@ async def authorize_project(
     )
     if is_allowed is None:
         raise ForbiddenError
+
+
+async def authorize_projects(
+    session: AsyncSession,
+    actor_id: UUID,
+    project_ids: tuple[UUID, ...],
+    action: ProjectAction,
+) -> None:
+    """Authorize a complete project set without returning a visible subset."""
+    for project_id in project_ids:
+        await authorize_project(session, actor_id, project_id, action)

@@ -20,8 +20,9 @@ async def _insert_private_session(
         await connection.execute(
             text(
                 "INSERT INTO xagent_sessions "
-                "(id, owner_id, visibility, permission_revision_created, title) "
-                "VALUES (:id, :owner_id, 'private', 1, 'Workbench RLS test')"
+                "(id, owner_id, visibility, permission_revision_created, title, "
+                "next_citation_ordinal) "
+                "VALUES (:id, :owner_id, 'private', 1, 'Workbench RLS test', 1)"
             ),
             {"id": session_id, "owner_id": owner_id},
         )
@@ -176,7 +177,7 @@ async def test_accounts_read_only_their_own_capability_grants_without_write_acce
 
 
 @pytest.mark.anyio
-async def test_accounts_only_read_project_refs_for_their_private_sessions(
+async def test_accounts_only_read_project_refs_for_their_private_sessions_and_may_insert(
     seeded_database: AsyncEngine,
     actor_session: AsyncSession,
     alice,
@@ -231,7 +232,7 @@ async def test_accounts_only_read_project_refs_for_their_private_sessions(
     )
 
     assert rows == [(alice_session_id, bob_project.id)]
-    assert may_insert is False
+    assert may_insert is True
 
 
 @pytest.mark.anyio

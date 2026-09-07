@@ -20,4 +20,22 @@ export interface XAgentAuthenticatedRequestScope {
   readonly principal: XAgentPrincipal
   readonly userToken: string
   readonly connectionId: string
+  /** AbortSignal for the prompt request that admitted inbox work. */
+  readonly requestSignal?: AbortSignal
+  /** AbortSignal for the authenticated physical connection. */
+  readonly connectionSignal?: AbortSignal
 }
+
+/** Authenticated Session facts propagated from one physical prompt request into its agent turn. */
+export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestScope & (
+  | {
+    readonly sessionId: string
+    readonly visibility: 'private'
+    readonly projectId: null
+  }
+  | {
+    readonly sessionId: string
+    readonly visibility: 'project'
+    readonly projectId: string
+  }
+)
