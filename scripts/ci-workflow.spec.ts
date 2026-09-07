@@ -366,15 +366,6 @@ describe('CI workflow', () => {
     })
     expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
     expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
-    expect(migrate.depends_on).toMatchObject({
-      roles: { condition: 'service_completed_successfully' },
-    })
-    expect(worker.depends_on).toMatchObject({
-      migrate: { condition: 'service_completed_successfully' },
-      minio: { condition: 'service_healthy' },
-      clamav: { condition: 'service_healthy' },
-      embedding: { condition: 'service_healthy' },
-    })
     expect(durationSeconds(worker.stop_grace_period)).toBeGreaterThanOrEqual(90)
     expect(minio.healthcheck.test).toEqual(['CMD', 'mc', 'ready', 'local'])
     expect(clamav.image).toMatch(/^clamav\/clamav-debian:1\.4(?:$|\.)/)
@@ -451,15 +442,6 @@ describe('CI workflow', () => {
     })
     expect(migrate.environment).not.toHaveProperty('POSTGRES_APP_PASSWORD')
     expect(migrate.environment).not.toHaveProperty('POSTGRES_WORKER_PASSWORD')
-    expect(migrate.depends_on).toMatchObject({
-      roles: { condition: 'service_completed_successfully' },
-    })
-    expect(worker.depends_on).toMatchObject({
-      migrate: { condition: 'service_completed_successfully' },
-      minio: { condition: 'service_healthy' },
-      clamav: { condition: 'service_healthy' },
-      embedding: { condition: 'service_healthy' },
-    })
     expect(api.depends_on).toMatchObject({
       migrate: { condition: 'service_completed_successfully' },
       minio: { condition: 'service_healthy' },
@@ -966,6 +948,7 @@ function expectArtifactLifecycleOrder(services: {
     migrate: { condition: 'service_completed_successfully' },
     minio: { condition: 'service_healthy' },
     clamav: { condition: 'service_healthy' },
+    embedding: { condition: 'service_healthy' },
   })
 }
 

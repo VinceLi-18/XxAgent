@@ -64,6 +64,29 @@ const RETRIEVAL_ERRORS = new Set<XAgentRetrievalErrorCode>([
   'evidence-expired', 'evidence-conflict', 'citation-invalid', 'service-unavailable',
 ])
 
+async function runTrackedCall<T>(
+  controllers: Map<AbortController, Promise<void>>,
+  signal: AbortSignal | undefined,
+  operation: (signal: AbortSignal) => Promise<T>,
+  mapError: (error: unknown) => unknown,
+): Promise<T> {
+  const controller = new AbortController()
+  const merged = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal])
+  const settled = Promise.withResolvers<void>()
+  controllers.set(controller, settled.promise)
+  try {
+    merged.throwIfAborted()
+    const value = await operation(merged)
+    merged.throwIfAborted()
+    return value
+  } catch (error: unknown) {
+    throw mapError(error)
+  } finally {
+    controllers.delete(controller)
+    settled.resolve()
+  }
+}
+
 /** Host retrieval provider configuration. */
 export interface Config {
   /** FastAPI service origin. */
@@ -381,23 +404,11 @@ export class XAgentCitationRemoteService extends TypertRemoteService implements 
   }
 
   private async call<T>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    const controller = new AbortController()
-    const merged = AbortSignal.any([signal, controller.signal])
-    const settled = Promise.withResolvers<void>()
-    this.controllers.set(controller, settled.promise)
-    try {
-      merged.throwIfAborted()
-      const value = await operation(merged)
-      merged.throwIfAborted()
-      return value
-    } catch (error: unknown) {
+    return runTrackedCall(this.controllers, signal, operation, (error) => {
       if (error instanceof TypertRemoteFailure) throw error
       if (error instanceof XAgentBackendError) throw citationRemoteFailure(error.code)
       throw citationRemoteFailure('service-unavailable')
-    } finally {
-      this.controllers.delete(controller)
-      settled.resolve()
-    }
+    })
   }
 }
 
@@ -869,25 +880,13 @@ export class XAgentRetrievalService extends XAgentRetrieval {
 
   private async call<T>(signal: AbortSignal | undefined, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (!this.accepting) throw new XAgentRetrievalError('service-unavailable')
-    const controller = new AbortController()
-    const merged = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal])
-    const settled = Promise.withResolvers<void>()
-    this.controllers.set(controller, settled.promise)
-    try {
-      merged.throwIfAborted()
-      const value = await operation(merged)
-      merged.throwIfAborted()
-      return value
-    } catch (error: unknown) {
+    return runTrackedCall(this.controllers, signal, operation, (error) => {
       if (error instanceof XAgentRetrievalError) throw error
       if (error instanceof XAgentBackendError && RETRIEVAL_ERRORS.has(error.code as XAgentRetrievalErrorCode)) {
         throw new XAgentRetrievalError(error.code as XAgentRetrievalErrorCode)
       }
       throw new XAgentRetrievalError('service-unavailable')
-    } finally {
-      this.controllers.delete(controller)
-      settled.resolve()
-    }
+    })
   }
 }
 

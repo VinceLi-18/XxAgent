@@ -9,12 +9,14 @@ import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { probeFreePort, REPO_ROOT, requireDist, saveFailureShot, ZH_BROWSER_LOCALE } from './support.ts'
 import {
-  browserDiagnosticUrl,
-  redactBrowserDiagnosticText,
   spawnOwnedChild,
   stopChildProcess,
-  structuredRetrievalIdentity,
   type OwnedChildProcess,
+} from './xagent-artifact-support.ts'
+import {
+  browserDiagnosticUrl,
+  redactBrowserDiagnosticText,
+  structuredRetrievalIdentity,
 } from './xagent-structured-retrieval-support.ts'
 
 const SERVICE_TOKEN = 'xagent-e2e-service-token-test-only-0001'
@@ -545,7 +547,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
         await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
         await page.getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
       } catch (error) {
-        const logs = compose(identity.composeProject, override, ['logs', '--no-color']).slice(-12_000)
+        const logs = compose(identity.composeProject, override, ['logs', '--no-color', '--tail', '200']).slice(-12_000)
         throw new Error(`Task12 stack startup failed: ${String(error)}\n${redactBrowserDiagnosticText(logs)}`)
       }
     }, 900_000)

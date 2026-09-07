@@ -187,7 +187,7 @@ describe('XAgent Business 真实资料生命周期', () => {
       await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
       await page.getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
     } catch (error) {
-      const logs = compose(project, override, ['logs', '--no-color']).slice(-12_000)
+      const logs = compose(project, override, ['logs', '--no-color', '--tail', '200']).slice(-12_000)
       throw new Error(`真实资料栈启动失败：${String(error)}\n${logs}`)
     }
   }, 600_000)
@@ -216,7 +216,7 @@ describe('XAgent Business 真实资料生命周期', () => {
   it('上传、扫描、详情、预览、新版本、栏位折叠和账号切换均保持服务器范围', async () => {
     onTestFailed(async () => {
       if (page !== undefined) await saveFailureShot(page, 'xagent-artifact')
-      browserDiagnostics.push(compose(project, override, ['logs', '--no-color']).slice(-12_000))
+      browserDiagnostics.push(compose(project, override, ['logs', '--no-color', '--tail', '200']).slice(-12_000))
     })
     const activePage = page!
     await login(activePage, managerEmail)
