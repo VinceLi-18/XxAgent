@@ -72,7 +72,7 @@ jobs:
       DSH_GATE_CONCURRENCY: ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '8' || '2' }}
     steps:
       # Fetch complete history so the archive gate can read the trusted PR base from a reused shallow checkout.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -124,7 +124,7 @@ jobs:
       DSH_COVERAGE_MAX_WORKERS: ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '8' || '2' }}
       DSH_GATE_CONCURRENCY: ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '3' || '2' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -186,7 +186,7 @@ jobs:
       DSH_PUBLINT_CONCURRENCY: ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '8' || '2' }}
       DSH_SNAPSHOT_MAX_CONCURRENCY: ${{ vars.DSH_CI_FAILOVER_LINUX == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '12' || '4' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -303,7 +303,7 @@ jobs:
             runner: ubuntu-latest
             gate_concurrency: '1'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
         with:
@@ -325,7 +325,7 @@ jobs:
     runs-on: ubuntu-latest
     name: python 3.10 / keyless SDK
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6.3.0
         with:
@@ -360,7 +360,7 @@ jobs:
       JX_TEST_DATABASE_URL: postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:5432/xagent_api_test
       JX_ALLOW_SCHEMA_DROP: 'yes'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -391,7 +391,7 @@ jobs:
       XAGENT_ARTIFACT_E2E_URL: http://127.0.0.1:58000
       XAGENT_ARTIFACT_E2E_SERVICE_TOKEN: xagent-e2e-service-token-test-only-0001
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -459,7 +459,7 @@ jobs:
       XAGENT_RETRIEVAL_E2E_URL: http://127.0.0.1:58000
       XAGENT_RETRIEVAL_E2E_SERVICE_TOKEN: xagent-e2e-service-token-test-only-0001
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -549,7 +549,7 @@ jobs:
     name: windows node 24 / wine blocking
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -669,7 +669,7 @@ jobs:
       DSH_GATE_CONCURRENCY: '2'
       DSH_PUBLINT_CONCURRENCY: '8'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -708,7 +708,7 @@ jobs:
     name: serial / linux
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
@@ -791,7 +791,7 @@ jobs:
       # comparison as serial-linux. Depth 2 would miss github.event.before
       # on multi-commit or force pushes; full fetch is cheap here because
       # checkout resolves against the VM's local mirror.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -833,7 +833,7 @@ jobs:
     name: serial / macos
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
         with:
@@ -872,7 +872,7 @@ jobs:
     runs-on: [self-hosted, dsh-win-ci, windows]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Enable Developer Mode (symlink support)
         shell: pwsh
@@ -966,7 +966,7 @@ jobs:
             runner: dsh-windows-2025-96core
             workload: production-site
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
         with:
@@ -1057,7 +1057,7 @@ jobs:
             runner: dsh-windows-2025-96core
             workers: '2'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v4
         with:
