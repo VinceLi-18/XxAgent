@@ -54,6 +54,8 @@ const dshBinScript = fileURLToPath(new URL('../../../apps/cli/src/bin.ts', impor
 const tsconfigPath = fileURLToPath(new URL('../../../tsconfig.json', import.meta.url))
 const reasoningConfigPath = fileURLToPath(new URL('./fixtures/cli.cordis.yml', import.meta.url))
 const deepseekDefaultsConfigPath = fileURLToPath(new URL('./fixtures/deepseek-defaults.cordis.yml', import.meta.url))
+const DEEPSEEK_DEFAULTS_KEEP_ALIVE_COUNT = 32
+const DEEPSEEK_DEFAULTS_KEEP_ALIVE_INTERVAL_MS = 50
 const headlessOverlayPath = fileURLToPath(new URL('./fixtures/headless-profile.cordis.yml', import.meta.url))
 const headlessSessionExpected = join(snapshotsDir, 'headless-profile', 'session.expected.jsonl')
 const headlessFailureExpected = join(snapshotsDir, 'headless-profile', 'stderr.expected.txt')
@@ -85,11 +87,13 @@ async function deepseekDefaultsServer(): Promise<DeepSeekDefaultsServer> {
     request.on('end', () => {
       requests.push(JSON.parse(body) as JsonObject)
       response.writeHead(200, { 'content-type': 'text/event-stream' })
-      let keepAlives = 3
+      // The response outlasts the fixture's idle deadline while each comment
+      // retains enough scheduler headroom to reset it on shared CI runners.
+      let keepAlives = DEEPSEEK_DEFAULTS_KEEP_ALIVE_COUNT
       const write = (): void => {
         if (keepAlives-- > 0) {
           response.write(': keep-alive\n\n')
-          setTimeout(write, 60)
+          setTimeout(write, DEEPSEEK_DEFAULTS_KEEP_ALIVE_INTERVAL_MS)
           return
         }
         response.end([
@@ -99,7 +103,7 @@ async function deepseekDefaultsServer(): Promise<DeepSeekDefaultsServer> {
           '',
         ].join('\n\n'))
       }
-      setTimeout(write, 60)
+      setTimeout(write, DEEPSEEK_DEFAULTS_KEEP_ALIVE_INTERVAL_MS)
     })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
