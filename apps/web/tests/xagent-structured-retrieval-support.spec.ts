@@ -39,7 +39,7 @@ describe('XAgent structured-retrieval E2E ownership', () => {
     }
   })
 
-  it('waits for inherited stdio close and escalates an ignored TERM to KILL', async () => {
+  it.skipIf(process.platform === 'win32')('waits for inherited stdio close and escalates an ignored TERM to KILL', async () => {
     const owned = spawnOwnedChild(process.execPath, ['-e', [
       "process.on('SIGTERM', () => {})",
       "process.stdout.write('ready\\n')",
