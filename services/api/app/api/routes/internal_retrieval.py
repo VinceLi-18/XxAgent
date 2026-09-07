@@ -3,6 +3,7 @@
 import hashlib
 import time
 from collections.abc import Awaitable, Callable
+from typing import Literal
 from uuid import UUID, uuid4
 
 import httpx
@@ -192,6 +193,7 @@ async def _write_retrieval_audit(
     returned_count: int = 0,
     latency_ms: int = 0,
     evidence: list[dict[str, object]] | None = None,
+    max_evidence: Literal[8, 64] = 8,
 ) -> None:
     await write_audit_event(
         context.session,
@@ -212,6 +214,7 @@ async def _write_retrieval_audit(
             result=result,
             latency_ms=latency_ms,
             evidence=evidence,
+            max_evidence=max_evidence,
         ),
     )
 
@@ -570,7 +573,6 @@ async def _authorized_citations(
     ]
     candidates = await authorize_session_citations(
         context.session,
-        actor_id=context.principal.actor_id,
         session_id=request.session_id,
         citations=identities,
     )
@@ -641,6 +643,7 @@ async def authorize_citations_route(
                 }
                 for item in candidates
             ],
+            max_evidence=64,
         )
         return await _commit_response(
             context, CitationAuthorizeResponse(authorized=True),

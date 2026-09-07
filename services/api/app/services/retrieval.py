@@ -17,8 +17,8 @@ from app.models.retrieval import (
     ArtifactSearchHead,
     ArtifactTextChunk,
     ArtifactTextIndex,
+    XAgentAdmittedEvidence,
     XAgentCitedAnswerEvidence,
-    XAgentRetrievalReceipt,
 )
 from app.models.xagent_session import XAgentSession
 from app.retrieval.embedding_client import EmbeddingClient, RetrievalUnavailableError
@@ -422,28 +422,27 @@ async def authorize_citation_chunks(
 async def authorize_session_citations(
     session: AsyncSession,
     *,
-    actor_id: UUID,
     session_id: UUID,
     citations: list[tuple[str, UUID, UUID, UUID]],
 ) -> list[RetrievalCandidate]:
-    """Require each citation to come from consumed evidence in the same Session."""
-    receipts = (
+    """Require each citation to match durable admitted evidence in the same Session."""
+    evidence = (
         await session.scalars(
-            select(XAgentRetrievalReceipt).where(
-                XAgentRetrievalReceipt.actor_id == actor_id,
-                XAgentRetrievalReceipt.session_id == session_id,
-                XAgentRetrievalReceipt.kind == "artifact_search",
-                XAgentRetrievalReceipt.consumed_at.is_not(None),
+            select(XAgentAdmittedEvidence).where(
+                XAgentAdmittedEvidence.session_id == session_id,
+                XAgentAdmittedEvidence.citation_id.in_([
+                    citation_id for citation_id, _, _, _ in citations
+                ]),
             )
+            .order_by(XAgentAdmittedEvidence.citation_id)
+            .limit(len(citations))
         )
     ).all()
-    admitted: dict[str, UUID] = {}
-    for receipt in receipts:
-        if receipt.citation_ordinal_start is None:
-            continue
-        for offset, chunk_id in enumerate(receipt.chunk_ids):
-            admitted[f"[资料{receipt.citation_ordinal_start + offset}]"] = UUID(chunk_id)
-    if any(admitted.get(citation_id) != chunk_id for citation_id, _, _, chunk_id in citations):
+    admitted = {
+        (item.citation_id, item.artifact_id, item.version_id, item.chunk_id)
+        for item in evidence
+    }
+    if admitted != set(citations):
         raise RetrievalError("citation-invalid")
     return await authorize_citation_chunks(
         session,

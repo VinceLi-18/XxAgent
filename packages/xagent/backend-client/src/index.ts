@@ -532,7 +532,8 @@ function parseArtifactList(value: unknown): readonly XAgentArtifactSummary[] {
 const CITATION_ID_PATTERN = /^\[资料([1-9][0-9]*)\]$/
 const OPAQUE_RECEIPT_PATTERN = /^[A-Za-z0-9_-]+$/
 const MAX_RETRIEVAL_PROJECTS = 20
-const MAX_RETRIEVAL_CITATIONS = 8
+const MAX_RETRIEVAL_SEARCH_CITATIONS = 8
+const MAX_RETRIEVAL_AUTHORIZATION_CITATIONS = 64
 const MAX_RETRIEVAL_TEXT_BYTES = 32 * 1024
 
 function payloadHash(value: unknown): string {
@@ -631,7 +632,7 @@ function parseArtifactSearch(value: unknown): {
   readonly payloadHash: string
 } {
   const row = exactRecord(value, ['schema_version', 'citations', 'receipt', 'payload_sha256'])
-  if (row.schema_version !== 1 || !Array.isArray(row.citations) || row.citations.length > MAX_RETRIEVAL_CITATIONS) {
+  if (row.schema_version !== 1 || !Array.isArray(row.citations) || row.citations.length > MAX_RETRIEVAL_SEARCH_CITATIONS) {
     failSchema()
   }
   if (
@@ -1118,7 +1119,7 @@ export class XAgentBackendClient implements XAgentBackend {
         if (
           !Array.isArray(input.citations)
           || input.citations.length < 1
-          || input.citations.length > MAX_RETRIEVAL_CITATIONS
+          || input.citations.length > MAX_RETRIEVAL_AUTHORIZATION_CITATIONS
         ) failSchema()
         const citations = input.citations.map(citationRequest)
         if (

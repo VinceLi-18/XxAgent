@@ -517,6 +517,28 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
             "citation_id": search_body["citations"][0]["id"],
         },
     )
+    authorized_fork = await client.post(
+        "/internal/xagent/retrieval/citations/authorize",
+        headers={
+            **headers,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=fork_id,
+                tool_call_id="authorize-cited-answer-fork",
+                tool_name="authorize_citations",
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(fork_id),
+            "tool_call_id": "authorize-cited-answer-fork",
+            "permission_revision": 1,
+            "citations": [{
+                key: search_body["citations"][0][key]
+                for key in ("id", "artifact_id", "version_id", "chunk_id")
+            }],
+        },
+    )
     invented = await client.post(
         f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
         headers=headers,
@@ -552,6 +574,8 @@ async def test_append_atomically_consumes_search_receipt_and_persists_only_publi
     assert forked.status_code == 201
     assert reopened_fork.status_code == 200
     assert reopened_fork.json()["version_id"] == search_body["citations"][0]["version_id"]
+    assert authorized_fork.status_code == 200, authorized_fork.text
+    assert authorized_fork.json() == {"schema_version": 1, "authorized": True}
     assert invented.status_code == 409
     assert invented.json() == {"detail": {"code": "evidence-conflict"}}
     persisted_event = opened.json()["events"][0]
@@ -1161,6 +1185,31 @@ async def test_project_member_reopens_admitted_citation_and_revocation_closes_ac
             },
         )
 
+    authorized = await client.post(
+        "/internal/xagent/retrieval/citations/authorize",
+        headers={
+            "Authorization": f"Bearer {alice_token}",
+            "X-XAgent-Service-Token": SERVICE_TOKEN,
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=shared_xagent_session.id,
+                project_id=shared_xagent_session.project_id,
+                tool_call_id="authorize-shared",
+                tool_name="authorize_citations",
+                permission_revision=alice_revision,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(shared_xagent_session.id),
+            "tool_call_id": "authorize-shared",
+            "permission_revision": alice_revision,
+            "citations": [{
+                key: search_body["citations"][0][key]
+                for key in ("id", "artifact_id", "version_id", "chunk_id")
+            }],
+        },
+    )
     reopened = await resolve("resolve-shared", alice_revision, alice_token)
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
@@ -1194,6 +1243,8 @@ async def test_project_member_reopens_admitted_citation_and_revocation_closes_ac
         refreshed_login.json()["access_token"],
     )
 
+    assert authorized.status_code == 200, authorized.text
+    assert authorized.json() == {"schema_version": 1, "authorized": True}
     assert reopened.status_code == 200
     assert reopened.json()["version_id"] == search_body["citations"][0]["version_id"]
     assert stale.status_code == 401

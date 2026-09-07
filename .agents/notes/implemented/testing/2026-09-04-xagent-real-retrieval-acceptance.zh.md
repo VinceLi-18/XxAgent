@@ -16,11 +16,11 @@ embedding UID/GID `65532:65532` 持有共享 Hugging Face 缓存，owner 可写�
 
 浏览器 consumer 车道会针对同一套 Compose 拓扑运行资料生命周期，因此会在启动浏览器测试集前恢复并准备相同的修订、锁文件与 manifest 缓存。缓存命中且通过验证后强制离线加载；精确缓存缺失时，该次运行允许下载固定的官方修订，而前置 verifier 仍会拒绝部分存在或损坏的状态。测试集结束后的严格验证必须通过，cache action 才能保存结果。除这项显式的 CI 冷缓存信号外，测试进程默认离线加载。
 
-必需的拉取请求车道运行真实上传、扫描、索引、搜索、收据、Session 证据、引用授权和引用解析路径。检索 fixture 让每条排序分支都可观察：dense 候选的词法得分为零，英文词法候选位于 dense 前四十之外，中文候选的全文排名为零、trigram 得分为正，并且也位于 dense 前四十之外。一组同分候选让 VersionID、ordinal 和 chunk ID 顺序都与 ArtifactID 顺序相反；另一组候选共享 Artifact 与 Version，并让 chunk ID 顺序与 ordinal 顺序相反。这些真实断言到达元组中所有在真实搜索里可到达的层级；如果 VersionID、ordinal 或分支内 chunk identity 取代 ArtifactID 优先级，测试就会失败。`artifact_search_heads.artifact_id` 是主键，因此有效的真实搜索不可能让一个 Artifact 同时出现不同的可搜索 Version；直接 fusion 单元测试保留该函数较宽候选列表约定中的 VersionID fallback，而无需破坏数据库。版本替换会保持当前 generation 可搜索，直到下一个就绪索引原子切换 head。无效 UTF-8 会完成 MIME 分类并入队，随后进入精确的 `failed:invalid-utf8` 索引状态和 dead job 状态，不产生 head 或检索结果。不支持与隔离输入不创建索引；已被取代和陈旧的工作不能发布可搜索 head。
+必需的拉取请求车道运行真实上传、扫描、索引、搜索、收据、Session 证据、引用授权和引用解析路径。API 验收还会证明，共享 Project Session 的另一名当前成员和 fork 都能在没有原 actor receipt 的情况下授权已复制的持久证据，且授权与审计路径接受终态回答的 64 条引用上限。检索 fixture 让每条排序分支都可观察：dense 候选的词法得分为零，英文词法候选位于 dense 前四十之外，中文候选的全文排名为零、trigram 得分为正，并且也位于 dense 前四十之外。一组同分候选让 VersionID、ordinal 和 chunk ID 顺序都与 ArtifactID 顺序相反；另一组候选共享 Artifact 与 Version，并让 chunk ID 顺序与 ordinal 顺序相反。这些真实断言到达元组中所有在真实搜索里可到达的层级；如果 VersionID、ordinal 或分支内 chunk identity 取代 ArtifactID 优先级，测试就会失败。`artifact_search_heads.artifact_id` 是主键，因此有效的真实搜索不可能让一个 Artifact 同时出现不同的可搜索 Version；直接 fusion 单元测试保留该函数较宽候选列表约定中的 VersionID fallback，而无需破坏数据库。版本替换会保持当前 generation 可搜索，直到下一个就绪索引原子切换 head。无效 UTF-8 会完成 MIME 分类并入队，随后进入精确的 `failed:invalid-utf8` 索引状态和 dead job 状态，不产生 head 或检索结果。不支持与隔离输入不创建索引；已被取代和陈旧的工作不能发布可搜索 head。
 
 重叠 worker 恢复使用可观察租约，不使用依赖延时的协调。测试保持第一代可搜索，在一次性 worker 持有替换租约期间暂停真实 embedding 依赖，随后暂停而不杀死该 owner。主 worker 发布更新的 generation，并重新领取已过期的替换任务；旧 owner 随后恢复并完成真实进程路径。断言要求重建期间保留第一个 head、发布后只保留最新 head、不存在已被取代的 head，并且陈旧 owner 不能发布。每个轮询循环、HTTP 操作、Compose 命令、服务健康检查和 CI 任务都有显式界限。
 
-CI 步骤在启动前安装无条件退出 trap。失败诊断先于拆卸运行，随后删除具名的一次性 worker，并由 Compose 删除卷和遗留资源。精确的 worker 名称与 Compose 项目标签查询要求容器、卷和网络结果均为空，因此成功的测试命令无法掩盖清理失败。
+CI 步骤在启动前安装无条件退出 trap。失败诊断先于拆卸运行，随后删除具名的一次性 worker，并由 Compose 删除卷和遗留资源。精确的 worker 名称与 Compose 项目标签查询要求容器、卷和网络结果均为空，因此成功的测试命令无法掩盖清理失败。数据库中存在超过旧版 8 条 identity 或 8 KiB 上限的引用授权审计证据时，迁移回退会在改变 schema 或数据前拒绝操作。
 
 [RAG 检索决策](../architecture/2026-08-28-xagent-rag-retrieval.md)继续持有运行时数据、授权、收据和引用设计。本笔记持有组装后的部署与验收策略，不取代该决策。
 

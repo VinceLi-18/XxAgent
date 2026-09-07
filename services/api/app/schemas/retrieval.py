@@ -67,7 +67,7 @@ class CitationIdentity(_ClosedModel):
 
 
 class CitationAuthorizeRequest(_OperationRequest):
-    citations: list[CitationIdentity] = Field(min_length=1, max_length=8)
+    citations: list[CitationIdentity] = Field(min_length=1, max_length=64)
 
 
 class CitationAuthorizeResponse(_ClosedModel):

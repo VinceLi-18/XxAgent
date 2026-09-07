@@ -20,8 +20,11 @@ class AuditEvent(Base):
             name="ck_audit_event_index_generation",
         ),
         CheckConstraint(
-            "jsonb_typeof(details) = 'object' AND octet_length(details::text) <= 8192 AND "
-            "(action NOT LIKE 'retrieval.%' OR public.xagent_valid_retrieval_audit_details(details))",
+            "jsonb_typeof(details) = 'object' AND "
+            "octet_length(details::text) <= CASE "
+            "WHEN action = 'retrieval.citation_authorize' THEN 32768 ELSE 8192 END AND "
+            "(action NOT LIKE 'retrieval.%' OR "
+            "public.xagent_valid_retrieval_audit_details(action, details))",
             name="ck_audit_event_details",
         ),
     )

@@ -495,6 +495,20 @@ describe('XAgent 后端客户端', () => {
     )).resolves.toBeUndefined()
   })
 
+  test('引用授权接受终态答案允许的 64 个唯一引用', async () => {
+    const client = retrievalClient({ schema_version: 1, authorized: true })
+    const identities = Array.from({ length: 64 }, (_, index) => ({
+      id: `[资料${index + 1}]`,
+      artifactId: retrievalIds.artifact,
+      versionId: retrievalIds.version,
+      chunkId: `00000000-0000-0000-0000-${String(1_000 + index).padStart(12, '0')}`,
+    }))
+
+    await expect(client.retrieval.authorizeCitations(
+      'user', 'delegation', { ...retrievalOperation, citations: identities },
+    )).resolves.toBeUndefined()
+  })
+
   test.each([
     [{ schema_version: 1, projects: [], receipt: 'r', payload_sha256: 'a'.repeat(64), extra: true }],
     [{ schema_version: 1, projects: [{ project_id: 'bad', name: 'Alpha' }], receipt: 'r', payload_sha256: 'a'.repeat(64) }],

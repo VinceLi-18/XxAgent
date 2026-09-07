@@ -8,7 +8,8 @@ from sqlalchemy import select, text
 from app.core.db_context import set_actor_context
 from app.core.security import Actor
 from app.models.identity import Role
-from app.models.retrieval import XAgentRetrievalReceipt
+from app.models.retrieval import XAgentAdmittedEvidence, XAgentRetrievalReceipt
+from app.models.xagent_session import XAgentSessionEvent
 
 from app.services.retrieval_receipts import (
     ReceiptClaims,
@@ -94,7 +95,7 @@ async def test_persisted_receipt_contains_only_digest_and_five_minute_bound_clai
 
 
 @pytest.mark.anyio
-async def test_citation_requires_consumed_same_session_receipt_before_reauthorization(
+async def test_citation_requires_same_session_admitted_evidence_before_reauthorization(
     actor_session,
     seeded_database,
     alice,
@@ -147,7 +148,7 @@ async def test_citation_requires_consumed_same_session_receipt_before_reauthoriz
 
     with pytest.raises(RetrievalError, match="citation-invalid"):
         await authorize_session_citations(
-            actor_session, actor_id=alice.id,
+            actor_session,
             session_id=alice_private_xagent_session.id, citations=citation,
         )
 
@@ -157,8 +158,36 @@ async def test_citation_requires_consumed_same_session_receipt_before_reauthoriz
     receipt.consumed_payload_sha256 = claims.payload_sha256
     await actor_session.flush()
 
+    with pytest.raises(RetrievalError, match="citation-invalid"):
+        await authorize_session_citations(
+            actor_session,
+            session_id=alice_private_xagent_session.id, citations=citation,
+        )
+
+    actor_session.add(XAgentSessionEvent(
+        session_id=alice_private_xagent_session.id,
+        sequence=0,
+        event_type="tool/result",
+        schema_version=1,
+        payload={},
+        actor_id=alice.id,
+        tool_call_id="call-citation",
+    ))
+    await actor_session.flush()
+    actor_session.add(XAgentAdmittedEvidence(
+        session_id=alice_private_xagent_session.id,
+        citation_id="[资料1]",
+        admission_event_sequence=0,
+        artifact_id=artifact_id,
+        version_id=version_id,
+        index_id=index_id,
+        index_generation=1,
+        chunk_id=chunk_id,
+    ))
+    await actor_session.flush()
+
     authorized = await authorize_session_citations(
-        actor_session, actor_id=alice.id,
+        actor_session,
         session_id=alice_private_xagent_session.id, citations=citation,
     )
     assert [item.chunk_id for item in authorized] == [chunk_id]

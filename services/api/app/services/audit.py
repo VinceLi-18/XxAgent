@@ -71,6 +71,7 @@ def retrieval_audit_details(
     result: str,
     latency_ms: int,
     evidence: list[dict[str, object]] | None = None,
+    max_evidence: Literal[8, 64] = 8,
 ) -> dict[str, Any]:
     """Build the fixed redacted fields permitted for a retrieval audit."""
     details = {
@@ -99,7 +100,7 @@ def retrieval_audit_details(
     ):
         raise ValueError("retrieval audit details are invalid")
     UUID(session_id)
-    if len(details["evidence"]) > 8:
+    if len(details["evidence"]) > max_evidence:
         raise ValueError("retrieval audit details are invalid")
     for identity in details["evidence"]:
         if set(identity) != {"artifact_id", "version_id", "index_id", "generation", "chunk_id"}:

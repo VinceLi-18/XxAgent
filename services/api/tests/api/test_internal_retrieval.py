@@ -6,6 +6,7 @@ from uuid import UUID
 import jwt
 import pytest
 from argon2 import PasswordHasher
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +39,28 @@ from conftest import DELEGATION_PRIVATE_KEY
 
 SERVICE_TOKEN = "xagent-test-service-token-00000001"
 PASSWORD = "correct horse battery staple"
+
+
+def test_citation_authorize_request_matches_terminal_answer_limit() -> None:
+    base = {
+        "schema_version": 1,
+        "session_id": UUID(int=1),
+        "tool_call_id": "authorize-64",
+        "permission_revision": 1,
+    }
+    citations = [
+        {
+            "id": f"[资料{index + 1}]",
+            "artifact_id": UUID(int=100 + index),
+            "version_id": UUID(int=200 + index),
+            "chunk_id": UUID(int=300 + index),
+        }
+        for index in range(65)
+    ]
+
+    assert len(CitationAuthorizeRequest(**base, citations=citations[:64]).citations) == 64
+    with pytest.raises(ValidationError):
+        CitationAuthorizeRequest(**base, citations=citations)
 
 
 async def _login(client, engine, account) -> str:
