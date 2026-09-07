@@ -630,6 +630,7 @@ describe('CI workflow', () => {
     const manifestFiles = modelManifest.files as unknown[]
     expect(manifestFiles.map(file => isRecord(file) ? file.path : undefined)).toEqual([
       '1_Pooling/config.json',
+      'README.md',
       'config.json',
       'config_sentence_transformers.json',
       'modules.json',

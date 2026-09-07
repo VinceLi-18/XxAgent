@@ -11,6 +11,12 @@
       "huggingface_blob_id": "9bd85925f325e25246d94c4918dc02ab98f2a1b7"
     },
     {
+      "path": "README.md",
+      "size": 15822,
+      "sha256": "0b81ccf9134e5874d620a86e6905062ea999e779c34eb1a7e65eaeb7fe00e450",
+      "huggingface_blob_id": "e5a320176edd6ee1cfb256e68ee5ac0004de9447"
+    },
+    {
       "path": "config.json",
       "size": 687,
       "sha256": "26159e7ad065073448460117eb24b7a4572f6f4e78eadff65dc0a11c052449fa",
