@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   countVisibleUnits,
+  loadIssueFieldValues,
   nextResolvingIssueStatus,
   parseReferences,
   retainIssueReferences,
@@ -61,6 +62,19 @@ const reviewedPull = (labels) => ({
   labels,
   references: { all: [2], resolving: [], related: [2] },
   issues: new Map([[2, { priority: null }]]),
+})
+
+test('treats an unsupported optional Issue fields endpoint as empty metadata', async () => {
+  const values = await loadIssueFieldValues(21, async (path, options = {}) => {
+    assert.equal(
+      path,
+      '/repos/VinceLi-18/XxAgent/issues/21/issue-field-values?per_page=100',
+    )
+    if (!options.allow404) throw new Error('GET issue-field-values: 404 Not Found')
+    return null
+  })
+
+  assert.deepEqual(values, [])
 })
 
 test('counts only text outside details', () => {
