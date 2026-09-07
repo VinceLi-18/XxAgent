@@ -145,6 +145,52 @@ describe('CI workflow', () => {
     expect(consumersIndex).toBeGreaterThan(uvIndex)
   })
 
+  it('restores or cold-seeds the pinned embedding cache before browser-backed artifact acceptance', () => {
+    const workflow = loadWorkflow('.github/workflows/ci.yml')
+    const job = workflowJob(workflow, 'node-24-consumers')
+    if (!Array.isArray(job.steps)) throw new TypeError('node-24-consumers must define steps')
+
+    const restoreIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Restore pinned BGE-M3 cache for browser acceptance'
+    ))
+    const restore: unknown = job.steps[restoreIndex]
+    const prepareIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Prepare browser acceptance model cache'
+    ))
+    const prepare: unknown = job.steps[prepareIndex]
+    const consumersIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Run compatibility, snapshot, and artifact gates'
+    ))
+    const verifyIndex = job.steps.findIndex(step => (
+      isRecord(step) && step.name === 'Verify browser acceptance model cache'
+    ))
+    const verify: unknown = job.steps[verifyIndex]
+
+    expect(restore).toMatchObject({
+      id: 'browser-bge-cache',
+      uses: 'actions/cache@v4',
+      with: {
+        path: '${{ runner.temp }}/xagent-huggingface',
+        key: "bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}",
+      },
+    })
+    if (!isRecord(prepare) || typeof prepare.run !== 'string') {
+      throw new TypeError('consumer job must prepare its private model cache')
+    }
+    expect(prepare.run).toContain('verify_model_snapshot.py --allow-absent')
+    expect(prepare.run).toContain('steps.browser-bge-cache.outputs.cache-hit')
+    expect(prepare.run).toContain('XAGENT_TASK10_HF_HUB_OFFLINE=false')
+    expect(prepare.run).toContain('XAGENT_TASK10_HF_HUB_OFFLINE=true')
+    expect(prepare.run).toContain('XAGENT_EMBEDDING_CACHE_DIR=')
+    expect(verify).toMatchObject({
+      run: 'python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"',
+    })
+    expect(restoreIndex).toBeGreaterThanOrEqual(0)
+    expect(prepareIndex).toBeGreaterThan(restoreIndex)
+    expect(consumersIndex).toBeGreaterThan(prepareIndex)
+    expect(verifyIndex).toBeGreaterThan(consumersIndex)
+  })
+
   it('exempts push from cancellation, so one master merge does not cancel the running drill', () => {
     const workflow = loadWorkflow('.github/workflows/ci.yml')
     if (!isRecord(workflow.jobs) || !isRecord(workflow.concurrency)) {

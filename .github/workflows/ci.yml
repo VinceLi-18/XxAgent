@@ -232,6 +232,26 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-playwright-
 
+      - name: Restore pinned BGE-M3 cache for browser acceptance
+        id: browser-bge-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xagent-huggingface
+          key: bge-m3-5617a9f61b028005a4858fdac845db406aefb181-${{ hashFiles('services/embedding/uv.lock', 'services/embedding/bge-m3-snapshot.json') }}
+
+      - name: Prepare browser acceptance model cache
+        run: |
+          sudo install -d -o 65532 -g 65532 -m 0755 "${{ runner.temp }}/xagent-huggingface"
+          sudo chown -R 65532:65532 "${{ runner.temp }}/xagent-huggingface"
+          sudo chmod -R u=rwX,go=rX "${{ runner.temp }}/xagent-huggingface"
+          python3 services/embedding/verify_model_snapshot.py --allow-absent --cache-dir "${{ runner.temp }}/xagent-huggingface"
+          echo "XAGENT_EMBEDDING_CACHE_DIR=${{ runner.temp }}/xagent-huggingface" >> "$GITHUB_ENV"
+          if [ "${{ steps.browser-bge-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "XAGENT_TASK10_HF_HUB_OFFLINE=true" >> "$GITHUB_ENV"
+          else
+            echo "XAGENT_TASK10_HF_HUB_OFFLINE=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Install dependencies and prepare bubblewrap
         run: |
           pnpm install --frozen-lockfile &
@@ -257,6 +277,9 @@ jobs:
 
       - name: Run compatibility, snapshot, and artifact gates
         run: pnpm run check:ci:consumers
+
+      - name: Verify browser acceptance model cache
+        run: python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
 
 
   node-compat:

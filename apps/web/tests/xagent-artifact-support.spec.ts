@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   browserDiagnosticUrl,
   redactBrowserDiagnosticText,
+  resolveArtifactEmbeddingCacheDir,
+  resolveArtifactEmbeddingOffline,
   spawnOwnedChild,
   stopChildProcess,
 } from './xagent-artifact-support.ts'
@@ -76,5 +78,22 @@ describe('XAgent 资料 E2E 辅助生命周期', () => {
     expect(redactBrowserDiagnosticText(
       `请求失败 http://127.0.0.1:8765/content?expires=1&signature=${'b'.repeat(64)}`,
     )).toBe('请求失败 http://127.0.0.1:8765/content')
+  })
+
+  it('资料浏览器验收只在显式冷缓存信号下允许模型联网', () => {
+    expect(resolveArtifactEmbeddingOffline({})).toBe('true')
+    expect(resolveArtifactEmbeddingOffline({ XAGENT_TASK10_HF_HUB_OFFLINE: 'true' })).toBe('true')
+    expect(resolveArtifactEmbeddingOffline({ XAGENT_TASK10_HF_HUB_OFFLINE: 'false' })).toBe('false')
+    expect(() => resolveArtifactEmbeddingOffline({ XAGENT_TASK10_HF_HUB_OFFLINE: '1' })).toThrow(
+      'XAGENT_TASK10_HF_HUB_OFFLINE 必须是 true 或 false',
+    )
+  })
+
+  it('资料浏览器验收优先使用 CI 准备的模型缓存目录', () => {
+    expect(resolveArtifactEmbeddingCacheDir({}, '/repo/cache')).toBe('/repo/cache')
+    expect(resolveArtifactEmbeddingCacheDir({ XAGENT_EMBEDDING_CACHE_DIR: '/runner/cache' }, '/repo/cache'))
+      .toBe('/runner/cache')
+    expect(() => resolveArtifactEmbeddingCacheDir({ XAGENT_EMBEDDING_CACHE_DIR: '' }, '/repo/cache'))
+      .toThrow('XAGENT_EMBEDDING_CACHE_DIR 不能为空')
   })
 })

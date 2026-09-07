@@ -14,6 +14,8 @@ API Compose 文件定义唯一的私有 CPU 检索拓扑。PostgreSQL 16 使用�
 
 embedding UID/GID `65532:65532` 持有共享 Hugging Face 缓存，owner 可写，组和其他用户只读；API 与 worker 以只读方式挂载同一缓存，因为二者都加载固定 tokenizer。提交的 `bge-m3-snapshot.json` 记录官方不可变 Hugging Face 元数据 endpoint 和精确 snapshot 文件集，包括每个文件的大小、SHA-256 与 blob ID。独立 verifier 会拒绝畸形元数据、缺失或部分 snapshot、损坏的 snapshot 链接、内容漂移，以及精确 revision snapshot 内任何未列出的非目录条目，包括替代权重、索引、adapter 和符号链接别名。它不遍历目录符号链接，也不会把该 snapshot 外的 Hugging Face 缓存元数据误当作模型内容。模型加载前，仅当 BGE-M3 精确仓库路径及其专用 lock 路径在文件系统中均不存在时，CI 才允许从官方来源下载；任一路径上的文件、空目录、有效或失效符号链接都会失败，而其他模型的仓库和 lock 不受影响。CI 在测试和缓存保存前执行严格验证，并用模型修订、embedding 锁文件和 manifest 组成缓存键。只有通过严格验证的完整缓存才可以设置 `HF_HUB_OFFLINE=true`。Docker 和 Python 包输入都排除本地缓存。
 
+浏览器 consumer 车道会针对同一套 Compose 拓扑运行资料生命周期，因此会在启动浏览器测试集前恢复并准备相同的修订、锁文件与 manifest 缓存。缓存命中且通过验证后强制离线加载；精确缓存缺失时，该次运行允许下载固定的官方修订，而前置 verifier 仍会拒绝部分存在或损坏的状态。测试集结束后的严格验证必须通过，cache action 才能保存结果。除这项显式的 CI 冷缓存信号外，测试进程默认离线加载。
+
 必需的拉取请求车道运行真实上传、扫描、索引、搜索、收据、Session 证据、引用授权和引用解析路径。检索 fixture 让每条排序分支都可观察：dense 候选的词法得分为零，英文词法候选位于 dense 前四十之外，中文候选的全文排名为零、trigram 得分为正，并且也位于 dense 前四十之外。一组同分候选让 VersionID、ordinal 和 chunk ID 顺序都与 ArtifactID 顺序相反；另一组候选共享 Artifact 与 Version，并让 chunk ID 顺序与 ordinal 顺序相反。这些真实断言到达元组中所有在真实搜索里可到达的层级；如果 VersionID、ordinal 或分支内 chunk identity 取代 ArtifactID 优先级，测试就会失败。`artifact_search_heads.artifact_id` 是主键，因此有效的真实搜索不可能让一个 Artifact 同时出现不同的可搜索 Version；直接 fusion 单元测试保留该函数较宽候选列表约定中的 VersionID fallback，而无需破坏数据库。版本替换会保持当前 generation 可搜索，直到下一个就绪索引原子切换 head。无效 UTF-8 会完成 MIME 分类并入队，随后进入精确的 `failed:invalid-utf8` 索引状态和 dead job 状态，不产生 head 或检索结果。不支持与隔离输入不创建索引；已被取代和陈旧的工作不能发布可搜索 head。
 
 重叠 worker 恢复使用可观察租约，不使用依赖延时的协调。测试保持第一代可搜索，在一次性 worker 持有替换租约期间暂停真实 embedding 依赖，随后暂停而不杀死该 owner。主 worker 发布更新的 generation，并重新领取已过期的替换任务；旧 owner 随后恢复并完成真实进程路径。断言要求重建期间保留第一个 head、发布后只保留最新 head、不存在已被取代的 head，并且陈旧 owner 不能发布。每个轮询循环、HTTP 操作、Compose 命令、服务健康检查和 CI 任务都有显式界限。
@@ -38,4 +40,4 @@ CI 步骤在启动前安装无条件退出 trap。失败诊断先于拆卸运行
 
 ## Consequences
 
-拉取请求获得一条有界、无 mock 的完整 XAgent 检索栈信号，其中包括重叠 generation 所有权、不可变输入验证和精确清理。该车道有意只在 Linux 运行，且成本足以使其与普通 API 单元任务分离。GitHub 托管环境的冷缓存会从官方来源下载不可变修订，因此可用性与带宽可能影响该次运行；这条路径在 workflow 于拉取请求执行前仍属于外部证据。受限于本地验收能力，已证明严格验证的暖缓存路径，以及损坏、部分存在和缺失缓存的失败关闭行为，但这些证据不替代托管环境的冷缓存运行。后续托管运行复用修订、锁文件与 manifest 组成的缓存键。模型修订、manifest、tokenizer 使用、来源镜像摘要、服务依赖、数据库角色、租约行为、一次性 worker 名称或 Compose 项目名发生任何变化时，都必须同时更新该车道及其清理断言。
+拉取请求获得一条有界、无 mock 的完整 XAgent 检索栈信号，其中包括重叠 generation 所有权、不可变输入验证和精确清理。该车道有意只在 Linux 运行，且成本足以使其与普通 API 单元任务分离。GitHub 托管环境的冷缓存会从官方来源下载不可变修订，因此可用性与带宽可能影响该次运行。受限于本地验收能力，已证明严格验证的暖缓存路径，以及损坏、部分存在和缺失缓存的失败关闭行为，但这些证据不替代托管环境的冷缓存运行。后续托管的检索与浏览器验收运行复用修订、锁文件与 manifest 组成的缓存键。模型修订、manifest、tokenizer 使用、来源镜像摘要、服务依赖、数据库角色、租约行为、一次性 worker 名称或 Compose 项目名发生任何变化时，都必须同时更新该车道及其清理断言。

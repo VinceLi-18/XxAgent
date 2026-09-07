@@ -11,6 +11,8 @@ import { probeFreePort, REPO_ROOT, requireDist, saveFailureShot, ZH_BROWSER_LOCA
 import {
   browserDiagnosticUrl,
   redactBrowserDiagnosticText,
+  resolveArtifactEmbeddingCacheDir,
+  resolveArtifactEmbeddingOffline,
   spawnOwnedChild,
   stopChildProcess,
   type OwnedChildProcess,
@@ -35,8 +37,11 @@ function compose(project: string, override: string, args: readonly string[], inp
     timeout: 600_000,
     env: {
       ...process.env,
-      HF_HUB_OFFLINE: 'true',
-      XAGENT_EMBEDDING_CACHE_DIR: join(REPO_ROOT, 'services/api/.cache/huggingface'),
+      HF_HUB_OFFLINE: resolveArtifactEmbeddingOffline(process.env),
+      XAGENT_EMBEDDING_CACHE_DIR: resolveArtifactEmbeddingCacheDir(
+        process.env,
+        join(REPO_ROOT, 'services/api/.cache/huggingface'),
+      ),
     },
     ...(input === undefined ? {} : { input }),
   }).trim()
