@@ -183,6 +183,57 @@ describe('XAgent FastAPI Session Persistence', () => {
     )).rejects.toThrow('invalid XAgent session fork response')
   })
 
+  test('fork accepts a private child and rejects invalid server scope or runtime lineage', async () => {
+    const value = backend()
+    const childHeader: SessionHeader = {
+      version: 0,
+      id: SessionId('session-00000000-0000-0000-0000-000000000702'),
+      createdAt: 1_787_587_200_010,
+      parentSession: id,
+      seedLength: 1,
+    }
+    const response = (visibility: unknown, projectId: unknown, runtimeHeader: unknown = childHeader) => ({
+      schema_version: 1,
+      session: {
+        id: '00000000-0000-0000-0000-000000000702',
+        visibility,
+        project_id: projectId,
+        runtime_header: runtimeHeader,
+        last_event_sequence: 0,
+      },
+    })
+    value.sessions.fork = vi.fn(async () => response('private', null))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    await expect(persistence.withUserToken('alice-token', () => persistence.fork(id, 0, forkOperationId)))
+      .resolves.toEqual(childHeader)
+
+    for (const invalid of [
+      response('private', '00000000-0000-0000-0000-000000000401'),
+      response('project', null),
+      response('project', 'not-a-uuid'),
+      response('unknown', null),
+      response('private', null, { ...childHeader, parentSession: SessionId('other') }),
+    ]) {
+      value.sessions.fork = vi.fn(async () => invalid)
+      await expect(persistence.withUserToken('alice-token', () => persistence.fork(id, 0, forkOperationId)))
+        .rejects.toThrow('invalid XAgent session fork response')
+    }
+  })
+
+  test.each([
+    [Number.NaN, forkOperationId],
+    [-2, forkOperationId],
+    [0.5, forkOperationId],
+    [0, '' as SessionForkOperationId],
+    [0, 'x'.repeat(251) as SessionForkOperationId],
+  ])('fork rejects invalid source coordinates %#', async (throughSequence, operationId) => {
+    const persistence = new XAgentSessionPersistence(new Context(), backend())
+    await expect(persistence.withUserToken(
+      'alice-token',
+      () => persistence.fork(id, throughSequence, operationId),
+    )).rejects.toBeInstanceOf(TypeError)
+  })
+
   test('flush sends only the exact receipt sidecars for its event window and commits after success', async () => {
     const ctx = new Context()
     const value = backend()

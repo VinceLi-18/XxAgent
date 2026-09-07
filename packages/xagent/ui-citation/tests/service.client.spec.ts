@@ -71,4 +71,21 @@ describe('XAgent citation controller', () => {
     handoff.resolve(undefined)
     await opening
   })
+
+  it('ignores a sibling ToolView cancellation and waits for an active task during disposal', async () => {
+    const request = Promise.withResolvers<never>()
+    const remote = {
+      resolve: vi.fn((_sessionId: string, _citationId: string, _signal?: AbortSignal) => request.promise),
+    }
+    const artifact = { openCitation: vi.fn(async () => {}) }
+    const controller = new XAgentCitationController(remote, artifact, vi.fn())
+    controller.setScope('account-a', 'session-701')
+    const opening = controller.open('session-701', '[资料1]')
+    controller.cancel('session-702')
+    expect(remote.resolve.mock.calls[0]![2]!.aborted).toBe(false)
+    const disposal = controller.dispose()
+    expect(remote.resolve.mock.calls[0]![2]!.aborted).toBe(true)
+    request.reject(new DOMException('aborted', 'AbortError'))
+    await Promise.all([opening, disposal])
+  })
 })

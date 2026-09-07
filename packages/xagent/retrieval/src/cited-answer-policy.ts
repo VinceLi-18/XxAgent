@@ -100,7 +100,7 @@ function toolResultText(block: ContentBlock): string | undefined {
 }
 
 function evidenceMessage(message: GenerateOptions['messages'][number]): readonly XAgentCitationIdentity[] | undefined {
-  if (message.source.kind !== 'tool' || message.content.length !== 1) return undefined
+  if (message.content.length !== 1) return undefined
   const text = toolResultText(message.content[0] as ContentBlock)
   if (text === undefined) return undefined
   let value: unknown

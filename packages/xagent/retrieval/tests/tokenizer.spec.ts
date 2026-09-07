@@ -6,9 +6,10 @@ import {
   MAX_BGE_M3_REQUEST_BYTES,
   MAX_BGE_M3_RESPONSE_BYTES,
   XAgentBgeM3HttpTokenizer,
+  validateBgeM3Tokenizer,
 } from '../src/tokenizer.ts'
 
-function response(body: BodyInit = JSON.stringify({
+function response(body: BodyInit | null = JSON.stringify({
   model: BGE_M3_MODEL_ID,
   revision: BGE_M3_REVISION,
   token_count: 17,
@@ -38,11 +39,12 @@ describe('XAgentBgeM3HttpTokenizer', () => {
       '\\'.repeat(MAX_BGE_M3_QUERY_BYTES),
       '\u0000'.repeat(MAX_BGE_M3_QUERY_BYTES),
       '😀'.repeat(MAX_BGE_M3_QUERY_BYTES / 4),
+      'é'.repeat(MAX_BGE_M3_QUERY_BYTES / 2),
     ]) {
       await expect(tokenizer.count(query)).resolves.toBe(17)
     }
 
-    expect(requests).toHaveLength(4)
+    expect(requests).toHaveLength(5)
     const requestSizes: number[] = []
     for (const request of requests) {
       expect(request.input).toBe('http://api.internal/internal/xagent/retrieval/token-count')
@@ -126,8 +128,18 @@ describe('XAgentBgeM3HttpTokenizer', () => {
     }
   })
 
+  test('rejects invalid relay configuration before transport', () => {
+    expect(() => new XAgentBgeM3HttpTokenizer('not a URL', 'service-secret'))
+      .toThrow('invalid XAgent tokenizer configuration')
+    expect(() => new XAgentBgeM3HttpTokenizer('file:///tmp/tokenizer', 'service-secret'))
+      .toThrow('invalid XAgent tokenizer configuration')
+    expect(() => new XAgentBgeM3HttpTokenizer('https://api.internal', ''))
+      .toThrow('invalid XAgent tokenizer configuration')
+  })
+
   test('bounds and fatally decodes the streamed response before closed-schema validation', async () => {
     const cases: BodyInit[] = [
+      null as never,
       new Uint8Array(MAX_BGE_M3_RESPONSE_BYTES + 1),
       new Uint8Array([0xc3, 0x28]),
       '{',
@@ -138,6 +150,9 @@ describe('XAgentBgeM3HttpTokenizer', () => {
         extra: true,
       }),
       JSON.stringify({ model: BGE_M3_MODEL_ID, revision: BGE_M3_REVISION, token_count: 1.5 }),
+      'null',
+      '[]',
+      '1',
     ]
 
     for (const body of cases) {
@@ -162,5 +177,44 @@ describe('XAgentBgeM3HttpTokenizer', () => {
     const pending = tokenizer.count('query', caller.signal)
     caller.abort()
     await expect(pending).rejects.toThrow('BGE-M3 tokenizer unavailable')
+  })
+
+  test('contains stream cancellation failures for abort and oversized responses', async () => {
+    const caller = new AbortController()
+    let started!: () => void
+    const reading = new Promise<void>((resolve) => { started = resolve })
+    const stalledBody = new ReadableStream<Uint8Array>({
+      pull: () => {
+        started()
+        return new Promise<void>(() => {})
+      },
+      cancel: () => { throw new Error('cancel failed') },
+    })
+    const stalled = new XAgentBgeM3HttpTokenizer(
+      'http://api.internal', 'service-secret', async () => response(stalledBody),
+    )
+    const pending = stalled.count('query', caller.signal)
+    await reading
+    caller.abort(new Error('cancelled'))
+    await expect(pending).rejects.toThrow('BGE-M3 tokenizer unavailable')
+
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(MAX_BGE_M3_RESPONSE_BYTES + 1)) },
+      cancel: () => { throw new Error('cancel failed') },
+    })
+    const oversized = new XAgentBgeM3HttpTokenizer(
+      'http://api.internal', 'service-secret', async () => response(oversizedBody),
+    )
+    await expect(oversized.count('query')).rejects.toThrow('BGE-M3 tokenizer response rejected')
+  })
+
+  test('accepts only the exact pinned tokenizer provider', () => {
+    const valid = { modelId: BGE_M3_MODEL_ID, revision: BGE_M3_REVISION, count: async () => 1 }
+    expect(validateBgeM3Tokenizer(valid)).toBe(valid)
+    expect(() => validateBgeM3Tokenizer(undefined)).toThrow('requires the pinned BGE-M3 tokenizer')
+    expect(() => validateBgeM3Tokenizer({ ...valid, modelId: 'other' }))
+      .toThrow('requires the pinned BGE-M3 tokenizer')
+    expect(() => validateBgeM3Tokenizer({ ...valid, revision: 'other' }))
+      .toThrow('requires the pinned BGE-M3 tokenizer')
   })
 })

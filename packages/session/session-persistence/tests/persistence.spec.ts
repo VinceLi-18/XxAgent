@@ -4,7 +4,7 @@ import SessionStore, { Session, SessionId, isJsonValue } from '@deepseek-ai/dsh-
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
-  SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator,
+  SessionForkOperationId, SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator,
   type PersistenceBackend, type SessionPersistenceSnapshot, type StoredPrefix, type StoredSuffix,
 } from '../src/index.ts'
 import { runPersistenceContract, meta, oneTurnLog } from './contract.ts'
@@ -1767,6 +1767,8 @@ describe('SessionPersistence service registration', () => {
 
     await expect(ctx.sessionPersistence.listForBootstrap()).resolves.toEqual([m])
     await expect(ctx.sessionPersistence.preparePublication(Session.create(m.id, [], m))).resolves.toBeUndefined()
+    await expect(ctx.sessionPersistence.fork(m.id, 0, SessionForkOperationId('fork-operation'))).resolves.toBeUndefined()
+    expect(ctx.sessionPersistence.isForkRetryable(new Error('provider failure'))).toBe(false)
     await fiber.dispose()
   })
 

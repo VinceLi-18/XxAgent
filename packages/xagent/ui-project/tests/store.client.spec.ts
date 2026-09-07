@@ -62,6 +62,9 @@ describe('XAgent 项目工作台状态', () => {
 
     expect(workbench.details.getSnapshot()).toBe('artifacts')
     expect(openDetails).toHaveBeenCalledOnce()
+
+    const withoutLayout = new XAgentWorkbenchController(remote(), sessions())
+    expect(() => { withoutLayout.openArtifacts() }).not.toThrow()
   })
 
   it('Bootstrap 是唯一初始化请求，且不读写任何浏览器缓存', async () => {

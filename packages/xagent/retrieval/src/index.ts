@@ -204,8 +204,7 @@ function discoveryQuery(value: string | undefined): string | undefined {
   return value
 }
 
-function toolResultIdentity(event: SessionEvent): string | undefined {
-  if (event.type !== 'tool/result') return undefined
+function toolResultIdentity(event: Extract<SessionEvent, { type: 'tool/result' }>): string {
   const block = event.data.message.content[0]
   return String(block.toolCallId)
 }
@@ -356,9 +355,6 @@ export class XAgentCitationRemoteService extends TypertRemoteService implements 
       throw citationRemoteFailure('unauthenticated')
     }
     if (resolved !== state.scope.sessionId) throw citationRemoteFailure('unauthenticated')
-    if (state.scope.requestSignal === undefined || state.scope.connectionSignal === undefined) {
-      throw new Error('invalid xagent citation request scope')
-    }
     return state.scope as ActiveCitationRequestScope
   }
 
@@ -385,7 +381,6 @@ export class XAgentCitationRemoteService extends TypertRemoteService implements 
   }
 
   private async call<T>(signal: AbortSignal, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    if (!this.accepting) throw citationRemoteFailure('service-unavailable')
     const controller = new AbortController()
     const merged = AbortSignal.any([signal, controller.signal])
     const settled = Promise.withResolvers<void>()
@@ -552,17 +547,17 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     this.closeSessionObserver = ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/end') {
         for (const [agent] of this.activeScopes) {
-          if (String((agent as { session?: { id?: unknown } }).session?.id) === String(session.id)) {
+          if (String(agent.session.id) === String(session.id)) {
             this.deleteActiveScope(agent)
           }
         }
       }
-      const meta = event.type === 'tool/result' ? event.data.meta : undefined
+      if (event.type !== 'tool/result') return
+      const meta = event.data.meta
       if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) return
       const row = meta as Record<string, unknown>
       if (row.kind !== 'xagent-retrieval' || !HASH_PATTERN.test(String(row.payloadHash))) return
       const toolCallId = toolResultIdentity(event)
-      if (toolCallId === undefined) return
       try {
         this.receipts.bindEvent(String(session.id), toolCallId, event.seq, String(row.payloadHash))
       } catch (error: unknown) {
@@ -669,7 +664,6 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         agent.cancel({ kind: 'user' })
         this.deleteActiveScope(agent)
       }
-      this.closeCitedAnswerOwners(() => true)
       const answerOwners = [...this.drainingCitedAnswerOwners]
       const active = [...this.controllers.entries()]
       const receiptDisposal = this.receipts.dispose()
@@ -807,9 +801,8 @@ export class XAgentRetrievalService extends XAgentRetrieval {
       if (String(agent.session.id) !== String(session.id)) continue
       const allowed = reconstructCitedAnswerEvidence(session.deriveMessages(), session)
       if (allowed === undefined) return
-      const requestSignal = binding.scope.requestSignal
-      const connectionSignal = binding.scope.connectionSignal
-      if (requestSignal === undefined || connectionSignal === undefined) return
+      const requestSignal = binding.scope.requestSignal as AbortSignal
+      const connectionSignal = binding.scope.connectionSignal as AbortSignal
       const previous = this.citedAnswerOwners.get(agent)
       if (previous !== undefined) this.drainCitedAnswerOwner(previous.owner)
       const owner = openCitedAnswerRequest({

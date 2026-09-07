@@ -125,9 +125,6 @@ export class XAgentBgeM3HttpTokenizer implements XAgentBgeM3Tokenizer {
       throw new Error('BGE-M3 tokenizer request rejected')
     }
     const requestBody = JSON.stringify({ text: value })
-    if (new TextEncoder().encode(requestBody).byteLength > MAX_BGE_M3_REQUEST_BYTES) {
-      throw new Error('BGE-M3 tokenizer request rejected')
-    }
     const timeout = AbortSignal.timeout(TOKENIZER_TIMEOUT_MS)
     const operationSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
     let response: Response

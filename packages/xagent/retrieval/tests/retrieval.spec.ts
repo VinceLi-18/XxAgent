@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import LlmRuntime, { CallId, createUserMessage, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -13,6 +13,7 @@ import type {
   XAgentProjectDiscoveryResult,
   XAgentRetrievalBackend,
 } from '@xagent/dsh-backend-client'
+import { XAgentBackendError } from '@xagent/dsh-backend-client'
 import { runWithXAgentAuthenticatedRequestScope, type XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
 import { describe, expect, test, vi } from 'vitest'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
@@ -28,7 +29,9 @@ import {
   XAgentCitationRemoteService,
   XAgentRetrievalError,
   XAgentRetrievalService,
+  apply,
   inject as pluginInject,
+  type CitedAnswerRequestOwner,
   type XAgentBgeM3Tokenizer,
 } from '../src/index.ts'
 
@@ -42,6 +45,20 @@ const LIVE_CONNECTION_SIGNAL = new AbortController().signal
 describe('retrieval plugin composition', () => {
   test('declares the exact Session service consumed by Loader-mounted citation reads', () => {
     expect(pluginInject).toEqual(['sessions'])
+  })
+
+  test('installs the production retrieval and citation services', async () => {
+    const ctx = new Context()
+    apply(ctx, {
+      backendOrigin: 'https://api.example.test',
+      serviceToken: 'service-token',
+      delegationPrivateKey: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
+      delegationIssuer: 'xagent-host',
+      delegationAudience: 'xagent-api',
+    })
+    expect(ctx.xagentRetrieval).toBeInstanceOf(XAgentRetrievalService)
+    expect(ctx.xagentCitation).toBeInstanceOf(XAgentCitationRemoteService)
+    await ctx.fiber.dispose()
   })
 })
 
@@ -552,6 +569,105 @@ describe('XAgentRetrievalService', () => {
     expect(sourceReturned).toBe(true)
   })
 
+  test('fails closed when cited-answer request ownership or evidence diverges', async () => {
+    const created = await agentHarness(new MockAdapter([]))
+    type ActiveBinding = {
+      readonly identity: object
+      readonly scope: XAgentAuthenticatedSessionRequestScope
+      readonly signal: AbortSignal
+      readonly close: () => void
+    }
+    type OwnerEntry = {
+      readonly scopeIdentity: object
+      readonly owner: CitedAnswerRequestOwner
+    }
+    const internals = created.retrieval as unknown as {
+      readonly activeScopes: Map<Agent, ActiveBinding>
+      readonly citedAnswerOwners: Map<Agent, OwnerEntry>
+      citedAnswerRequest(options: GenerateOptions): OwnerEntry['owner'] | undefined
+      closeCitedAnswerOwners(predicate: (agent: Agent) => boolean): void
+      invalidateMessageScope(messageId: string): void
+      openCitedAnswerForSession(session: Session): void
+      sameEvidence(left: ReadonlyMap<string, object>, right: ReadonlyMap<string, object>): boolean
+    }
+    const identity = Object.freeze({})
+    internals.activeScopes.set(created.owner, {
+      identity,
+      scope: scope(),
+      signal: new AbortController().signal,
+      close: vi.fn(),
+    })
+    appendPersistedCitation(created.owner.session)
+    const entry = internals.citedAnswerOwners.get(created.owner)
+    expect(entry).toBeDefined()
+    const options = {
+      provider: 'mock', model: 'mock', sessionId: created.owner.session.id,
+      messages: created.owner.session.deriveMessages(),
+    } as GenerateOptions
+    expect(internals.citedAnswerRequest(options)).toBe(entry!.owner)
+    expect(internals.citedAnswerRequest({
+      provider: options.provider, model: options.model, messages: options.messages,
+    })).toBeUndefined()
+    expect(internals.citedAnswerRequest({ ...options, sessionId: SessionId('other') })).toBeUndefined()
+    expect(internals.citedAnswerRequest({ ...options, messages: [] })).toBeUndefined()
+
+    internals.activeScopes.set(created.owner, {
+      identity: Object.freeze({}), scope: scope(), signal: new AbortController().signal, close: vi.fn(),
+    })
+    expect(internals.citedAnswerRequest(options)).toBeUndefined()
+    internals.activeScopes.set(created.owner, {
+      identity, scope: scope(), signal: new AbortController().signal, close: vi.fn(),
+    })
+    internals.citedAnswerOwners.set(created.owner, {
+      scopeIdentity: identity,
+      owner: { ...entry!.owner, identity: Object.freeze({}) },
+    })
+    expect(internals.citedAnswerRequest(options)).toBeUndefined()
+    internals.citedAnswerOwners.set(created.owner, entry!)
+
+    const otherSession = Session.create(SessionId(`session-${SESSION}`))
+    appendPersistedCitation(otherSession)
+    const otherAgent = { session: otherSession, cancel: vi.fn() } as unknown as Agent
+    internals.activeScopes.set(otherAgent, {
+      identity, scope: scope(), signal: new AbortController().signal, close: vi.fn(),
+    })
+    internals.citedAnswerOwners.set(otherAgent, entry!)
+    expect(internals.citedAnswerRequest(options)).toBeUndefined()
+    internals.citedAnswerOwners.delete(otherAgent)
+    internals.activeScopes.delete(otherAgent)
+
+    const citation = Object.freeze({
+      id: '[资料1]', artifactId: '00000000-0000-0000-0000-000000000501',
+      versionId: '00000000-0000-0000-0000-000000000601', chunkId: '00000000-0000-0000-0000-000000000801',
+    })
+    const exact = new Map([[citation.id, citation]])
+    expect(internals.sameEvidence(exact, exact)).toBe(true)
+    expect(internals.sameEvidence(exact, new Map())).toBe(false)
+    expect(internals.sameEvidence(exact, new Map([['[资料2]', citation]]))).toBe(false)
+    for (const field of ['artifactId', 'versionId', 'chunkId'] as const) {
+      expect(internals.sameEvidence(exact, new Map([[citation.id, {
+        ...citation, [field]: '00000000-0000-0000-0000-000000000999',
+      }]]))).toBe(false)
+    }
+
+    internals.invalidateMessageScope('missing')
+    internals.closeCitedAnswerOwners(() => false)
+    expect(internals.citedAnswerOwners.has(created.owner)).toBe(true)
+    internals.openCitedAnswerForSession(created.owner.session)
+    expect(internals.citedAnswerOwners.get(created.owner)?.owner).not.toBe(entry!.owner)
+
+    const empty = Session.create(SessionId('empty-evidence'))
+    const emptyAgent = { session: empty, cancel: vi.fn() } as unknown as Agent
+    internals.activeScopes.set(emptyAgent, {
+      identity, scope: scope(), signal: new AbortController().signal, close: vi.fn(),
+    })
+    internals.openCitedAnswerForSession(empty)
+    expect(internals.citedAnswerOwners.has(emptyAgent)).toBe(false)
+
+    await created.retrieval.dispose()
+    expect(internals.citedAnswerRequest(options)).toBeUndefined()
+  })
+
   test('requires the pinned BGE-M3 tokenizer identity and validates the production HTTP response', async () => {
     expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
       issuer: 'xagent-host', audience: 'xagent-api', privateKey,
@@ -857,6 +973,66 @@ describe('XAgentRetrievalService', () => {
     }).not.toThrow()
   })
 
+  test('fails closed across direct inbox lifecycle edge cases', async () => {
+    const created = service()
+    const session = Session.create(SessionId(`session-${SESSION}`))
+    const siblingSession = Session.create(SessionId(`session-${SESSION}`))
+    const cancel = vi.fn()
+    const agent = { session, cancel } as unknown as Agent
+    const sibling = { session: siblingSession, cancel: vi.fn() } as unknown as Agent
+    const localAgent = { session: Session.create(SessionId('local-session')), cancel: vi.fn() } as unknown as Agent
+    const message = (text: string) => createUserMessage({
+      content: [{ type: 'text', text }], source: { kind: 'user' },
+    })
+    const preStep = (subject: Agent, messages: ReturnType<typeof message>[], decision: 'enter' | 'reject' = 'enter') =>
+      agentEvents(created.ctx, subject).waterfall(
+        'agent/pre-step',
+        { messages, turn: 1, step: 1, signal: new AbortController().signal },
+        () => Promise.resolve(decision === 'enter' ? { kind: 'enter' as const, messages } : { kind: 'reject' as const }),
+      )
+
+    const kept = message('kept for sibling')
+    const removed = message('removed with agent')
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      agentEvents(created.ctx, sibling).emit('agent/inbox/inserted', { message: kept })
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: removed })
+    })
+    agentEvents(created.ctx, agent).emit('agent/disposed', {})
+
+    await expect(preStep(agent, [message('never bound')])).resolves.toEqual({ kind: 'reject' })
+    await expect(preStep(agent, [kept])).resolves.toEqual({ kind: 'reject' })
+    await expect(preStep(localAgent, [message('local unbound')])).resolves.toMatchObject({ kind: 'enter' })
+
+    const first = message('same scope one')
+    const second = message('same scope two')
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: first })
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: second })
+    })
+    await expect(preStep(agent, [first, second])).resolves.toMatchObject({ kind: 'enter' })
+    const otherId = '00000000-0000-0000-0000-000000000702'
+    const otherAgent = {
+      session: Session.create(SessionId(`session-${otherId}`)), cancel: vi.fn(),
+    } as unknown as Agent
+    const otherMessage = message('other active session')
+    const otherScope = Object.freeze({ ...scope(), sessionId: otherId })
+    runWithXAgentAuthenticatedRequestScope(otherScope, () => {
+      agentEvents(created.ctx, otherAgent).emit('agent/inbox/inserted', { message: otherMessage })
+    })
+    await expect(preStep(otherAgent, [otherMessage])).resolves.toMatchObject({ kind: 'enter' })
+    created.ctx.emit('session/event', session, {
+      seq: 0, time: 0, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } },
+    })
+    expect(cancel).not.toHaveBeenCalled()
+
+    const rejected = message('downstream rejected')
+    runWithXAgentAuthenticatedRequestScope(scope(), () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: rejected })
+    })
+    await expect(preStep(agent, [rejected], 'reject')).resolves.toEqual({ kind: 'reject' })
+    await created.value.dispose()
+  })
+
   test('uses one inherited physical scope, one delegation, and one backend call for project discovery', async () => {
     const created = service()
     const result = await runWithXAgentAuthenticatedRequestScope(scope(), () =>
@@ -918,6 +1094,109 @@ describe('XAgentRetrievalService', () => {
     expect(() => new XAgentRetrievalService(new Context(), backend(), new XAgentReceiptRegistry(), {
       issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => 100,
     })).toThrow(/tokenizer/i)
+  })
+
+  test.each(['', ' evidence', 'evidence '])('rejects a non-canonical search query %j', async (query) => {
+    const created = service()
+    await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.searchArtifacts({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-invalid-query',
+      query, projectIds: [PROJECT], includePrivate: false,
+    }))).rejects.toMatchObject({ code: 'invalid-retrieval-scope' })
+    expect(created.backend.search).not.toHaveBeenCalled()
+  })
+
+  test.each(['', ' alpha', 'alpha ', 'x'.repeat(256)])(
+    'rejects a non-canonical discovery query %j',
+    async (query) => {
+      const created = service()
+      await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.listAccessibleProjects({
+        sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-invalid-discovery', query,
+      }))).rejects.toMatchObject({ code: 'invalid-retrieval-scope' })
+      expect(created.backend.projects).not.toHaveBeenCalled()
+    },
+  )
+
+  test('maps tokenizer and delegation failures without calling the backend', async () => {
+    const value = backend()
+    const brokenTokenizer = new XAgentRetrievalService(new Context(), value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+      tokenizer: Object.freeze({
+        modelId: BGE_M3_MODEL_ID,
+        revision: BGE_M3_REVISION,
+        count: () => Promise.reject(new Error('tokenizer unavailable')),
+      }),
+    })
+    await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => brokenTokenizer.searchArtifacts({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-tokenizer-error',
+      query: 'evidence', projectIds: [PROJECT], includePrivate: false,
+    }))).rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const brokenDelegation = new XAgentRetrievalService(new Context(), value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => Number.NaN,
+      tokenizer: tokenizer(() => 1),
+    })
+    await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => brokenDelegation.listAccessibleProjects({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-delegation-error',
+    }))).rejects.toMatchObject({ code: 'service-unavailable' })
+    expect(value.projects).not.toHaveBeenCalled()
+  })
+
+  test('supports omitted Private selectors and rejects discovery in a Project Session', async () => {
+    const created = service()
+    await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.searchArtifacts({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-default-private',
+      query: 'evidence', includePrivate: true,
+    }))).resolves.toBeDefined()
+    expect(created.backend.search).toHaveBeenCalledWith(
+      'alice-token', expect.any(String), expect.objectContaining({ projectIds: [], includePrivate: true }), expect.any(AbortSignal),
+    )
+    await expect(runWithXAgentAuthenticatedRequestScope(scope('project'), () => created.value.listAccessibleProjects({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-project-discovery',
+    }))).rejects.toMatchObject({ code: 'invalid-retrieval-scope' })
+  })
+
+  test('rejects a malformed Host Session id before calling the backend', async () => {
+    const created = service()
+    await expect(runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.listAccessibleProjects({
+      sessionId: SessionId('not-a-session'), toolCallId: 'call-malformed-session',
+    }))).rejects.toMatchObject({ code: 'unauthenticated' })
+    expect(created.backend.projects).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    new XAgentRetrievalError('evidence-expired'),
+    new XAgentBackendError('evidence-expired'),
+    new XAgentBackendError('forbidden'),
+    new Error('unexpected'),
+  ])('maps backend failure %# to the closed retrieval vocabulary', async (failure) => {
+    const value = backend()
+    value.projects = vi.fn(async () => { throw failure })
+    const created = service(value)
+    const operation = runWithXAgentAuthenticatedRequestScope(scope(), () => created.value.listAccessibleProjects({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-backend-error',
+    }))
+    const expected = failure instanceof XAgentRetrievalError || failure instanceof XAgentBackendError && failure.code === 'evidence-expired'
+      ? failure.code
+      : 'service-unavailable'
+    await expect(operation).rejects.toMatchObject({ code: expected })
+  })
+
+  test('rejects a search whose tokenizer settles after service disposal', async () => {
+    const counted = Promise.withResolvers<number>()
+    const value = backend()
+    const retrieval = new XAgentRetrievalService(new Context(), value, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+      tokenizer: tokenizer(() => counted.promise as never),
+    })
+    const operation = runWithXAgentAuthenticatedRequestScope(scope(), () => retrieval.searchArtifacts({
+      sessionId: SessionId(`session-${SESSION}`), toolCallId: 'call-disposed-after-tokenize',
+      query: 'evidence', projectIds: [PROJECT], includePrivate: false,
+    }))
+    const disposal = retrieval.dispose()
+    counted.resolve(1)
+    await expect(operation).rejects.toMatchObject({ code: 'service-unavailable' })
+    await disposal
+    expect(value.search).not.toHaveBeenCalled()
   })
 
   test.each([Number.NaN, -1, 1.5])('rejects an invalid exact token count of %s before fetch', async (count) => {
@@ -1084,6 +1363,33 @@ describe('XAgentRetrievalService', () => {
     expect(registry.discard(`session-${SESSION}`, 'call-reentrant-dispose')).toBe(false)
   })
 
+  test('blocks an agentless retrieval result when disposal starts in post-execute', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    const retrieval = new XAgentRetrievalService(ctx, backend(), new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, tokenizer: tokenizer(() => 1),
+    })
+    ctx.tools.register({
+      name: 'list_accessible_projects',
+      description: 'test retrieval',
+      parameters: { type: 'object' },
+      output: { schema: { type: 'null' }, render: () => [] },
+      execute: async () => null,
+    })
+    ctx.on('tools/post-execute', async (_exec, _result, next) => {
+      const decision = await next()
+      await retrieval.dispose()
+      return decision
+    })
+    await expect(ctx.tools.execute({
+      callId: CallId('agentless-disposal'),
+      name: 'list_accessible_projects',
+      arguments: {},
+      signal: new AbortController().signal,
+    })).resolves.toMatchObject({ isError: true, content: [{ text: 'Error: service-unavailable' }] })
+  })
+
   test('prevents backend settlement from registering after synchronous disposal', async () => {
     const pending = Promise.withResolvers<XAgentProjectDiscoveryResult>()
     const value = backend()
@@ -1119,6 +1425,76 @@ describe('XAgentRetrievalService', () => {
     })
     expect(created.registry.discard(String(session.id), 'call-blocked')).toBe(false)
     await created.value.dispose()
+  })
+
+  test('ignores unowned results and discards malformed or unpublishable retrieval metadata', () => {
+    const created = service()
+    const session = Session.create(SessionId(`session-${SESSION}`))
+    const execution = (callId: string, agent: Agent | null = { session } as Agent) => ({
+      token: Symbol(callId) as never,
+      rootCallId: callId as never,
+      callId: callId as never,
+      name: 'list_accessible_projects',
+      arguments: {},
+      signal: new AbortController().signal,
+      ...(agent === null ? {} : { agent }),
+    })
+    const result = (meta: unknown) => ({
+      isError: false as const,
+      value: null,
+      content: [],
+      meta: meta as never,
+      additionalContexts: [],
+    })
+
+    created.ctx.emit('tools/result', execution('no-agent', null), result({
+      kind: 'xagent-retrieval', payloadHash: 'a'.repeat(64),
+    }))
+    created.ctx.emit('tools/result', execution('invalid-kind'), result({
+      kind: 'other', payloadHash: 'a'.repeat(64),
+    }))
+    created.ctx.emit('tools/result', execution('invalid-hash'), result({
+      kind: 'xagent-retrieval', payloadHash: 'invalid',
+    }))
+
+    for (const [index, failure] of [new Error('publish failed'), 'publish failed'].entries()) {
+      const callId = `publish-failure-${index}`
+      created.registry.register({
+        sessionId: String(session.id), toolCallId: callId,
+        receipt: `opaque-${index}`, payloadHash: 'a'.repeat(64),
+      })
+      vi.spyOn(created.registry, 'publish').mockImplementationOnce(() => { throw failure })
+      created.ctx.emit('tools/result', execution(callId), result({
+        kind: 'xagent-retrieval', payloadHash: 'a'.repeat(64),
+      }))
+      expect(created.registry.discard(String(session.id), callId)).toBe(false)
+    }
+  })
+
+  test('redacts a non-Error receipt binding failure', () => {
+    const created = service()
+    const session = Session.create(SessionId(`session-${SESSION}`))
+    const failure: unknown = 'binding failed'
+    vi.spyOn(created.registry, 'bindEvent').mockImplementationOnce(() => { throw failure })
+    created.ctx.emit('session/event', session, {
+      seq: 7,
+      time: 100,
+      type: 'tool/result',
+      data: {
+        turn: 0,
+        step: 0,
+        message: {
+          id: 'message-binding-failure' as never,
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-binding-failure' as never },
+          content: [{
+            type: 'tool-result', toolCallId: 'call-binding-failure' as never,
+            isError: false, content: [],
+          }],
+        },
+        meta: { kind: 'xagent-retrieval', payloadHash: 'a'.repeat(64), citations: [] },
+      },
+    })
   })
 
   test.each(['agent/error', 'agent/disposed', 'session/disposed'] as const)(
@@ -1230,6 +1606,74 @@ describe('XAgentRetrievalService', () => {
 })
 
 describe('XAgentCitationRemoteService', () => {
+  test('validates request scope, explicit cancellation, and citation ordinal bounds', async () => {
+    const created = await citationService()
+    created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async (_token, _delegation, input) => ({
+      id: input.citationId,
+      artifactId: '00000000-0000-0000-0000-000000000501',
+      versionId: '00000000-0000-0000-0000-000000000601',
+      chunkId: '00000000-0000-0000-0000-000000000801',
+      lineStart: 1,
+      lineEnd: 2,
+    }))
+    const missingSignal = { ...scope(), requestSignal: undefined }
+    await expect(created.remote.withRequest(missingSignal as never, async () => undefined))
+      .rejects.toThrow('invalid xagent citation request scope')
+    const controller = new AbortController()
+    await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
+      `session-${SESSION}`, '[资料1]', controller.signal,
+    ))).resolves.toBeDefined()
+    await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
+      `session-${SESSION}`, `[资料${'9'.repeat(40)}]`,
+    ))).rejects.toMatchObject({ failure: { code: 'citation-invalid' } })
+    await expect(created.remote.withRequest(scope(), () => created.remote.resolve(
+      `session-${SESSION}`, '[资料9999999999999999]',
+    ))).rejects.toMatchObject({ failure: { code: 'citation-invalid' } })
+  })
+
+  test('maps only supported backend failures and passes through an existing Remote failure', async () => {
+    const value = backend()
+    const remote = new XAgentCitationRemoteService(new Context(), value, {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+    })
+    const direct = new TypertRemoteFailure({ code: 'citation-invalid', message: 'direct', details: {} })
+    for (const [failure, expected] of [
+      [direct, 'citation-invalid'],
+      [new XAgentBackendError('unauthenticated'), 'unauthenticated'],
+      [new XAgentBackendError('sequence-conflict'), 'service-unavailable'],
+      [new Error('unexpected'), 'service-unavailable'],
+    ] as const) {
+      value.resolveCitation = vi.fn(async () => { throw failure })
+      await expect(remote.withRequest(scope(), () => remote.resolve(`session-${SESSION}`, '[资料1]')))
+        .rejects.toMatchObject({ failure: { code: expected } })
+    }
+  })
+
+  test('rejects malformed Session ids, missing signing, and signing failures', async () => {
+    const value = backend()
+    const unsigned = new XAgentCitationRemoteService(new Context(), value, {
+      issuer: 'xagent-host', audience: 'xagent-api', now: () => 100,
+    })
+    await expect(unsigned.withRequest(scope(), () => unsigned.resolve('bad-session', '[资料1]')))
+      .rejects.toMatchObject({ failure: { code: 'unauthenticated' } })
+    await expect(unsigned.withRequest(scope(), () => unsigned.resolve(`session-${SESSION}`, '[资料1]')))
+      .rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+
+    const invalidClock = new XAgentCitationRemoteService(new Context(), value, {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey, now: () => Number.NaN,
+    })
+    await expect(invalidClock.withRequest(scope(), () => invalidClock.resolve(`session-${SESSION}`, '[资料1]')))
+      .rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+  })
+
+  test('rejects resolution after disposal begins inside an admitted request scope', async () => {
+    const created = await citationService()
+    await expect(created.remote.withRequest(scope(), async () => {
+      await created.remote.dispose()
+      return created.remote.resolve(`session-${SESSION}`, '[资料1]')
+    })).rejects.toThrow('disposed')
+  })
+
   test('publishes only resolve and sends only the durable citation id to the backend', async () => {
     const created = await citationService()
     created.backend.resolveCitation = vi.fn<XAgentRetrievalBackend['resolveCitation']>(async () => ({

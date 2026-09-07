@@ -241,7 +241,7 @@ async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: (
 async dispose(): Promise<void>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:248`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:247`](../../packages/xagent/retrieval/src/index.ts)
 
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 

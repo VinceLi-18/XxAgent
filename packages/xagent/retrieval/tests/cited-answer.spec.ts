@@ -55,7 +55,76 @@ describe('normalizeCitedAnswer', () => {
     })).toBeUndefined()
   })
 
+  test('replay metadata rejects every noncanonical root, block, ID, order, and limit', () => {
+    const meta = (blocks: unknown[], citationIds: unknown[] = ['[资料1]']): unknown => ({
+      kind: 'xagent-cited-answer', schemaVersion: 1, blocks, citationIds,
+    })
+    const validBlocks = [{ type: 'markdown', text: '正文' }, { type: 'citation', id: '[资料1]' }]
+    const invalid = [
+      null,
+      [],
+      { kind: 'xagent-cited-answer', schemaVersion: 1, blocks: validBlocks },
+      { kind: 'wrong', schemaVersion: 1, blocks: validBlocks, citationIds: ['[资料1]'] },
+      { kind: 'xagent-cited-answer', schemaVersion: 2, blocks: validBlocks, citationIds: ['[资料1]'] },
+      { kind: 'xagent-cited-answer', schemaVersion: 1, blocks: null, citationIds: ['[资料1]'] },
+      meta([]),
+      meta(Array.from({ length: CITED_ANSWER_MAX_BLOCKS + 1 }, () => ({ type: 'markdown', text: 'x' }))),
+      { kind: 'xagent-cited-answer', schemaVersion: 1, blocks: validBlocks, citationIds: null },
+      meta([null, ...validBlocks]),
+      meta([{}, ...validBlocks]),
+      meta([{ type: 'markdown', text: 1 }, { type: 'citation', id: '[资料1]' }]),
+      meta([{ type: 'markdown', text: '正文', extra: true }, { type: 'citation', id: '[资料1]' }]),
+      meta([{ type: 'markdown', text: '正文' }, { type: 'citation', id: 1 }]),
+      meta([{ type: 'markdown', text: '正文' }, { type: 'unknown', id: '[资料1]' }]),
+      meta([{ type: 'markdown', text: '' }, { type: 'citation', id: '[资料1]' }]),
+      meta([{ type: 'markdown', text: '正文' }], []),
+      meta(validBlocks, []),
+      meta(validBlocks, [1]),
+      meta(validBlocks, ['[资料2]']),
+      meta([{ type: 'markdown', text: '正文' }, { type: 'citation', id: '[资料1]' }, {
+        type: 'citation', id: '[资料1]',
+      }]),
+      meta([
+        { type: 'markdown', text: '正文' },
+        ...Array.from({ length: CITED_ANSWER_MAX_CITATIONS + 1 }, (_, index) => ({
+          type: 'citation', id: index % 2 === 0 ? '[资料1]' : '[资料2]',
+        })),
+      ], ['[资料1]', '[资料2]']),
+      meta([{ type: 'markdown', text: '文'.repeat(CITED_ANSWER_MAX_BYTES) }, { type: 'citation', id: '[资料1]' }]),
+    ]
+    for (const value of invalid) expect(parseXAgentCitedAnswerMeta(value)).toBeUndefined()
+
+    expect(parseXAgentCitedAnswerMeta(meta([
+      { type: 'markdown', text: 'A' },
+      { type: 'citation', id: '[资料1]' },
+      { type: 'markdown', text: 'B' },
+      { type: 'citation', id: '[资料1]' },
+    ]))).toBeDefined()
+  })
+
+  test('replay metadata contains serialization failures', () => {
+    const blocks: unknown[] = [{ type: 'markdown', text: '正文' }, { type: 'citation', id: '[资料1]' }]
+    Object.defineProperty(blocks, 'toJSON', {
+      value: () => { throw new Error('serialization failed') },
+    })
+    expect(parseXAgentCitedAnswerMeta({
+      kind: 'xagent-cited-answer', schemaVersion: 1, blocks, citationIds: ['[资料1]'],
+    })).toBeUndefined()
+  })
+
   test('rejects unknown root and block fields through a closed discriminated union', () => {
+    expectInvalid(null)
+    expectInvalid([])
+    expectInvalid(answer([
+      null,
+      { type: 'markdown', text: 'valid' },
+      { type: 'citation', id: '[资料1]' },
+    ]))
+    expectInvalid(answer([
+      {},
+      { type: 'markdown', text: 'valid' },
+      { type: 'citation', id: '[资料1]' },
+    ]))
     expectInvalid(answer([
       { type: 'markdown', text: 'valid' },
       { type: 'citation', id: '[资料1]' },
@@ -72,6 +141,18 @@ describe('normalizeCitedAnswer', () => {
       { type: 'markdown', text: 'valid' },
       { type: 'unknown', id: '[资料1]' },
     ]))
+  })
+
+  test('rejects serialization failures and non-string JSON results', () => {
+    const blocks = [{ type: 'markdown', text: 'valid' }, { type: 'citation', id: '[资料1]' }]
+    Object.defineProperty(blocks, 'toJSON', {
+      value: () => { throw new Error('serialization failed') },
+    })
+    expectInvalid(answer(blocks))
+
+    const omitted = answer([{ type: 'markdown', text: 'valid' }, { type: 'citation', id: '[资料1]' }])
+    Object.defineProperty(omitted, 'toJSON', { value: () => undefined })
+    expectInvalid(omitted)
   })
 
   test('enforces the complete JSON UTF-8 limit including multibyte Markdown', () => {

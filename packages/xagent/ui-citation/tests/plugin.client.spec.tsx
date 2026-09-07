@@ -18,9 +18,10 @@ import { apply as applyConversation, inject as injectConversation } from '@deeps
 import { apply as applyTool, inject as injectTool } from '@deepseek-ai/dsh-client-ui-tool/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, within } from '@testing-library/react'
-import { CitedAnswerView } from '../src/client/CitedAnswerView.tsx'
+import { CitedAnswerView, type CitedAnswerInjected } from '../src/client/CitedAnswerView.tsx'
 import { apply, inject } from '../src/client/index.ts'
 import * as CitationPlugin from '../src/client/index.ts'
+import * as HostCitationPlugin from '../src/index.ts'
 
 const SID = 'session-701' as SessionId
 
@@ -183,9 +184,10 @@ describe('XAgent citation browser plugin', () => {
       },
     }
     const workbenchListeners = new Set<() => void>()
+    let account = { phase: 'ready', switching: false, accountId: 'account-a' }
     const workbench = {
       snapshot: {
-        getSnapshot: () => ({ phase: 'ready', switching: false, accountId: 'account-a' }),
+        getSnapshot: () => account,
         subscribe: (listener: () => void) => { workbenchListeners.add(listener); return () => { workbenchListeners.delete(listener) } },
       },
     }
@@ -222,11 +224,36 @@ describe('XAgent citation browser plugin', () => {
     current = 'session-702'
     sessionListeners.forEach((listener) => { listener() })
     expect(cancelCitation).toHaveBeenCalledOnce()
+    current = undefined
+    sessionListeners.forEach((listener) => { listener() })
+    expect((entry.inject!() as unknown as CitedAnswerInjected).sessionId).toBe('')
+    account = { phase: 'ready', switching: true, accountId: 'account-a' }
+    workbenchListeners.forEach((listener) => { listener() })
     await fiber.dispose()
     expect(slots.entries('tool.call.toolview')).toHaveLength(0)
     expect(sessionListeners).toHaveLength(0)
     expect(workbenchListeners).toHaveLength(0)
     declareRoot()
+  })
+
+  it('cleans up the Remote namespace when injected feature startup fails', async () => {
+    const failure = new Error('feature startup failed')
+    const feature = {
+      await: vi.fn(() => Promise.reject(failure)),
+      dispose: vi.fn(async () => {}),
+    }
+    const disposeRemote = vi.fn(async () => {})
+    const ctx = {
+      remote: { $mount: vi.fn(async () => disposeRemote) },
+      inject: vi.fn(() => feature),
+    }
+    await expect(apply(ctx as never)).rejects.toBe(failure)
+    expect(feature.dispose).toHaveBeenCalledOnce()
+    expect(disposeRemote).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the Host half intentionally inert', () => {
+    HostCitationPlugin.apply()
   })
 
   it('loads the client package through a real Loader composition and unloads its keyed ToolView', async () => {

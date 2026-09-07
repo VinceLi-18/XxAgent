@@ -1,8 +1,11 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, test } from 'vitest'
 import XAgentPrincipalService, {
+  currentXAgentAuthenticatedRequestScope,
   isXAgentAuthenticatedRequestScope,
   parseXAgentPrincipal,
+  runWithoutXAgentAuthenticatedRequestScope,
+  runWithXAgentAuthenticatedRequestScope,
 } from '../src/index.ts'
 
 const valid = {
@@ -61,5 +64,20 @@ describe('XAgent Principal', () => {
       .toBe(false)
     expect(isXAgentAuthenticatedRequestScope({ principal, userToken: 'token', connectionId: 'connection-2' }))
       .toBe(false)
+  })
+
+  test('认证请求范围沿异步调用传播并可显式抑制', async () => {
+    const principal = parseXAgentPrincipal(valid, 'connection-1')
+    const scope = { principal, userToken: 'token', connectionId: 'connection-1' }
+
+    expect(currentXAgentAuthenticatedRequestScope()).toBeUndefined()
+    await runWithXAgentAuthenticatedRequestScope(scope, async () => {
+      expect(currentXAgentAuthenticatedRequestScope()).toEqual(scope)
+      await Promise.resolve()
+      expect(currentXAgentAuthenticatedRequestScope()).toEqual(scope)
+      expect(runWithoutXAgentAuthenticatedRequestScope(currentXAgentAuthenticatedRequestScope)).toBeUndefined()
+      expect(currentXAgentAuthenticatedRequestScope()).toEqual(scope)
+    })
+    expect(currentXAgentAuthenticatedRequestScope()).toBeUndefined()
   })
 })

@@ -77,11 +77,13 @@ describe('XAgent Ed25519 委托令牌', () => {
   })
 
   test.each([
+    [{ projectIds: null, includePrivate: true }],
+    [{ projectIds: [], includePrivate: 1 }],
     [{ projectIds: [], includePrivate: false }],
     [{ projectIds: ['bad'], includePrivate: true }],
     [{ projectIds: Array.from({ length: 21 }, () => crypto.randomUUID()), includePrivate: false }],
   ])('拒绝无效的个人会话检索范围 %#', (input) => {
-    expect(() => canonicalizeRetrievalDelegationScope(input)).toThrow('delegation rejected')
+    expect(() => canonicalizeRetrievalDelegationScope(input as never)).toThrow('delegation rejected')
   })
 
   test('按 FastAPI UUID 表示规范化大小写后计算范围摘要', () => {

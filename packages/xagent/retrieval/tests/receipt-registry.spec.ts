@@ -56,4 +56,48 @@ describe('XAgentReceiptRegistry', () => {
     expect(registry.discard(SESSION, 'call-1')).toBe(false)
     await Promise.all([registry.dispose(), registry.dispose()])
   })
+
+  test('discards only one Session non-bound operations and retains durable bindings', async () => {
+    const registry = new XAgentReceiptRegistry()
+    registry.register({ sessionId: SESSION, toolCallId: 'bound', receipt: 'bound', payloadHash: 'a'.repeat(64) })
+    registry.publish(SESSION, 'bound', 'a'.repeat(64))
+    registry.bindEvent(SESSION, 'bound', 7)
+    registry.register({ sessionId: SESSION, toolCallId: 'published', receipt: 'published', payloadHash: 'b'.repeat(64) })
+    registry.publish(SESSION, 'published', 'b'.repeat(64))
+    registry.register({ sessionId: SESSION, toolCallId: 'registered', receipt: 'registered', payloadHash: 'c'.repeat(64) })
+    registry.register({ sessionId: 'session-other', toolCallId: 'other', receipt: 'other', payloadHash: 'd'.repeat(64) })
+
+    registry.discardSession(SESSION)
+
+    expect(registry.attachments(SESSION, 0, 10)).toHaveLength(1)
+    expect(registry.discard(SESSION, 'bound')).toBe(false)
+    expect(registry.discard(SESSION, 'published')).toBe(false)
+    expect(registry.discard(SESSION, 'registered')).toBe(false)
+    expect(registry.discard('session-other', 'other')).toBe(true)
+    await registry.dispose()
+    expect(registry.attachments(SESSION, 0, 10)).toHaveLength(1)
+  })
+
+  test('validates event windows and returns sorted owned attachments only', () => {
+    const registry = new XAgentReceiptRegistry()
+    expect(() => { registry.bindEvent(SESSION, 'missing', -1) }).toThrow('event binding rejected')
+    expect(() => { registry.bindEvent(SESSION, 'missing', 1.5) }).toThrow('event binding rejected')
+    expect(registry.attachments(SESSION, 2, 1)).toEqual([])
+    expect(registry.attachments(SESSION, 1.5, 2)).toEqual([])
+    expect(registry.attachments(SESSION, 1, 2.5)).toEqual([])
+    registry.commit(SESSION, 1.5)
+
+    for (const [toolCallId, sequence] of [['later', 9], ['earlier', 7]] as const) {
+      registry.register({ sessionId: SESSION, toolCallId, receipt: toolCallId, payloadHash: 'a'.repeat(64) })
+      registry.publish(SESSION, toolCallId, 'a'.repeat(64))
+      registry.bindEvent(SESSION, toolCallId, sequence)
+    }
+    registry.register({ sessionId: SESSION, toolCallId: 'unbound', receipt: 'unbound', payloadHash: 'a'.repeat(64) })
+    registry.register({ sessionId: 'session-other', toolCallId: 'other', receipt: 'other', payloadHash: 'a'.repeat(64) })
+    registry.publish('session-other', 'other', 'a'.repeat(64))
+    registry.bindEvent('session-other', 'other', 8)
+
+    expect(registry.attachments(SESSION, 8, 8)).toEqual([])
+    expect(registry.attachments(SESSION, 0, 10).map(value => value.eventSequence)).toEqual([7, 9])
+  })
 })

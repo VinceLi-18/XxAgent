@@ -51,10 +51,13 @@ describe('XAgent cited answer ToolView', () => {
     const injected = props()
     render(<CitedAnswerView {...injected} />)
     const chips = screen.getAllByRole('button', { name: '已验证资料 [资料1]' })
+    fireEvent.keyDown(chips[0]!, { key: 'Escape' })
     fireEvent.keyDown(chips[0]!, { key: 'Enter' })
+    fireEvent.keyDown(chips[1]!, { key: ' ' })
     fireEvent.click(chips[2]!)
     expect(injected.openCitation).toHaveBeenNthCalledWith(1, 'session-701', '[资料1]')
     expect(injected.openCitation).toHaveBeenNthCalledWith(2, 'session-701', '[资料1]')
+    expect(injected.openCitation).toHaveBeenNthCalledWith(3, 'session-701', '[资料1]')
   })
 
   it('renders rejected attempts as a neutral unpublished state and fails closed for malformed success metadata', () => {

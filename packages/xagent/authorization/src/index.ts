@@ -311,6 +311,8 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     }
     if (!authenticated(request)) return unauthenticated()
     if (permission === undefined) return unauthenticated()
+    const promptSessionId = method === 'prompt' ? values?.sessionId : undefined
+    if (method === 'prompt' && typeof promptSessionId !== 'string') return unauthenticated()
     try {
       return await this.persistence.withUserToken(request.userToken, async () => {
         let visible: ReadonlySet<string> | undefined
@@ -330,11 +332,9 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
         }
         let result: RpcResult<T>
         if (method === 'prompt') {
-          const sessionId = values?.sessionId
-          if (typeof sessionId !== 'string') return unauthenticated<T>()
           const requestScope = authenticatedScope(request, signal)
           const scoped = authenticatedSessionScope(
-            await this.backend.sessions.list(request.userToken, signal), sessionId, requestScope,
+            await this.backend.sessions.list(request.userToken, signal), promptSessionId as string, requestScope,
           )
           result = await runWithXAgentAuthenticatedRequestScope(scoped, operation)
         } else {

@@ -537,6 +537,223 @@ describe('XAgent 后端客户端', () => {
     })).rejects.toMatchObject({ code: 'service-unavailable' })
   })
 
+  test.each([
+    [{ schema_version: 2, projects: [], receipt: 'opaque', payload_sha256: 'a'.repeat(64) }],
+    [{ schema_version: 1, projects: null, receipt: 'opaque', payload_sha256: 'a'.repeat(64) }],
+    [{
+      schema_version: 1,
+      projects: Array.from({ length: 21 }, (_, index) => ({
+        project_id: `00000000-0000-0000-0000-${String(900 + index).padStart(12, '0')}`,
+        name: `Project ${index}`,
+      })),
+      receipt: 'opaque',
+      payload_sha256: 'a'.repeat(64),
+    }],
+  ])('项目发现拒绝无效 envelope %#', async (body) => {
+    await expect(retrievalClient(body).retrieval.projects('user', 'delegation', retrievalOperation))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('项目发现拒绝重复项目和非 opaque receipt', async () => {
+    const duplicateProjects = [
+      { project_id: retrievalIds.project, name: 'Alpha' },
+      { project_id: retrievalIds.project, name: 'Again' },
+    ]
+    await expect(retrievalClient({
+      schema_version: 1,
+      projects: duplicateProjects,
+      receipt: 'opaque',
+      payload_sha256: retrievalPayloadHash({ schema_version: 1, projects: duplicateProjects }),
+    }).retrieval.projects('user', 'delegation', retrievalOperation))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const projects: unknown[] = []
+    await expect(retrievalClient({
+      schema_version: 1,
+      projects,
+      receipt: 'https://secret.example/token',
+      payload_sha256: retrievalPayloadHash({ schema_version: 1, projects }),
+    }).retrieval.projects('user', 'delegation', retrievalOperation))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('项目发现摘要按键名排序而不依赖 wire 插入顺序', async () => {
+    const project = { name: 'Alpha', project_id: retrievalIds.project }
+    const projects = [project]
+    await expect(retrievalClient({
+      schema_version: 1,
+      projects,
+      receipt: 'opaque',
+      payload_sha256: retrievalPayloadHash({ schema_version: 1, projects }),
+    }).retrieval.projects('user', 'delegation', retrievalOperation))
+      .resolves.toMatchObject({ projects: [{ projectId: retrievalIds.project, name: 'Alpha' }] })
+  })
+
+  test.each([
+    [{ schema_version: 2, citations: [], receipt: 'opaque', payload_sha256: 'a'.repeat(64) }],
+    [{ schema_version: 1, citations: null, receipt: 'opaque', payload_sha256: 'a'.repeat(64) }],
+    [{
+      schema_version: 1,
+      citations: Array.from({ length: 9 }, (_, index) => ({
+        ...citationResponse,
+        id: `[资料${index + 1}]`,
+        chunk_id: `00000000-0000-0000-0000-${String(800 + index).padStart(12, '0')}`,
+      })),
+      receipt: 'opaque',
+      payload_sha256: 'a'.repeat(64),
+    }],
+  ])('资料搜索拒绝无效 envelope %#', async (body) => {
+    await expect(retrievalClient(body).retrieval.search('user', 'delegation', {
+      ...retrievalOperation,
+      query: 'query',
+      projectIds: [retrievalIds.project],
+      includePrivate: false,
+      scopeHash: retrievalScopeHashes.projectOnly,
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [[citationResponse, { ...citationResponse, chunk_id: '00000000-0000-0000-0000-000000000506' }]],
+    [[citationResponse, { ...citationResponse, id: '[资料2]' }]],
+  ])('资料搜索拒绝重复 citation 身份 %#', async (citations) => {
+    const payload = { schema_version: 1, citations }
+    await expect(retrievalClient({
+      ...payload,
+      receipt: 'opaque',
+      payload_sha256: retrievalPayloadHash(payload),
+    }).retrieval.search('user', 'delegation', {
+      ...retrievalOperation,
+      query: 'query',
+      projectIds: [retrievalIds.project],
+      includePrivate: false,
+      scopeHash: retrievalScopeHashes.projectOnly,
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [{ ...citationResponse, id: 1 }],
+    [{ ...citationResponse, text: 'x'.repeat(32 * 1024 + 1) }],
+  ])('资料搜索拒绝非字符串引用 ID 或超过总响应上限的正文 %#', async (citation) => {
+    const payload = { schema_version: 1, citations: [citation] }
+    await expect(retrievalClient({
+      ...payload,
+      receipt: 'opaque',
+      payload_sha256: retrievalPayloadHash(payload),
+    }).retrieval.search('user', 'delegation', {
+      ...retrievalOperation,
+      query: 'query',
+      projectIds: [retrievalIds.project],
+      includePrivate: false,
+      scopeHash: retrievalScopeHashes.projectOnly,
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [{ ...retrievalOperation, sessionId: 'bad' }],
+    [{ ...retrievalOperation, toolCallId: '' }],
+    [{ ...retrievalOperation, toolCallId: '界'.repeat(256) }],
+    [{ ...retrievalOperation, permissionRevision: 1.5 }],
+    [{ ...retrievalOperation, permissionRevision: 0 }],
+  ])('检索调用拒绝无效操作身份 %#', async (operation) => {
+    await expect(retrievalClient({}).retrieval.projects('user', 'delegation', operation))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('资料搜索拒绝非布尔私有范围和非数组项目范围', async () => {
+    const client = retrievalClient({})
+    await expect(client.retrieval.search('user', 'delegation', {
+      ...retrievalOperation, query: 'query', projectIds: [], includePrivate: 1, scopeHash: 'a'.repeat(64),
+    } as never)).rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(client.retrieval.search('user', 'delegation', {
+      ...retrievalOperation, query: 'query', projectIds: null, includePrivate: false, scopeHash: 'a'.repeat(64),
+    } as never)).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('资料搜索支持无显式项目范围，并拒绝不配对的私有标志或摘要', async () => {
+    const payload = { schema_version: 1, citations: [] }
+    await expect(retrievalClient({
+      ...payload,
+      receipt: 'opaque',
+      payload_sha256: retrievalPayloadHash(payload),
+    }).retrieval.search('user', 'delegation', {
+      ...retrievalOperation, query: 'query', includePrivate: false,
+    })).resolves.toEqual({
+      citations: [], receipt: 'opaque', payloadHash: retrievalPayloadHash(payload),
+    })
+    await expect(retrievalClient({}).retrieval.search('user', 'delegation', {
+      ...retrievalOperation, query: 'query', includePrivate: true,
+    } as never)).rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(retrievalClient({}).retrieval.search('user', 'delegation', {
+      ...retrievalOperation, query: 'query', includePrivate: false, scopeHash: 'a'.repeat(64),
+    } as never)).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [{ id: '[资料1]', artifactId: 'bad', versionId: retrievalIds.version, chunkId: retrievalIds.chunk }],
+    [{ id: '[资料1]', artifactId: retrievalIds.artifact, versionId: 'bad', chunkId: retrievalIds.chunk }],
+    [{ id: '[资料1]', artifactId: retrievalIds.artifact, versionId: retrievalIds.version, chunkId: 'bad' }],
+  ])('引用授权拒绝无效不可变身份 %#', async (citation) => {
+    await expect(retrievalClient({}).retrieval.authorizeCitations('user', 'delegation', {
+      ...retrievalOperation, citations: [citation],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [null],
+    [[]],
+    [Array.from({ length: 9 }, (_, index) => ({
+      id: `[资料${index + 1}]`,
+      artifactId: retrievalIds.artifact,
+      versionId: retrievalIds.version,
+      chunkId: `00000000-0000-0000-0000-${String(700 + index).padStart(12, '0')}`,
+    }))],
+  ])('引用授权拒绝无效 citation 集合 %#', async (citations) => {
+    await expect(retrievalClient({}).retrieval.authorizeCitations('user', 'delegation', {
+      ...retrievalOperation, citations,
+    } as never)).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [{ schema_version: 2, authorized: true }],
+    [{ schema_version: 1, authorized: false }],
+  ])('引用授权拒绝非肯定响应 %#', async (body) => {
+    await expect(retrievalClient(body).retrieval.authorizeCitations('user', 'delegation', {
+      ...retrievalOperation,
+      citations: [{
+        id: '[资料1]', artifactId: retrievalIds.artifact,
+        versionId: retrievalIds.version, chunkId: retrievalIds.chunk,
+      }],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each([
+    [{
+      schema_version: 2,
+      artifact_id: retrievalIds.artifact,
+      version_id: retrievalIds.version,
+      chunk_id: retrievalIds.chunk,
+      line_start: 3,
+      line_end: 8,
+    }],
+    [{
+      schema_version: 1,
+      artifact_id: retrievalIds.artifact,
+      version_id: retrievalIds.version,
+      chunk_id: retrievalIds.chunk,
+      line_start: 8,
+      line_end: 3,
+    }],
+  ])('引用解析拒绝无效版本或倒置行区间 %#', async (body) => {
+    await expect(retrievalClient(body).retrieval.resolveCitation('user', 'delegation', {
+      ...retrievalOperation, citationId: '[资料1]',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('所有检索调用拒绝空委托令牌', async () => {
+    await expect(retrievalClient({}).retrieval.projects('user', '', retrievalOperation))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
   test('资料搜索按完整模型可见 citations JSON 执行 32 KiB 上限', async () => {
     const citations = Array.from({ length: 8 }, (_, index) => ({
       ...citationResponse,

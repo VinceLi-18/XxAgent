@@ -73,9 +73,11 @@ describe('Connection 请求上下文', () => {
   })
 
   test('resolver 在 handler 前运行且不能覆盖 Host connectionId', async () => {
+    const lifetime = new AbortController().signal
     const resolver = { resolve: vi.fn(async (_request: Request, connectionId: string) => ({
       principal: { actorId: 'alice' },
       userToken: 'browser-secret',
+      lifetime,
       connectionId: `forged-${connectionId}`,
     })) }
     const { ctx, routes, dispose } = await mount(resolver)
@@ -92,6 +94,7 @@ describe('Connection 请求上下文', () => {
     expect(handler).toHaveBeenCalledWith('probe/read', {}, expect.any(AbortSignal), {
       principal: { actorId: 'alice' },
       userToken: 'browser-secret',
+      lifetime,
       connectionId: generated,
       requestId: 'rpc-1',
     })

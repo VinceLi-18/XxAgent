@@ -611,7 +611,6 @@ function parseRetrievalCitation(value: unknown): XAgentRetrievalCitation {
   const lineEnd = positiveInteger(row.line_end)
   if (lineEnd < lineStart || (row.scope !== 'private' && row.scope !== 'project')) failSchema()
   const text = requiredString(row.text)
-  if (new TextEncoder().encode(text).byteLength > MAX_RETRIEVAL_TEXT_BYTES) failSchema()
   return {
     id: identity.id,
     artifactId: identity.artifactId,
@@ -713,7 +712,7 @@ function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
   if (typeof value === 'object' && value !== null) {
     const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
-      left < right ? -1 : left > right ? 1 : 0)
+      left < right ? -1 : 1)
     return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`
   }
   return JSON.stringify(value)
