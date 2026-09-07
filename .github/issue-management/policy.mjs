@@ -415,12 +415,24 @@ async function graphql(query, variables) {
   return result.data
 }
 
+/**
+ * Read optional repository Issue field values.
+ * @param {number} number Issue number.
+ * @param {typeof api} request GitHub API request implementation.
+ * @returns {Promise<unknown[]>} Issue field values, or an empty list when the endpoint is unavailable.
+ */
+export async function loadIssueFieldValues(number, request = api) {
+  const values = await request(
+    `/repos/${config.organization}/${config.repository}/issues/${number}/issue-field-values?per_page=100`,
+    { allow404: true },
+  )
+  return values ?? []
+}
+
 async function issueSnapshot(number, status = undefined) {
   const issue = await api(`/repos/${config.organization}/${config.repository}/issues/${number}`)
   if (issue.pull_request) return null
-  const values = await api(
-    `/repos/${config.organization}/${config.repository}/issues/${number}/issue-field-values?per_page=100`,
-  )
+  const values = await loadIssueFieldValues(number)
   const field = (name) => values.find((value) => value.issue_field_name === name)
   return {
     number,
