@@ -113,3 +113,41 @@ def retrieval_audit_details(
         if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
             raise ValueError("retrieval audit details are invalid")
     return details
+
+
+def fact_audit_details(
+    *,
+    operation: str,
+    result: str,
+    latency_ms: int,
+    project_id: UUID | None = None,
+    session_id: UUID | None = None,
+    proposal_id: UUID | None = None,
+    tool_call_id: str | None = None,
+    request_sha256: str | None = None,
+    payload_sha256: str | None = None,
+    permission_revision: int | None = None,
+    evidence_count: int | None = None,
+    status: str | None = None,
+    event_sequence: int | None = None,
+) -> dict[str, Any]:
+    """Build redacted fields accepted by the action-specific Fact audit validator."""
+    details: dict[str, Any] = {
+        "operation": operation,
+        "result": result,
+        "latency_ms": latency_ms,
+    }
+    optional = {
+        "project_id": str(project_id) if project_id is not None else None,
+        "session_id": str(session_id) if session_id is not None else None,
+        "proposal_id": str(proposal_id) if proposal_id is not None else None,
+        "tool_call_id": tool_call_id,
+        "request_sha256": request_sha256,
+        "payload_sha256": payload_sha256,
+        "permission_revision": permission_revision,
+        "evidence_count": evidence_count,
+        "status": status,
+        "event_sequence": event_sequence,
+    }
+    details.update({key: value for key, value in optional.items() if value is not None})
+    return details

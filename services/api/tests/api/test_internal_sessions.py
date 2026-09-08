@@ -383,6 +383,50 @@ async def test_unsupported_schema_version_has_a_stable_error(
 
 
 @pytest.mark.anyio
+async def test_append_rejects_unknown_private_fact_attachment_fields(
+    client,
+    seeded_database,
+    alice,
+    alice_private_xagent_session,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    response = await client.post(
+        f"/internal/xagent/sessions/{alice_private_xagent_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "append-closed-fact-attachment",
+            "events": [
+                {"event_type": "tool/result", "schema_version": 1, "payload": {}}
+            ],
+            "fact_proposal_receipts": [
+                {
+                    "event_sequence": 1,
+                    "tool_call_id": "call-closed-fact",
+                    "proposal_id": "00000000-0000-0000-0000-000000000901",
+                    "receipt": "a" * 43,
+                    "payload_hash": "b" * 64,
+                    "raw_receipt_copy": "forbidden",
+                }
+            ],
+            "fact_outbox_events": [
+                {
+                    "event_sequence": 1,
+                    "outbox_id": "00000000-0000-0000-0000-000000000902",
+                    "payload_hash": "c" * 64,
+                    "unknown": True,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"code": "invalid-request"}}
+    assert "raw_receipt_copy" not in response.text
+
+
+@pytest.mark.anyio
 async def test_runtime_header_and_requested_identity_round_trip_with_explicit_authorization(
     client,
     seeded_database,

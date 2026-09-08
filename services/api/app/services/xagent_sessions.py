@@ -10,6 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.facts import FactProposalReceipt
 from app.models.project import Project, ProjectAction
 from app.models.retrieval import (
     XAgentAdmittedEvidence,
@@ -18,9 +19,16 @@ from app.models.retrieval import (
 )
 from app.models.workbench import XAgentSessionProjectRef
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
-from app.services.audit import retrieval_audit_details, write_audit_event
+from app.services.audit import fact_audit_details, retrieval_audit_details, write_audit_event
 from app.services.auth import Principal
 from app.services.authorization import ForbiddenError, authorize_projects
+from app.services.fact_receipts import (
+    FactReceiptClaims,
+    FactReceiptError,
+    receipt_digest_id as fact_receipt_digest_id,
+    verify_receipt as verify_fact_receipt,
+)
+from app.services.fact_validation import canonical_sha256
 from app.services.retrieval import (
     RetrievalCandidate,
     RetrievalError,
@@ -46,6 +54,8 @@ class SessionErrorCode(str, Enum):
     UNSUPPORTED_VERSION = "unsupported-version"
     EVIDENCE_EXPIRED = "evidence-expired"
     EVIDENCE_CONFLICT = "evidence-conflict"
+    FACT_RECEIPT_INVALID = "fact-receipt-invalid"
+    FACT_RECEIPT_EXPIRED = "fact-receipt-expired"
     SERVICE_UNAVAILABLE = "service-unavailable"
 
 
@@ -392,6 +402,113 @@ def _receipt_claims(item: XAgentRetrievalReceipt) -> ReceiptClaims:
     )
 
 
+def _fact_receipt_claims(item: FactProposalReceipt) -> FactReceiptClaims:
+    return FactReceiptClaims(
+        proposal_id=item.proposal_id,
+        project_id=item.project_id,
+        actor_id=item.actor_id,
+        session_id=item.session_id,
+        tool_call_id=item.tool_call_id,
+        permission_revision=item.permission_revision,
+        source_event_sequence=item.source_event_sequence,
+        payload_sha256=item.payload_sha256,
+        issued_at=item.issued_at,
+        expires_at=item.expires_at,
+    )
+
+
+def _fact_public_payload(
+    event: dict[str, Any],
+    *,
+    sequence: int,
+) -> tuple[str, UUID, str, dict[str, Any]]:
+    try:
+        payload = event["payload"]
+        data = payload["data"]
+        message = data["message"]
+        message_content = message["content"]
+        if not isinstance(message_content, list) or len(message_content) != 1:
+            raise ValueError
+        result = message_content[0]
+        result_content = result["content"]
+        if not isinstance(result_content, list) or len(result_content) != 1:
+            raise ValueError
+        text_content = result_content[0]
+        tool_call_id = result["toolCallId"]
+        if (
+            event["event_type"] != "tool/result"
+            or event["schema_version"] != 1
+            or set(payload) - {"sourceEventSeqs"}
+            != {"seq", "time", "type", "data", "surfaceOp"}
+            or payload["seq"] != sequence
+            or payload["type"] != "tool/result"
+            or payload["surfaceOp"] != "append"
+            or isinstance(payload["time"], bool)
+            or not isinstance(payload["time"], int)
+            or payload["time"] < 0
+            or not _valid_source_event_sequences(payload, sequence)
+            or set(data) != {"turn", "step", "message"}
+            or any(
+                isinstance(data[key], bool)
+                or not isinstance(data[key], int)
+                or data[key] < 0
+                for key in ("turn", "step")
+            )
+            or set(message) != {"id", "role", "source", "content"}
+            or not isinstance(message["id"], str)
+            or not 1 <= len(message["id"]) <= 255
+            or message["role"] != "user"
+            or set(message["source"]) != {"kind", "callId"}
+            or message["source"] != {"kind": "tool", "callId": tool_call_id}
+            or set(result) != {"type", "toolCallId", "isError", "content"}
+            or result["type"] != "tool-result"
+            or result["isError"] is not False
+            or not isinstance(tool_call_id, str)
+            or not 1 <= len(tool_call_id) <= 255
+            or set(text_content) != {"type", "text"}
+            or text_content["type"] != "text"
+            or not isinstance(text_content["text"], str)
+        ):
+            raise ValueError
+        public = json.loads(text_content["text"])
+        if not isinstance(public, dict) or set(public) != {"proposalId", "status"}:
+            raise ValueError
+        proposal_id = _canonical_uuid(public["proposalId"])
+        if public["status"] != "pending":
+            raise ValueError
+        digest = canonical_sha256(public)
+        canonical_text = json.dumps(public, ensure_ascii=False, separators=(",", ":"))
+        canonical_payload = {
+            "seq": sequence,
+            "time": payload["time"],
+            "type": "tool/result",
+            "surfaceOp": "append",
+            **(
+                {"sourceEventSeqs": payload["sourceEventSeqs"]}
+                if "sourceEventSeqs" in payload
+                else {}
+            ),
+            "data": {
+                "turn": data["turn"],
+                "step": data["step"],
+                "message": {
+                    "id": message["id"],
+                    "role": "user",
+                    "source": {"kind": "tool", "callId": tool_call_id},
+                    "content": [{
+                        "type": "tool-result",
+                        "toolCallId": tool_call_id,
+                        "isError": False,
+                        "content": [{"type": "text", "text": canonical_text}],
+                    }],
+                },
+            },
+        }
+        return tool_call_id, proposal_id, digest, canonical_payload
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID) from None
+
+
 def _retrieval_public_payload(
     event: dict[str, Any],
     *,
@@ -656,6 +773,24 @@ class _PendingRetrievalAdmission:
     canonical_payload: dict[str, Any]
 
 
+@dataclass
+class _PendingFactAdmission:
+    sequence: int
+    receipt: FactProposalReceipt
+    claims: FactReceiptClaims
+    proposal_id: UUID
+    tool_call_id: str
+    digest: str
+    canonical_payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _AdmittedFact:
+    tool_call_id: str
+    payload: dict[str, Any]
+    audit_id: UUID
+
+
 @dataclass(frozen=True)
 class _CitationEvidence:
     admission_sequence: int
@@ -672,6 +807,96 @@ class _AdmittedRetrieval:
     payload: dict[str, Any]
     audit_id: UUID
     evidence: tuple[tuple[str, _CitationEvidence], ...]
+
+
+async def _load_fact_admissions(
+    session: AsyncSession,
+    principal: Principal,
+    item: XAgentSession,
+    *,
+    expected_sequence: int,
+    events: list[dict[str, Any]],
+    attachments: list[dict[str, Any]],
+) -> list[_PendingFactAdmission]:
+    if attachments and (item.visibility != "project" or item.project_id is None):
+        raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+    by_sequence: dict[int, dict[str, Any]] = {}
+    for attachment in attachments:
+        sequence = attachment["event_sequence"]
+        if sequence in by_sequence:
+            raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+        by_sequence[sequence] = attachment
+
+    pending: list[_PendingFactAdmission] = []
+    for sequence in sorted(by_sequence):
+        attachment = by_sequence[sequence]
+        offset = sequence - expected_sequence - 1
+        if offset < 0 or offset >= len(events):
+            raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+        event = events[offset]
+        attachment_proposal_id = _canonical_uuid(attachment["proposal_id"])
+        receipt_id = fact_receipt_digest_id(attachment["receipt"])
+        receipt = await session.scalar(
+            select(FactProposalReceipt)
+            .where(FactProposalReceipt.receipt_digest_id == receipt_id)
+            .with_for_update()
+        )
+        if receipt is None or receipt.consumed_at is not None or item.project_id is None:
+            raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+        tool_call_id, proposal_id, digest, canonical_payload = _fact_public_payload(
+            event,
+            sequence=sequence,
+        )
+        stored_claims = _fact_receipt_claims(receipt)
+        expected_claims = FactReceiptClaims(
+            proposal_id=attachment_proposal_id,
+            project_id=item.project_id,
+            actor_id=principal.actor_id,
+            session_id=item.id,
+            tool_call_id=attachment["tool_call_id"],
+            permission_revision=principal.permission_revision,
+            source_event_sequence=sequence,
+            payload_sha256=attachment["payload_hash"],
+            issued_at=receipt.issued_at,
+            expires_at=receipt.expires_at,
+        )
+        try:
+            verify_fact_receipt(
+                attachment["receipt"],
+                receipt.receipt_digest_id,
+                stored_claims,
+                expected_claims,
+            )
+        except FactReceiptError as error:
+            code = (
+                SessionErrorCode.FACT_RECEIPT_EXPIRED
+                if error.code == "fact-receipt-expired"
+                else SessionErrorCode.FACT_RECEIPT_INVALID
+            )
+            raise SessionServiceError(code) from None
+        if (
+            proposal_id != attachment_proposal_id
+            or tool_call_id != attachment["tool_call_id"]
+            or digest != attachment["payload_hash"]
+            or attachment["receipt"] in json.dumps(
+                canonical_payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        ):
+            raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+        pending.append(
+            _PendingFactAdmission(
+                sequence=sequence,
+                receipt=receipt,
+                claims=stored_claims,
+                proposal_id=proposal_id,
+                tool_call_id=tool_call_id,
+                digest=digest,
+                canonical_payload=canonical_payload,
+            )
+        )
+    return pending
 
 
 async def _load_retrieval_admissions(
@@ -914,6 +1139,69 @@ async def _admit_retrieval_receipts(
                 payload=admission.canonical_payload,
                 sequence=admission.sequence,
             ) or ()),
+        )
+    return admitted
+
+
+async def _admit_fact_receipts(
+    session: AsyncSession,
+    principal: Principal,
+    item: XAgentSession,
+    pending: list[_PendingFactAdmission],
+    *,
+    request_sha256: str,
+) -> dict[int, _AdmittedFact]:
+    admitted: dict[int, _AdmittedFact] = {}
+    for admission in pending:
+        accepted = await session.scalar(
+            text(
+                "SELECT public.xagent_admit_fact_proposal("
+                ":receipt_digest, :proposal_id, :project_id, :actor_id, :session_id, "
+                ":tool_call_id, :permission_revision, :event_sequence, :payload_sha256)"
+            ),
+            {
+                "receipt_digest": admission.receipt.receipt_digest_id,
+                "proposal_id": admission.proposal_id,
+                "project_id": admission.claims.project_id,
+                "actor_id": principal.actor_id,
+                "session_id": item.id,
+                "tool_call_id": admission.tool_call_id,
+                "permission_revision": principal.permission_revision,
+                "event_sequence": admission.sequence,
+                "payload_sha256": admission.digest,
+            },
+        )
+        if accepted is not True:
+            if admission.claims.expires_at <= datetime.now(UTC):
+                raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_EXPIRED)
+            raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+        audit = await write_audit_event(
+            session,
+            principal.actor_id,
+            "fact.admit",
+            "fact_proposal",
+            admission.proposal_id,
+            uuid4(),
+            "pending",
+            details=fact_audit_details(
+                project_id=admission.claims.project_id,
+                session_id=item.id,
+                proposal_id=admission.proposal_id,
+                tool_call_id=admission.tool_call_id,
+                event_sequence=admission.sequence,
+                operation="admit",
+                request_sha256=request_sha256,
+                payload_sha256=admission.digest,
+                permission_revision=principal.permission_revision,
+                result="pending",
+                status="pending",
+                latency_ms=0,
+            ),
+        )
+        admitted[admission.sequence] = _AdmittedFact(
+            tool_call_id=admission.tool_call_id,
+            payload=admission.canonical_payload,
+            audit_id=audit.id,
         )
     return admitted
 
@@ -1328,6 +1616,135 @@ async def write_append_admission_denial(
     )
 
 
+async def write_fact_append_admission_failure(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    session_id: UUID,
+    attachments: list[dict[str, Any]],
+    request_sha256: str,
+    result: str,
+) -> None:
+    """Expire exact prepared proposals or record one redacted receipt denial."""
+    if not attachments:
+        return
+    attachment = attachments[0]
+    proposal_id = _canonical_uuid(attachment["proposal_id"])
+    receipt = await session.scalar(
+        select(FactProposalReceipt).where(
+            FactProposalReceipt.receipt_digest_id
+            == fact_receipt_digest_id(attachment["receipt"])
+        )
+    )
+    if result == SessionErrorCode.FACT_RECEIPT_EXPIRED.value and receipt is not None:
+        expired = await session.scalar(
+            text(
+                "SELECT public.xagent_expire_fact_proposal("
+                ":receipt_digest, :proposal_id, :project_id, :actor_id, :session_id, "
+                ":tool_call_id, :permission_revision, :event_sequence, :payload_sha256)"
+            ),
+            {
+                "receipt_digest": receipt.receipt_digest_id,
+                "proposal_id": proposal_id,
+                "project_id": receipt.project_id,
+                "actor_id": principal.actor_id,
+                "session_id": session_id,
+                "tool_call_id": attachment["tool_call_id"],
+                "permission_revision": principal.permission_revision,
+                "event_sequence": attachment["event_sequence"],
+                "payload_sha256": attachment["payload_hash"],
+            },
+        )
+        if expired is True:
+            await write_audit_event(
+                session,
+                principal.actor_id,
+                "fact.expire",
+                "fact_proposal",
+                proposal_id,
+                uuid4(),
+                "expired",
+                details=fact_audit_details(
+                    project_id=receipt.project_id,
+                    session_id=session_id,
+                    proposal_id=proposal_id,
+                    operation="expire",
+                    request_sha256=request_sha256,
+                    payload_sha256=attachment["payload_hash"],
+                    result="expired",
+                    status="expired",
+                    latency_ms=0,
+                ),
+            )
+            return
+    await write_audit_event(
+        session,
+        principal.actor_id,
+        "fact.authorization_denied",
+        "fact_proposal",
+        proposal_id,
+        uuid4(),
+        SessionErrorCode.FACT_RECEIPT_INVALID.value,
+        details=fact_audit_details(
+            project_id=receipt.project_id if receipt is not None else None,
+            session_id=session_id,
+            proposal_id=proposal_id,
+            tool_call_id=attachment["tool_call_id"],
+            event_sequence=attachment["event_sequence"],
+            operation="admit",
+            request_sha256=request_sha256,
+            payload_sha256=attachment["payload_hash"],
+            permission_revision=principal.permission_revision,
+            result=SessionErrorCode.FACT_RECEIPT_INVALID.value,
+            latency_ms=0,
+        ),
+    )
+
+
+async def write_fact_append_cancellation(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    session_id: UUID,
+    attachments: list[dict[str, Any]],
+    request_sha256: str,
+) -> None:
+    """Record a cancelled Fact admission without retaining its receipt secret."""
+    if not attachments:
+        return
+    attachment = attachments[0]
+    proposal_id = _canonical_uuid(attachment["proposal_id"])
+    receipt = await session.scalar(
+        select(FactProposalReceipt).where(
+            FactProposalReceipt.receipt_digest_id
+            == fact_receipt_digest_id(attachment["receipt"])
+        )
+    )
+    await write_audit_event(
+        session,
+        principal.actor_id,
+        "fact.cancel",
+        "fact_proposal",
+        proposal_id,
+        uuid4(),
+        "cancelled",
+        details=fact_audit_details(
+            project_id=receipt.project_id if receipt is not None else None,
+            session_id=session_id,
+            proposal_id=proposal_id,
+            tool_call_id=attachment["tool_call_id"],
+            event_sequence=attachment["event_sequence"],
+            operation="admit",
+            request_sha256=request_sha256,
+            payload_sha256=attachment["payload_hash"],
+            permission_revision=principal.permission_revision,
+            result="cancelled",
+            status="prepared",
+            latency_ms=0,
+        ),
+    )
+
+
 async def append_events(
     session: AsyncSession,
     principal: Principal,
@@ -1336,6 +1753,8 @@ async def append_events(
     expected_sequence: int,
     events: list[dict[str, Any]],
     retrieval_receipts: list[dict[str, Any]],
+    fact_proposal_receipts: list[dict[str, Any]],
+    fact_outbox_events: list[dict[str, Any]],
     idempotency_key: str,
     digest: str,
 ) -> dict[str, Any]:
@@ -1350,6 +1769,8 @@ async def append_events(
     )
     if replay is not None:
         return replay
+    if fact_outbox_events:
+        raise SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
     await _reject_consumed_receipt_reuse(session, retrieval_receipts)
     if item.last_event_sequence != expected_sequence:
         raise SessionServiceError(SessionErrorCode.SEQUENCE_CONFLICT)
@@ -1361,6 +1782,14 @@ async def append_events(
         events=events,
         attachments=retrieval_receipts,
     )
+    pending_facts = await _load_fact_admissions(
+        session,
+        principal,
+        item,
+        expected_sequence=expected_sequence,
+        events=events,
+        attachments=fact_proposal_receipts,
+    )
     if pending:
         item = await _finalize_append_authorization(session, principal, item, pending)
     admitted = await _admit_retrieval_receipts(
@@ -1368,6 +1797,13 @@ async def append_events(
         principal,
         item,
         pending,
+    )
+    admitted_facts = await _admit_fact_receipts(
+        session,
+        principal,
+        item,
+        pending_facts,
+        request_sha256=digest,
     )
     provenance, answer_tool_calls = await _cited_answer_provenance(
         session,
@@ -1379,20 +1815,37 @@ async def append_events(
     for offset, event in enumerate(events, start=1):
         sequence = expected_sequence + offset
         admission = admitted.get(sequence)
+        fact_admission = admitted_facts.get(sequence)
         session.add(
             XAgentSessionEvent(
                 session_id=session_id,
                 sequence=sequence,
                 event_type=event["event_type"],
                 schema_version=event["schema_version"],
-                payload=(admission.payload if admission is not None else event["payload"]),
+                payload=(
+                    admission.payload
+                    if admission is not None
+                    else (
+                        fact_admission.payload
+                        if fact_admission is not None
+                        else event["payload"]
+                    )
+                ),
                 actor_id=principal.actor_id,
                 tool_call_id=(
                     admission.tool_call_id
                     if admission is not None
-                    else answer_tool_calls.get(sequence, event.get("tool_call_id"))
+                    else (
+                        fact_admission.tool_call_id
+                        if fact_admission is not None
+                        else answer_tool_calls.get(sequence, event.get("tool_call_id"))
+                    )
                 ),
-                audit_id=(admission.audit_id if admission is not None else None),
+                audit_id=(
+                    admission.audit_id
+                    if admission is not None
+                    else (fact_admission.audit_id if fact_admission is not None else None)
+                ),
             )
         )
     item.last_event_sequence = expected_sequence + len(events)

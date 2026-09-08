@@ -584,7 +584,8 @@ def _create_fact_audit_validator() -> None:
                         'payload_sha256','permission_revision','evidence_count','result','latency_ms'];
                     allowed_operations := ARRAY['prepare','admit','expire','withdraw','approve',
                         'reject','outbox_append'];
-                    allowed_results := ARRAY['not-found','stale-permission'];
+                    allowed_results := ARRAY[
+                        'not-found','stale-permission','fact-receipt-invalid'];
                     allowed_statuses := ARRAY[]::text[];
                     status_required := false;
                 ELSE RETURN false;
@@ -808,6 +809,139 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         f"GRANT EXECUTE ON FUNCTION public.xagent_fact_authorized_project_ids() TO {application_role}"
     )
     op.execute(
+        "CREATE FUNCTION public.xagent_fact_prepare_context("
+        "target_session_id uuid, expected_revision bigint, target_field_key text) "
+        "RETURNS TABLE(project_id uuid, source_event_sequence bigint, base_revision bigint) "
+        "LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
+        "DECLARE actor uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
+        "locked_revision bigint; BEGIN "
+        "UPDATE public.xagent_permission_revisions SET revision = revision "
+        "WHERE account_id = actor AND revision = expected_revision "
+        "RETURNING revision INTO locked_revision; "
+        "IF locked_revision IS NULL THEN RETURN; END IF; "
+        "RETURN QUERY SELECT sessions.project_id, sessions.last_event_sequence + 1, "
+        "COALESCE(heads.content_revision, 0) FROM public.xagent_sessions AS sessions "
+        "LEFT JOIN public.project_fact_heads AS heads ON heads.project_id = sessions.project_id "
+        "AND heads.field_key = target_field_key "
+        "WHERE sessions.id = target_session_id AND sessions.visibility = 'project' "
+        "AND sessions.project_id IN (SELECT public.xagent_fact_authorized_project_ids()) "
+        "AND sessions.last_event_sequence + 1 >= 1 FOR UPDATE OF sessions; END $$"
+    )
+    op.execute(
+        "REVOKE ALL ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text) FROM PUBLIC"
+    )
+    op.execute(
+        f"GRANT EXECUTE ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text) "
+        f"TO {application_role}"
+    )
+    op.execute(
+        "CREATE FUNCTION public.xagent_admit_fact_proposal("
+        "target_receipt_digest uuid, target_proposal_id uuid, target_project_id uuid, "
+        "target_actor_id uuid, target_session_id uuid, target_tool_call_id text, "
+        "expected_revision bigint, target_event_sequence bigint, target_payload_sha256 text) "
+        "RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER "
+        "SET search_path = pg_catalog, public AS $$ "
+        "DECLARE actor uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
+        "locked_revision bigint; BEGIN "
+        "IF actor IS NULL OR actor IS DISTINCT FROM target_actor_id "
+        "OR target_event_sequence < 1 THEN RETURN false; END IF; "
+        "UPDATE public.xagent_permission_revisions SET revision = revision "
+        "WHERE account_id = actor AND revision = expected_revision "
+        "RETURNING revision INTO locked_revision; "
+        "IF locked_revision IS NULL THEN RETURN false; END IF; "
+        "PERFORM 1 FROM public.xagent_sessions AS sessions "
+        "WHERE sessions.id = target_session_id AND sessions.visibility = 'project' "
+        "AND sessions.project_id = target_project_id "
+        "AND sessions.last_event_sequence = target_event_sequence - 1 "
+        "AND sessions.project_id IN (SELECT public.xagent_fact_authorized_project_ids()) "
+        "FOR UPDATE; IF NOT FOUND THEN RETURN false; END IF; "
+        "PERFORM 1 FROM public.fact_proposals AS proposal "
+        "WHERE proposal.id = target_proposal_id AND proposal.project_id = target_project_id "
+        "AND proposal.proposer_id = actor AND proposal.source_session_id = target_session_id "
+        "AND proposal.source_tool_call_id = target_tool_call_id "
+        "AND proposal.permission_revision = expected_revision "
+        "AND proposal.payload_sha256 = target_payload_sha256 "
+        "AND proposal.status = 'prepared' "
+        "AND proposal.admission_expires_at > CURRENT_TIMESTAMP FOR UPDATE; "
+        "IF NOT FOUND THEN RETURN false; END IF; "
+        "PERFORM 1 FROM public.fact_proposal_receipts AS receipt "
+        "WHERE receipt.receipt_digest_id = target_receipt_digest "
+        "AND receipt.proposal_id = target_proposal_id "
+        "AND receipt.project_id = target_project_id AND receipt.actor_id = actor "
+        "AND receipt.session_id = target_session_id "
+        "AND receipt.tool_call_id = target_tool_call_id "
+        "AND receipt.permission_revision = expected_revision "
+        "AND receipt.source_event_sequence = target_event_sequence "
+        "AND receipt.payload_sha256 = target_payload_sha256 "
+        "AND receipt.consumed_at IS NULL AND receipt.expires_at > CURRENT_TIMESTAMP FOR UPDATE; "
+        "IF NOT FOUND THEN RETURN false; END IF; "
+        "UPDATE public.fact_proposals SET status = 'pending', admitted_at = CURRENT_TIMESTAMP "
+        "WHERE id = target_proposal_id; "
+        "UPDATE public.fact_proposal_receipts SET consumed_at = CURRENT_TIMESTAMP, "
+        "consumed_event_sequence = target_event_sequence, "
+        "consumed_payload_sha256 = target_payload_sha256 "
+        "WHERE receipt_digest_id = target_receipt_digest; RETURN true; END $$"
+    )
+    op.execute(
+        "REVOKE ALL ON FUNCTION public.xagent_admit_fact_proposal("
+        "uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text) FROM PUBLIC"
+    )
+    op.execute(
+        f"GRANT EXECUTE ON FUNCTION public.xagent_admit_fact_proposal("
+        f"uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text) TO {application_role}"
+    )
+    op.execute(
+        "CREATE FUNCTION public.xagent_expire_fact_proposal("
+        "target_receipt_digest uuid, target_proposal_id uuid, target_project_id uuid, "
+        "target_actor_id uuid, target_session_id uuid, target_tool_call_id text, "
+        "expected_revision bigint, target_event_sequence bigint, target_payload_sha256 text) "
+        "RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER "
+        "SET search_path = pg_catalog, public AS $$ "
+        "DECLARE actor uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
+        "locked_revision bigint; BEGIN "
+        "IF actor IS NULL OR actor IS DISTINCT FROM target_actor_id "
+        "OR target_event_sequence < 1 THEN RETURN false; END IF; "
+        "UPDATE public.xagent_permission_revisions SET revision = revision "
+        "WHERE account_id = actor AND revision = expected_revision "
+        "RETURNING revision INTO locked_revision; "
+        "IF locked_revision IS NULL THEN RETURN false; END IF; "
+        "PERFORM 1 FROM public.xagent_sessions AS sessions "
+        "WHERE sessions.id = target_session_id AND sessions.visibility = 'project' "
+        "AND sessions.project_id = target_project_id "
+        "AND sessions.project_id IN (SELECT public.xagent_fact_authorized_project_ids()) "
+        "FOR UPDATE; IF NOT FOUND THEN RETURN false; END IF; "
+        "PERFORM 1 FROM public.fact_proposal_receipts AS receipt "
+        "WHERE receipt.receipt_digest_id = target_receipt_digest "
+        "AND receipt.proposal_id = target_proposal_id "
+        "AND receipt.project_id = target_project_id AND receipt.actor_id = actor "
+        "AND receipt.session_id = target_session_id "
+        "AND receipt.tool_call_id = target_tool_call_id "
+        "AND receipt.permission_revision = expected_revision "
+        "AND receipt.source_event_sequence = target_event_sequence "
+        "AND receipt.payload_sha256 = target_payload_sha256 "
+        "AND receipt.consumed_at IS NULL AND receipt.expires_at <= CURRENT_TIMESTAMP FOR UPDATE; "
+        "IF NOT FOUND THEN RETURN false; END IF; "
+        "PERFORM 1 FROM public.fact_proposals AS proposal "
+        "WHERE proposal.id = target_proposal_id AND proposal.project_id = target_project_id "
+        "AND proposal.proposer_id = actor AND proposal.source_session_id = target_session_id "
+        "AND proposal.source_tool_call_id = target_tool_call_id "
+        "AND proposal.permission_revision = expected_revision "
+        "AND proposal.payload_sha256 = target_payload_sha256 "
+        "AND proposal.status = 'prepared' "
+        "AND proposal.admission_expires_at <= CURRENT_TIMESTAMP FOR UPDATE; "
+        "IF NOT FOUND THEN RETURN false; END IF; "
+        "UPDATE public.fact_proposals SET status = 'expired', decided_at = CURRENT_TIMESTAMP "
+        "WHERE id = target_proposal_id; RETURN true; END $$"
+    )
+    op.execute(
+        "REVOKE ALL ON FUNCTION public.xagent_expire_fact_proposal("
+        "uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text) FROM PUBLIC"
+    )
+    op.execute(
+        f"GRANT EXECUTE ON FUNCTION public.xagent_expire_fact_proposal("
+        f"uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text) TO {application_role}"
+    )
+    op.execute(
         "CREATE FUNCTION public.xagent_fact_can_add_evidence("
         "target_proposal_id uuid, target_project_id uuid, target_session_id uuid) RETURNS boolean "
         "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
@@ -998,6 +1132,18 @@ def downgrade() -> None:
         f"REVOKE ALL ON FUNCTION public.xagent_fact_can_add_evidence(uuid, uuid, uuid) "
         f"FROM {application_role}"
     )
+    op.execute(
+        f"REVOKE ALL ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text) "
+        f"FROM {application_role}"
+    )
+    op.execute(
+        f"REVOKE ALL ON FUNCTION public.xagent_admit_fact_proposal("
+        f"uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text) FROM {application_role}"
+    )
+    op.execute(
+        f"REVOKE ALL ON FUNCTION public.xagent_expire_fact_proposal("
+        f"uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text) FROM {application_role}"
+    )
     for table, policies in (
         ("fact_operation_idempotency", ("fact_operation_idempotency_insert", "fact_operation_idempotency_select")),
         ("business_outbox", ("business_outbox_update", "business_outbox_insert", "business_outbox_select")),
@@ -1012,6 +1158,15 @@ def downgrade() -> None:
         op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
     op.execute("DROP FUNCTION public.xagent_fact_can_add_evidence(uuid, uuid, uuid)")
+    op.execute(
+        "DROP FUNCTION public.xagent_expire_fact_proposal("
+        "uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text)"
+    )
+    op.execute(
+        "DROP FUNCTION public.xagent_admit_fact_proposal("
+        "uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text)"
+    )
+    op.execute("DROP FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text)")
     op.execute("DROP FUNCTION public.xagent_fact_authorized_project_ids()")
     op.execute("DROP TRIGGER business_outbox_terminal_proposal ON business_outbox")
     op.execute("DROP TRIGGER fact_proposal_terminal_outbox ON fact_proposals")

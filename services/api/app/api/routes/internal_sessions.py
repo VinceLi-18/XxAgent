@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 from uuid import UUID
@@ -31,6 +32,8 @@ from app.services.xagent_sessions import (
     read_events,
     request_hash,
     require_protocol_version,
+    write_fact_append_admission_failure,
+    write_fact_append_cancellation,
     write_append_admission_denial,
 )
 
@@ -81,6 +84,24 @@ class RetrievalReceiptAttachment(BaseModel):
     payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class FactProposalReceiptAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_sequence: StrictInt = Field(ge=1)
+    tool_call_id: str = Field(min_length=1, max_length=255)
+    proposal_id: UUID
+    receipt: str = Field(min_length=1, max_length=1024, pattern=r"^[A-Za-z0-9_-]+$")
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class FactOutboxAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_sequence: StrictInt = Field(ge=0)
+    outbox_id: UUID
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CreateSessionRequest(VersionedRequest):
     model_config = ConfigDict(extra="ignore")
 
@@ -98,6 +119,14 @@ class AppendRequest(VersionedRequest):
     idempotency_key: str = Field(min_length=1, max_length=255)
     events: list[EventInput] = Field(min_length=1, max_length=100)
     retrieval_receipts: list[RetrievalReceiptAttachment] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    fact_proposal_receipts: list[FactProposalReceiptAttachment] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    fact_outbox_events: list[FactOutboxAttachment] = Field(
         default_factory=list,
         max_length=100,
     )
@@ -160,6 +189,8 @@ def _error_status(error: SessionServiceError) -> int:
         SessionErrorCode.UNSUPPORTED_VERSION: status.HTTP_400_BAD_REQUEST,
         SessionErrorCode.EVIDENCE_EXPIRED: status.HTTP_410_GONE,
         SessionErrorCode.EVIDENCE_CONFLICT: status.HTTP_409_CONFLICT,
+        SessionErrorCode.FACT_RECEIPT_EXPIRED: status.HTTP_410_GONE,
+        SessionErrorCode.FACT_RECEIPT_INVALID: status.HTTP_409_CONFLICT,
         SessionErrorCode.SERVICE_UNAVAILABLE: status.HTTP_503_SERVICE_UNAVAILABLE,
     }[error.code]
 
@@ -304,7 +335,17 @@ async def append_route(
         attachment.model_dump(mode="json")
         for attachment in request.retrieval_receipts
     ]
+    fact_attachments = [
+        attachment.model_dump(mode="json")
+        for attachment in request.fact_proposal_receipts
+    ]
+    fact_outbox_events = [
+        attachment.model_dump(mode="json")
+        for attachment in request.fact_outbox_events
+    ]
     retrieval_append = bool(attachments) or any(_is_retrieval_event(event) for event in events)
+    fact_append = bool(fact_attachments)
+    digest = request_hash(body)
     try:
         async with context.session.begin_nested():
             return await append_events(
@@ -314,10 +355,58 @@ async def append_route(
                 expected_sequence=request.expected_sequence,
                 events=events,
                 retrieval_receipts=attachments,
+                fact_proposal_receipts=fact_attachments,
+                fact_outbox_events=fact_outbox_events,
                 idempotency_key=request.idempotency_key,
-                digest=request_hash(body),
+                digest=digest,
             )
+    except asyncio.CancelledError:
+        if fact_append:
+            try:
+                bind = context.session.bind
+                if bind is not None:
+                    async with AsyncSession(bind, expire_on_commit=False) as audit_session:
+                        async with audit_session.begin():
+                            role = bind.dialect.identifier_preparer.quote(
+                                settings.POSTGRES_APP_USER
+                            )
+                            await audit_session.execute(text(f"SET LOCAL ROLE {role}"))
+                            await set_actor_context(
+                                audit_session,
+                                Actor(
+                                    id=context.principal.actor_id,
+                                    role=context.principal.role,
+                                ),
+                            )
+                            await write_fact_append_cancellation(
+                                audit_session,
+                                context.principal,
+                                session_id=session_id,
+                                attachments=fact_attachments,
+                                request_sha256=digest,
+                            )
+            except Exception as cancelled_audit_failure:
+                # The original cancellation remains authoritative if its audit cannot commit.
+                del cancelled_audit_failure
+        raise
     except SessionServiceError as error:
+        if fact_append and error.code in {
+            SessionErrorCode.FACT_RECEIPT_INVALID,
+            SessionErrorCode.FACT_RECEIPT_EXPIRED,
+        }:
+            try:
+                await write_fact_append_admission_failure(
+                    context.session,
+                    context.principal,
+                    session_id=session_id,
+                    attachments=fact_attachments,
+                    request_sha256=digest,
+                    result=error.code.value,
+                )
+            except Exception:
+                return _error_response(
+                    SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
+                )
         if retrieval_append:
             try:
                 await write_append_admission_denial(
