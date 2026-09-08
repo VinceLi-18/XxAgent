@@ -11,6 +11,15 @@ from app.core.migration_config import migration_settings
 from app.models.audit import AuditEvent
 from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion, StagingUpload
 from app.models.base import Base
+from app.models.facts import (
+    BusinessOutbox,
+    FactOperationIdempotency,
+    FactProposal,
+    FactProposalEvidence,
+    FactProposalReceipt,
+    ProjectFactHead,
+    ProjectFactRevision,
+)
 from app.models.identity import Account
 from app.models.project import Project, ProjectMembership, TemporaryProjectGrant
 from app.models.retrieval import (

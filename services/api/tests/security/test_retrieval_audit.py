@@ -234,7 +234,7 @@ async def test_citation_authorization_downgrade_rejects_incompatible_audit_data(
             {"id": UUID(int=700)},
         )
 
-    assert revision == "015_citation_authorization"
+    assert revision == "016_xagent_fact_approval"
     assert stored == details
 
 

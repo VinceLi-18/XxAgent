@@ -24,7 +24,9 @@ class AuditEvent(Base):
             "octet_length(details::text) <= CASE "
             "WHEN action = 'retrieval.citation_authorize' THEN 32768 ELSE 8192 END AND "
             "(action NOT LIKE 'retrieval.%' OR "
-            "public.xagent_valid_retrieval_audit_details(action, details))",
+            "public.xagent_valid_retrieval_audit_details(action, details)) AND "
+            "(action NOT LIKE 'fact.%' OR "
+            "public.xagent_valid_fact_audit_details(action, details))",
             name="ck_audit_event_details",
         ),
     )

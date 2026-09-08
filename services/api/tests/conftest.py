@@ -408,6 +408,44 @@ async def shared_xagent_session(seeded_database: AsyncEngine):
 
 
 @pytest.fixture
+async def fact_project_session(seeded_database: AsyncEngine):
+    from app.models.project import Project, ProjectMembership
+    from app.models.xagent_session import XAgentSession
+
+    project = Project(
+        id=UUID("00000000-0000-0000-0000-000000000501"),
+        name="Governed facts project",
+        owner_id=BOB.id,
+    )
+    xagent_session = XAgentSession(
+        id=UUID("00000000-0000-0000-0000-000000000502"),
+        title="Governed facts project session",
+        owner_id=ALICE.id,
+        project_id=project.id,
+        visibility="project",
+        permission_revision_created=1,
+    )
+    memberships = (
+        ProjectMembership(
+            id=UUID("00000000-0000-0000-0000-000000000503"),
+            project_id=project.id,
+            account_id=ALICE.id,
+        ),
+        ProjectMembership(
+            id=UUID("00000000-0000-0000-0000-000000000504"),
+            project_id=project.id,
+            account_id=MANAGER.id,
+        ),
+    )
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            session.add(project)
+            await session.flush()
+            session.add_all((xagent_session, *memberships))
+    return xagent_session
+
+
+@pytest.fixture
 async def actor_session(seeded_database: AsyncEngine, application_role: str):
     from sqlalchemy import text
 

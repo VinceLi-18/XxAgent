@@ -2,6 +2,15 @@
 
 from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion, StagingUpload
 from app.models.auth import XAgentAccountCredential, XAgentAuthSession, XAgentPermissionRevision
+from app.models.facts import (
+    BusinessOutbox,
+    FactOperationIdempotency,
+    FactProposal,
+    FactProposalEvidence,
+    FactProposalReceipt,
+    ProjectFactHead,
+    ProjectFactRevision,
+)
 from app.models.retrieval import (
     ArtifactIndexJob,
     ArtifactSearchHead,
@@ -28,6 +37,13 @@ __all__ = (
     "XAgentAccountCredential",
     "XAgentAuthSession",
     "XAgentPermissionRevision",
+    "BusinessOutbox",
+    "FactOperationIdempotency",
+    "FactProposal",
+    "FactProposalEvidence",
+    "FactProposalReceipt",
+    "ProjectFactHead",
+    "ProjectFactRevision",
     "ArtifactIndexJob",
     "ArtifactSearchHead",
     "ArtifactTextChunk",

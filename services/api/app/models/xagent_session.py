@@ -2,7 +2,17 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +31,7 @@ class XAgentSession(Base):
         CheckConstraint("last_event_sequence >= -1", name="ck_xagent_session_last_event_sequence"),
         CheckConstraint("next_citation_ordinal >= 1", name="ck_xagent_session_next_citation_ordinal"),
         CheckConstraint("version >= 1", name="ck_xagent_session_version"),
+        UniqueConstraint("id", "project_id", name="uq_xagent_session_project_identity"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

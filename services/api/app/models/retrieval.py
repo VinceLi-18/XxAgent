@@ -81,6 +81,10 @@ class ArtifactTextChunk(Base):
         CheckConstraint("octet_length(text) <= 8192", name="ck_artifact_text_chunk_bytes"),
         UniqueConstraint("index_id", "ordinal", name="uq_artifact_text_chunks_index_ordinal"),
         UniqueConstraint("id", "index_id", name="uq_artifact_text_chunk_id_index"),
+        UniqueConstraint(
+            "id", "index_id", "line_start", "line_end",
+            name="uq_artifact_text_chunk_exact_range",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
