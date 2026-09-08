@@ -6,11 +6,11 @@ from enum import Enum
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.facts import FactProposalReceipt
+from app.models.facts import FactProposal, FactProposalReceipt
 from app.models.project import Project, ProjectAction
 from app.models.retrieval import (
     XAgentAdmittedEvidence,
@@ -509,6 +509,50 @@ def _fact_public_payload(
         raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID) from None
 
 
+def _tool_result_call_id(event: dict[str, Any]) -> str | None:
+    """Return the consistent call ID from a standard durable tool result."""
+    if event.get("event_type") != "tool/result" or event.get("schema_version") != 1:
+        return None
+    try:
+        message = event["payload"]["data"]["message"]
+        content = message["content"]
+        if not isinstance(content, list) or len(content) != 1:
+            return None
+        result = content[0]
+        tool_call_id = result["toolCallId"]
+        if (
+            not isinstance(tool_call_id, str)
+            or message["source"] != {"kind": "tool", "callId": tool_call_id}
+            or result["type"] != "tool-result"
+        ):
+            return None
+        return tool_call_id
+    except (KeyError, TypeError):
+        return None
+
+
+def _is_exact_durable_fact_call(
+    event: XAgentSessionEvent,
+    *,
+    actor_id: UUID,
+    tool_call_id: str,
+    sequence: int,
+) -> bool:
+    payload = event.payload
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return (
+        event.sequence == sequence
+        and event.event_type == "tool/call"
+        and event.schema_version == 1
+        and event.actor_id == actor_id
+        and event.tool_call_id == tool_call_id
+        and isinstance(data, dict)
+        and payload.get("type") == "tool/call"
+        and data.get("callId") == tool_call_id
+        and data.get("name") == "propose_fact"
+    )
+
+
 def _retrieval_public_payload(
     event: dict[str, Any],
     *,
@@ -820,12 +864,93 @@ async def _load_fact_admissions(
 ) -> list[_PendingFactAdmission]:
     if attachments and (item.visibility != "project" or item.project_id is None):
         raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+    event_sequences = {
+        expected_sequence + offset for offset in range(1, len(events) + 1)
+    }
+    result_calls = {
+        tool_call_id
+        for event in events
+        if (tool_call_id := _tool_result_call_id(event)) is not None
+    }
+    selectors = [FactProposalReceipt.source_event_sequence.in_(event_sequences)]
+    if result_calls:
+        selectors.append(FactProposalReceipt.tool_call_id.in_(result_calls))
+    candidate_receipts = list(
+        (
+            await session.scalars(
+                select(FactProposalReceipt)
+                .where(
+                    FactProposalReceipt.actor_id == principal.actor_id,
+                    FactProposalReceipt.session_id == item.id,
+                    or_(*selectors),
+                )
+                .with_for_update()
+            )
+        ).all()
+    )
+    call_sequences = {
+        receipt.source_event_sequence - 1 for receipt in candidate_receipts
+    }
+    durable_calls = list(
+        (
+            await session.scalars(
+                select(XAgentSessionEvent).where(
+                    XAgentSessionEvent.session_id == item.id,
+                    XAgentSessionEvent.sequence.in_(call_sequences),
+                    XAgentSessionEvent.event_type == "tool/call",
+                )
+            )
+        ).all()
+    ) if call_sequences else []
+    durable_by_sequence = {event.sequence: event for event in durable_calls}
+    for receipt in candidate_receipts:
+        call_sequence = receipt.source_event_sequence - 1
+        call = durable_by_sequence.get(call_sequence)
+        if call is None or not _is_exact_durable_fact_call(
+            call,
+            actor_id=receipt.actor_id,
+            tool_call_id=receipt.tool_call_id,
+            sequence=call_sequence,
+        ):
+            raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+
     by_sequence: dict[int, dict[str, Any]] = {}
     for attachment in attachments:
         sequence = attachment["event_sequence"]
         if sequence in by_sequence:
             raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
         by_sequence[sequence] = attachment
+
+    expected_identities = {
+        (receipt.source_event_sequence, receipt.tool_call_id, receipt.proposal_id)
+        for receipt in candidate_receipts
+    }
+    attached_identities = {
+        (
+            attachment["event_sequence"],
+            attachment["tool_call_id"],
+            _canonical_uuid(attachment["proposal_id"]),
+        )
+        for attachment in attachments
+    }
+    expected_result_pairs = {
+        (sequence, tool_call_id)
+        for sequence, tool_call_id, _proposal_id in expected_identities
+    }
+    associated_tool_calls = {
+        tool_call_id for _sequence, tool_call_id in expected_result_pairs
+    }
+    actual_result_pairs = [
+        (expected_sequence + offset, tool_call_id)
+        for offset, event in enumerate(events, start=1)
+        if (tool_call_id := _tool_result_call_id(event)) in associated_tool_calls
+    ]
+    if (
+        attached_identities != expected_identities
+        or set(actual_result_pairs) != expected_result_pairs
+        or len(actual_result_pairs) != len(expected_result_pairs)
+    ):
+        raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
 
     pending: list[_PendingFactAdmission] = []
     for sequence in sorted(by_sequence):
@@ -1713,25 +1838,49 @@ async def write_fact_append_cancellation(
     if not attachments:
         return
     attachment = attachments[0]
-    proposal_id = _canonical_uuid(attachment["proposal_id"])
+    requested_proposal_id = _canonical_uuid(attachment["proposal_id"])
     receipt = await session.scalar(
         select(FactProposalReceipt).where(
             FactProposalReceipt.receipt_digest_id
             == fact_receipt_digest_id(attachment["receipt"])
         )
     )
+    receipt_is_exact = receipt is not None and (
+        receipt.proposal_id == requested_proposal_id
+        and receipt.actor_id == principal.actor_id
+        and receipt.session_id == session_id
+        and receipt.tool_call_id == attachment["tool_call_id"]
+        and receipt.permission_revision == principal.permission_revision
+        and receipt.source_event_sequence == attachment["event_sequence"]
+        and receipt.payload_sha256 == attachment["payload_hash"]
+    )
+    proposal = None
+    if receipt_is_exact and receipt is not None:
+        proposal = await session.scalar(
+            select(FactProposal).where(
+                FactProposal.id == requested_proposal_id,
+                FactProposal.project_id == receipt.project_id,
+                FactProposal.proposer_id == principal.actor_id,
+                FactProposal.source_session_id == session_id,
+                FactProposal.source_tool_call_id == attachment["tool_call_id"],
+                FactProposal.permission_revision == principal.permission_revision,
+                FactProposal.payload_sha256 == attachment["payload_hash"],
+            )
+        )
+    resource_type = "fact_proposal" if proposal is not None else "xagent_session"
+    resource_id = proposal.id if proposal is not None else session_id
     await write_audit_event(
         session,
         principal.actor_id,
         "fact.cancel",
-        "fact_proposal",
-        proposal_id,
+        resource_type,
+        resource_id,
         uuid4(),
         "cancelled",
         details=fact_audit_details(
-            project_id=receipt.project_id if receipt is not None else None,
+            project_id=proposal.project_id if proposal is not None else None,
             session_id=session_id,
-            proposal_id=proposal_id,
+            proposal_id=proposal.id if proposal is not None else None,
             tool_call_id=attachment["tool_call_id"],
             event_sequence=attachment["event_sequence"],
             operation="admit",
@@ -1739,7 +1888,7 @@ async def write_fact_append_cancellation(
             payload_sha256=attachment["payload_hash"],
             permission_revision=principal.permission_revision,
             result="cancelled",
-            status="prepared",
+            status=proposal.status if proposal is not None else None,
             latency_ms=0,
         ),
     )

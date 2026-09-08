@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import jwt
 import pytest
 from argon2 import PasswordHasher
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit import AuditEvent
@@ -83,6 +83,7 @@ def _delegation_token(
     session_id: UUID,
     project_id: UUID,
     tool_call_id: str,
+    tool_name: str = "propose_fact",
     permission_revision: int = 1,
     nonce: str | None = None,
 ) -> str:
@@ -97,7 +98,7 @@ def _delegation_token(
             "project_id": str(project_id),
             "session_id": str(session_id),
             "tool_call_id": tool_call_id,
-            "tool_name": "propose_fact",
+            "tool_name": tool_name,
             "permission_revision": permission_revision,
             "nonce": nonce or f"nonce-{tool_call_id}-{uuid4()}",
         },
@@ -106,7 +107,14 @@ def _delegation_token(
     )
 
 
-async def _prime_tool_call(engine, session_id: UUID, actor_id: UUID) -> None:
+async def _prime_tool_call(
+    engine,
+    session_id: UUID,
+    actor_id: UUID,
+    *,
+    tool_call_id: str = "call-prime",
+    tool_name: str = "propose_fact",
+) -> None:
     async with AsyncSession(engine, expire_on_commit=False) as session:
         async with session.begin():
             await session.execute(
@@ -114,13 +122,33 @@ async def _prime_tool_call(engine, session_id: UUID, actor_id: UUID) -> None:
                     "INSERT INTO xagent_session_events "
                     "(session_id, sequence, event_type, schema_version, payload, actor_id, "
                     "tool_call_id) VALUES (:session_id, 0, 'tool/call', 1, "
-                    "CAST(:payload AS jsonb), :actor_id, "
-                    "'call-prime') ON CONFLICT (session_id, sequence) DO NOTHING"
+                    "CAST(:payload AS jsonb), :actor_id, :tool_call_id) "
+                    "ON CONFLICT (session_id, sequence) DO UPDATE SET "
+                    "event_type = EXCLUDED.event_type, "
+                    "schema_version = EXCLUDED.schema_version, "
+                    "payload = EXCLUDED.payload, "
+                    "actor_id = EXCLUDED.actor_id, "
+                    "tool_call_id = EXCLUDED.tool_call_id"
                 ),
                 {
                     "session_id": session_id,
                     "actor_id": actor_id,
-                    "payload": json.dumps({"type": "tool/call", "seq": 0}),
+                    "tool_call_id": tool_call_id,
+                    "payload": json.dumps(
+                        {
+                            "seq": 0,
+                            "time": 1788854400000,
+                            "type": "tool/call",
+                            "surfaceOp": "append",
+                            "data": {
+                                "turn": 0,
+                                "step": 0,
+                                "callId": tool_call_id,
+                                "name": tool_name,
+                                "arguments": "{}",
+                            },
+                        }
+                    ),
                 },
             )
             await session.execute(
@@ -246,6 +274,28 @@ async def test_prepare_rejects_declared_and_streamed_oversized_requests(client) 
 
 
 @pytest.mark.anyio
+async def test_prepare_accepts_an_exact_sixty_four_kibibyte_request_body(client) -> None:
+    encoded = json.dumps(
+        _prepare_body(UUID(int=595)),
+        separators=(",", ":"),
+    ).encode()
+    body = encoded + b" " * (MAX_FACT_BODY_BYTES - len(encoded))
+    assert len(body) == MAX_FACT_BODY_BYTES
+
+    response = await client.post(
+        "/internal/xagent/facts/proposals/prepare",
+        headers={
+            "X-XAgent-Service-Token": SERVICE_TOKEN,
+            "Content-Type": "application/json",
+        },
+        content=body,
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": {"code": "unauthenticated"}}
+
+
+@pytest.mark.anyio
 async def test_prepare_requires_current_project_session_membership_and_exact_delegation(
     client,
     seeded_database,
@@ -335,16 +385,34 @@ async def test_specialist_and_manager_prepare_hidden_proposals_with_private_rece
 ) -> None:
     alice_token = await _login(client, seeded_database, alice, "alice@example.test")
     manager_token = await _login(client, seeded_database, manager, "manager@example.test")
-    await _prime_tool_call(seeded_database, fact_project_session.id, alice.id)
+    manager_session_id = uuid4()
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            session.add(
+                XAgentSession(
+                    id=manager_session_id,
+                    title="Manager fact proposal",
+                    owner_id=manager.id,
+                    project_id=fact_project_session.project_id,
+                    visibility="project",
+                    permission_revision_created=1,
+                )
+            )
 
     responses = []
-    for account, token, suffix in (
-        (alice, alice_token, "specialist"),
-        (manager, manager_token, "manager"),
+    for account, token, session_id, suffix in (
+        (alice, alice_token, fact_project_session.id, "specialist"),
+        (manager, manager_token, manager_session_id, "manager"),
     ):
         tool_call_id = f"call-{suffix}"
+        await _prime_tool_call(
+            seeded_database,
+            session_id,
+            account.id,
+            tool_call_id=tool_call_id,
+        )
         body = {
-            **_prepare_body(fact_project_session.id),
+            **_prepare_body(session_id),
             "tool_call_id": tool_call_id,
             "permission_revision": _permission_revision(token),
             "idempotency_key": f"prepare-{suffix}",
@@ -357,7 +425,7 @@ async def test_specialist_and_manager_prepare_hidden_proposals_with_private_rece
                 **_headers(token),
                 "X-XAgent-Delegation": _delegation_token(
                     actor_id=account.id,
-                    session_id=fact_project_session.id,
+                    session_id=session_id,
                     project_id=fact_project_session.project_id,
                     tool_call_id=tool_call_id,
                     permission_revision=_permission_revision(token),
@@ -420,6 +488,65 @@ async def test_specialist_and_manager_prepare_hidden_proposals_with_private_rece
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("stored_actor", "stored_call_id", "stored_tool_name"),
+    (
+        ("alice", "call-durable", "generic_tool"),
+        ("alice", "call-other", "propose_fact"),
+        ("bob", "call-durable", "propose_fact"),
+    ),
+)
+async def test_prepare_requires_the_exact_owned_durable_propose_fact_call(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    fact_project_session,
+    stored_actor,
+    stored_call_id,
+    stored_tool_name,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    permission_revision = _permission_revision(token)
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id if stored_actor == "alice" else bob.id,
+        tool_call_id=stored_call_id,
+        tool_name=stored_tool_name,
+    )
+    response = await client.post(
+        "/internal/xagent/facts/proposals/prepare",
+        headers={
+            **_headers(token),
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=fact_project_session.id,
+                project_id=fact_project_session.project_id,
+                tool_call_id="call-durable",
+                permission_revision=permission_revision,
+            ),
+        },
+        json={
+            **_prepare_body(fact_project_session.id),
+            "tool_call_id": "call-durable",
+            "permission_revision": permission_revision,
+            "idempotency_key": (
+                f"prepare-durable-{stored_actor}-{stored_call_id}-{stored_tool_name}"
+            ),
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": {"code": "not-found"}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        proposal_count = await session.scalar(
+            select(func.count()).select_from(FactProposal)
+        )
+    assert proposal_count == 0
+
+
+@pytest.mark.anyio
 async def test_revoked_login_cannot_prepare_a_fact(
     client,
     seeded_database,
@@ -463,8 +590,13 @@ async def test_prepare_copies_exact_admitted_evidence_identity_and_chunk_range(
     fact_admitted_evidence,
 ) -> None:
     token = await _login(client, seeded_database, alice, "alice@example.test")
-    await _prime_tool_call(seeded_database, fact_project_session.id, alice.id)
     tool_call_id = "call-evidence-exact"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+    )
     response = await client.post(
         "/internal/xagent/facts/proposals/prepare",
         headers={
@@ -538,7 +670,6 @@ async def test_prepare_rejects_invented_cross_session_and_cross_project_evidence
     fact_project_session,
     fact_admitted_evidence,
 ) -> None:
-    await _prime_tool_call(seeded_database, fact_project_session.id, alice.id)
     same_project_session_id = uuid4()
     other_project_session_id = uuid4()
     source = fact_admitted_evidence[0]
@@ -575,25 +706,30 @@ async def test_prepare_rejects_invented_cross_session_and_cross_project_evidence
             )
             await session.flush()
             session.add_all(
-                (
-                    XAgentSessionEvent(
-                        session_id=same_project_session_id,
-                        sequence=0,
-                        event_type="tool/call",
-                        schema_version=1,
-                        payload={"type": "tool/call", "seq": 0},
-                        actor_id=alice.id,
-                        tool_call_id="call-prime",
-                    ),
-                    XAgentSessionEvent(
-                        session_id=other_project_session_id,
-                        sequence=0,
-                        event_type="tool/call",
-                        schema_version=1,
-                        payload={"type": "tool/call", "seq": 0},
-                        actor_id=alice.id,
-                        tool_call_id="call-prime",
-                    ),
+                XAgentSessionEvent(
+                    session_id=session_id,
+                    sequence=0,
+                    event_type="tool/call",
+                    schema_version=1,
+                    payload={
+                        "seq": 0,
+                        "time": 1788854400000,
+                        "type": "tool/call",
+                        "surfaceOp": "append",
+                        "data": {
+                            "turn": 0,
+                            "step": 0,
+                            "callId": tool_call_id,
+                            "name": "propose_fact",
+                            "arguments": "{}",
+                        },
+                    },
+                    actor_id=alice.id,
+                    tool_call_id=tool_call_id,
+                )
+                for session_id, tool_call_id in (
+                    (same_project_session_id, "call-evidence-cross-session"),
+                    (other_project_session_id, "call-evidence-cross-project"),
                 )
             )
             await session.flush()
@@ -609,6 +745,13 @@ async def test_prepare_rejects_invented_cross_session_and_cross_project_evidence
                     chunk_id=source["chunk"],
                 )
             )
+
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id="call-evidence-invented",
+    )
 
     token = await _login(client, seeded_database, alice, "alice@example.test")
     permission_revision = _permission_revision(token)
@@ -665,9 +808,14 @@ async def test_prepare_exact_replay_keeps_one_proposal_and_rotates_private_recei
     fact_project_session,
 ) -> None:
     token = await _login(client, seeded_database, alice, "alice@example.test")
-    await _prime_tool_call(seeded_database, fact_project_session.id, alice.id)
     permission_revision = _permission_revision(token)
     tool_call_id = "call-prepare-replay"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+    )
     body = {
         **_prepare_body(fact_project_session.id),
         "tool_call_id": tool_call_id,
@@ -760,9 +908,14 @@ async def test_prepare_rejects_idempotency_hash_conflict_without_new_state(
     fact_project_session,
 ) -> None:
     token = await _login(client, seeded_database, alice, "alice@example.test")
-    await _prime_tool_call(seeded_database, fact_project_session.id, alice.id)
     permission_revision = _permission_revision(token)
     tool_call_id = "call-prepare-conflict"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+    )
     body = {
         **_prepare_body(fact_project_session.id),
         "tool_call_id": tool_call_id,

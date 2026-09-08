@@ -94,12 +94,13 @@ async def _prepare_context(
             text(
                 "SELECT project_id, source_event_sequence, base_revision "
                 "FROM public.xagent_fact_prepare_context("
-                ":session_id, :permission_revision, :field_key)"
+                ":session_id, :permission_revision, :field_key, :tool_call_id)"
             ),
             {
                 "session_id": request.session_id,
                 "permission_revision": request.permission_revision,
                 "field_key": request.field_key,
+                "tool_call_id": request.tool_call_id,
             },
         )
     ).one_or_none()

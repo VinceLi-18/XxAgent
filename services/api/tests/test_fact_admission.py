@@ -11,8 +11,10 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import app.services.fact_receipts as fact_receipts
+import app.services.xagent_sessions as xagent_sessions
 from app.models.audit import AuditEvent
 from app.models.facts import FactOperationIdempotency, FactProposal, FactProposalReceipt
+from app.models.retrieval import XAgentRetrievalReceipt
 from app.models.xagent_session import XAgentSession, XAgentSessionEvent
 from app.services.audit import fact_audit_details, write_audit_event
 from test_fact_prepare import (
@@ -112,7 +114,7 @@ def test_fact_receipt_verification_rejects_expiry_digest_and_every_changed_claim
 
 
 @pytest.mark.anyio
-async def test_fact_admission_functions_are_not_granted_to_public_or_worker(
+async def test_fact_admission_functions_have_restricted_definer_catalog_and_grants(
     seeded_database,
     application_role,
     worker_role,
@@ -123,11 +125,25 @@ async def test_fact_admission_functions_are_not_granted_to_public_or_worker(
         "xagent_expire_fact_proposal",
     }
     async with seeded_database.connect() as connection:
+        owner = await connection.scalar(text("SELECT current_user"))
         rows = (
             await connection.execute(
                 text(
                     "SELECT routine_name, grantee FROM information_schema.routine_privileges "
                     "WHERE routine_schema = 'public' AND routine_name IN "
+                    "('xagent_fact_prepare_context', 'xagent_admit_fact_proposal', "
+                    "'xagent_expire_fact_proposal')"
+                )
+            )
+        ).all()
+        catalog_rows = (
+            await connection.execute(
+                text(
+                    "SELECT procedures.proname, procedures.prosecdef, procedures.proconfig, "
+                    "owners.rolname AS owner FROM pg_proc AS procedures "
+                    "JOIN pg_namespace AS namespaces ON namespaces.oid = procedures.pronamespace "
+                    "JOIN pg_roles AS owners ON owners.oid = procedures.proowner "
+                    "WHERE namespaces.nspname = 'public' AND procedures.proname IN "
                     "('xagent_fact_prepare_context', 'xagent_admit_fact_proposal', "
                     "'xagent_expire_fact_proposal')"
                 )
@@ -141,6 +157,11 @@ async def test_fact_admission_functions_are_not_granted_to_public_or_worker(
         for name, grantee in grants
         if grantee in {"PUBLIC", worker_role}
     }
+    assert {row.proname for row in catalog_rows} == function_names
+    for row in catalog_rows:
+        assert row.owner == owner
+        assert row.prosecdef is True
+        assert set(row.proconfig or ()) == {"search_path=pg_catalog, public"}
 
 
 @pytest.mark.anyio
@@ -176,7 +197,37 @@ async def test_fact_receipt_denial_audit_accepts_only_the_action_specific_outcom
 
 
 @pytest.mark.anyio
-async def test_cancelled_prepare_rolls_back_proposal_receipt_operation_and_audit(
+async def test_fact_cancel_audit_accepts_an_unknown_status_without_claiming_one(
+    audit_session,
+    alice,
+) -> None:
+    session_id = UUID(int=43)
+    event = await write_audit_event(
+        audit_session,
+        alice.id,
+        "fact.cancel",
+        "xagent_session",
+        session_id,
+        UUID(int=44),
+        "cancelled",
+        details=fact_audit_details(
+            session_id=session_id,
+            tool_call_id="call-fact-cancel-unknown",
+            operation="admit",
+            request_sha256="c" * 64,
+            payload_sha256="d" * 64,
+            permission_revision=1,
+            result="cancelled",
+            latency_ms=0,
+        ),
+    )
+
+    assert event.details["result"] == "cancelled"
+    assert "status" not in event.details
+
+
+@pytest.mark.anyio
+async def test_cancelled_prepare_rolls_back_business_state_and_records_cancellation(
     client,
     seeded_database,
     alice,
@@ -184,9 +235,14 @@ async def test_cancelled_prepare_rolls_back_proposal_receipt_operation_and_audit
     monkeypatch,
 ) -> None:
     token = await _login(client, seeded_database, alice, "alice@example.test")
-    await _prime_tool_call(seeded_database, fact_project_session.id, alice.id)
     permission_revision = _permission_revision(token)
     tool_call_id = "call-prepare-cancelled"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+    )
 
     async def cancel_receipt(*_args, **_kwargs):
         raise asyncio.CancelledError
@@ -229,12 +285,26 @@ async def test_cancelled_prepare_rolls_back_proposal_receipt_operation_and_audit
                 FactOperationIdempotency.idempotency_key == "prepare-cancelled"
             )
         )
-        audit_count = await session.scalar(
-            select(func.count()).select_from(AuditEvent).where(
-                AuditEvent.details["tool_call_id"].astext == tool_call_id
-            )
+        audits = list(
+            (
+                await session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.details["tool_call_id"].astext == tool_call_id
+                    )
+                )
+            ).all()
         )
-    assert proposal_count == receipt_count == operation_count == audit_count == 0
+    assert proposal_count == receipt_count == operation_count == 0
+    assert len(audits) == 1
+    audit = audits[0]
+    assert audit.action == "fact.cancel"
+    assert audit.resource_type == "xagent_session"
+    assert audit.resource_id == fact_project_session.id
+    assert audit.details["operation"] == "prepare"
+    assert audit.details["result"] == "cancelled"
+    assert "status" not in audit.details
+    assert audit.details["evidence_count"] == 0
+    assert "assertion_reason" not in audit.details
 
 
 async def _prepare_for_admission(
@@ -246,9 +316,14 @@ async def _prepare_for_admission(
     suffix: str,
 ) -> tuple[str, int, str, dict[str, object]]:
     token = await _login(client, seeded_database, alice, "alice@example.test")
-    await _prime_tool_call(seeded_database, fact_project_session.id, alice.id)
     permission_revision = _permission_revision(token)
     tool_call_id = f"call-admit-{suffix}"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+    )
     response = await client.post(
         "/internal/xagent/facts/proposals/prepare",
         headers={
@@ -336,6 +411,302 @@ def _fact_attachment(
     }
 
 
+def _retrieval_result_event(
+    *,
+    sequence: int,
+    tool_call_id: str,
+    search: dict[str, object],
+) -> dict[str, object]:
+    public = {"citations": search["citations"]}
+    return {
+        "event_type": "tool/result",
+        "schema_version": 1,
+        "payload": {
+            "seq": sequence,
+            "time": 1788854400000 + sequence,
+            "type": "tool/result",
+            "surfaceOp": "append",
+            "data": {
+                "turn": 0,
+                "step": 0,
+                "message": {
+                    "id": f"message-{sequence}",
+                    "role": "user",
+                    "source": {"kind": "tool", "callId": tool_call_id},
+                    "content": [
+                        {
+                            "type": "tool-result",
+                            "toolCallId": tool_call_id,
+                            "isError": False,
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": json.dumps(
+                                        public,
+                                        ensure_ascii=False,
+                                        separators=(",", ":"),
+                                    ),
+                                }
+                            ],
+                        }
+                    ],
+                },
+                "meta": {
+                    "kind": "xagent-retrieval",
+                    "payloadHash": search["payload_sha256"],
+                    "citations": [
+                        item["id"] for item in search["citations"]
+                    ],
+                },
+            },
+        },
+    }
+
+
+async def _assert_fact_append_left_prepared(
+    seeded_database,
+    fact_project_session,
+    prepared: dict[str, object],
+) -> None:
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        proposal = await session.get(
+            FactProposal,
+            UUID(prepared["result"]["proposalId"]),
+        )
+        receipt = await session.get(
+            FactProposalReceipt,
+            fact_receipts.receipt_digest_id(prepared["receipt"]),
+        )
+        session_head = await session.scalar(
+            select(XAgentSession.last_event_sequence).where(
+                XAgentSession.id == fact_project_session.id
+            )
+        )
+    assert proposal is not None and proposal.status == "prepared"
+    assert receipt is not None and receipt.consumed_at is None
+    assert session_head == 0
+
+
+@pytest.mark.anyio
+async def test_fact_result_without_receipt_attachment_is_rejected_atomically(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+) -> None:
+    token, _, tool_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix="missing-attachment",
+    )
+    response = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-fact-missing-attachment",
+            "events": [
+                _fact_result_event(
+                    sequence=1,
+                    tool_call_id=tool_call_id,
+                    proposal_id=prepared["result"]["proposalId"],
+                )
+            ],
+            "fact_proposal_receipts": [],
+            "fact_outbox_events": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"code": "fact-receipt-invalid"}}
+    await _assert_fact_append_left_prepared(
+        seeded_database,
+        fact_project_session,
+        prepared,
+    )
+
+
+@pytest.mark.anyio
+async def test_fact_receipt_attachment_without_matching_result_is_rejected_atomically(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+) -> None:
+    token, _, tool_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix="missing-result",
+    )
+    response = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-fact-missing-result",
+            "events": [
+                {
+                    "event_type": "user/message",
+                    "schema_version": 1,
+                    "payload": {"seq": 1, "type": "user/message"},
+                }
+            ],
+            "fact_proposal_receipts": [
+                _fact_attachment(prepared, sequence=1, tool_call_id=tool_call_id)
+            ],
+            "fact_outbox_events": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"code": "fact-receipt-invalid"}}
+    await _assert_fact_append_left_prepared(
+        seeded_database,
+        fact_project_session,
+        prepared,
+    )
+
+
+@pytest.mark.anyio
+async def test_duplicate_fact_receipt_attachments_are_rejected_atomically(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+) -> None:
+    token, _, tool_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix="duplicate-attachment",
+    )
+    attachment = _fact_attachment(prepared, sequence=1, tool_call_id=tool_call_id)
+    response = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-fact-duplicate-attachment",
+            "events": [
+                _fact_result_event(
+                    sequence=1,
+                    tool_call_id=tool_call_id,
+                    proposal_id=prepared["result"]["proposalId"],
+                )
+            ],
+            "fact_proposal_receipts": [attachment, attachment],
+            "fact_outbox_events": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"code": "fact-receipt-invalid"}}
+    await _assert_fact_append_left_prepared(
+        seeded_database,
+        fact_project_session,
+        prepared,
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("second_proposal_id", [None, str(UUID(int=998))])
+async def test_duplicate_or_unbound_fact_result_is_rejected_atomically(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+    second_proposal_id,
+) -> None:
+    token, _, tool_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix=f"extra-result-{second_proposal_id is not None}",
+    )
+    proposal_id = prepared["result"]["proposalId"]
+    response = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": f"append-fact-extra-{second_proposal_id is not None}",
+            "events": [
+                _fact_result_event(
+                    sequence=1,
+                    tool_call_id=tool_call_id,
+                    proposal_id=proposal_id,
+                ),
+                _fact_result_event(
+                    sequence=2,
+                    tool_call_id=tool_call_id,
+                    proposal_id=second_proposal_id or proposal_id,
+                ),
+            ],
+            "fact_proposal_receipts": [
+                _fact_attachment(prepared, sequence=1, tool_call_id=tool_call_id)
+            ],
+            "fact_outbox_events": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"code": "fact-receipt-invalid"}}
+    await _assert_fact_append_left_prepared(
+        seeded_database,
+        fact_project_session,
+        prepared,
+    )
+
+
+@pytest.mark.anyio
+async def test_fact_shaped_result_for_unrelated_durable_tool_call_remains_generic(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    tool_call_id = "call-unrelated-generic"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+        tool_name="generic_tool",
+    )
+    response = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-generic-fact-coincidence",
+            "events": [
+                _fact_result_event(
+                    sequence=1,
+                    tool_call_id=tool_call_id,
+                    proposal_id=str(UUID(int=999)),
+                )
+            ],
+            "fact_proposal_receipts": [],
+            "fact_outbox_events": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["last_event_sequence"] == 1
+
+
 @pytest.mark.anyio
 async def test_session_append_admits_fact_once_and_exact_replay_recovers_lost_response(
     client,
@@ -411,6 +782,142 @@ async def test_session_append_admits_fact_once_and_exact_replay_recovers_lost_re
     assert receipt.consumed_payload_sha256 == prepared["payload_sha256"]
     assert event_count == len(audits) == 1
     assert prepared["receipt"] not in json.dumps([audit.details for audit in audits])
+
+
+@pytest.mark.anyio
+async def test_fact_and_retrieval_receipts_can_be_admitted_in_one_append(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+    fact_admitted_evidence,
+    monkeypatch,
+) -> None:
+    async def fake_embed(_self, texts):
+        return [[1.0] + [0.0] * 1023 for _ in texts]
+
+    monkeypatch.setattr("app.retrieval.embedding_client.EmbeddingClient.embed", fake_embed)
+    source = fact_admitted_evidence[0]
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "UPDATE artifact_text_chunks SET embedding = CAST(:embedding AS vector) "
+                    "WHERE id = :chunk_id"
+                ),
+                {
+                    "chunk_id": source["chunk"],
+                    "embedding": "[1" + ",0" * 1023 + "]",
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO artifact_search_heads (artifact_id, index_id, version_id) "
+                    "VALUES (:artifact_id, :index_id, :version_id)"
+                ),
+                {
+                    "artifact_id": source["artifact"],
+                    "index_id": source["index"],
+                    "version_id": source["version"],
+                },
+            )
+
+    token, permission_revision, fact_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix="with-retrieval",
+    )
+    retrieval_call_id = "call-retrieval-with-fact"
+    search = await client.post(
+        "/internal/xagent/retrieval/search",
+        headers={
+            **_headers(token),
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=fact_project_session.id,
+                project_id=fact_project_session.project_id,
+                tool_call_id=retrieval_call_id,
+                tool_name="search_artifacts",
+                permission_revision=permission_revision,
+            ),
+        },
+        json={
+            "schema_version": 1,
+            "session_id": str(fact_project_session.id),
+            "tool_call_id": retrieval_call_id,
+            "permission_revision": permission_revision,
+            "query": "fact evidence",
+            "include_private": False,
+        },
+    )
+    assert search.status_code == 200, search.text
+    search_body = search.json()
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "DELETE FROM xagent_admitted_evidence "
+                    "WHERE session_id = :session_id"
+                ),
+                {"session_id": fact_project_session.id},
+            )
+    appended = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-fact-with-retrieval",
+            "events": [
+                _fact_result_event(
+                    sequence=1,
+                    tool_call_id=fact_call_id,
+                    proposal_id=prepared["result"]["proposalId"],
+                ),
+                _retrieval_result_event(
+                    sequence=2,
+                    tool_call_id=retrieval_call_id,
+                    search=search_body,
+                ),
+            ],
+            "retrieval_receipts": [
+                {
+                    "event_sequence": 2,
+                    "tool_call_id": retrieval_call_id,
+                    "receipt": search_body["receipt"],
+                    "payload_hash": search_body["payload_sha256"],
+                }
+            ],
+            "fact_proposal_receipts": [
+                _fact_attachment(prepared, sequence=1, tool_call_id=fact_call_id)
+            ],
+            "fact_outbox_events": [],
+        },
+    )
+
+    assert appended.status_code == 200, appended.text
+    assert appended.json()["last_event_sequence"] == 2
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        proposal = await session.get(
+            FactProposal,
+            UUID(prepared["result"]["proposalId"]),
+        )
+        fact_receipt = await session.get(
+            FactProposalReceipt,
+            fact_receipts.receipt_digest_id(prepared["receipt"]),
+        )
+        retrieval_receipt = await session.scalar(
+            select(XAgentRetrievalReceipt).where(
+                XAgentRetrievalReceipt.tool_call_id == retrieval_call_id
+            )
+        )
+
+    assert proposal is not None and proposal.status == "pending"
+    assert fact_receipt is not None and fact_receipt.consumed_event_sequence == 1
+    assert retrieval_receipt is not None
+    assert retrieval_receipt.consumed_event_sequence == 2
 
 
 @pytest.mark.anyio
@@ -708,6 +1215,114 @@ async def test_expired_fact_receipt_hides_proposal_then_records_expiry_without_a
 
 
 @pytest.mark.anyio
+async def test_fact_deadline_uses_wall_clock_after_authoritative_rows_are_locked(
+    client,
+    seeded_database,
+    application_role,
+    alice,
+    fact_project_session,
+    monkeypatch,
+) -> None:
+    issued_at = datetime.now(UTC) - timedelta(minutes=5) + timedelta(seconds=5)
+    monkeypatch.setattr(
+        "app.services.facts.new_receipt_times",
+        lambda: (issued_at, issued_at + timedelta(minutes=5)),
+    )
+    _, permission_revision, tool_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix="wall-clock",
+    )
+    proposal_id = UUID(prepared["result"]["proposalId"])
+    receipt_digest = fact_receipts.receipt_digest_id(prepared["receipt"])
+    expires_at = issued_at + timedelta(minutes=5)
+    parameters = {
+        "receipt_digest": receipt_digest,
+        "proposal_id": proposal_id,
+        "project_id": fact_project_session.project_id,
+        "actor_id": alice.id,
+        "session_id": fact_project_session.id,
+        "tool_call_id": tool_call_id,
+        "permission_revision": permission_revision,
+        "event_sequence": 1,
+        "payload_sha256": prepared["payload_sha256"],
+    }
+    signature = (
+        ":receipt_digest, :proposal_id, :project_id, :actor_id, :session_id, "
+        ":tool_call_id, :permission_revision, :event_sequence, :payload_sha256"
+    )
+    quoted_role = seeded_database.dialect.identifier_preparer.quote(application_role)
+    admission_started = asyncio.Event()
+
+    async def admit_after_transaction_start() -> tuple[bool | None, datetime]:
+        async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+            async with session.begin():
+                await session.execute(text(f"SET LOCAL ROLE {quoted_role}"))
+                await session.execute(
+                    text("SELECT set_config('app.actor_id', :actor_id, true)"),
+                    {"actor_id": str(alice.id)},
+                )
+                await session.execute(
+                    text("SELECT set_config('app.actor_role', 'specialist', true)")
+                )
+                transaction_time = await session.scalar(text("SELECT CURRENT_TIMESTAMP"))
+                admission_started.set()
+                accepted = await session.scalar(
+                    text(
+                        "SELECT public.xagent_admit_fact_proposal("
+                        f"{signature})"
+                    ),
+                    parameters,
+                )
+        assert isinstance(transaction_time, datetime)
+        return accepted, transaction_time
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as blocker:
+        async with blocker.begin():
+            await blocker.execute(
+                select(XAgentSession)
+                .where(XAgentSession.id == fact_project_session.id)
+                .with_for_update()
+            )
+            admission_task = asyncio.create_task(admit_after_transaction_start())
+            await admission_started.wait()
+            wait_seconds = (expires_at - datetime.now(UTC)).total_seconds() + 0.2
+            assert wait_seconds > 0
+            await asyncio.sleep(wait_seconds)
+    accepted, transaction_time = await admission_task
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(text(f"SET LOCAL ROLE {quoted_role}"))
+            await session.execute(
+                text("SELECT set_config('app.actor_id', :actor_id, true)"),
+                {"actor_id": str(alice.id)},
+            )
+            await session.execute(
+                text("SELECT set_config('app.actor_role', 'specialist', true)")
+            )
+            expired = await session.scalar(
+                text(
+                    "SELECT public.xagent_expire_fact_proposal("
+                    f"{signature})"
+                ),
+                parameters,
+            )
+
+    assert transaction_time < expires_at < datetime.now(UTC)
+    assert accepted is False
+    assert expired is True
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        proposal = await session.get(FactProposal, proposal_id)
+        receipt = await session.get(FactProposalReceipt, receipt_digest)
+    assert proposal is not None and proposal.status == "expired"
+    assert proposal.decided_at is not None and proposal.decided_at >= expires_at
+    assert receipt is not None and receipt.consumed_at is None
+
+
+@pytest.mark.anyio
 async def test_cancelled_fact_append_rolls_back_admission_and_records_cancellation(
     client,
     seeded_database,
@@ -765,11 +1380,14 @@ async def test_cancelled_fact_append_rolls_back_admission_and_records_cancellati
                 XAgentSessionEvent.sequence == 1,
             )
         )
-        actions = list(
+        cancellation_audits = list(
             (
                 await session.scalars(
-                    select(AuditEvent.action)
-                    .where(AuditEvent.resource_id == UUID(proposal_id))
+                    select(AuditEvent)
+                    .where(
+                        AuditEvent.action == "fact.cancel",
+                        AuditEvent.details["tool_call_id"].astext == tool_call_id,
+                    )
                     .order_by(AuditEvent.created_at)
                 )
             ).all()
@@ -777,7 +1395,168 @@ async def test_cancelled_fact_append_rolls_back_admission_and_records_cancellati
     assert proposal is not None and proposal.status == "prepared"
     assert receipt is not None and receipt.consumed_at is None
     assert event_count == 0
-    assert actions == ["fact.prepare", "fact.cancel"]
+    assert len(cancellation_audits) == 1
+    assert cancellation_audits[0].resource_type == "xagent_session"
+    assert cancellation_audits[0].resource_id == fact_project_session.id
+    assert "proposal_id" not in cancellation_audits[0].details
+    assert "status" not in cancellation_audits[0].details
+
+
+@pytest.mark.anyio
+async def test_early_fact_append_cancellation_does_not_claim_proposal_or_status(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+    monkeypatch,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    tool_call_id = "call-cancel-before-validation"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+        tool_name="generic_tool",
+    )
+
+    async def cancel_validation(*_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        "app.services.xagent_sessions._load_fact_admissions",
+        cancel_validation,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await client.post(
+            f"/internal/xagent/sessions/{fact_project_session.id}/append",
+            headers=_headers(token),
+            json={
+                "schema_version": 1,
+                "expected_sequence": 0,
+                "idempotency_key": "append-fact-cancel-before-validation",
+                "events": [
+                    _fact_result_event(
+                        sequence=1,
+                        tool_call_id=tool_call_id,
+                        proposal_id=str(UUID(int=997)),
+                    )
+                ],
+                "fact_proposal_receipts": [
+                    {
+                        "event_sequence": 1,
+                        "tool_call_id": tool_call_id,
+                        "proposal_id": str(UUID(int=997)),
+                        "receipt": "a" * 43,
+                        "payload_hash": "b" * 64,
+                    }
+                ],
+                "fact_outbox_events": [],
+            },
+        )
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        audits = list(
+            (
+                await session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.action == "fact.cancel",
+                        AuditEvent.details["tool_call_id"].astext == tool_call_id,
+                    )
+                )
+            ).all()
+        )
+        session_head = await session.scalar(
+            select(XAgentSession.last_event_sequence).where(
+                XAgentSession.id == fact_project_session.id
+            )
+        )
+    assert len(audits) == 1
+    assert audits[0].resource_type == "xagent_session"
+    assert audits[0].resource_id == fact_project_session.id
+    assert "proposal_id" not in audits[0].details
+    assert "status" not in audits[0].details
+    assert session_head == 0
+
+
+@pytest.mark.anyio
+async def test_cancelled_exact_append_replay_reports_the_committed_pending_status(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+    monkeypatch,
+) -> None:
+    token, _, tool_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix="cancelled-replay",
+    )
+    proposal_id = prepared["result"]["proposalId"]
+    append_body = {
+        "schema_version": 1,
+        "expected_sequence": 0,
+        "idempotency_key": "append-fact-cancelled-replay",
+        "events": [
+            _fact_result_event(
+                sequence=1,
+                tool_call_id=tool_call_id,
+                proposal_id=proposal_id,
+            )
+        ],
+        "fact_proposal_receipts": [
+            _fact_attachment(prepared, sequence=1, tool_call_id=tool_call_id)
+        ],
+        "fact_outbox_events": [],
+    }
+    first = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json=append_body,
+    )
+    assert first.status_code == 200
+    original_idempotent_result = xagent_sessions._idempotent_result
+
+    async def cancel_after_replay(*args, **kwargs):
+        replay = await original_idempotent_result(*args, **kwargs)
+        if replay is not None:
+            raise asyncio.CancelledError
+        return replay
+
+    monkeypatch.setattr(
+        "app.services.xagent_sessions._idempotent_result",
+        cancel_after_replay,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await client.post(
+            f"/internal/xagent/sessions/{fact_project_session.id}/append",
+            headers=_headers(token),
+            json=append_body,
+        )
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        proposal = await session.get(FactProposal, UUID(proposal_id))
+        event_count = await session.scalar(
+            select(func.count()).select_from(XAgentSessionEvent).where(
+                XAgentSessionEvent.session_id == fact_project_session.id,
+                XAgentSessionEvent.sequence == 1,
+            )
+        )
+        cancel_audit = await session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.action == "fact.cancel",
+                AuditEvent.details["tool_call_id"].astext == tool_call_id,
+            )
+        )
+    assert proposal is not None and proposal.status == "pending"
+    assert event_count == 1
+    assert cancel_audit is not None
+    assert cancel_audit.resource_type == "fact_proposal"
+    assert cancel_audit.resource_id == UUID(proposal_id)
+    assert cancel_audit.details["proposal_id"] == proposal_id
+    assert cancel_audit.details["status"] == "pending"
 
 
 @pytest.mark.anyio

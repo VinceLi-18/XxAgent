@@ -577,7 +577,7 @@ def _create_fact_audit_validator() -> None:
                     allowed_results := ARRAY['cancelled'];
                     allowed_statuses := ARRAY[
                         'prepared','pending','confirmed','rejected','withdrawn','conflicted','expired'];
-                    status_required := true;
+                    status_required := false;
                 WHEN 'fact.authorization_denied' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
                         'outbox_id','tool_call_id','event_sequence','operation','request_sha256',
@@ -598,10 +598,10 @@ def _create_fact_audit_validator() -> None:
                 OR (value->>'operation') <> ALL(allowed_operations)
                 OR jsonb_typeof(value->'result') <> 'string'
                 OR (value->>'result') <> ALL(allowed_results) THEN RETURN false; END IF;
-            IF status_required THEN
-                IF NOT value ? 'status' OR jsonb_typeof(value->'status') <> 'string'
+            IF value ? 'status' THEN
+                IF jsonb_typeof(value->'status') <> 'string'
                     OR (value->>'status') <> ALL(allowed_statuses) THEN RETURN false; END IF;
-            ELSIF value ? 'status' THEN RETURN false;
+            ELSIF status_required THEN RETURN false;
             END IF;
             IF value ? 'tool_call_id' AND (jsonb_typeof(value->'tool_call_id') <> 'string'
                 OR value->>'tool_call_id' !~ '^call-[A-Za-z0-9-]{1,120}$') THEN RETURN false; END IF;
@@ -810,7 +810,8 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
     )
     op.execute(
         "CREATE FUNCTION public.xagent_fact_prepare_context("
-        "target_session_id uuid, expected_revision bigint, target_field_key text) "
+        "target_session_id uuid, expected_revision bigint, target_field_key text, "
+        "target_tool_call_id text) "
         "RETURNS TABLE(project_id uuid, source_event_sequence bigint, base_revision bigint) "
         "LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
         "DECLARE actor uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
@@ -825,13 +826,22 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         "AND heads.field_key = target_field_key "
         "WHERE sessions.id = target_session_id AND sessions.visibility = 'project' "
         "AND sessions.project_id IN (SELECT public.xagent_fact_authorized_project_ids()) "
+        "AND EXISTS (SELECT 1 FROM public.xagent_session_events AS calls "
+        "WHERE calls.session_id = sessions.id "
+        "AND calls.sequence = sessions.last_event_sequence "
+        "AND calls.event_type = 'tool/call' AND calls.schema_version = 1 "
+        "AND calls.actor_id = actor AND calls.tool_call_id = target_tool_call_id "
+        "AND calls.payload->>'type' = 'tool/call' "
+        "AND calls.payload->'data'->>'callId' = target_tool_call_id "
+        "AND calls.payload->'data'->>'name' = 'propose_fact') "
         "AND sessions.last_event_sequence + 1 >= 1 FOR UPDATE OF sessions; END $$"
     )
     op.execute(
-        "REVOKE ALL ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text) FROM PUBLIC"
+        "REVOKE ALL ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text, text) "
+        "FROM PUBLIC"
     )
     op.execute(
-        f"GRANT EXECUTE ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text) "
+        f"GRANT EXECUTE ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text, text) "
         f"TO {application_role}"
     )
     op.execute(
@@ -842,7 +852,8 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         "RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER "
         "SET search_path = pg_catalog, public AS $$ "
         "DECLARE actor uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
-        "locked_revision bigint; BEGIN "
+        "locked_revision bigint; proposal_expires timestamptz; receipt_expires timestamptz; "
+        "checked_at timestamptz; BEGIN "
         "IF actor IS NULL OR actor IS DISTINCT FROM target_actor_id "
         "OR target_event_sequence < 1 THEN RETURN false; END IF; "
         "UPDATE public.xagent_permission_revisions SET revision = revision "
@@ -855,16 +866,17 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         "AND sessions.last_event_sequence = target_event_sequence - 1 "
         "AND sessions.project_id IN (SELECT public.xagent_fact_authorized_project_ids()) "
         "FOR UPDATE; IF NOT FOUND THEN RETURN false; END IF; "
-        "PERFORM 1 FROM public.fact_proposals AS proposal "
+        "SELECT proposal.admission_expires_at INTO proposal_expires "
+        "FROM public.fact_proposals AS proposal "
         "WHERE proposal.id = target_proposal_id AND proposal.project_id = target_project_id "
         "AND proposal.proposer_id = actor AND proposal.source_session_id = target_session_id "
         "AND proposal.source_tool_call_id = target_tool_call_id "
         "AND proposal.permission_revision = expected_revision "
         "AND proposal.payload_sha256 = target_payload_sha256 "
-        "AND proposal.status = 'prepared' "
-        "AND proposal.admission_expires_at > CURRENT_TIMESTAMP FOR UPDATE; "
+        "AND proposal.status = 'prepared' FOR UPDATE; "
         "IF NOT FOUND THEN RETURN false; END IF; "
-        "PERFORM 1 FROM public.fact_proposal_receipts AS receipt "
+        "SELECT receipt.expires_at INTO receipt_expires "
+        "FROM public.fact_proposal_receipts AS receipt "
         "WHERE receipt.receipt_digest_id = target_receipt_digest "
         "AND receipt.proposal_id = target_proposal_id "
         "AND receipt.project_id = target_project_id AND receipt.actor_id = actor "
@@ -873,11 +885,14 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         "AND receipt.permission_revision = expected_revision "
         "AND receipt.source_event_sequence = target_event_sequence "
         "AND receipt.payload_sha256 = target_payload_sha256 "
-        "AND receipt.consumed_at IS NULL AND receipt.expires_at > CURRENT_TIMESTAMP FOR UPDATE; "
+        "AND receipt.consumed_at IS NULL FOR UPDATE; "
         "IF NOT FOUND THEN RETURN false; END IF; "
-        "UPDATE public.fact_proposals SET status = 'pending', admitted_at = CURRENT_TIMESTAMP "
+        "checked_at := clock_timestamp(); "
+        "IF proposal_expires <= checked_at OR receipt_expires <= checked_at "
+        "THEN RETURN false; END IF; "
+        "UPDATE public.fact_proposals SET status = 'pending', admitted_at = checked_at "
         "WHERE id = target_proposal_id; "
-        "UPDATE public.fact_proposal_receipts SET consumed_at = CURRENT_TIMESTAMP, "
+        "UPDATE public.fact_proposal_receipts SET consumed_at = checked_at, "
         "consumed_event_sequence = target_event_sequence, "
         "consumed_payload_sha256 = target_payload_sha256 "
         "WHERE receipt_digest_id = target_receipt_digest; RETURN true; END $$"
@@ -898,7 +913,8 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         "RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER "
         "SET search_path = pg_catalog, public AS $$ "
         "DECLARE actor uuid := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
-        "locked_revision bigint; BEGIN "
+        "locked_revision bigint; proposal_expires timestamptz; receipt_expires timestamptz; "
+        "checked_at timestamptz; BEGIN "
         "IF actor IS NULL OR actor IS DISTINCT FROM target_actor_id "
         "OR target_event_sequence < 1 THEN RETURN false; END IF; "
         "UPDATE public.xagent_permission_revisions SET revision = revision "
@@ -910,7 +926,17 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         "AND sessions.project_id = target_project_id "
         "AND sessions.project_id IN (SELECT public.xagent_fact_authorized_project_ids()) "
         "FOR UPDATE; IF NOT FOUND THEN RETURN false; END IF; "
-        "PERFORM 1 FROM public.fact_proposal_receipts AS receipt "
+        "SELECT proposal.admission_expires_at INTO proposal_expires "
+        "FROM public.fact_proposals AS proposal "
+        "WHERE proposal.id = target_proposal_id AND proposal.project_id = target_project_id "
+        "AND proposal.proposer_id = actor AND proposal.source_session_id = target_session_id "
+        "AND proposal.source_tool_call_id = target_tool_call_id "
+        "AND proposal.permission_revision = expected_revision "
+        "AND proposal.payload_sha256 = target_payload_sha256 "
+        "AND proposal.status = 'prepared' FOR UPDATE; "
+        "IF NOT FOUND THEN RETURN false; END IF; "
+        "SELECT receipt.expires_at INTO receipt_expires "
+        "FROM public.fact_proposal_receipts AS receipt "
         "WHERE receipt.receipt_digest_id = target_receipt_digest "
         "AND receipt.proposal_id = target_proposal_id "
         "AND receipt.project_id = target_project_id AND receipt.actor_id = actor "
@@ -919,18 +945,12 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         "AND receipt.permission_revision = expected_revision "
         "AND receipt.source_event_sequence = target_event_sequence "
         "AND receipt.payload_sha256 = target_payload_sha256 "
-        "AND receipt.consumed_at IS NULL AND receipt.expires_at <= CURRENT_TIMESTAMP FOR UPDATE; "
+        "AND receipt.consumed_at IS NULL FOR UPDATE; "
         "IF NOT FOUND THEN RETURN false; END IF; "
-        "PERFORM 1 FROM public.fact_proposals AS proposal "
-        "WHERE proposal.id = target_proposal_id AND proposal.project_id = target_project_id "
-        "AND proposal.proposer_id = actor AND proposal.source_session_id = target_session_id "
-        "AND proposal.source_tool_call_id = target_tool_call_id "
-        "AND proposal.permission_revision = expected_revision "
-        "AND proposal.payload_sha256 = target_payload_sha256 "
-        "AND proposal.status = 'prepared' "
-        "AND proposal.admission_expires_at <= CURRENT_TIMESTAMP FOR UPDATE; "
-        "IF NOT FOUND THEN RETURN false; END IF; "
-        "UPDATE public.fact_proposals SET status = 'expired', decided_at = CURRENT_TIMESTAMP "
+        "checked_at := clock_timestamp(); "
+        "IF proposal_expires > checked_at OR receipt_expires > checked_at "
+        "THEN RETURN false; END IF; "
+        "UPDATE public.fact_proposals SET status = 'expired', decided_at = checked_at "
         "WHERE id = target_proposal_id; RETURN true; END $$"
     )
     op.execute(
@@ -1133,7 +1153,7 @@ def downgrade() -> None:
         f"FROM {application_role}"
     )
     op.execute(
-        f"REVOKE ALL ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text) "
+        f"REVOKE ALL ON FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text, text) "
         f"FROM {application_role}"
     )
     op.execute(
@@ -1166,7 +1186,7 @@ def downgrade() -> None:
         "DROP FUNCTION public.xagent_admit_fact_proposal("
         "uuid, uuid, uuid, uuid, uuid, text, bigint, bigint, text)"
     )
-    op.execute("DROP FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text)")
+    op.execute("DROP FUNCTION public.xagent_fact_prepare_context(uuid, bigint, text, text)")
     op.execute("DROP FUNCTION public.xagent_fact_authorized_project_ids()")
     op.execute("DROP TRIGGER business_outbox_terminal_proposal ON business_outbox")
     op.execute("DROP TRIGGER fact_proposal_terminal_outbox ON fact_proposals")

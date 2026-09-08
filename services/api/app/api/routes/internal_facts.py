@@ -1,5 +1,6 @@
 """Authenticated internal routes for governed Fact operations."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from time import monotonic
 from uuid import UUID, uuid4
@@ -8,10 +9,13 @@ from fastapi import APIRouter, Depends, Header, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.internal_sessions import SessionContext, get_session_context
 from app.core.config import settings
+from app.core.db_context import set_actor_context
+from app.core.security import Actor
 from app.schemas.facts import FactPrepareRequest, FactPrepareResponse
 from app.services.audit import fact_audit_details, write_audit_event
 from app.services.fact_validation import canonical_sha256
@@ -159,6 +163,46 @@ async def _audit_denial(
     )
 
 
+async def _audit_cancellation(
+    context: SessionContext,
+    request: FactPrepareRequest,
+    *,
+    started: float,
+) -> None:
+    bind = context.session.bind
+    if bind is None:
+        return
+    async with AsyncSession(bind, expire_on_commit=False) as audit_session:
+        async with audit_session.begin():
+            role = bind.dialect.identifier_preparer.quote(settings.POSTGRES_APP_USER)
+            await audit_session.execute(text(f"SET LOCAL ROLE {role}"))
+            await set_actor_context(
+                audit_session,
+                Actor(id=context.principal.actor_id, role=context.principal.role),
+            )
+            await write_audit_event(
+                audit_session,
+                context.principal.actor_id,
+                "fact.cancel",
+                "xagent_session",
+                request.session_id,
+                uuid4(),
+                "cancelled",
+                details=fact_audit_details(
+                    session_id=request.session_id,
+                    tool_call_id=request.tool_call_id,
+                    operation="prepare",
+                    request_sha256=canonical_sha256(
+                        request.model_dump(mode="json", exclude={"idempotency_key"})
+                    ),
+                    permission_revision=request.permission_revision,
+                    evidence_count=len(request.evidence_ids),
+                    result="cancelled",
+                    latency_ms=max(0, int((monotonic() - started) * 1000)),
+                ),
+            )
+
+
 @router.post("/proposals/prepare", response_model=FactPrepareResponse)
 async def prepare_route(
     request: FactPrepareRequest,
@@ -183,6 +227,13 @@ async def prepare_route(
         )
         async with context.session.begin_nested():
             return await prepare_fact(context.session, context.principal, request)
+    except asyncio.CancelledError:
+        try:
+            await _audit_cancellation(context, request, started=started)
+        except Exception as cancellation_audit_failure:
+            # The original cancellation remains authoritative if its audit cannot commit.
+            del cancellation_audit_failure
+        raise
     except DelegationError:
         error = FactServiceError(FactErrorCode.NOT_FOUND)
     except FactServiceError as caught:
