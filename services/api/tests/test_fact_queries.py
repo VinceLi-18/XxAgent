@@ -1,3 +1,4 @@
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -43,6 +44,12 @@ def headers(token: str) -> dict[str, str]:
         "Authorization": f"Bearer {token}",
         "X-XAgent-Service-Token": SERVICE_TOKEN,
     }
+
+
+def encoded_cursor(payload: object) -> str:
+    """Encode a hand-written cursor payload without production cursor helpers."""
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
 async def seed_proposal(
@@ -467,3 +474,64 @@ async def test_fact_heads_and_revision_detail_return_typed_ordered_history(
 
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         assert await session.scalar(select(FactProposal.id).limit(1)) is not None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "cursor",
+    (
+        encoded_cursor({
+            "created_at": "2026-09-08T08:00:00+00:00",
+            "id": str(UUID(int=1)),
+            "v": True,
+        }),
+        encoded_cursor({
+            "created_at": "2026-09-08T08:00:00+00:00",
+            "id": str(UUID(int=1)),
+            "v": 1.0,
+        }),
+        encoded_cursor({
+            "created_at": "2026-09-08T08:00:00+00:00",
+            "id": 1,
+            "v": 1,
+        }),
+        encoded_cursor({
+            "created_at": 1,
+            "id": str(UUID(int=1)),
+            "v": 1,
+        }),
+        encoded_cursor({
+            "created_at": "2026-09-08",
+            "id": str(UUID(int=1)),
+            "v": 1,
+        }),
+        base64.urlsafe_b64encode(
+            (
+                '{"created_at":"2026-09-08T08:00:00+00:00",'
+                f'"id":"{UUID(int=1)}","v":1,"v":1}}'
+            ).encode()
+        ).rstrip(b"=").decode(),
+    ),
+)
+async def test_every_fact_page_rejects_typed_malformed_cursors(
+    client,
+    seeded_database,
+    manager,
+    fact_project_session,
+    cursor: str,
+) -> None:
+    """Malformed typed cursor fields never escape or authorize any paged read."""
+    token = await login(client, seeded_database, manager, "manager@example.test")
+    paths = (
+        f"/internal/xagent/facts/projects/{fact_project_session.project_id}/heads/list",
+        f"/internal/xagent/facts/projects/{fact_project_session.project_id}/proposals/list",
+        f"/internal/xagent/facts/sessions/{fact_project_session.id}/outbox/pull",
+    )
+    for path in paths:
+        response = await client.post(
+            path,
+            headers=headers(token),
+            json={"schema_version": 1, "cursor": cursor},
+        )
+        assert response.status_code == 422
+        assert response.json() == {"detail": {"code": "fact-input-invalid"}}

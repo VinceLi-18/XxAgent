@@ -671,6 +671,121 @@ async def test_one_outbox_row_is_required_for_each_public_terminal_proposal(
 
 
 @pytest.mark.anyio
+async def test_fact_operation_idempotency_binds_decision_status_revision_and_outbox(
+    seeded_database: AsyncEngine,
+    alice,
+    fact_project_session,
+) -> None:
+    """Decision operation rows reject contradictory or cross-proposal identities."""
+    project_id = fact_project_session.project_id
+    first = await _insert_proposal(
+        seeded_database,
+        project_id=project_id,
+        session_id=fact_project_session.id,
+        proposer_id=alice.id,
+        status="confirmed",
+        field_key="operation.first",
+    )
+    second = await _insert_proposal(
+        seeded_database,
+        project_id=project_id,
+        session_id=fact_project_session.id,
+        proposer_id=alice.id,
+        status="confirmed",
+        field_key="operation.second",
+    )
+    first_revision = uuid4()
+    second_revision = uuid4()
+    async with seeded_database.begin() as connection:
+        for proposal, revision, field_key in (
+            (first, first_revision, "operation.first"),
+            (second, second_revision, "operation.second"),
+        ):
+            await connection.execute(
+                text(
+                    "INSERT INTO project_fact_revisions "
+                    "(id, project_id, field_key, label, value_type, value, content_revision, "
+                    "proposal_id, confirmed_by_id) VALUES (:revision, :project, :field_key, "
+                    "'Operation', 'text', to_jsonb('Ada'::text), 1, :proposal, :actor)"
+                ),
+                {
+                    "revision": revision,
+                    "project": project_id,
+                    "field_key": field_key,
+                    "proposal": proposal,
+                    "actor": alice.id,
+                },
+            )
+        outboxes = dict((await connection.execute(
+            text(
+                "SELECT aggregate_id, id FROM business_outbox "
+                "WHERE aggregate_id IN (:first, :second)"
+            ),
+            {"first": first, "second": second},
+        )).all())
+
+    statement = text(
+        "INSERT INTO fact_operation_idempotency "
+        "(actor_id, operation, idempotency_key, project_id, request_sha256, proposal_id, "
+        "response_status, revision_id, outbox_id) VALUES "
+        "(:actor, 'approve', :key, :project, :digest, :proposal, :status, :revision, :outbox)"
+    )
+    invalid = (
+        (
+            "status",
+            "rejected",
+            None,
+            outboxes[first],
+            "ck_fact_operation_idempotency_decision_status",
+        ),
+        (
+            "missing-revision",
+            "confirmed",
+            None,
+            outboxes[first],
+            "ck_fact_operation_idempotency_revision_identity",
+        ),
+        (
+            "missing-outbox",
+            "confirmed",
+            first_revision,
+            None,
+            "ck_fact_operation_idempotency_outbox_identity",
+        ),
+        (
+            "cross-revision",
+            "confirmed",
+            second_revision,
+            outboxes[first],
+            "fk_fact_operation_idempotency_revision_proposal",
+        ),
+        (
+            "cross-outbox",
+            "confirmed",
+            first_revision,
+            outboxes[second],
+            "fk_fact_operation_idempotency_outbox_proposal",
+        ),
+    )
+    for key, status, revision, outbox, constraint in invalid:
+        with pytest.raises(IntegrityError, match=constraint):
+            async with seeded_database.begin() as connection:
+                await connection.execute(
+                    statement,
+                    {
+                        "actor": alice.id,
+                        "key": key,
+                        "project": project_id,
+                        "digest": "d" * 64,
+                        "proposal": first,
+                        "status": status,
+                        "revision": revision,
+                        "outbox": outbox,
+                    },
+                )
+
+
+@pytest.mark.anyio
 async def test_fact_audit_validator_rejects_content_and_secret_keys(
     seeded_database: AsyncEngine,
     alice,

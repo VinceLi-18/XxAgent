@@ -212,6 +212,10 @@ def _create_tables() -> None:
             name="uq_project_fact_revision_project_identity",
         ),
         sa.UniqueConstraint(
+            "id", "proposal_id", "project_id",
+            name="uq_project_fact_revision_proposal_identity",
+        ),
+        sa.UniqueConstraint(
             "id", "project_id", "field_key", "content_revision",
             name="uq_project_fact_revision_head_identity",
         ),
@@ -409,6 +413,10 @@ def _create_tables() -> None:
         sa.UniqueConstraint("aggregate_id", name="uq_business_outbox_fact_proposal"),
         sa.UniqueConstraint("id", "project_id", name="uq_business_outbox_project_identity"),
         sa.UniqueConstraint(
+            "id", "aggregate_id", "project_id",
+            name="uq_business_outbox_operation_identity",
+        ),
+        sa.UniqueConstraint(
             "source_session_id", "consumed_event_sequence",
             name="uq_business_outbox_session_event",
         ),
@@ -447,6 +455,23 @@ def _create_tables() -> None:
             "response_status IN ('prepared', 'pending', 'confirmed', 'rejected', 'withdrawn', 'conflicted')",
             name="ck_fact_operation_idempotency_response_status",
         ),
+        sa.CheckConstraint(
+            "operation NOT IN ('prepare', 'approve', 'reject', 'withdraw') OR "
+            "(operation = 'prepare' AND response_status = 'prepared') OR "
+            "(operation = 'approve' AND response_status IN ('confirmed', 'conflicted')) OR "
+            "(operation = 'reject' AND response_status = 'rejected') OR "
+            "(operation = 'withdraw' AND response_status = 'withdrawn')",
+            name="ck_fact_operation_idempotency_decision_status",
+        ),
+        sa.CheckConstraint(
+            "operation NOT IN ('approve', 'reject', 'withdraw') OR "
+            "((response_status = 'confirmed') = (revision_id IS NOT NULL))",
+            name="ck_fact_operation_idempotency_revision_identity",
+        ),
+        sa.CheckConstraint(
+            "operation NOT IN ('approve', 'reject', 'withdraw') OR outbox_id IS NOT NULL",
+            name="ck_fact_operation_idempotency_outbox_identity",
+        ),
         sa.ForeignKeyConstraint(["actor_id"], ["accounts.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
@@ -456,15 +481,19 @@ def _create_tables() -> None:
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["revision_id", "project_id"],
-            ["project_fact_revisions.id", "project_fact_revisions.project_id"],
-            name="fk_fact_operation_idempotency_revision",
+            ["revision_id", "proposal_id", "project_id"],
+            [
+                "project_fact_revisions.id",
+                "project_fact_revisions.proposal_id",
+                "project_fact_revisions.project_id",
+            ],
+            name="fk_fact_operation_idempotency_revision_proposal",
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["outbox_id", "project_id"],
-            ["business_outbox.id", "business_outbox.project_id"],
-            name="fk_fact_operation_idempotency_outbox",
+            ["outbox_id", "proposal_id", "project_id"],
+            ["business_outbox.id", "business_outbox.aggregate_id", "business_outbox.project_id"],
+            name="fk_fact_operation_idempotency_outbox_proposal",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("actor_id", "operation", "idempotency_key"),

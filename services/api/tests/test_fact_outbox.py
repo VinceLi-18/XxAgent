@@ -14,6 +14,7 @@ from app.models.xagent_session import XAgentSessionEvent
 from app.services import xagent_sessions as session_service
 from app.services.fact_validation import canonical_sha256
 from app.services.facts import fact_decision_event
+from test_fact_decisions import approve_body
 from test_fact_queries import PASSWORD, headers, login, seed_proposal
 
 
@@ -286,3 +287,104 @@ async def test_outbox_append_validates_identity_consumes_atomically_and_replays(
         json={"schema_version": 1},
     )
     assert empty.json() == {"schema_version": 1, "items": [], "next_cursor": None}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("corruption", "expected_status"),
+    (
+        ("outer_unknown", 422),
+        ("event_schema_boolean", 422),
+        ("sequence_boolean", 404),
+        ("content_revision_boolean", 404),
+        ("decision_data_unknown", 404),
+    ),
+)
+async def test_fact_outbox_append_rejects_non_strict_decision_events(
+    client,
+    seeded_database,
+    alice,
+    manager,
+    fact_project_session,
+    corruption: str,
+    expected_status: int,
+) -> None:
+    """Fact delivery rejects ignored fields and booleans masquerading as integers."""
+    alice_token = await login(client, seeded_database, alice, "alice@example.test")
+    manager_token = await login(client, seeded_database, manager, "manager@example.test")
+    proposal_id = await seed_proposal(
+        seeded_database,
+        fact_project_session,
+        alice.id,
+        field_key=f"strict_{corruption}",
+    )
+    approved = await client.post(
+        f"/internal/xagent/facts/proposals/{proposal_id}/approve",
+        headers=headers(manager_token),
+        json=approve_body(f"strict-{corruption}"),
+    )
+    assert approved.status_code == 200
+    pull = await client.post(
+        f"/internal/xagent/facts/sessions/{fact_project_session.id}/outbox/pull",
+        headers=headers(alice_token),
+        json={"schema_version": 1},
+    )
+    assert pull.status_code == 200
+    item = pull.json()["items"][0]
+    body = append_body(item, sequence=0, key=f"strict-{corruption}")
+    if corruption == "outer_unknown":
+        body["events"][0]["unknown"] = "ignored"
+    elif corruption == "event_schema_boolean":
+        body["events"][0]["schema_version"] = True
+    elif corruption == "sequence_boolean":
+        body["events"][0]["payload"]["seq"] = False
+    elif corruption == "content_revision_boolean":
+        body["events"][0]["payload"]["data"]["content_revision"] = True
+    else:
+        body["events"][0]["payload"]["data"]["unknown"] = "ignored"
+
+    denied = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=headers(alice_token),
+        json=body,
+    )
+    assert denied.status_code == expected_status
+    expected_code = "invalid-request" if expected_status == 422 else "not-found"
+    assert denied.json() == {"detail": {"code": expected_code}}
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        outbox = await session.get(BusinessOutbox, UUID(item["outbox_id"]))
+        assert outbox is not None and outbox.consumed_at is None
+        assert await session.scalar(select(func.count()).select_from(XAgentSessionEvent)) == 0
+
+
+@pytest.mark.anyio
+async def test_ordinary_session_events_keep_existing_loose_envelope_compatibility(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+) -> None:
+    """Fact-only strict validation does not tighten an ordinary Session event."""
+    token = await login(client, seeded_database, alice, "alice@example.test")
+    response = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": -1,
+            "idempotency_key": "ordinary-loose-envelope",
+            "events": [{
+                "event_type": "ordinary/custom",
+                "schema_version": "1",
+                "payload": {"value": 1},
+                "ignored_outer_field": True,
+            }],
+        },
+    )
+    assert response.status_code == 200
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        event = await session.scalar(select(XAgentSessionEvent))
+    assert event is not None
+    assert event.event_type == "ordinary/custom"
+    assert event.schema_version == 1
+    assert event.payload == {"value": 1}

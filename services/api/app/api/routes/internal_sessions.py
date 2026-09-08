@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,6 +76,27 @@ class EventInput(BaseModel):
     schema_version: int = Field(ge=1)
     payload: dict[str, Any]
     tool_call_id: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_fact_decision_envelope(cls, value: Any) -> Any:
+        """Reject loose envelope fields only for Fact decision events."""
+        if not isinstance(value, dict):
+            return value
+        payload = value.get("payload")
+        is_fact_decision = value.get("event_type") == "fact/proposal-decided" or (
+            isinstance(payload, dict) and payload.get("type") == "fact/proposal-decided"
+        )
+        allowed_fields = (
+            {"event_type", "schema_version", "payload"},
+            {"event_type", "schema_version", "payload", "tool_call_id"},
+        )
+        if is_fact_decision and (
+            set(value) not in allowed_fields
+            or type(value.get("schema_version")) is not int
+        ):
+            raise ValueError("Fact decision event envelope is not closed")
+        return value
 
 class RetrievalReceiptAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid")

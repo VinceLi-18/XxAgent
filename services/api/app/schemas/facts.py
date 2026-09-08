@@ -219,7 +219,7 @@ class FactProposalDetailResponse(_ClosedModel):
 
 
 class FactRevisionDetailResponse(_ClosedModel):
-    """One selected revision and newest-first history for its field."""
+    """One revision and its newest 100 field revisions, with no continuation."""
 
     schema_version: Literal[1] = 1
     revision: FactRevisionResponse

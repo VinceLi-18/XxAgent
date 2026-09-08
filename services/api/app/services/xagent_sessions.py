@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,7 @@ from app.models.retrieval import (
 )
 from app.models.workbench import XAgentSessionProjectRef
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
+from app.schemas.facts import FactProposalDecidedEvent
 from app.services.audit import fact_audit_details, retrieval_audit_details, write_audit_event
 from app.services.auth import Principal
 from app.services.authorization import ForbiddenError, authorize_projects
@@ -1062,17 +1064,23 @@ def _fact_outbox_payload(
         payload = event["payload"]
         if (
             event["event_type"] != "fact/proposal-decided"
+            or type(event["schema_version"]) is not int
             or event["schema_version"] != 1
             or event.get("tool_call_id") is not None
             or set(payload) != {"seq", "time", "type", "surfaceOp", "data"}
+            or type(payload["seq"]) is not int
             or payload["seq"] != sequence
             or payload["type"] != "fact/proposal-decided"
             or payload["surfaceOp"] != "append"
-            or isinstance(payload["time"], bool)
-            or not isinstance(payload["time"], int)
+            or type(payload["time"]) is not int
             or payload["time"] < 0
-            or payload["data"] != expected_event["data"]
         ):
+            raise ValueError
+        parsed = FactProposalDecidedEvent.model_validate({
+            "type": payload["type"],
+            "data": payload["data"],
+        }).model_dump(mode="json", exclude_none=True)
+        if parsed != expected_event:
             raise ValueError
         return {
             "seq": sequence,
@@ -1081,7 +1089,7 @@ def _fact_outbox_payload(
             "surfaceOp": "append",
             "data": expected_event["data"],
         }
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, ValidationError):
         raise SessionServiceError(SessionErrorCode.NOT_FOUND) from None
 
 

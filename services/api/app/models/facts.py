@@ -193,6 +193,10 @@ class ProjectFactRevision(Base):
         UniqueConstraint("proposal_id", name="uq_project_fact_revision_proposal"),
         UniqueConstraint("id", "project_id", name="uq_project_fact_revision_project_identity"),
         UniqueConstraint(
+            "id", "proposal_id", "project_id",
+            name="uq_project_fact_revision_proposal_identity",
+        ),
+        UniqueConstraint(
             "id", "project_id", "field_key", "content_revision",
             name="uq_project_fact_revision_head_identity",
         ),
@@ -368,6 +372,10 @@ class BusinessOutbox(Base):
         UniqueConstraint("aggregate_id", name="uq_business_outbox_fact_proposal"),
         UniqueConstraint("id", "project_id", name="uq_business_outbox_project_identity"),
         UniqueConstraint(
+            "id", "aggregate_id", "project_id",
+            name="uq_business_outbox_operation_identity",
+        ),
+        UniqueConstraint(
             "source_session_id", "consumed_event_sequence",
             name="uq_business_outbox_session_event",
         ),
@@ -404,6 +412,23 @@ class FactOperationIdempotency(Base):
             "response_status IN ('prepared', 'pending', 'confirmed', 'rejected', 'withdrawn', 'conflicted')",
             name="ck_fact_operation_idempotency_response_status",
         ),
+        CheckConstraint(
+            "operation NOT IN ('prepare', 'approve', 'reject', 'withdraw') OR "
+            "(operation = 'prepare' AND response_status = 'prepared') OR "
+            "(operation = 'approve' AND response_status IN ('confirmed', 'conflicted')) OR "
+            "(operation = 'reject' AND response_status = 'rejected') OR "
+            "(operation = 'withdraw' AND response_status = 'withdrawn')",
+            name="ck_fact_operation_idempotency_decision_status",
+        ),
+        CheckConstraint(
+            "operation NOT IN ('approve', 'reject', 'withdraw') OR "
+            "((response_status = 'confirmed') = (revision_id IS NOT NULL))",
+            name="ck_fact_operation_idempotency_revision_identity",
+        ),
+        CheckConstraint(
+            "operation NOT IN ('approve', 'reject', 'withdraw') OR outbox_id IS NOT NULL",
+            name="ck_fact_operation_idempotency_outbox_identity",
+        ),
         ForeignKeyConstraint(
             ("proposal_id", "project_id"),
             ("fact_proposals.id", "fact_proposals.project_id"),
@@ -411,15 +436,23 @@ class FactOperationIdempotency(Base):
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
-            ("revision_id", "project_id"),
-            ("project_fact_revisions.id", "project_fact_revisions.project_id"),
-            name="fk_fact_operation_idempotency_revision",
+            ("revision_id", "proposal_id", "project_id"),
+            (
+                "project_fact_revisions.id",
+                "project_fact_revisions.proposal_id",
+                "project_fact_revisions.project_id",
+            ),
+            name="fk_fact_operation_idempotency_revision_proposal",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
-            ("outbox_id", "project_id"),
-            ("business_outbox.id", "business_outbox.project_id"),
-            name="fk_fact_operation_idempotency_outbox",
+            ("outbox_id", "proposal_id", "project_id"),
+            (
+                "business_outbox.id",
+                "business_outbox.aggregate_id",
+                "business_outbox.project_id",
+            ),
+            name="fk_fact_operation_idempotency_outbox_proposal",
             ondelete="RESTRICT",
         ),
     )

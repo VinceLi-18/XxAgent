@@ -39,7 +39,7 @@ from app.services.fact_validation import canonical_sha256
 
 
 class FactErrorCode(str, Enum):
-    """Stable internal Fact preparation and admission failure codes."""
+    """Stable internal failure codes for every governed Fact operation."""
 
     FACT_INPUT_INVALID = "fact-input-invalid"
     FACT_EVIDENCE_INVALID = "fact-evidence-invalid"
@@ -123,6 +123,15 @@ def _encode_cursor(created_at: datetime, item_id: UUID) -> str:
 def _decode_cursor(value: str | None) -> FactCursor | None:
     if value is None:
         return None
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("duplicate cursor field")
+            result[key] = item
+        return result
+
     try:
         padding = "=" * (-len(value) % 4)
         decoded = base64.b64decode(
@@ -130,18 +139,27 @@ def _decode_cursor(value: str | None) -> FactCursor | None:
             altchars=b"-_",
             validate=True,
         )
-        payload = json.loads(decoded)
+        payload = json.loads(decoded, object_pairs_hook=unique_object)
         if not isinstance(payload, dict) or set(payload) != {"created_at", "id", "v"}:
             raise ValueError
-        if payload["v"] != 1 or not isinstance(payload["created_at"], str):
+        if (
+            type(payload["v"]) is not int
+            or payload["v"] != 1
+            or not isinstance(payload["created_at"], str)
+            or not isinstance(payload["id"], str)
+        ):
             raise ValueError
         created_at = datetime.fromisoformat(payload["created_at"])
-        if created_at.tzinfo is None or created_at.utcoffset() is None:
+        if (
+            created_at.tzinfo is None
+            or created_at.utcoffset() is None
+            or created_at.isoformat() != payload["created_at"]
+        ):
             raise ValueError
         item_id = UUID(payload["id"])
         if str(item_id) != payload["id"]:
             raise ValueError
-    except (UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, ValueError, TypeError, OverflowError, json.JSONDecodeError):
         raise FactServiceError(FactErrorCode.FACT_INPUT_INVALID) from None
     return FactCursor(created_at=created_at, item_id=item_id)
 
@@ -817,6 +835,8 @@ async def _decision_replay(
     request_sha256: str,
     started: float,
 ) -> FactProposalDecision | None:
+    if operation in {"approve", "reject"} and principal.role is not Role.MANAGER:
+        raise FactServiceError(FactErrorCode.NOT_FOUND)
     await _lock_operation(
         session,
         actor_id=principal.actor_id,
@@ -831,28 +851,66 @@ async def _decision_replay(
         return None
     if stored.request_sha256 != request_sha256 or stored.proposal_id != proposal_id:
         raise FactServiceError(FactErrorCode.IDEMPOTENCY_CONFLICT)
+    expected_statuses = {
+        "approve": {
+            FactProposalStatus.CONFIRMED.value,
+            FactProposalStatus.CONFLICTED.value,
+        },
+        "reject": {FactProposalStatus.REJECTED.value},
+        "withdraw": {FactProposalStatus.WITHDRAWN.value},
+    }
+    if (
+        stored.operation != operation
+        or operation not in expected_statuses
+        or stored.response_status not in expected_statuses[operation]
+    ):
+        raise FactServiceError(FactErrorCode.SERVICE_UNAVAILABLE)
     proposal = await session.scalar(
         select(FactProposal).where(FactProposal.id == stored.proposal_id)
     )
     if proposal is None:
         raise FactServiceError(FactErrorCode.NOT_FOUND)
-    outbox = await session.scalar(select(BusinessOutbox).where(
-        BusinessOutbox.id == stored.outbox_id,
-        BusinessOutbox.aggregate_id == proposal.id,
-        BusinessOutbox.project_id == proposal.project_id,
-    ))
-    if outbox is None:
+    if (
+        stored.project_id != proposal.project_id
+        or proposal.status != stored.response_status
+        or proposal.decision_actor_id != principal.actor_id
+        or (operation == "withdraw" and proposal.proposer_id != principal.actor_id)
+    ):
         raise FactServiceError(FactErrorCode.SERVICE_UNAVAILABLE)
-    content_revision = None
-    if stored.revision_id is not None:
+    requires_revision = stored.response_status == FactProposalStatus.CONFIRMED.value
+    if requires_revision != (stored.revision_id is not None):
+        raise FactServiceError(FactErrorCode.SERVICE_UNAVAILABLE)
+    revision = None
+    if requires_revision:
         revision = await session.scalar(
             select(ProjectFactRevision).where(
                 ProjectFactRevision.id == stored.revision_id
             )
         )
-        if revision is None:
+        if (
+            revision is None
+            or revision.project_id != proposal.project_id
+            or revision.proposal_id != proposal.id
+            or revision.field_key != proposal.field_key
+            or revision.content_revision != proposal.base_revision + 1
+            or revision.confirmed_by_id != proposal.decision_actor_id
+        ):
             raise FactServiceError(FactErrorCode.SERVICE_UNAVAILABLE)
-        content_revision = revision.content_revision
+    if stored.outbox_id is None:
+        raise FactServiceError(FactErrorCode.SERVICE_UNAVAILABLE)
+    outbox = await session.scalar(
+        select(BusinessOutbox).where(BusinessOutbox.id == stored.outbox_id)
+    )
+    event = fact_decision_event(proposal, revision=revision)
+    if (
+        outbox is None
+        or outbox.aggregate_kind != "fact_proposal"
+        or outbox.aggregate_id != proposal.id
+        or outbox.project_id != proposal.project_id
+        or outbox.source_session_id != proposal.source_session_id
+        or outbox.payload_sha256 != canonical_sha256(event)
+    ):
+        raise FactServiceError(FactErrorCode.SERVICE_UNAVAILABLE)
     evidence_count = await session.scalar(
         select(func.count())
         .select_from(FactProposalEvidence)
@@ -885,7 +943,7 @@ async def _decision_replay(
         proposal_id=proposal.id,
         status=stored.response_status,
         fact_revision_id=stored.revision_id,
-        content_revision=content_revision,
+        content_revision=revision.content_revision if revision is not None else None,
     )
 
 
@@ -1345,7 +1403,11 @@ async def _decide_without_revision(
         proposal_id=proposal_id,
         operation=operation,
     )
-    evidence_count = await _authorize_decision_evidence(session, proposal)
+    evidence_count = await session.scalar(
+        select(func.count())
+        .select_from(FactProposalEvidence)
+        .where(FactProposalEvidence.proposal_id == proposal.id)
+    )
     return await _finish_fact_decision(
         session,
         proposal,
@@ -1355,7 +1417,7 @@ async def _decide_without_revision(
         request_sha256=request_sha256,
         decision_reason=decision_reason,
         status=status,
-        evidence_count=evidence_count,
+        evidence_count=evidence_count or 0,
         revision=None,
         started=started,
     )
