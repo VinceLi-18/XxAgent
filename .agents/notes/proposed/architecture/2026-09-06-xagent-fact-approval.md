@@ -59,13 +59,13 @@ Fact audit actions contain only identities, counts, hashes, stable outcomes, and
 ## Acceptance criteria
 
 - Seven Fact relations enforce closed value, lifecycle, aggregate, operation, field-key, revision, identity, and uniqueness rules, including same-project and same-field head references and exact admitted-evidence ranges.
-- Database triggers reject mutation of confirmed revisions, terminal proposals, decision Outbox rows, and invalid head advancement; the migration rejects a non-empty downgrade before any schema change.
+- Database triggers reject mutation of confirmed revisions, terminal proposals, decision Outbox rows, and invalid head advancement; the migration rejects downgrade before any schema change when a Fact relation or Fact audit row is non-empty.
 - Row-level security admits only current project members for their permitted actions, hides prepared proposals from product reads, and denies all Fact access to the worker role.
 - Proposal admission consumes only a matching unexpired digest-backed receipt; approval or conflict writes proposal, revision when applicable, head, audit, idempotency, and one Outbox row atomically.
 - Outbox delivery is bounded and exactly-once at Session append, creates no Agent Turn, and exposes no receipt, token, evidence text, URL, or object key.
 
 ## Risks
 
-Composite references and mutation triggers make the first migration intentionally strict; application transactions must acquire rows in the prescribed order and cannot repair inconsistent data through compatibility fallbacks. Downgrade is available only when all seven Fact relations are empty, so rollback of deployed business data requires a reviewed backup.
+Composite references and mutation triggers make the first migration intentionally strict; application transactions must acquire rows in the prescribed order and cannot repair inconsistent data through compatibility fallbacks. Downgrade is available only when all seven Fact relations and the Fact audit stream are empty, so rollback of deployed business data requires a reviewed backup.
 
 The single-object Outbox and Fact-specific idempotency store duplicate some structure that a later governed object may also need. Generalization is deferred until another approved object supplies concrete shared semantics; any later migration must preserve the existing Fact identities and authorization guarantees.

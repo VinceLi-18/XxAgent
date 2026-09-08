@@ -25,6 +25,22 @@ PENDING = "pending"
 TERMINAL = ("confirmed", "rejected", "withdrawn", "conflicted")
 
 
+def _safe_fact_audit_details() -> dict[str, object]:
+    return {
+        "project_id": str(UUID(int=501)),
+        "session_id": str(UUID(int=502)),
+        "proposal_id": str(UUID(int=503)),
+        "tool_call_id": "call-1",
+        "request_sha256": "a" * 64,
+        "payload_sha256": "b" * 64,
+        "evidence_count": 1,
+        "operation": "prepare",
+        "result": "prepared",
+        "status": "prepared",
+        "latency_ms": 4,
+    }
+
+
 def _alembic_config(database_url: str) -> Config:
     backend_directory = Path(__file__).resolve().parents[2]
     config = Config(str(backend_directory / "alembic.ini"))
@@ -330,9 +346,14 @@ async def test_fact_evidence_requires_admitted_identity_and_exact_chunk_range(
         project_id=fact_project_session.project_id,
         session_id=fact_project_session.id,
         proposer_id=alice.id,
+        status="prepared",
     )
     embedding = "[0" + ",0" * 1023 + "]"
     async with seeded_database.begin() as connection:
+        await connection.execute(
+            text("SELECT set_config('app.actor_id', CAST(:actor AS text), true)"),
+            {"actor": str(alice.id)},
+        )
         await connection.execute(
             text(
                 "INSERT INTO xagent_session_events "
@@ -426,6 +447,10 @@ async def test_fact_evidence_requires_admitted_identity_and_exact_chunk_range(
     with pytest.raises(IntegrityError, match="fk_fact_proposal_evidence_admitted_identity"):
         async with seeded_database.begin() as connection:
             await connection.execute(
+                text("SELECT set_config('app.actor_id', CAST(:actor AS text), true)"),
+                {"actor": str(alice.id)},
+            )
+            await connection.execute(
                 text(
                     "INSERT INTO fact_proposal_evidence "
                     "(proposal_id, project_id, session_id, citation_id, admission_event_sequence, artifact_id, "
@@ -452,6 +477,62 @@ async def test_fact_evidence_requires_admitted_identity_and_exact_chunk_range(
                     "WHERE proposal_id = :proposal AND citation_id = '[资料1]'"
                 ),
                 {"proposal": proposal_id},
+            )
+
+
+@pytest.mark.anyio
+async def test_fact_proposal_rejects_sixty_fifth_evidence_row(
+    seeded_database: AsyncEngine,
+    alice,
+    fact_project_session,
+    fact_admitted_evidence,
+) -> None:
+    proposal_id = await _insert_proposal(
+        seeded_database,
+        project_id=fact_project_session.project_id,
+        session_id=fact_project_session.id,
+        proposer_id=alice.id,
+        status="prepared",
+    )
+    statement = text(
+        "INSERT INTO fact_proposal_evidence "
+        "(proposal_id, project_id, session_id, citation_id, admission_event_sequence, artifact_id, "
+        "version_id, index_id, index_generation, chunk_id, line_start, line_end) "
+        "VALUES (:proposal, :project, :session, :citation, 0, :artifact, :version, :index, 1, "
+        ":chunk, :line, :line)"
+    )
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text("SELECT set_config('app.actor_id', CAST(:actor AS text), true)"),
+            {"actor": str(alice.id)},
+        )
+        await connection.execute(
+            statement,
+            [
+                {
+                    **row,
+                    "proposal": proposal_id,
+                    "project": fact_project_session.project_id,
+                    "session": fact_project_session.id,
+                }
+                for row in fact_admitted_evidence[:64]
+            ],
+        )
+
+    with pytest.raises(DBAPIError, match="at most 64 evidence rows"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('app.actor_id', CAST(:actor AS text), true)"),
+                {"actor": str(alice.id)},
+            )
+            await connection.execute(
+                statement,
+                {
+                    **fact_admitted_evidence[64],
+                    "proposal": proposal_id,
+                    "project": fact_project_session.project_id,
+                    "session": fact_project_session.id,
+                },
             )
 
 
@@ -594,17 +675,7 @@ async def test_fact_audit_validator_rejects_content_and_secret_keys(
     seeded_database: AsyncEngine,
     alice,
 ) -> None:
-    safe_details = {
-        "project_id": str(UUID(int=501)),
-        "session_id": str(UUID(int=502)),
-        "proposal_id": str(UUID(int=503)),
-        "tool_call_id": "call-1",
-        "request_sha256": "a" * 64,
-        "payload_sha256": "b" * 64,
-        "evidence_count": 1,
-        "result": "prepared",
-        "latency_ms": 4,
-    }
+    safe_details = _safe_fact_audit_details()
     async with seeded_database.begin() as connection:
         await connection.execute(
             text(
@@ -621,6 +692,26 @@ async def test_fact_audit_validator_rejects_content_and_secret_keys(
                 "details": json.dumps(safe_details),
             },
         )
+
+    with pytest.raises(IntegrityError, match="ck_audit_event_details"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO audit_events "
+                    "(id, actor_id, action, resource_type, resource_id, request_id, result, details) "
+                    "VALUES (:id, :actor, 'fact.exfiltrate', 'fact_proposal', :resource, :request, "
+                    "'prepared', CAST(:details AS jsonb))"
+                ),
+                {
+                    "id": uuid4(),
+                    "actor": alice.id,
+                    "resource": UUID(int=503),
+                    "request": uuid4(),
+                    "details": json.dumps(
+                        {key: value for key, value in safe_details.items() if key != "tool_call_id"}
+                    ),
+                },
+            )
 
     with pytest.raises(IntegrityError, match="ck_audit_event_details"):
         async with seeded_database.begin() as connection:
@@ -674,6 +765,93 @@ async def test_fact_audit_validator_rejects_content_and_secret_keys(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("operation", "sk_live_secret"),
+        ("result", "customer secret"),
+        ("status", "hidden value"),
+        ("tool_call_id", "secret Fact content"),
+    ],
+)
+async def test_fact_audit_validator_rejects_secret_like_scalar_values(
+    seeded_database: AsyncEngine,
+    alice,
+    key: str,
+    value: str,
+) -> None:
+    with pytest.raises(IntegrityError, match="ck_audit_event_details"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO audit_events "
+                    "(id, actor_id, action, resource_type, resource_id, request_id, result, details) "
+                    "VALUES (:id, :actor, 'fact.prepare', 'fact_proposal', :resource, :request, "
+                    "'prepared', CAST(:details AS jsonb))"
+                ),
+                {
+                    "id": uuid4(),
+                    "actor": alice.id,
+                    "resource": UUID(int=503),
+                    "request": uuid4(),
+                    "details": json.dumps({**_safe_fact_audit_details(), key: value}),
+                },
+            )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("action", "operation", "result", "status"),
+    [
+        ("fact.prepare", "prepare", "prepared", "prepared"),
+        ("fact.admit", "admit", "pending", "pending"),
+        ("fact.expire", "expire", "expired", "expired"),
+        ("fact.withdraw", "withdraw", "withdrawn", "withdrawn"),
+        ("fact.approve", "approve", "confirmed", "confirmed"),
+        ("fact.reject", "reject", "rejected", "rejected"),
+        ("fact.conflict", "approve", "conflicted", "conflicted"),
+        ("fact.confirm", "approve", "confirmed", "confirmed"),
+        ("fact.outbox.project", "outbox_append", "projected", "confirmed"),
+        ("fact.replay", "prepare", "replayed", "prepared"),
+        ("fact.cancel", "prepare", "cancelled", "prepared"),
+        ("fact.authorization_denied", "approve", "not-found", None),
+    ],
+)
+async def test_fact_audit_validator_accepts_planned_action_schemas(
+    seeded_database: AsyncEngine,
+    action: str,
+    operation: str,
+    result: str,
+    status: str | None,
+) -> None:
+    details: dict[str, object] = {
+        "project_id": str(UUID(int=501)),
+        "session_id": str(UUID(int=502)),
+        "proposal_id": str(UUID(int=503)),
+        "operation": operation,
+        "request_sha256": "a" * 64,
+        "payload_sha256": "b" * 64,
+        "result": result,
+        "latency_ms": 4,
+    }
+    if action in ("fact.prepare", "fact.admit"):
+        details["tool_call_id"] = "call-1"
+    if action in ("fact.admit", "fact.outbox.project"):
+        details["event_sequence"] = 1
+    if status is not None:
+        details["status"] = status
+
+    async with seeded_database.connect() as connection:
+        valid = await connection.scalar(
+            text(
+                "SELECT public.xagent_valid_fact_audit_details(:action, CAST(:details AS jsonb))"
+            ),
+            {"action": action, "details": json.dumps(details)},
+        )
+    assert valid is True
+
+
+@pytest.mark.anyio
 async def test_empty_fact_schema_can_downgrade_and_upgrade_again(
     seeded_database: AsyncEngine,
 ) -> None:
@@ -692,6 +870,44 @@ async def test_empty_fact_schema_can_downgrade_and_upgrade_again(
         )
     assert revision == "016_xagent_fact_approval"
     assert FACT_TABLES <= tables
+
+
+@pytest.mark.anyio
+async def test_fact_audit_event_rejects_downgrade_before_ddl(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    audit_id = uuid4()
+    details = _safe_fact_audit_details()
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(id, actor_id, action, resource_type, resource_id, request_id, result, details) "
+                "VALUES (:id, :actor, 'fact.prepare', 'fact_proposal', :resource, :request, "
+                "'prepared', CAST(:details AS jsonb))"
+            ),
+            {
+                "id": audit_id,
+                "actor": alice.id,
+                "resource": UUID(int=503),
+                "request": uuid4(),
+                "details": json.dumps(details),
+            },
+        )
+    config = _alembic_config(seeded_database.url.render_as_string(hide_password=False))
+    await seeded_database.dispose()
+
+    with pytest.raises(DBAPIError, match="cannot downgrade fact approval with stored data"):
+        await to_thread.run_sync(command.downgrade, config, "015_citation_authorization")
+
+    async with seeded_database.connect() as connection:
+        revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+        stored = await connection.scalar(
+            text("SELECT id FROM audit_events WHERE id = :id"), {"id": audit_id}
+        )
+    assert revision == "016_xagent_fact_approval"
+    assert stored == audit_id
 
 
 @pytest.mark.anyio

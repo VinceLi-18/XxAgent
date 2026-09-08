@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import jwt
 import pytest
@@ -443,6 +443,120 @@ async def fact_project_session(seeded_database: AsyncEngine):
             await session.flush()
             session.add_all((xagent_session, *memberships))
     return xagent_session
+
+
+@pytest.fixture
+async def fact_admitted_evidence(seeded_database: AsyncEngine, alice, fact_project_session):
+    artifact_id = uuid4()
+    version_id = uuid4()
+    index_id = uuid4()
+    embedding = "[0" + ",0" * 1023 + "]"
+    rows = [
+        {
+            "citation": f"[资料{ordinal + 1}]",
+            "chunk": uuid4(),
+            "ordinal": ordinal,
+            "line": ordinal + 1,
+        }
+        for ordinal in range(65)
+    ]
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO xagent_session_events "
+                "(session_id, sequence, event_type, schema_version, payload, actor_id) "
+                "VALUES (:session, 0, 'tool/result', 1, '{}'::jsonb, :actor)"
+            ),
+            {"session": fact_project_session.id, "actor": alice.id},
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifacts (id, filename, project_id, created_by_id) "
+                "VALUES (:artifact, 'facts.txt', :project, :actor)"
+            ),
+            {
+                "artifact": artifact_id,
+                "project": fact_project_session.project_id,
+                "actor": alice.id,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_versions "
+                "(id, artifact_id, project_id, version_number, original_filename, uploaded_by_id, "
+                "declared_size, actual_size, detected_content_type, scan_status, object_key, size, "
+                "content_type, sha256) VALUES (:version, :artifact, :project, 1, 'facts.txt', "
+                ":actor, 1, 1, 'text/plain', 'clean', :object_key, 1, 'text/plain', :sha256)"
+            ),
+            {
+                "version": version_id,
+                "artifact": artifact_id,
+                "project": fact_project_session.project_id,
+                "actor": alice.id,
+                "object_key": f"artifacts/{artifact_id}/{version_id}",
+                "sha256": "1" * 64,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_text_indexes "
+                "(id, artifact_id, version_id, generation, content_sha256, parser_revision, "
+                "embedding_model, embedding_revision, vector_dimensions, configuration_fingerprint, status) "
+                "VALUES (:index, :artifact, :version, 1, :sha256, 'parser-1', 'bge-m3', "
+                "'revision-1', 1024, :fingerprint, 'ready')"
+            ),
+            {
+                "index": index_id,
+                "artifact": artifact_id,
+                "version": version_id,
+                "sha256": "2" * 64,
+                "fingerprint": "3" * 64,
+            },
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO artifact_text_chunks "
+                "(id, index_id, ordinal, line_start, line_end, text, token_count, text_sha256, embedding) "
+                "VALUES (:chunk, :index, :ordinal, :line, :line, 'fact evidence', 2, "
+                ":sha256, CAST(:embedding AS vector))"
+            ),
+            [
+                {
+                    **row,
+                    "index": index_id,
+                    "sha256": f"{row['ordinal'] + 1:064x}",
+                    "embedding": embedding,
+                }
+                for row in rows
+            ],
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO xagent_admitted_evidence "
+                "(session_id, citation_id, admission_event_sequence, artifact_id, version_id, "
+                "index_id, index_generation, chunk_id) VALUES (:session, :citation, 0, "
+                ":artifact, :version, :index, 1, :chunk)"
+            ),
+            [
+                {
+                    **row,
+                    "session": fact_project_session.id,
+                    "artifact": artifact_id,
+                    "version": version_id,
+                    "index": index_id,
+                }
+                for row in rows
+            ],
+        )
+    return [
+        {
+            **row,
+            "artifact": artifact_id,
+            "version": version_id,
+            "index": index_id,
+        }
+        for row in rows
+    ]
 
 
 @pytest.fixture

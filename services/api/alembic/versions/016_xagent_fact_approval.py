@@ -473,28 +473,124 @@ def _create_tables() -> None:
 
 def _create_fact_audit_validator() -> None:
     op.execute(
-        "CREATE FUNCTION public.xagent_valid_fact_audit_details(action_name text, value jsonb) "
-        "RETURNS boolean LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog, public AS $$ "
-        "DECLARE key text; scalar text; BEGIN "
-        "IF action_name NOT LIKE 'fact.%' OR jsonb_typeof(value) <> 'object' OR "
-        "value - ARRAY['project_id','session_id','proposal_id','fact_revision_id','outbox_id',"
-        "'tool_call_id','event_sequence','operation','request_sha256','payload_sha256',"
-        "'evidence_count','result','status','latency_ms'] <> '{}'::jsonb THEN RETURN false; END IF; "
-        "IF action_name !~ '(prepare|admit)$' AND value ? 'tool_call_id' THEN RETURN false; END IF; "
-        "IF action_name !~ '(admit|outbox\\.project)$' AND value ? 'event_sequence' THEN RETURN false; END IF; "
-        "FOREACH key IN ARRAY ARRAY['project_id','session_id','proposal_id','fact_revision_id','outbox_id'] LOOP "
-        "IF value ? key AND (jsonb_typeof(value->key) <> 'string' "
-        "OR value->>key !~ '^[0-9a-f-]{36}$') THEN RETURN false; END IF; END LOOP; "
-        "FOREACH key IN ARRAY ARRAY['request_sha256','payload_sha256'] LOOP "
-        "IF value ? key AND (jsonb_typeof(value->key) <> 'string' "
-        "OR value->>key !~ '^[0-9a-f]{64}$') THEN RETURN false; END IF; END LOOP; "
-        "FOREACH key IN ARRAY ARRAY['evidence_count','event_sequence','latency_ms'] LOOP "
-        "IF value ? key AND (jsonb_typeof(value->key) <> 'number' "
-        "OR value->>key !~ '^[0-9]+$' OR (value->>key)::numeric < 0) THEN RETURN false; END IF; END LOOP; "
-        "FOREACH key IN ARRAY ARRAY['tool_call_id','operation','result','status'] LOOP "
-        "IF value ? key THEN scalar := value->>key; IF jsonb_typeof(value->key) <> 'string' "
-        "OR length(scalar) NOT BETWEEN 1 AND 255 THEN RETURN false; END IF; END IF; END LOOP; "
-        "RETURN true; EXCEPTION WHEN others THEN RETURN false; END $$"
+        """
+        CREATE FUNCTION public.xagent_valid_fact_audit_details(action_name text, value jsonb)
+        RETURNS boolean LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog, public AS $$
+        DECLARE
+            key text;
+            allowed_keys text[];
+            allowed_operations text[];
+        BEGIN
+            IF jsonb_typeof(value) <> 'object' THEN RETURN false; END IF;
+            CASE action_name
+                WHEN 'fact.prepare' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','tool_call_id',
+                        'operation','request_sha256','payload_sha256','permission_revision',
+                        'evidence_count','result','status','latency_ms'];
+                    allowed_operations := ARRAY['prepare'];
+                WHEN 'fact.admit' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','tool_call_id',
+                        'event_sequence','operation','request_sha256','payload_sha256',
+                        'permission_revision','evidence_count','result','status','latency_ms'];
+                    allowed_operations := ARRAY['admit'];
+                WHEN 'fact.expire' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','operation',
+                        'request_sha256','payload_sha256','result','status','latency_ms'];
+                    allowed_operations := ARRAY['expire'];
+                WHEN 'fact.withdraw' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','outbox_id',
+                        'operation','request_sha256','payload_sha256','result','status','latency_ms'];
+                    allowed_operations := ARRAY['withdraw'];
+                WHEN 'fact.approve' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
+                        'outbox_id','operation','request_sha256','payload_sha256','evidence_count',
+                        'result','status','latency_ms'];
+                    allowed_operations := ARRAY['approve'];
+                WHEN 'fact.reject' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','outbox_id',
+                        'operation','request_sha256','payload_sha256','evidence_count','result',
+                        'status','latency_ms'];
+                    allowed_operations := ARRAY['reject'];
+                WHEN 'fact.conflict' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','outbox_id',
+                        'operation','request_sha256','payload_sha256','evidence_count','result',
+                        'status','latency_ms'];
+                    allowed_operations := ARRAY['approve'];
+                WHEN 'fact.confirm' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
+                        'outbox_id','operation','request_sha256','payload_sha256','evidence_count',
+                        'result','status','latency_ms'];
+                    allowed_operations := ARRAY['approve'];
+                WHEN 'fact.outbox.project' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
+                        'outbox_id','event_sequence','operation','payload_sha256','result','status',
+                        'request_sha256','latency_ms'];
+                    allowed_operations := ARRAY['outbox_append'];
+                WHEN 'fact.replay' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
+                        'outbox_id','tool_call_id','event_sequence','operation','request_sha256',
+                        'payload_sha256','permission_revision','evidence_count','result','status',
+                        'latency_ms'];
+                    allowed_operations := ARRAY['prepare','admit','expire','withdraw','approve',
+                        'reject','outbox_append'];
+                WHEN 'fact.cancel' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
+                        'outbox_id','tool_call_id','event_sequence','operation','request_sha256',
+                        'payload_sha256','permission_revision','evidence_count','result','status',
+                        'latency_ms'];
+                    allowed_operations := ARRAY['prepare','admit','expire','withdraw','approve',
+                        'reject','outbox_append'];
+                WHEN 'fact.authorization_denied' THEN
+                    allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
+                        'outbox_id','tool_call_id','event_sequence','operation','request_sha256',
+                        'payload_sha256','permission_revision','evidence_count','result','status',
+                        'latency_ms'];
+                    allowed_operations := ARRAY['prepare','admit','expire','withdraw','approve',
+                        'reject','outbox_append'];
+                ELSE RETURN false;
+            END CASE;
+            IF value - allowed_keys <> '{}'::jsonb
+                OR NOT value ?& ARRAY['operation','result','latency_ms']
+                OR jsonb_typeof(value->'operation') <> 'string'
+                OR (value->>'operation') <> ALL(allowed_operations)
+                OR jsonb_typeof(value->'result') <> 'string'
+                OR (value->>'result') <> ALL(ARRAY[
+                    'prepared','pending','expired','withdrawn','confirmed','rejected','conflicted',
+                    'projected','replayed','cancelled','allowed','denied','fact-input-invalid',
+                    'fact-evidence-invalid','fact-session-invalid','fact-receipt-invalid',
+                    'fact-receipt-expired','fact-revision-conflict','fact-already-decided','not-found',
+                    'stale-permission','idempotency-conflict','service-unavailable'
+                ]) THEN RETURN false; END IF;
+            IF value ? 'status' AND (jsonb_typeof(value->'status') <> 'string'
+                OR (value->>'status') <> ALL(ARRAY[
+                    'prepared','pending','confirmed','rejected','withdrawn','conflicted','expired'
+                ])) THEN RETURN false; END IF;
+            IF value ? 'tool_call_id' AND (jsonb_typeof(value->'tool_call_id') <> 'string'
+                OR value->>'tool_call_id' !~ '^call-[A-Za-z0-9-]{1,120}$') THEN RETURN false; END IF;
+            FOREACH key IN ARRAY ARRAY[
+                'project_id','session_id','proposal_id','fact_revision_id','outbox_id'
+            ] LOOP
+                IF value ? key AND (jsonb_typeof(value->key) <> 'string'
+                    OR value->>key !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+                    THEN RETURN false; END IF;
+            END LOOP;
+            FOREACH key IN ARRAY ARRAY['request_sha256','payload_sha256'] LOOP
+                IF value ? key AND (jsonb_typeof(value->key) <> 'string'
+                    OR value->>key !~ '^[0-9a-f]{64}$') THEN RETURN false; END IF;
+            END LOOP;
+            FOREACH key IN ARRAY ARRAY[
+                'evidence_count','event_sequence','permission_revision','latency_ms'
+            ] LOOP
+                IF value ? key AND (jsonb_typeof(value->key) <> 'number'
+                    OR value->>key !~ '^[0-9]+$' OR (value->>key)::numeric < 0)
+                    THEN RETURN false; END IF;
+            END LOOP;
+            IF value ? 'evidence_count' AND (value->>'evidence_count')::numeric > 64
+                THEN RETURN false; END IF;
+            RETURN true;
+        EXCEPTION WHEN others THEN RETURN false;
+        END $$
+        """
     )
 
 
@@ -502,7 +598,8 @@ def _create_triggers() -> None:
     op.execute(
         "CREATE FUNCTION public.enforce_fact_proposal_transition() "
         "RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
-        "BEGIN "
+        "DECLARE actor_id uuid; BEGIN "
+        "actor_id := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
         "IF OLD.id IS DISTINCT FROM NEW.id OR OLD.project_id IS DISTINCT FROM NEW.project_id "
         "OR OLD.field_key IS DISTINCT FROM NEW.field_key OR OLD.label IS DISTINCT FROM NEW.label "
         "OR OLD.value_type IS DISTINCT FROM NEW.value_type OR OLD.value IS DISTINCT FROM NEW.value "
@@ -523,6 +620,10 @@ def _create_triggers() -> None:
         "AND NEW.status IN ('pending','expired')) OR (OLD.status = 'pending' "
         "AND NEW.status IN ('confirmed','rejected','withdrawn','conflicted'))) THEN "
         "RAISE EXCEPTION 'invalid fact proposal status transition' USING ERRCODE = '23514'; END IF; "
+        "IF actor_id IS NOT NULL AND NEW.status IN ('confirmed','rejected','withdrawn','conflicted') "
+        "AND NEW.decision_actor_id IS DISTINCT FROM actor_id THEN "
+        "RAISE EXCEPTION 'fact proposal decision actor must be current actor' "
+        "USING ERRCODE = '23514'; END IF; "
         "NEW.updated_at := CURRENT_TIMESTAMP; RETURN NEW; END $$"
     )
     op.execute(
@@ -532,9 +633,12 @@ def _create_triggers() -> None:
     op.execute(
         "CREATE FUNCTION public.enforce_project_fact_revision() "
         "RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
-        "DECLARE proposal_base bigint; proposal_status text; BEGIN "
+        "DECLARE proposal_base bigint; proposal_status text; actor_id uuid; BEGIN "
+        "actor_id := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
         "IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'confirmed fact revisions are immutable' "
         "USING ERRCODE = '23514'; END IF; "
+        "IF actor_id IS NOT NULL AND NEW.confirmed_by_id IS DISTINCT FROM actor_id THEN "
+        "RAISE EXCEPTION 'fact revision confirmer must be current actor' USING ERRCODE = '23514'; END IF; "
         "SELECT base_revision, status INTO proposal_base, proposal_status FROM public.fact_proposals "
         "WHERE id = NEW.proposal_id AND project_id = NEW.project_id AND field_key = NEW.field_key; "
         "IF NEW.content_revision >= 1 AND "
@@ -547,6 +651,30 @@ def _create_triggers() -> None:
         "CREATE TRIGGER project_fact_revision_immutable "
         "BEFORE INSERT OR UPDATE OR DELETE ON project_fact_revisions FOR EACH ROW "
         "EXECUTE FUNCTION public.enforce_project_fact_revision()"
+    )
+    op.execute(
+        "CREATE FUNCTION public.enforce_fact_proposal_evidence_insert() "
+        "RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
+        "DECLARE actor_id uuid; proposal_proposer uuid; proposal_status text; evidence_count bigint; BEGIN "
+        "actor_id := NULLIF(current_setting('app.actor_id', true), '')::uuid; "
+        "SELECT proposer_id, status INTO proposal_proposer, proposal_status "
+        "FROM public.fact_proposals WHERE id = NEW.proposal_id AND project_id = NEW.project_id "
+        "AND source_session_id = NEW.session_id FOR UPDATE; "
+        "IF proposal_proposer IS NULL OR actor_id IS NULL OR proposal_proposer IS DISTINCT FROM actor_id THEN "
+        "RAISE EXCEPTION 'fact proposal evidence requires current proposal owner' "
+        "USING ERRCODE = '42501'; END IF; "
+        "IF proposal_status <> 'prepared' THEN "
+        "RAISE EXCEPTION 'fact proposal evidence requires prepared proposal' "
+        "USING ERRCODE = '23514'; END IF; "
+        "SELECT count(*) INTO evidence_count FROM public.fact_proposal_evidence "
+        "WHERE proposal_id = NEW.proposal_id; "
+        "IF evidence_count >= 64 THEN RAISE EXCEPTION 'fact proposal accepts at most 64 evidence rows' "
+        "USING ERRCODE = '23514'; END IF; RETURN NEW; END $$"
+    )
+    op.execute(
+        "CREATE TRIGGER fact_proposal_evidence_insert_guard "
+        "BEFORE INSERT ON fact_proposal_evidence FOR EACH ROW "
+        "EXECUTE FUNCTION public.enforce_fact_proposal_evidence_insert()"
     )
     op.execute(
         "CREATE FUNCTION public.enforce_project_fact_head() "
@@ -642,6 +770,23 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
     op.execute(
         f"GRANT EXECUTE ON FUNCTION public.xagent_fact_authorized_project_ids() TO {application_role}"
     )
+    op.execute(
+        "CREATE FUNCTION public.xagent_fact_can_add_evidence("
+        "target_proposal_id uuid, target_project_id uuid, target_session_id uuid) RETURNS boolean "
+        "LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$ "
+        "SELECT EXISTS (SELECT 1 FROM public.fact_proposals AS proposal "
+        "WHERE proposal.id = target_proposal_id AND proposal.project_id = target_project_id "
+        "AND proposal.source_session_id = target_session_id AND proposal.status = 'prepared' "
+        "AND proposal.proposer_id = NULLIF(current_setting('app.actor_id', true), '')::uuid "
+        "AND proposal.project_id IN (SELECT public.xagent_fact_authorized_project_ids())) $$"
+    )
+    op.execute(
+        "REVOKE ALL ON FUNCTION public.xagent_fact_can_add_evidence(uuid, uuid, uuid) FROM PUBLIC"
+    )
+    op.execute(
+        f"GRANT EXECUTE ON FUNCTION public.xagent_fact_can_add_evidence(uuid, uuid, uuid) "
+        f"TO {application_role}"
+    )
     for table in (
         "fact_proposals",
         "project_fact_revisions",
@@ -669,9 +814,11 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
     op.execute(
         f"CREATE POLICY fact_proposal_update ON fact_proposals FOR UPDATE TO {application_role} "
         f"USING ({scope} AND ({manager} OR proposer_id = {actor})) "
-        f"WITH CHECK ({scope} AND ({manager} OR (proposer_id = {actor} "
-        f"AND ((status = 'pending' AND decision_actor_id IS NULL) "
-        f"OR (status = 'withdrawn' AND decision_actor_id = {actor})))))"
+        f"WITH CHECK ({scope} AND ((proposer_id = {actor} AND "
+        f"((status = 'pending' AND decision_actor_id IS NULL) "
+        f"OR (status = 'withdrawn' AND decision_actor_id = {actor}))) "
+        f"OR ({manager} AND status IN ('confirmed','rejected','conflicted') "
+        f"AND decision_actor_id = {actor})))"
     )
     for table in ("project_fact_revisions", "project_fact_heads"):
         op.execute(
@@ -679,7 +826,9 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
         )
         op.execute(
             f"CREATE POLICY {table}_insert ON {table} FOR INSERT TO {application_role} "
-            f"WITH CHECK ({scope} AND {manager})"
+            f"WITH CHECK ({scope} AND {manager}"
+            + (f" AND confirmed_by_id = {actor}" if table == "project_fact_revisions" else "")
+            + ")"
         )
     op.execute(
         f"CREATE POLICY project_fact_heads_update ON project_fact_heads FOR UPDATE TO {application_role} "
@@ -692,7 +841,8 @@ def _create_rls_and_grants(application_role: str, worker_role: str) -> None:
     )
     op.execute(
         f"CREATE POLICY fact_proposal_evidence_insert ON fact_proposal_evidence "
-        f"FOR INSERT TO {application_role} WITH CHECK ({scope})"
+        f"FOR INSERT TO {application_role} WITH CHECK ({scope} AND "
+        "public.xagent_fact_can_add_evidence(proposal_id, project_id, session_id))"
     )
     op.execute(
         f"CREATE POLICY fact_proposal_receipt_select ON fact_proposal_receipts "
@@ -785,7 +935,8 @@ def downgrade() -> None:
         "OR EXISTS (SELECT 1 FROM public.fact_proposal_evidence) "
         "OR EXISTS (SELECT 1 FROM public.fact_proposal_receipts) "
         "OR EXISTS (SELECT 1 FROM public.fact_operation_idempotency) "
-        "OR EXISTS (SELECT 1 FROM public.business_outbox) THEN "
+        "OR EXISTS (SELECT 1 FROM public.business_outbox) "
+        "OR EXISTS (SELECT 1 FROM public.audit_events WHERE action LIKE 'fact.%') THEN "
         "RAISE EXCEPTION 'cannot downgrade fact approval with stored data'; END IF; END $$"
     )
     op.drop_constraint("ck_audit_event_details", "audit_events", type_="check")
@@ -806,6 +957,10 @@ def downgrade() -> None:
     op.execute(
         f"REVOKE ALL ON FUNCTION public.xagent_fact_authorized_project_ids() FROM {application_role}"
     )
+    op.execute(
+        f"REVOKE ALL ON FUNCTION public.xagent_fact_can_add_evidence(uuid, uuid, uuid) "
+        f"FROM {application_role}"
+    )
     for table, policies in (
         ("fact_operation_idempotency", ("fact_operation_idempotency_insert", "fact_operation_idempotency_select")),
         ("business_outbox", ("business_outbox_update", "business_outbox_insert", "business_outbox_select")),
@@ -819,6 +974,7 @@ def downgrade() -> None:
             op.execute(f"DROP POLICY {policy} ON {table}")
         op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
+    op.execute("DROP FUNCTION public.xagent_fact_can_add_evidence(uuid, uuid, uuid)")
     op.execute("DROP FUNCTION public.xagent_fact_authorized_project_ids()")
     op.execute("DROP TRIGGER business_outbox_terminal_proposal ON business_outbox")
     op.execute("DROP TRIGGER fact_proposal_terminal_outbox ON fact_proposals")
@@ -827,6 +983,8 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION public.enforce_business_outbox_consumption()")
     op.execute("DROP TRIGGER fact_proposal_receipt_consumption ON fact_proposal_receipts")
     op.execute("DROP FUNCTION public.enforce_fact_receipt_consumption()")
+    op.execute("DROP TRIGGER fact_proposal_evidence_insert_guard ON fact_proposal_evidence")
+    op.execute("DROP FUNCTION public.enforce_fact_proposal_evidence_insert()")
     op.execute("DROP TRIGGER project_fact_head_advance ON project_fact_heads")
     op.execute("DROP FUNCTION public.enforce_project_fact_head()")
     op.execute("DROP TRIGGER project_fact_revision_immutable ON project_fact_revisions")
