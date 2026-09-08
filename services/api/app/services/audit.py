@@ -130,6 +130,8 @@ def fact_audit_details(
     evidence_count: int | None = None,
     status: str | None = None,
     event_sequence: int | None = None,
+    fact_revision_id: UUID | None = None,
+    outbox_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Build redacted fields accepted by the action-specific Fact audit validator."""
     details: dict[str, Any] = {
@@ -148,6 +150,10 @@ def fact_audit_details(
         "evidence_count": evidence_count,
         "status": status,
         "event_sequence": event_sequence,
+        "fact_revision_id": (
+            str(fact_revision_id) if fact_revision_id is not None else None
+        ),
+        "outbox_id": str(outbox_id) if outbox_id is not None else None,
     }
     details.update({key: value for key, value in optional.items() if value is not None})
     return details

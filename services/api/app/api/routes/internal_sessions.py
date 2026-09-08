@@ -34,6 +34,8 @@ from app.services.xagent_sessions import (
     require_protocol_version,
     write_fact_append_admission_failure,
     write_fact_append_cancellation,
+    write_fact_outbox_append_cancellation,
+    write_fact_outbox_append_failure,
     write_append_admission_denial,
 )
 
@@ -128,7 +130,7 @@ class AppendRequest(VersionedRequest):
     )
     fact_outbox_events: list[FactOutboxAttachment] = Field(
         default_factory=list,
-        max_length=100,
+        max_length=32,
     )
 
 
@@ -345,6 +347,7 @@ async def append_route(
     ]
     retrieval_append = bool(attachments) or any(_is_retrieval_event(event) for event in events)
     fact_append = bool(fact_attachments)
+    fact_outbox_append = bool(fact_outbox_events)
     digest = request_hash(body)
     try:
         async with context.session.begin_nested():
@@ -361,7 +364,7 @@ async def append_route(
                 digest=digest,
             )
     except asyncio.CancelledError:
-        if fact_append:
+        if fact_append or fact_outbox_append:
             try:
                 bind = context.session.bind
                 if bind is not None:
@@ -378,18 +381,40 @@ async def append_route(
                                     role=context.principal.role,
                                 ),
                             )
-                            await write_fact_append_cancellation(
-                                audit_session,
-                                context.principal,
-                                session_id=session_id,
-                                attachments=fact_attachments,
-                                request_sha256=digest,
-                            )
+                            if fact_append:
+                                await write_fact_append_cancellation(
+                                    audit_session,
+                                    context.principal,
+                                    session_id=session_id,
+                                    attachments=fact_attachments,
+                                    request_sha256=digest,
+                                )
+                            if fact_outbox_append:
+                                await write_fact_outbox_append_cancellation(
+                                    audit_session,
+                                    context.principal,
+                                    session_id=session_id,
+                                    attachments=fact_outbox_events,
+                                    request_sha256=digest,
+                                )
             except Exception as cancelled_audit_failure:
                 # The original cancellation remains authoritative if its audit cannot commit.
                 del cancelled_audit_failure
         raise
     except SessionServiceError as error:
+        if fact_outbox_append and error.code is SessionErrorCode.NOT_FOUND:
+            try:
+                await write_fact_outbox_append_failure(
+                    context.session,
+                    context.principal,
+                    session_id=session_id,
+                    attachments=fact_outbox_events,
+                    request_sha256=digest,
+                )
+            except Exception:
+                return _error_response(
+                    SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
+                )
         if fact_append and error.code in {
             SessionErrorCode.FACT_RECEIPT_INVALID,
             SessionErrorCode.FACT_RECEIPT_EXPIRED,

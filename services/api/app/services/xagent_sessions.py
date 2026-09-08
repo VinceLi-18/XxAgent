@@ -10,7 +10,13 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.facts import FactProposal, FactProposalReceipt
+from app.models.facts import (
+    BusinessOutbox,
+    FactProposal,
+    FactProposalReceipt,
+    FactProposalStatus,
+    ProjectFactRevision,
+)
 from app.models.project import Project, ProjectAction
 from app.models.retrieval import (
     XAgentAdmittedEvidence,
@@ -29,6 +35,7 @@ from app.services.fact_receipts import (
     verify_receipt as verify_fact_receipt,
 )
 from app.services.fact_validation import canonical_sha256
+from app.services.facts import fact_decision_event
 from app.services.retrieval import (
     RetrievalCandidate,
     RetrievalError,
@@ -835,6 +842,26 @@ class _AdmittedFact:
     audit_id: UUID
 
 
+@dataclass
+class _PendingFactOutbox:
+    """One locked decision projection ready for atomic Session admission."""
+
+    sequence: int
+    outbox: BusinessOutbox
+    proposal: FactProposal
+    revision: ProjectFactRevision | None
+    digest: str
+    canonical_payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _AdmittedFactOutbox:
+    """Canonical decision event fields produced by Outbox admission."""
+
+    payload: dict[str, Any]
+    audit_id: UUID
+
+
 @dataclass(frozen=True)
 class _CitationEvidence:
     admission_sequence: int
@@ -1021,6 +1048,129 @@ async def _load_fact_admissions(
                 canonical_payload=canonical_payload,
             )
         )
+    return pending
+
+
+def _fact_outbox_payload(
+    event: dict[str, Any],
+    *,
+    sequence: int,
+    expected_event: dict[str, object],
+) -> dict[str, Any]:
+    """Validate and canonicalize one closed Outbox decision Session event."""
+    try:
+        payload = event["payload"]
+        if (
+            event["event_type"] != "fact/proposal-decided"
+            or event["schema_version"] != 1
+            or event.get("tool_call_id") is not None
+            or set(payload) != {"seq", "time", "type", "surfaceOp", "data"}
+            or payload["seq"] != sequence
+            or payload["type"] != "fact/proposal-decided"
+            or payload["surfaceOp"] != "append"
+            or isinstance(payload["time"], bool)
+            or not isinstance(payload["time"], int)
+            or payload["time"] < 0
+            or payload["data"] != expected_event["data"]
+        ):
+            raise ValueError
+        return {
+            "seq": sequence,
+            "time": payload["time"],
+            "type": "fact/proposal-decided",
+            "surfaceOp": "append",
+            "data": expected_event["data"],
+        }
+    except (KeyError, TypeError, ValueError):
+        raise SessionServiceError(SessionErrorCode.NOT_FOUND) from None
+
+
+async def _load_fact_outbox_admissions(
+    session: AsyncSession,
+    item: XAgentSession,
+    *,
+    expected_sequence: int,
+    events: list[dict[str, Any]],
+    attachments: list[dict[str, Any]],
+) -> list[_PendingFactOutbox]:
+    """Lock and validate every Outbox identity paired with this append window."""
+    if attachments and (item.visibility != "project" or item.project_id is None):
+        raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+    attached_sequences = [attachment["event_sequence"] for attachment in attachments]
+    if len(set(attached_sequences)) != len(attached_sequences):
+        raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+    fact_sequences = {
+        expected_sequence + offset
+        for offset, event in enumerate(events, start=1)
+        if event.get("event_type") == "fact/proposal-decided"
+        or (
+            isinstance(event.get("payload"), dict)
+            and event["payload"].get("type") == "fact/proposal-decided"
+        )
+    }
+    if set(attached_sequences) != fact_sequences:
+        raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+    if not attachments:
+        return []
+
+    outbox_ids = [_canonical_uuid(attachment["outbox_id"]) for attachment in attachments]
+    if len(set(outbox_ids)) != len(outbox_ids):
+        raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+    rows = list((await session.execute(
+        select(BusinessOutbox, FactProposal, ProjectFactRevision)
+        .join(FactProposal, FactProposal.id == BusinessOutbox.aggregate_id)
+        .outerjoin(
+            ProjectFactRevision,
+            ProjectFactRevision.proposal_id == FactProposal.id,
+        )
+        .where(
+            BusinessOutbox.id.in_(outbox_ids),
+            BusinessOutbox.source_session_id == item.id,
+        )
+        .with_for_update(of=BusinessOutbox)
+    )).tuples().all())
+    by_id = {outbox.id: (outbox, proposal, revision) for outbox, proposal, revision in rows}
+    pending: list[_PendingFactOutbox] = []
+    for attachment in sorted(attachments, key=lambda value: value["event_sequence"]):
+        sequence = attachment["event_sequence"]
+        offset = sequence - expected_sequence - 1
+        outbox_id = _canonical_uuid(attachment["outbox_id"])
+        row = by_id.get(outbox_id)
+        if offset < 0 or offset >= len(events) or row is None:
+            raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+        outbox, proposal, revision = row
+        expected_event = fact_decision_event(proposal, revision=revision)
+        digest = canonical_sha256(expected_event)
+        if (
+            outbox.consumed_at is not None
+            or outbox.aggregate_kind != "fact_proposal"
+            or outbox.aggregate_id != proposal.id
+            or outbox.project_id != item.project_id
+            or proposal.project_id != item.project_id
+            or proposal.source_session_id != item.id
+            or proposal.status not in {
+                FactProposalStatus.CONFIRMED.value,
+                FactProposalStatus.REJECTED.value,
+                FactProposalStatus.WITHDRAWN.value,
+                FactProposalStatus.CONFLICTED.value,
+            }
+            or (proposal.status == FactProposalStatus.CONFIRMED.value) != (revision is not None)
+            or outbox.payload_sha256 != attachment["payload_hash"]
+            or outbox.payload_sha256 != digest
+        ):
+            raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+        pending.append(_PendingFactOutbox(
+            sequence=sequence,
+            outbox=outbox,
+            proposal=proposal,
+            revision=revision,
+            digest=digest,
+            canonical_payload=_fact_outbox_payload(
+                events[offset],
+                sequence=sequence,
+                expected_event=expected_event,
+            ),
+        ))
     return pending
 
 
@@ -1328,6 +1478,52 @@ async def _admit_fact_receipts(
             payload=admission.canonical_payload,
             audit_id=audit.id,
         )
+    return admitted
+
+
+async def _admit_fact_outbox(
+    session: AsyncSession,
+    principal: Principal,
+    item: XAgentSession,
+    pending: list[_PendingFactOutbox],
+    *,
+    request_sha256: str,
+) -> dict[int, _AdmittedFactOutbox]:
+    """Consume decisions only while their canonical Session events are admitted."""
+    admitted: dict[int, _AdmittedFactOutbox] = {}
+    for admission in pending:
+        audit = await write_audit_event(
+            session,
+            principal.actor_id,
+            "fact.outbox.project",
+            "business_outbox",
+            admission.outbox.id,
+            uuid4(),
+            "projected",
+            details=fact_audit_details(
+                project_id=admission.outbox.project_id,
+                session_id=item.id,
+                proposal_id=admission.proposal.id,
+                fact_revision_id=(
+                    admission.revision.id if admission.revision is not None else None
+                ),
+                outbox_id=admission.outbox.id,
+                event_sequence=admission.sequence,
+                operation="outbox_append",
+                request_sha256=request_sha256,
+                payload_sha256=admission.digest,
+                result="projected",
+                status=admission.proposal.status,
+                latency_ms=0,
+            ),
+        )
+        admission.outbox.consumed_at = datetime.now(UTC)
+        admission.outbox.consumed_event_sequence = admission.sequence
+        admitted[admission.sequence] = _AdmittedFactOutbox(
+            payload=admission.canonical_payload,
+            audit_id=audit.id,
+        )
+    await session.flush()
     return admitted
 
 
@@ -1894,6 +2090,157 @@ async def write_fact_append_cancellation(
     )
 
 
+async def write_fact_outbox_append_failure(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    session_id: UUID,
+    attachments: list[dict[str, Any]],
+    request_sha256: str,
+) -> None:
+    """Record a non-disclosing Outbox admission denial."""
+    if not attachments:
+        return
+    await write_audit_event(
+        session,
+        principal.actor_id,
+        "fact.authorization_denied",
+        "xagent_session",
+        session_id,
+        uuid4(),
+        SessionErrorCode.NOT_FOUND.value,
+        details=fact_audit_details(
+            session_id=session_id,
+            event_sequence=attachments[0]["event_sequence"],
+            operation="outbox_append",
+            request_sha256=request_sha256,
+            payload_sha256=attachments[0]["payload_hash"],
+            permission_revision=principal.permission_revision,
+            result=SessionErrorCode.NOT_FOUND.value,
+            latency_ms=0,
+        ),
+    )
+
+
+async def write_fact_outbox_append_cancellation(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    session_id: UUID,
+    attachments: list[dict[str, Any]],
+    request_sha256: str,
+) -> None:
+    """Record cancelled Outbox delivery without acknowledging any decision event."""
+    if not attachments:
+        return
+    outbox_ids = [_canonical_uuid(value["outbox_id"]) for value in attachments]
+    rows = list((await session.execute(
+        select(BusinessOutbox, FactProposal, ProjectFactRevision)
+        .join(FactProposal, FactProposal.id == BusinessOutbox.aggregate_id)
+        .outerjoin(
+            ProjectFactRevision,
+            ProjectFactRevision.proposal_id == FactProposal.id,
+        )
+        .where(
+            BusinessOutbox.id.in_(outbox_ids),
+            BusinessOutbox.source_session_id == session_id,
+        )
+    )).tuples().all())
+    by_id = {row.id: (row, proposal, revision) for row, proposal, revision in rows}
+    for attachment in attachments:
+        outbox_id = _canonical_uuid(attachment["outbox_id"])
+        matched = by_id.get(outbox_id)
+        exact = matched is not None and matched[0].payload_sha256 == attachment["payload_hash"]
+        outbox, proposal, revision = matched if exact else (None, None, None)
+        await write_audit_event(
+            session,
+            principal.actor_id,
+            "fact.cancel",
+            "business_outbox" if outbox is not None else "xagent_session",
+            outbox.id if outbox is not None else session_id,
+            uuid4(),
+            "cancelled",
+            details=fact_audit_details(
+                project_id=outbox.project_id if outbox is not None else None,
+                session_id=session_id,
+                proposal_id=proposal.id if proposal is not None else None,
+                fact_revision_id=revision.id if revision is not None else None,
+                outbox_id=outbox.id if outbox is not None else None,
+                event_sequence=attachment["event_sequence"],
+                operation="outbox_append",
+                request_sha256=request_sha256,
+                payload_sha256=attachment["payload_hash"],
+                permission_revision=principal.permission_revision,
+                result="cancelled",
+                status=proposal.status if proposal is not None else None,
+                latency_ms=0,
+            ),
+        )
+
+
+async def _write_fact_outbox_replay(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    session_id: UUID,
+    attachments: list[dict[str, Any]],
+    request_sha256: str,
+) -> None:
+    """Audit an exact committed Session append replay for its consumed Outbox rows."""
+    if not attachments:
+        return
+    outbox_ids = [_canonical_uuid(value["outbox_id"]) for value in attachments]
+    rows = list((await session.execute(
+        select(BusinessOutbox, FactProposal, ProjectFactRevision)
+        .join(FactProposal, FactProposal.id == BusinessOutbox.aggregate_id)
+        .outerjoin(
+            ProjectFactRevision,
+            ProjectFactRevision.proposal_id == FactProposal.id,
+        )
+        .where(
+            BusinessOutbox.id.in_(outbox_ids),
+            BusinessOutbox.source_session_id == session_id,
+        )
+    )).tuples().all())
+    by_id = {row.id: (row, proposal, revision) for row, proposal, revision in rows}
+    for attachment in attachments:
+        outbox_id = _canonical_uuid(attachment["outbox_id"])
+        matched = by_id.get(outbox_id)
+        if matched is None:
+            raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+        outbox, proposal, revision = matched
+        if (
+            outbox.consumed_at is None
+            or outbox.consumed_event_sequence != attachment["event_sequence"]
+            or outbox.payload_sha256 != attachment["payload_hash"]
+        ):
+            raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+        await write_audit_event(
+            session,
+            principal.actor_id,
+            "fact.replay",
+            "business_outbox",
+            outbox.id,
+            uuid4(),
+            "replayed",
+            details=fact_audit_details(
+                project_id=outbox.project_id,
+                session_id=session_id,
+                proposal_id=proposal.id,
+                fact_revision_id=revision.id if revision is not None else None,
+                outbox_id=outbox.id,
+                event_sequence=attachment["event_sequence"],
+                operation="outbox_append",
+                request_sha256=request_sha256,
+                payload_sha256=outbox.payload_sha256,
+                permission_revision=principal.permission_revision,
+                result="replayed",
+                status=proposal.status,
+                latency_ms=0,
+            ),
+        )
+
+
 async def append_events(
     session: AsyncSession,
     principal: Principal,
@@ -1917,9 +2264,14 @@ async def append_events(
         digest=digest,
     )
     if replay is not None:
+        await _write_fact_outbox_replay(
+            session,
+            principal,
+            session_id=session_id,
+            attachments=fact_outbox_events,
+            request_sha256=digest,
+        )
         return replay
-    if fact_outbox_events:
-        raise SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE)
     await _reject_consumed_receipt_reuse(session, retrieval_receipts)
     if item.last_event_sequence != expected_sequence:
         raise SessionServiceError(SessionErrorCode.SEQUENCE_CONFLICT)
@@ -1939,6 +2291,13 @@ async def append_events(
         events=events,
         attachments=fact_proposal_receipts,
     )
+    pending_fact_outbox = await _load_fact_outbox_admissions(
+        session,
+        item,
+        expected_sequence=expected_sequence,
+        events=events,
+        attachments=fact_outbox_events,
+    )
     if pending:
         item = await _finalize_append_authorization(session, principal, item, pending)
     admitted = await _admit_retrieval_receipts(
@@ -1954,6 +2313,13 @@ async def append_events(
         pending_facts,
         request_sha256=digest,
     )
+    admitted_fact_outbox = await _admit_fact_outbox(
+        session,
+        principal,
+        item,
+        pending_fact_outbox,
+        request_sha256=digest,
+    )
     provenance, answer_tool_calls = await _cited_answer_provenance(
         session,
         item,
@@ -1965,6 +2331,7 @@ async def append_events(
         sequence = expected_sequence + offset
         admission = admitted.get(sequence)
         fact_admission = admitted_facts.get(sequence)
+        fact_outbox_admission = admitted_fact_outbox.get(sequence)
         session.add(
             XAgentSessionEvent(
                 session_id=session_id,
@@ -1977,7 +2344,11 @@ async def append_events(
                     else (
                         fact_admission.payload
                         if fact_admission is not None
-                        else event["payload"]
+                        else (
+                            fact_outbox_admission.payload
+                            if fact_outbox_admission is not None
+                            else event["payload"]
+                        )
                     )
                 ),
                 actor_id=principal.actor_id,
@@ -1993,7 +2364,15 @@ async def append_events(
                 audit_id=(
                     admission.audit_id
                     if admission is not None
-                    else (fact_admission.audit_id if fact_admission is not None else None)
+                    else (
+                        fact_admission.audit_id
+                        if fact_admission is not None
+                        else (
+                            fact_outbox_admission.audit_id
+                            if fact_outbox_admission is not None
+                            else None
+                        )
+                    )
                 ),
             )
         )
