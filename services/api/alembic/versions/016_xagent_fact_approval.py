@@ -480,6 +480,9 @@ def _create_fact_audit_validator() -> None:
             key text;
             allowed_keys text[];
             allowed_operations text[];
+            allowed_results text[];
+            allowed_statuses text[];
+            status_required boolean;
         BEGIN
             IF jsonb_typeof(value) <> 'object' THEN RETURN false; END IF;
             CASE action_name
@@ -488,44 +491,71 @@ def _create_fact_audit_validator() -> None:
                         'operation','request_sha256','payload_sha256','permission_revision',
                         'evidence_count','result','status','latency_ms'];
                     allowed_operations := ARRAY['prepare'];
+                    allowed_results := ARRAY['prepared'];
+                    allowed_statuses := ARRAY['prepared'];
+                    status_required := true;
                 WHEN 'fact.admit' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','tool_call_id',
                         'event_sequence','operation','request_sha256','payload_sha256',
                         'permission_revision','evidence_count','result','status','latency_ms'];
                     allowed_operations := ARRAY['admit'];
+                    allowed_results := ARRAY['pending'];
+                    allowed_statuses := ARRAY['pending'];
+                    status_required := true;
                 WHEN 'fact.expire' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','operation',
                         'request_sha256','payload_sha256','result','status','latency_ms'];
                     allowed_operations := ARRAY['expire'];
+                    allowed_results := ARRAY['expired'];
+                    allowed_statuses := ARRAY['expired'];
+                    status_required := true;
                 WHEN 'fact.withdraw' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','outbox_id',
                         'operation','request_sha256','payload_sha256','result','status','latency_ms'];
                     allowed_operations := ARRAY['withdraw'];
+                    allowed_results := ARRAY['withdrawn'];
+                    allowed_statuses := ARRAY['withdrawn'];
+                    status_required := true;
                 WHEN 'fact.approve' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
                         'outbox_id','operation','request_sha256','payload_sha256','evidence_count',
                         'result','status','latency_ms'];
                     allowed_operations := ARRAY['approve'];
+                    allowed_results := ARRAY['confirmed'];
+                    allowed_statuses := ARRAY['confirmed'];
+                    status_required := true;
                 WHEN 'fact.reject' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','outbox_id',
                         'operation','request_sha256','payload_sha256','evidence_count','result',
                         'status','latency_ms'];
                     allowed_operations := ARRAY['reject'];
+                    allowed_results := ARRAY['rejected'];
+                    allowed_statuses := ARRAY['rejected'];
+                    status_required := true;
                 WHEN 'fact.conflict' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','outbox_id',
                         'operation','request_sha256','payload_sha256','evidence_count','result',
                         'status','latency_ms'];
                     allowed_operations := ARRAY['approve'];
+                    allowed_results := ARRAY['conflicted'];
+                    allowed_statuses := ARRAY['conflicted'];
+                    status_required := true;
                 WHEN 'fact.confirm' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
                         'outbox_id','operation','request_sha256','payload_sha256','evidence_count',
                         'result','status','latency_ms'];
                     allowed_operations := ARRAY['approve'];
+                    allowed_results := ARRAY['confirmed'];
+                    allowed_statuses := ARRAY['confirmed'];
+                    status_required := true;
                 WHEN 'fact.outbox.project' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
                         'outbox_id','event_sequence','operation','payload_sha256','result','status',
                         'request_sha256','latency_ms'];
                     allowed_operations := ARRAY['outbox_append'];
+                    allowed_results := ARRAY['projected'];
+                    allowed_statuses := ARRAY['confirmed','rejected','withdrawn','conflicted'];
+                    status_required := true;
                 WHEN 'fact.replay' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
                         'outbox_id','tool_call_id','event_sequence','operation','request_sha256',
@@ -533,6 +563,10 @@ def _create_fact_audit_validator() -> None:
                         'latency_ms'];
                     allowed_operations := ARRAY['prepare','admit','expire','withdraw','approve',
                         'reject','outbox_append'];
+                    allowed_results := ARRAY['replayed'];
+                    allowed_statuses := ARRAY[
+                        'prepared','pending','confirmed','rejected','withdrawn','conflicted','expired'];
+                    status_required := true;
                 WHEN 'fact.cancel' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
                         'outbox_id','tool_call_id','event_sequence','operation','request_sha256',
@@ -540,31 +574,34 @@ def _create_fact_audit_validator() -> None:
                         'latency_ms'];
                     allowed_operations := ARRAY['prepare','admit','expire','withdraw','approve',
                         'reject','outbox_append'];
+                    allowed_results := ARRAY['cancelled'];
+                    allowed_statuses := ARRAY[
+                        'prepared','pending','confirmed','rejected','withdrawn','conflicted','expired'];
+                    status_required := true;
                 WHEN 'fact.authorization_denied' THEN
                     allowed_keys := ARRAY['project_id','session_id','proposal_id','fact_revision_id',
                         'outbox_id','tool_call_id','event_sequence','operation','request_sha256',
-                        'payload_sha256','permission_revision','evidence_count','result','status',
-                        'latency_ms'];
+                        'payload_sha256','permission_revision','evidence_count','result','latency_ms'];
                     allowed_operations := ARRAY['prepare','admit','expire','withdraw','approve',
                         'reject','outbox_append'];
+                    allowed_results := ARRAY['not-found','stale-permission'];
+                    allowed_statuses := ARRAY[]::text[];
+                    status_required := false;
                 ELSE RETURN false;
             END CASE;
+            IF allowed_keys IS NULL OR allowed_operations IS NULL OR allowed_results IS NULL
+                OR allowed_statuses IS NULL OR status_required IS NULL THEN RETURN false; END IF;
             IF value - allowed_keys <> '{}'::jsonb
                 OR NOT value ?& ARRAY['operation','result','latency_ms']
                 OR jsonb_typeof(value->'operation') <> 'string'
                 OR (value->>'operation') <> ALL(allowed_operations)
                 OR jsonb_typeof(value->'result') <> 'string'
-                OR (value->>'result') <> ALL(ARRAY[
-                    'prepared','pending','expired','withdrawn','confirmed','rejected','conflicted',
-                    'projected','replayed','cancelled','allowed','denied','fact-input-invalid',
-                    'fact-evidence-invalid','fact-session-invalid','fact-receipt-invalid',
-                    'fact-receipt-expired','fact-revision-conflict','fact-already-decided','not-found',
-                    'stale-permission','idempotency-conflict','service-unavailable'
-                ]) THEN RETURN false; END IF;
-            IF value ? 'status' AND (jsonb_typeof(value->'status') <> 'string'
-                OR (value->>'status') <> ALL(ARRAY[
-                    'prepared','pending','confirmed','rejected','withdrawn','conflicted','expired'
-                ])) THEN RETURN false; END IF;
+                OR (value->>'result') <> ALL(allowed_results) THEN RETURN false; END IF;
+            IF status_required THEN
+                IF NOT value ? 'status' OR jsonb_typeof(value->'status') <> 'string'
+                    OR (value->>'status') <> ALL(allowed_statuses) THEN RETURN false; END IF;
+            ELSIF value ? 'status' THEN RETURN false;
+            END IF;
             IF value ? 'tool_call_id' AND (jsonb_typeof(value->'tool_call_id') <> 'string'
                 OR value->>'tool_call_id' !~ '^call-[A-Za-z0-9-]{1,120}$') THEN RETURN false; END IF;
             FOREACH key IN ARRAY ARRAY[

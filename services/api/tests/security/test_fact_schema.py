@@ -803,6 +803,62 @@ async def test_fact_audit_validator_rejects_secret_like_scalar_values(
 @pytest.mark.parametrize(
     ("action", "operation", "result", "status"),
     [
+        ("fact.prepare", "prepare", "confirmed", "confirmed"),
+        ("fact.prepare", "prepare", "prepared", "confirmed"),
+        ("fact.prepare", "prepare", "prepared", None),
+        ("fact.replay", "prepare", "cancelled", "prepared"),
+        ("fact.replay", "prepare", "replayed", None),
+        ("fact.cancel", "prepare", "replayed", "prepared"),
+        ("fact.authorization_denied", "approve", "confirmed", None),
+        ("fact.authorization_denied", "approve", "not-found", "prepared"),
+    ],
+)
+async def test_fact_audit_validator_rejects_action_incompatible_outcomes(
+    seeded_database: AsyncEngine,
+    alice,
+    action: str,
+    operation: str,
+    result: str,
+    status: str | None,
+) -> None:
+    details: dict[str, object] = {
+        "project_id": str(UUID(int=501)),
+        "session_id": str(UUID(int=502)),
+        "proposal_id": str(UUID(int=503)),
+        "operation": operation,
+        "request_sha256": "a" * 64,
+        "payload_sha256": "b" * 64,
+        "result": result,
+        "latency_ms": 4,
+    }
+    if status is not None:
+        details["status"] = status
+
+    with pytest.raises(IntegrityError, match="ck_audit_event_details"):
+        async with seeded_database.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO audit_events "
+                    "(id, actor_id, action, resource_type, resource_id, request_id, result, details) "
+                    "VALUES (:id, :actor, :action, 'fact_proposal', :resource, :request, "
+                    ":result, CAST(:details AS jsonb))"
+                ),
+                {
+                    "id": uuid4(),
+                    "actor": alice.id,
+                    "action": action,
+                    "resource": UUID(int=503),
+                    "request": uuid4(),
+                    "result": result,
+                    "details": json.dumps(details),
+                },
+            )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("action", "operation", "result", "status"),
+    [
         ("fact.prepare", "prepare", "prepared", "prepared"),
         ("fact.admit", "admit", "pending", "pending"),
         ("fact.expire", "expire", "expired", "expired"),
@@ -812,9 +868,16 @@ async def test_fact_audit_validator_rejects_secret_like_scalar_values(
         ("fact.conflict", "approve", "conflicted", "conflicted"),
         ("fact.confirm", "approve", "confirmed", "confirmed"),
         ("fact.outbox.project", "outbox_append", "projected", "confirmed"),
+        ("fact.outbox.project", "outbox_append", "projected", "rejected"),
+        ("fact.outbox.project", "outbox_append", "projected", "withdrawn"),
+        ("fact.outbox.project", "outbox_append", "projected", "conflicted"),
         ("fact.replay", "prepare", "replayed", "prepared"),
+        ("fact.replay", "admit", "replayed", "pending"),
+        ("fact.replay", "approve", "replayed", "conflicted"),
         ("fact.cancel", "prepare", "cancelled", "prepared"),
+        ("fact.cancel", "approve", "cancelled", "pending"),
         ("fact.authorization_denied", "approve", "not-found", None),
+        ("fact.authorization_denied", "approve", "stale-permission", None),
     ],
 )
 async def test_fact_audit_validator_accepts_planned_action_schemas(
