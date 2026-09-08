@@ -22,7 +22,7 @@ Phase 4B 为 `xagent-business` 增加首个受治理的业务写操作：项目 
 4. 提案会结束当前工具操作，但不会阻塞 Turn 等待审核者。审核是持久的，可以从另一个 Browser 或在重启后完成。
 5. 审批在同一个 FastAPI 事务中确认 Fact revision。纯数据库确认没有异步 `executing` 状态。
 6. 审批不会启动 Agent Turn。决定会在来源 Session 的下一次模型请求前进入该 Session，也可以通过事实 UI 查看。
-7. 提案证据可选。没有 citation 证据的提案必须包含非空依据说明，并始终明显标记为没有资料证据。
+7. 提案证据可选，每项提案最多接受 64 个不重复 citation ID。没有 citation 证据的提案必须包含非空依据说明，并始终明显标记为没有资料证据。
 8. 事实采用类型化项目字段，而不是任意散文陈述。
 9. 乐观 revision 比较阻止陈旧提案覆盖较新的已确认值。
 10. 命名空间统一、文档生成、导出和外部系统写入仍是独立工作。
@@ -66,7 +66,7 @@ type ProjectFactValue =
   | { readonly type: 'date'; readonly value: string }
 ```
 
-日期采用精确 `YYYY-MM-DD`。数字必须是有限 JSON 数字。文本、标签、字段键和依据说明均有明确 UTF-8 字节上限。`field_key` 是由小写片段及 `.`、`_`、`-` 分隔符组成的稳定 ASCII 标识，不是面向用户的标题。
+日期采用精确 `YYYY-MM-DD`。数字必须是有限 JSON 数字。文本值最多 16 KiB UTF-8，标签最多 255 UTF-8 字节，字段键最多 128 ASCII 字节，依据说明、驳回原因和可选决定说明各最多 4 KiB UTF-8。`field_key` 匹配 `^[a-z0-9]+(?:[._-][a-z0-9]+)*$`，是稳定标识而不是面向用户的标题。
 
 ### 4.2 PostgreSQL 关系
 
@@ -126,7 +126,7 @@ interface ProposeFactInput {
 
 工具使用服务凭据、用户 token 和一份绑定精确 actor、Session、项目、工具调用、工具名称、permission revision、过期时间及 nonce 的新委托，向 FastAPI 发送有界请求。FastAPI 在 RLS 下重新验证每个字段和当前权限。
 
-FastAPI 首先创建或重放一个不可变 `prepared` 提案，并返回最小公开结果和不透明入账收据。此时审核查询看不到该提案。证据 ID 存在时必须通过来源 Session 的持久 admitted-evidence 关系解析，并属于其固定项目。没有证据 ID 时必须提供有界非空依据说明。
+FastAPI 首先创建或重放一个具有五分钟入账期限的不可变 `prepared` 提案，并返回最小公开结果和不透明入账收据。此时审核查询看不到该提案。证据 ID 存在时必须通过来源 Session 的持久 admitted-evidence 关系解析，并属于其固定项目。没有证据 ID 时必须提供有界非空依据说明。
 
 匹配的公开 `tool/result` 只有经过 Session append 事务后才具权威性。append 校验准备收据、工具调用、公开 payload hash、Session、项目、actor 和来源事件 sequence，然后原子地把提案改为 `pending` 并消费收据。被取消、过期、畸形或失败的 append 不会暴露可审核提案。
 
@@ -152,7 +152,7 @@ Browser 调用通过已认证 Host 连接和现有 CSRF header provider 使用�
 
 决定事件包含提案 ID、项目字段身份、终态状态、可选已确认 Fact revision 身份和有界人工决定原因。它不包含事实证据正文、资料 URL、收据、token 或 secret。它的模型投影只在之后由用户发起的 Turn 中可用；收到事件绝不会自动启动 Turn。
 
-Outbox 按创建顺序排序，并以稳定 ID 处理相同时间。页面上限限制内存和 append 大小。畸形或未授权行会失败关闭且不会被确认。
+Outbox 按创建顺序排序，并以稳定 ID 处理相同时间。事实与提案列表请求每页最多返回 100 行，Outbox 每次最多拉取 32 行，以限制内存和 append 大小。畸形或未授权行会失败关闭且不会被确认。
 
 ## 9. 事实与审核 UI
 

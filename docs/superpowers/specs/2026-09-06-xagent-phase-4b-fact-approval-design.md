@@ -22,7 +22,7 @@ The first vertical slice deliberately owns one business object. It does not buil
 4. A proposal ends the current tool operation but does not block the Turn for a reviewer. Review is durable and may occur from another browser or after a restart.
 5. Approval confirms the Fact revision in the same FastAPI transaction. Pure database confirmation has no asynchronous `executing` state.
 6. Approval never starts an Agent Turn. The decision enters the source Session before its next model request and is otherwise visible through the Fact UI.
-7. Proposal evidence is optional. A proposal without citation evidence requires a non-empty assertion reason and remains visibly marked as having no artifact evidence.
+7. Proposal evidence is optional and accepts at most 64 distinct citation IDs. A proposal without citation evidence requires a non-empty assertion reason and remains visibly marked as having no artifact evidence.
 8. Facts are typed project fields rather than arbitrary prose statements.
 9. Optimistic revision comparison prevents a stale proposal from overwriting a newer confirmed value.
 10. Namespace unification, document generation, exports, and external-system writes remain separate work.
@@ -66,7 +66,7 @@ type ProjectFactValue =
   | { readonly type: 'date'; readonly value: string }
 ```
 
-Dates use exact `YYYY-MM-DD`. Numbers must be finite JSON numbers. Text, label, field key, and assertion reason have explicit UTF-8 byte limits. `field_key` is a stable ASCII identifier composed of lowercase segments separated by `.`, `_`, or `-`; it is not a user-visible title.
+Dates use exact `YYYY-MM-DD`. Numbers must be finite JSON numbers. A text value is at most 16 KiB UTF-8; labels are at most 255 UTF-8 bytes; field keys are at most 128 ASCII bytes; assertion reasons, rejection reasons, and optional decision notes are each at most 4 KiB UTF-8. `field_key` matches `^[a-z0-9]+(?:[._-][a-z0-9]+)*$`; it is a stable identifier rather than a user-visible title.
 
 ### 4.2 PostgreSQL relations
 
@@ -126,7 +126,7 @@ interface ProposeFactInput {
 
 The tool sends FastAPI a bounded request with the service credential, user token, and a fresh delegation bound to the exact actor, Session, project, tool call, tool name, permission revision, expiry, and nonce. FastAPI revalidates every field and current permission under RLS.
 
-FastAPI first creates or replays an immutable `prepared` proposal and returns a minimal public result plus an opaque admission receipt. The proposal is hidden from review queries at this point. Evidence IDs, when present, must resolve through the source Session's durable admitted-evidence relation and belong to its fixed project. When no evidence ID is present, a bounded non-empty assertion reason is required.
+FastAPI first creates or replays an immutable `prepared` proposal with a five-minute admission deadline and returns a minimal public result plus an opaque admission receipt. The proposal is hidden from review queries at this point. Evidence IDs, when present, must resolve through the source Session's durable admitted-evidence relation and belong to its fixed project. When no evidence ID is present, a bounded non-empty assertion reason is required.
 
 The matching public `tool/result` becomes authoritative only through the Session append transaction. Append validates the preparation receipt, tool call, public payload hash, Session, project, actor, and source event sequence, then changes the proposal to `pending` and consumes the receipt atomically. A cancelled, expired, malformed, or failed append exposes no reviewable proposal.
 
@@ -152,7 +152,7 @@ The remote append admission validates the Outbox ID, source Session, proposal, p
 
 The decision event contains proposal ID, project field identity, terminal status, optional confirmed Fact revision identity, and the bounded human decision reason. It contains no fact evidence text, artifact URL, receipt, token, or secret. Its model projection is available only on a later user-initiated Turn; receiving the event never starts a Turn automatically.
 
-Outbox order is creation order with a stable ID tie-break. A page limit bounds memory and append size. A malformed or unauthorized row fails closed and is not acknowledged.
+Outbox order is creation order with a stable ID tie-break. Fact and proposal list requests return at most 100 rows per page; an Outbox pull returns at most 32 rows so memory and append size remain bounded. A malformed or unauthorized row fails closed and is not acknowledged.
 
 ## 9. Fact and review UI
 
