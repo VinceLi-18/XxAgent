@@ -296,9 +296,12 @@ const factOutboxEventResponse = {
 }
 const factOutboxHash = retrievalPayloadHash(factOutboxEventResponse)
 
-function factCursor(itemId = factIds.proposal): string {
+function factCursor(
+  itemId = factIds.proposal,
+  createdAt = '2026-09-08T08:00:00+00:00',
+): string {
   return Buffer.from(JSON.stringify({
-    created_at: '2026-09-08T08:00:00+00:00',
+    created_at: createdAt,
     id: itemId,
     v: 1,
   })).toString('base64url')
@@ -618,6 +621,145 @@ describe('XAgent 后端客户端', () => {
     }
   })
 
+  test.each([
+    {
+      family: 'prepare',
+      body: {
+        schema_version: 1,
+        result: { proposalId: factIds.proposal, status: 'pending' },
+        receipt: 'opaque-fact-receipt',
+        payload_sha256: factPrepareHash,
+        private: true,
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.prepare('user-token', 'delegation', {
+        sessionId: factIds.session,
+        toolCallId: 'call-fact',
+        permissionRevision: 3,
+        idempotencyKey: 'prepare',
+        fieldKey: 'delivery.date',
+        label: '交付日期',
+        value: { type: 'date', value: '2026-09-30' },
+        evidenceIds: ['[资料1]'],
+      }),
+    },
+    {
+      family: 'head page',
+      body: {
+        schema_version: true,
+        items: [confirmedFactRevisionResponse],
+        next_cursor: null,
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.listHeads(
+        'user-token', factIds.project, { limit: 1 },
+      ),
+    },
+    {
+      family: 'proposal page',
+      body: {
+        schema_version: 1,
+        items: [pendingFactProposalResponse],
+        next_cursor: factCursor(factIds.proposal, '2026-09-08T08:00:00-00:00'),
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.listProposals(
+        'user-token', factIds.project, { limit: 1 },
+      ),
+    },
+    {
+      family: 'proposal detail',
+      body: {
+        schema_version: 1,
+        proposal: { ...pendingFactProposalResponse, decided_at: 'not-an-instant' },
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.proposal('user-token', factIds.proposal),
+    },
+    {
+      family: 'revision detail',
+      body: {
+        schema_version: 1,
+        revision: confirmedFactRevisionResponse,
+        history: [{ ...confirmedFactRevisionResponse, evidence: [{
+          ...factEvidenceResponse,
+          index_generation: Number.MAX_SAFE_INTEGER + 1,
+        }] }],
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.revision('user-token', factIds.revision),
+    },
+    {
+      family: 'approve decision',
+      body: { schema_version: 1, proposal_id: factIds.proposal, status: 'rejected' },
+      invoke: (client: XAgentBackendClient) => client.facts.approve(
+        'user-token', factIds.proposal, { idempotencyKey: 'approve' },
+      ),
+    },
+    {
+      family: 'reject decision',
+      body: { schema_version: 1, proposal_id: factIds.proposal, status: 'withdrawn' },
+      invoke: (client: XAgentBackendClient) => client.facts.reject(
+        'user-token', factIds.proposal, { idempotencyKey: 'reject', reason: '证据不足' },
+      ),
+    },
+    {
+      family: 'withdraw decision',
+      body: { schema_version: 1, proposal_id: factIds.proposal, status: 'rejected' },
+      invoke: (client: XAgentBackendClient) => client.facts.withdraw(
+        'user-token', factIds.proposal, { idempotencyKey: 'withdraw' },
+      ),
+    },
+    {
+      family: 'Outbox pull',
+      body: { schema_version: 1, items: [], next_cursor: null, private: true },
+      invoke: (client: XAgentBackendClient) => client.facts.pullOutbox(
+        'user-token', factIds.session, { limit: 1 },
+      ),
+    },
+    {
+      family: 'Outbox event',
+      body: {
+        schema_version: 1,
+        items: [{
+          outbox_id: factIds.outbox,
+          payload_sha256: retrievalPayloadHash({ ...factOutboxEventResponse, private: true }),
+          event: { ...factOutboxEventResponse, private: true },
+        }],
+        next_cursor: null,
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.pullOutbox(
+        'user-token', factIds.session, { limit: 1 },
+      ),
+    },
+  ])('Fact $family decoder rejects its malformed top-level response', async ({ body, invoke }) => {
+    await expect(invoke(factClient(body))).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('Fact decoders accept exact UTF-8 byte boundaries and reject one-byte or multibyte overflow', async () => {
+    const exact = {
+      ...pendingFactProposalResponse,
+      field_key: 'a'.repeat(128),
+      label: '界'.repeat(85),
+      value: { type: 'text', value: `${'界'.repeat(5_461)}a` },
+      assertion_reason: `${'界'.repeat(1_365)}a`,
+    }
+    await expect(factClient({ schema_version: 1, proposal: exact }).facts.proposal(
+      'user-token', factIds.proposal,
+    )).resolves.toMatchObject({
+      fieldKey: 'a'.repeat(128),
+      label: '界'.repeat(85),
+      value: { type: 'text', value: `${'界'.repeat(5_461)}a` },
+      assertionReason: `${'界'.repeat(1_365)}a`,
+    })
+
+    for (const proposal of [
+      { ...exact, field_key: `${'a'.repeat(128)}b` },
+      { ...exact, label: `${'界'.repeat(85)}a` },
+      { ...exact, value: { type: 'text', value: `${'界'.repeat(5_461)}ab` } },
+      { ...exact, assertion_reason: `${'界'.repeat(1_365)}ab` },
+    ]) {
+      await expect(factClient({ schema_version: 1, proposal }).facts.proposal(
+        'user-token', factIds.proposal,
+      )).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+  })
+
   test('Fact 分页、修订详情、决定和 Outbox 拒绝超限、畸形游标与不完整事件', async () => {
     const overlongPage = factClient({
       schema_version: 1,
@@ -793,29 +935,88 @@ describe('XAgent 后端客户端', () => {
       value: { type: 'date' as const, value: '2026-09-30' },
       evidenceIds: ['[资料1]'],
     }
-    const stable: ReadonlyArray<readonly [number, string]> = [
-      [422, 'fact-input-invalid'],
-      [422, 'fact-evidence-invalid'],
-      [409, 'fact-session-invalid'],
-      [409, 'stale-permission'],
-      [409, 'idempotency-conflict'],
+    const common = [
+      [401, 'unauthenticated'],
       [404, 'not-found'],
       [503, 'service-unavailable'],
+    ] as const
+    const families: ReadonlyArray<{
+      readonly invoke: (client: XAgentBackendClient) => Promise<unknown>
+      readonly specific: ReadonlyArray<readonly [number, string]>
+    }> = [
+      {
+        invoke: client => client.facts.prepare('user-token', 'delegation', prepareInput),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [422, 'fact-evidence-invalid'],
+          [409, 'fact-session-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+        ],
+      },
+      {
+        invoke: client => client.facts.listHeads('user-token', factIds.project, { limit: 1 }),
+        specific: [[422, 'fact-input-invalid']],
+      },
+      {
+        invoke: client => client.facts.listProposals('user-token', factIds.project, { limit: 1 }),
+        specific: [[422, 'fact-input-invalid']],
+      },
+      { invoke: client => client.facts.proposal('user-token', factIds.proposal), specific: [] },
+      { invoke: client => client.facts.revision('user-token', factIds.revision), specific: [] },
+      {
+        invoke: client => client.facts.approve('user-token', factIds.proposal, { idempotencyKey: 'approve' }),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+          [409, 'fact-revision-conflict'],
+          [409, 'fact-already-decided'],
+        ],
+      },
+      {
+        invoke: client => client.facts.reject('user-token', factIds.proposal, {
+          idempotencyKey: 'reject', reason: '证据不足',
+        }),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+          [409, 'fact-already-decided'],
+        ],
+      },
+      {
+        invoke: client => client.facts.withdraw('user-token', factIds.proposal, { idempotencyKey: 'withdraw' }),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+          [409, 'fact-already-decided'],
+        ],
+      },
+      {
+        invoke: client => client.facts.pullOutbox('user-token', factIds.session, { limit: 1 }),
+        specific: [[422, 'fact-input-invalid'], [409, 'fact-session-invalid']],
+      },
     ]
-    for (const [status, code] of stable) {
-      await expect(factClient({ detail: { code } }, status).facts.prepare(
-        'user-token', 'delegation', prepareInput,
-      )).rejects.toMatchObject({ code })
+    for (const family of families) {
+      for (const [status, code] of [...common, ...family.specific]) {
+        await expect(family.invoke(factClient({ detail: { code } }, status)))
+          .rejects.toMatchObject({ code })
+      }
     }
-    for (const code of ['fact-revision-conflict', 'fact-already-decided']) {
-      await expect(factClient({ detail: { code } }, 409).facts.approve(
-        'user-token', factIds.proposal, { idempotencyKey: 'approve' },
-      )).rejects.toMatchObject({ code })
-    }
-    await expect(factClient({ detail: { code: 'fact-evidence-invalid' } }, 422).facts.approve(
-      'user-token', factIds.proposal, { idempotencyKey: 'approve' },
-    )).rejects.toMatchObject({ code: 'service-unavailable' })
-    for (const [status, code] of [[409, 'fact-receipt-invalid'], [410, 'fact-receipt-expired']] as const) {
+    for (const [status, code] of [
+      [401, 'unauthenticated'],
+      [404, 'not-found'],
+      [404, 'session-not-found'],
+      [409, 'sequence-conflict'],
+      [409, 'idempotency-conflict'],
+      [409, 'evidence-conflict'],
+      [409, 'fact-receipt-invalid'],
+      [410, 'evidence-expired'],
+      [410, 'fact-receipt-expired'],
+      [503, 'service-unavailable'],
+    ] as const) {
       const client = factClient({ detail: { code } }, status)
       await expect(client.sessions.append('user-token', factIds.session, {
         schema_version: 1,
@@ -824,6 +1025,50 @@ describe('XAgent 后端客户端', () => {
         events: [{}],
         retrieval_receipts: [],
       })).rejects.toMatchObject({ code })
+    }
+    const mismatches: ReadonlyArray<{
+      readonly status: number
+      readonly code: string
+      readonly invoke: (client: XAgentBackendClient) => Promise<unknown>
+    }> = [
+      {
+        status: 422,
+        code: 'fact-input-invalid',
+        invoke: client => client.facts.proposal('user-token', factIds.proposal),
+      },
+      {
+        status: 409,
+        code: 'fact-revision-conflict',
+        invoke: client => client.facts.reject('user-token', factIds.proposal, {
+          idempotencyKey: 'reject', reason: '证据不足',
+        }),
+      },
+      {
+        status: 409,
+        code: 'fact-revision-conflict',
+        invoke: client => client.facts.withdraw('user-token', factIds.proposal, { idempotencyKey: 'withdraw' }),
+      },
+      {
+        status: 422,
+        code: 'fact-evidence-invalid',
+        invoke: client => client.facts.pullOutbox('user-token', factIds.session, { limit: 1 }),
+      },
+      {
+        status: 409,
+        code: 'fact-already-decided',
+        invoke: client => client.sessions.append('user-token', factIds.session, {
+          schema_version: 1,
+          expected_sequence: -1,
+          idempotency_key: 'append-mismatch',
+          events: [{}],
+          retrieval_receipts: [],
+        }),
+      },
+    ]
+    for (const mismatch of mismatches) {
+      await expect(mismatch.invoke(factClient(
+        { detail: { code: mismatch.code } }, mismatch.status,
+      ))).rejects.toMatchObject({ code: 'service-unavailable' })
     }
 
     const secret = 'raw-receipt-and-token-must-not-escape'

@@ -22,7 +22,7 @@ import {
 } from '@deepseek-ai/dsh-session'
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend, type XAgentFactPersistenceSidecars } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
-
+import { decodeFactSessionEvent, encodeFactSessionEvent } from './fact-event-codec.ts'
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -79,8 +79,14 @@ function headerFrom(value: unknown): SessionHeader {
   return structuredClone(row) as unknown as SessionHeader
 }
 
-function eventFrom(value: unknown): SessionEvent {
+function eventFrom(value: unknown, envelopeType?: unknown): SessionEvent {
   const row = object(value)
+  if (row.type === 'fact/proposal-decided' || envelopeType === 'fact/proposal-decided') {
+    if (envelopeType !== row.type) {
+      throw new TypeError('invalid XAgent Fact session event')
+    }
+    return decodeFactSessionEvent(row)
+  }
   if (
     typeof row.type !== 'string'
     || row.type.length === 0
@@ -92,6 +98,12 @@ function eventFrom(value: unknown): SessionEvent {
     || (row.ignorable !== undefined && row.ignorable !== true)
   ) throw new TypeError('invalid XAgent session event')
   return structuredClone(row) as unknown as SessionEvent
+}
+
+function eventPayload(event: SessionEvent): SessionEvent | Record<string, unknown> {
+  return (event as { readonly type: string }).type === 'fact/proposal-decided'
+    ? encodeFactSessionEvent(event)
+    : structuredClone(event)
 }
 
 function responseSessions(value: unknown): Record<string, unknown>[] {
@@ -172,7 +184,7 @@ function responseInspection(value: unknown): SessionInspection {
   if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
   const parsed = events.map((entry, index) => {
     const envelope = object(entry)
-    const event = eventFrom(envelope.payload)
+    const event = eventFrom(envelope.payload, envelope.event_type)
     if (envelope.sequence !== index || event.seq !== index) throw new TypeError('non-contiguous XAgent session events')
     return adoptSessionEvent(event)
   })
@@ -184,7 +196,7 @@ function responseEvents(value: unknown, expectedSequence: number): SessionEvent[
   if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
   return events.map((entry, index) => {
     const envelope = object(entry)
-    const event = eventFrom(envelope.payload)
+    const event = eventFrom(envelope.payload, envelope.event_type)
     const sequence = expectedSequence + index
     if (envelope.sequence !== sequence || event.seq !== sequence) {
       throw new TypeError('non-contiguous XAgent session events')
@@ -261,7 +273,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
       events: events.map(event => ({
         event_type: event.type,
         schema_version: 1,
-        payload: event,
+        payload: eventPayload(event),
       })),
     }, undefined)
     validateCreatedSession(response, expectedId)
@@ -355,7 +367,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
       events: events.map(event => ({
         event_type: event.type,
         schema_version: 1 as const,
-        payload: structuredClone(event),
+        payload: eventPayload(event),
       })),
       retrieval_receipts: attachments.map(attachment => ({
         event_sequence: attachment.eventSequence,

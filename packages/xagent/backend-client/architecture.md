@@ -14,7 +14,7 @@ Artifact 方法与认证、Session 和工作台方法共用同一个请求管线
 
 Fact 方法使用九个固定 FastAPI v1 路径。准备操作还发送 `X-XAgent-Delegation`，并把 Host 已经从认证 Session 范围派生的 Session、tool call 和 permission revision 显式写入请求。列表、详情、决定和 Outbox 请求只从公开输入挑选允许字段；多余 actor、role、membership、ownership、permission revision、project authority 和 evidence authority 字段无法进入 wire body。
 
-Fact 解析器复用共享 exact-object、UTF-8 字节、安全整数、UUID、时间和 bounded-array 检查，再显式建立 camelCase 对象。Proposal 状态与 decision actor/reason/time 必须匹配；confirmed decision 和 event 必须携带完整修订身份，rejected event 必须携带 reason。分页游标必须是 FastAPI 生成的 canonical base64url JSON，Fact 准备和 Outbox 响应的 payload hash 必须与关闭公开载荷一致。未知字段、状态、成功响应或 status/code 错配都收敛为 `service-unavailable`，原始正文不进入异常。
+Fact 解析器复用共享 exact-object、UTF-8 字节、安全整数、UUID、时间和 bounded-array 检查，再显式建立 camelCase 对象。Proposal 状态与 decision actor/reason/time 必须匹配；confirmed decision 和 event 必须携带完整修订身份，rejected event 必须携带 reason。approve、reject 和 withdraw 只接受各自的终态响应，`fact-revision-conflict` 只属于 approve。分页游标必须是 FastAPI 生成的 canonical base64url JSON，且拒绝 `Z` 与未知本地偏移 `-00:00`；Fact 准备和 Outbox 响应的 payload hash 必须与关闭公开载荷一致。未知字段、状态、成功响应或 status/code 错配都收敛为 `service-unavailable`，原始正文不进入异常。
 
 上传授权只接受无凭据、无 fragment 的绝对 HTTP(S) PUT URL。预览和下载接受同样受限的绝对 HTTP(S) URL 或以单个 `/` 开头的相对 URL。URL 最多递归 percent-decode 16 轮；每轮保护不构成 `%XX` 的字面 `%`，其余 triplet 严格按 UTF-8 解码，并拒绝非法或不完整的字节序列、控制符、Unicode 空白、反斜杠、协议相对形式、凭据、fragment 和非 HTTP(S) scheme。解码产生的孤立 `%` 是稳定值，达到上限后仍含完整 escape 才失败关闭。稳定 URL 通过安全 base 解析；hostname label、路径 segment、query key/value 和 fragment 均按 token 边界拒绝存储 bucket，完整值还不得包含暂存 Key 或最终对象 Key。客户端把原始读取 URL 作为 opaque 字符串返回，不请求、重写或解析其正文。
 

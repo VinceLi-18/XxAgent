@@ -12,6 +12,8 @@
 
 可选 `xagentFact` 服务通过独立 `receipts` 和 `outbox` 注册表提供 Fact proposal receipt 与 Outbox 事件附件。provider 按同一首尾 sequence 窗口同时收集 retrieval、Fact receipt 和 Fact Outbox sidecar，将它们放入一次 append，只在关闭响应确认精确末 sequence 后才以该 sequence 分别 commit 三个注册表。部分确认、取消、超时、请求失败或响应校验失败都不 commit 任何注册表。`xagentFact` 缺失时，provider 不访问这两个注册表，也不添加空 Fact 数组，普通 append 正文字节保持不变。
 
+`fact/proposal-decided` 使用持久化层的单一严格 codec。写入把关闭的 camelCase DSH data 转成 FastAPI v1 snake_case，读取执行反向转换；两端都拒绝未知事件或 data 字段、bool 整数、非 `append` placement，以及与终态不一致的 revision 或 reason。其他 Session 事件原样复制，receipt 与 Outbox 身份只存在于 append sidecar。
+
 每个 Session 的后台写入只在确有 pending 或 retry 批次时建立 flush owner。空队列 flush 立即返回，不会留下已结算 owner 覆盖同步到达的新事件；并发入队因此仍会安排下一次远端 append。
 
 ## Model Experience

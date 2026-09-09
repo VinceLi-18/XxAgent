@@ -1080,7 +1080,11 @@ function parseFactCursor(value: unknown): string {
   if (id !== id.toLowerCase()) failSchema()
   const createdAt = instant(row.created_at)
   const fraction = /\.(\d+)(?:[+-]\d{2}:\d{2})$/.exec(createdAt)?.[1]
-  if (createdAt.endsWith('Z') || (fraction !== undefined && (fraction.length !== 6 || /^0+$/u.test(fraction)))) {
+  if (
+    createdAt.endsWith('Z')
+    || createdAt.endsWith('-00:00')
+    || (fraction !== undefined && (fraction.length !== 6 || /^0+$/u.test(fraction)))
+  ) {
     failSchema()
   }
   return cursor
@@ -1123,13 +1127,16 @@ function parseFactRevisionDetail(value: unknown): XAgentFactRevisionDetail {
   }
 }
 
-function parseFactDecision(value: unknown): XAgentFactProposalDecision {
+function parseFactDecision(
+  value: unknown,
+  expectedStatus: XAgentFactProposalDecision['status'],
+): XAgentFactProposalDecision {
   const row = exactRecordWithOptional(
     value,
     ['schema_version', 'proposal_id', 'status'],
     ['fact_revision_id', 'content_revision'],
   )
-  if (row.schema_version !== 1 || (
+  if (row.schema_version !== 1 || row.status !== expectedStatus || (
     row.status !== 'confirmed' && row.status !== 'rejected' && row.status !== 'withdrawn'
   )) failSchema()
   const hasRevisionId = Object.hasOwn(row, 'fact_revision_id')
@@ -1234,10 +1241,10 @@ const FACT_DECISION_ERRORS = [
   ...COMMON_FACT_ERRORS,
   [409, 'stale-permission'],
   [409, 'idempotency-conflict'],
-  [409, 'fact-revision-conflict'],
   [409, 'fact-already-decided'],
   [422, 'fact-input-invalid'],
 ] as const
+const FACT_APPROVE_ERRORS = [...FACT_DECISION_ERRORS, [409, 'fact-revision-conflict']] as const
 const FACT_OUTBOX_ERRORS = [
   ...FACT_QUERY_ERRORS,
   [409, 'fact-session-invalid'],
@@ -1632,9 +1639,9 @@ export class XAgentBackendClient implements XAgentBackend {
           idempotency_key: boundedString(input.idempotencyKey, 255),
           ...(input.decisionNote === undefined ? {} : { decision_note: factReason(input.decisionNote) }),
         },
-        FACT_DECISION_ERRORS,
+        FACT_APPROVE_ERRORS,
         signal,
-      )),
+      ), 'confirmed'),
       reject: async (token, proposalId, input, signal) => parseFactDecision(await this.factRequest(
         token,
         `/internal/xagent/facts/proposals/${encodeURIComponent(requiredUuid(proposalId))}/reject`,
@@ -1645,14 +1652,14 @@ export class XAgentBackendClient implements XAgentBackend {
         },
         FACT_DECISION_ERRORS,
         signal,
-      )),
+      ), 'rejected'),
       withdraw: async (token, proposalId, input, signal) => parseFactDecision(await this.factRequest(
         token,
         `/internal/xagent/facts/proposals/${encodeURIComponent(requiredUuid(proposalId))}/withdraw`,
         { schema_version: 1, idempotency_key: boundedString(input.idempotencyKey, 255) },
         FACT_DECISION_ERRORS,
         signal,
-      )),
+      ), 'withdrawn'),
       pullOutbox: async (token, sessionId, input, signal) => parseFactPage(
         await this.factRequest(
           token,

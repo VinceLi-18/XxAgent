@@ -12,6 +12,18 @@ Fact 接口覆盖 proposal 准备、项目当前 Fact 与 proposal 分页、prop
 
 Fact 值只接受 text、number、boolean 和 `YYYY-MM-DD` date；文本、标签、field key 和 reason 按 UTF-8 字节限制，数字必须有限且整数必须安全。Fact 与 proposal 页最多 100 项，Outbox 页最多 32 项，evidence 最多 64 条。响应解码器拒绝未知字段、未知状态、非规范游标、畸形 UUID/时间/整数、不完整终态身份和超限数组。准备 receipt 和 Outbox ID/hash 只返回给 Host 私有持久化路径；错误、公开 Fact 对象和 Session 事件不包含 receipt、JWT 或服务身份。
 
+Fact 路径共同接受 401 `unauthenticated`、404 `not-found` 和 503 `service-unavailable`。其余稳定 HTTP status/code 配对如下；未列出的配对、未知字段、未知 code、畸形 detail 和不可解析响应都返回 `service-unavailable`，且不附带原始正文。
+
+| 操作 | endpoint 特有的稳定 status/code |
+|---|---|
+| proposal prepare | 409 `fact-session-invalid`、`stale-permission`、`idempotency-conflict`；422 `fact-input-invalid`、`fact-evidence-invalid` |
+| Fact head 与 proposal 分页 | 422 `fact-input-invalid` |
+| proposal 与 revision 详情 | 无 |
+| approve | 409 `stale-permission`、`idempotency-conflict`、`fact-revision-conflict`、`fact-already-decided`；422 `fact-input-invalid` |
+| reject 与 withdraw | 409 `stale-permission`、`idempotency-conflict`、`fact-already-decided`；422 `fact-input-invalid` |
+| Outbox pull | 409 `fact-session-invalid`；422 `fact-input-invalid` |
+| Fact receipt／Outbox Session append | 400 `unsupported-version`；401 `unauthenticated`；404 `not-found`、`session-not-found`；409 `sequence-conflict`、`idempotency-conflict`、`evidence-conflict`、`fact-receipt-invalid`；410 `evidence-expired`、`fact-receipt-expired`；503 `service-unavailable`。Outbox 身份、来源或 payload 不匹配使用 404 `not-found` |
+
 请求和响应都受字节上限约束，响应正文必须是严格 UTF-8。工作台与资料响应按固定 snake_case 字段严格解码，并转换为 camelCase；未知字段、畸形 UUID、日期、状态、计数、大小或 URL 全部失败关闭。资料范围只接受 private 或带 UUID 的 project；列表摘要的 clean latest 必须同时是 latest clean，非 clean latest 只能引用更早的 clean 版本。详情版本号唯一且严格降序，latest 字段必须与版本历史一致，latest clean 必须指向最高 clean 版本。列表和版本历史各最多接受 1,000 项，单版本大小不超过 50 MiB。
 
 预览和下载 URL 只在存在完整 percent escape 时递归解码并检查；每轮保护不构成 `%XX` 的字面 `%`，其余 triplet 严格按 UTF-8 解码，非法或不完整的字节序列失败关闭。稳定值不得在 hostname、路径 segment、query key/value 或 fragment 中暴露 `xagent-private` bucket token，也不得包含暂存或最终对象 Key。资料上传创建、版本上传和完成只接受 `201`，列表、详情、重试、预览和下载只接受 `200`。资料错误要求 exact `detail.code`，401 `unauthenticated` 与 503 `service-unavailable` 为共同错误；详情只额外接受 404，新资料上传只额外接受 409，新版本上传接受 404/409，完成接受 404/409/422，重试接受 404/409/410/422，预览和下载接受 403/404。其他成功状态、其他 endpoint 的 code、额外错误字段、畸形 detail、非 JSON、重定向和超限正文统一为 `service-unavailable`。FastAPI detail、JWT、服务身份、对象 Key、暂存 Key、租约和内部扫描失败信息不会进入返回对象或异常消息。

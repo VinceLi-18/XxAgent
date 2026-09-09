@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { SessionForkOperationId } from '@deepseek-ai/dsh-session-persistence'
@@ -27,7 +28,41 @@ const event: SessionEvent = {
   type: 'turn/start',
   data: { turn: 0 },
 }
+const factDecisionData = {
+  proposalId: '00000000-0000-0000-0000-000000000721',
+  projectId: '00000000-0000-0000-0000-000000000722',
+  fieldKey: 'delivery.date',
+  label: '交付日期',
+  status: 'rejected',
+  decisionReason: '已有新版本',
+} as const
+
+function factDecisionEvent(seq: number, time: number): SessionEvent {
+  return {
+    seq,
+    time,
+    type: 'fact/proposal-decided',
+    surfaceOp: 'append',
+    data: factDecisionData,
+  } as unknown as SessionEvent
+}
+
 const forkOperationId = SessionForkOperationId('fork-request-000000000701')
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (typeof value === 'object' && value !== null) {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function payloadHash(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex')
+}
 
 function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[] } {
   const calls: { name: string; args: unknown[] }[] = []
@@ -307,7 +342,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const events = [
       event,
       { seq: 1, time: event.time + 1, type: 'tool/result', data: {} } as SessionEvent,
-      { seq: 2, time: event.time + 2, type: 'fact/proposal-decided', data: {} } as SessionEvent,
+      factDecisionEvent(2, event.time + 2),
     ]
 
     await persistence.append(id, events)
@@ -319,11 +354,28 @@ describe('XAgent FastAPI Session Persistence', () => {
       schema_version: 1,
       expected_sequence: -1,
       idempotency_key: `append:${id}:0:2`,
-      events: events.map(item => ({
-        event_type: item.type,
-        schema_version: 1,
-        payload: item,
-      })),
+      events: [
+        { event_type: event.type, schema_version: 1, payload: event },
+        { event_type: 'tool/result', schema_version: 1, payload: events[1] },
+        {
+          event_type: 'fact/proposal-decided',
+          schema_version: 1,
+          payload: {
+            seq: 2,
+            time: event.time + 2,
+            type: 'fact/proposal-decided',
+            surfaceOp: 'append',
+            data: {
+              proposal_id: factDecisionData.proposalId,
+              project_id: factDecisionData.projectId,
+              field_key: factDecisionData.fieldKey,
+              label: factDecisionData.label,
+              status: factDecisionData.status,
+              decision_reason: factDecisionData.decisionReason,
+            },
+          },
+        },
+      ],
       retrieval_receipts: [{
         event_sequence: 0,
         tool_call_id: 'call-retrieval',
@@ -346,6 +398,303 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(retrievalCommit).toHaveBeenCalledWith(String(id), 2)
     expect(factReceiptCommit).toHaveBeenCalledWith(String(id), 2)
     expect(factOutboxCommit).toHaveBeenCalledWith(String(id), 2)
+  })
+
+  test('an Outbox event round-trips through the real client as snake_case wire and camelCase DSH data', async () => {
+    const wireEvent = {
+      type: 'fact/proposal-decided',
+      data: {
+        proposal_id: '00000000-0000-0000-0000-000000000721',
+        project_id: '00000000-0000-0000-0000-000000000722',
+        field_key: 'delivery.date',
+        label: '交付日期',
+        status: 'confirmed',
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        content_revision: 2,
+      },
+    }
+    let storedPayload: unknown
+    let appendBody: string | undefined
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async (input, init) => {
+        const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).pathname
+        if (path.endsWith('/outbox/pull')) {
+          return Response.json({
+            schema_version: 1,
+            items: [{
+              outbox_id: '00000000-0000-0000-0000-000000000724',
+              payload_sha256: payloadHash(wireEvent),
+              event: wireEvent,
+            }],
+            next_cursor: null,
+          })
+        }
+        if (path.endsWith('/append')) {
+          if (typeof init?.body !== 'string') throw new TypeError('expected JSON append body')
+          appendBody = init.body
+          const body = JSON.parse(init.body) as { events: Array<{ payload: unknown }> }
+          storedPayload = body.events[0]?.payload
+          return Response.json({ schema_version: 1, version: 2, last_event_sequence: 0 })
+        }
+        if (path.endsWith('/list')) {
+          return Response.json({
+            schema_version: 1,
+            sessions: [{ runtime_header: header, version: 2, last_event_sequence: 0 }],
+          })
+        }
+        if (path.endsWith('/events')) {
+          return Response.json({
+            schema_version: 1,
+            events: [{
+              session_id: '00000000-0000-0000-0000-000000000701',
+              sequence: 0,
+              event_type: 'fact/proposal-decided',
+              schema_version: 1,
+              payload: storedPayload,
+              actor_id: '00000000-0000-0000-0000-000000000725',
+              tool_call_id: null,
+              audit_id: '00000000-0000-0000-0000-000000000726',
+              created_at: '2026-09-08T08:00:00+00:00',
+            }],
+          })
+        }
+        return Response.json({ detail: { code: 'not-found' } }, { status: 404 })
+      },
+    })
+    const page = await client.facts.pullOutbox(
+      'alice-token',
+      '00000000-0000-0000-0000-000000000701',
+      { limit: 1 },
+    )
+    const pulled = page.items[0]
+    if (pulled === undefined) throw new TypeError('expected one Outbox event')
+    const factEvent = {
+      seq: 0,
+      time: 1_787_587_200_001,
+      ...pulled.event,
+      surfaceOp: 'append',
+    } as unknown as SessionEvent
+    const ctx = new Context()
+    ctx.provide('xagentFact', {
+      receipts: { attachments: () => [], commit: vi.fn() },
+      outbox: {
+        attachments: () => [{
+          eventSequence: 0,
+          outboxId: pulled.outboxId,
+          payloadHash: pulled.payloadHash,
+        }],
+        commit: vi.fn(),
+      },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, client)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await persistence.append(id, [factEvent])
+    const replay = await persistence.readFrom(id, 0)
+
+    expect(storedPayload).toEqual({
+      seq: 0,
+      time: 1_787_587_200_001,
+      type: 'fact/proposal-decided',
+      surfaceOp: 'append',
+      data: wireEvent.data,
+    })
+    expect(appendBody).not.toContain('proposalId')
+    expect(appendBody).not.toContain('factRevisionId')
+    expect(replay.events).toEqual([factEvent])
+  })
+
+  test.each([
+    ['unknown event field', { ...factDecisionEvent(0, event.time), private: 'secret' }],
+    ['unknown data field', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, receipt: 'secret' },
+    }],
+    ['non-object data', { ...factDecisionEvent(0, event.time), data: 1 }],
+    ['array data', { ...factDecisionEvent(0, event.time), data: [] }],
+    ['missing label', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        proposalId: factDecisionData.proposalId,
+        projectId: factDecisionData.projectId,
+        fieldKey: factDecisionData.fieldKey,
+        status: factDecisionData.status,
+        decisionReason: factDecisionData.decisionReason,
+      },
+    }],
+    ['boolean sequence', { ...factDecisionEvent(0, event.time), seq: true }],
+    ['boolean time', { ...factDecisionEvent(0, event.time), time: true }],
+    ['negative time', { ...factDecisionEvent(0, event.time), time: -1 }],
+    ['replacement surface', {
+      ...factDecisionEvent(0, event.time),
+      surfaceOp: { op: 'replace', start: 0, end: 0 },
+    }],
+    ['non-string proposal id', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, proposalId: 1 },
+    }],
+    ['malformed project id', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, projectId: 'not-a-uuid' },
+    }],
+    ['non-string field key', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, fieldKey: 1 },
+    }],
+    ['invalid field key', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, fieldKey: 'Delivery Date' },
+    }],
+    ['empty label', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, label: '' },
+    }],
+    ['overlong label', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, label: '界'.repeat(86) },
+    }],
+    ['blank reason', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, decisionReason: '  ' },
+    }],
+    ['non-string status', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, status: 1 },
+    }],
+    ['unknown status', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, status: 'pending' },
+    }],
+    ['incomplete confirmed revision', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, status: 'confirmed', factRevisionId: '00000000-0000-0000-0000-000000000723' },
+    }],
+    ['rejected without reason', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        proposalId: factDecisionData.proposalId,
+        projectId: factDecisionData.projectId,
+        fieldKey: factDecisionData.fieldKey,
+        label: factDecisionData.label,
+        status: 'rejected',
+      },
+    }],
+    ['non-confirmed revision', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        ...factDecisionData,
+        factRevisionId: '00000000-0000-0000-0000-000000000723',
+        contentRevision: 1,
+      },
+    }],
+    ['boolean content revision', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        ...factDecisionData,
+        status: 'confirmed',
+        factRevisionId: '00000000-0000-0000-0000-000000000723',
+        contentRevision: true,
+      },
+    }],
+  ])('Fact append codec rejects camelCase %s', async (_case, invalid) => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await expect(persistence.append(id, [invalid as never]))
+      .rejects.toThrow(_case === 'boolean sequence'
+        ? 'non-contiguous XAgent session append'
+        : 'invalid XAgent Fact session event')
+    expect(value.calls.find(call => call.name === 'append')).toBeUndefined()
+  })
+
+  test.each([
+    ['unknown event field', { private: 'secret' }],
+    ['unknown data field', { data: { private_receipt: 'secret' } }],
+    ['boolean sequence', { seq: true }],
+    ['boolean time', { time: true }],
+    ['replacement surface', { surfaceOp: { op: 'replace', start: 0, end: 0 } }],
+    ['incomplete confirmed revision', {
+      data: {
+        status: 'confirmed',
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        decision_reason: undefined,
+      },
+    }],
+    ['rejected without reason', { data: { status: 'rejected', decision_reason: undefined } }],
+    ['non-confirmed revision', {
+      data: {
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        content_revision: 1,
+      },
+    }],
+    ['boolean content revision', {
+      data: {
+        status: 'confirmed',
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        content_revision: true,
+        decision_reason: undefined,
+      },
+    }],
+  ])('Fact read codec rejects snake_case %s', async (_case, override) => {
+    const valid = {
+      seq: 0,
+      time: event.time,
+      type: 'fact/proposal-decided',
+      surfaceOp: 'append',
+      data: {
+        proposal_id: factDecisionData.proposalId,
+        project_id: factDecisionData.projectId,
+        field_key: factDecisionData.fieldKey,
+        label: factDecisionData.label,
+        status: factDecisionData.status,
+        decision_reason: factDecisionData.decisionReason,
+      },
+    }
+    const payload = {
+      ...valid,
+      ...override,
+      ...('data' in override ? { data: { ...valid.data, ...override.data } } : {}),
+    }
+    const value = backend()
+    value.sessions.events = vi.fn(async () => ({
+      schema_version: 1,
+      events: [{ sequence: 0, event_type: 'fact/proposal-decided', payload }],
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
+      .rejects.toThrow('invalid XAgent Fact session event')
+  })
+
+  test('Fact read codec rejects a missing event envelope type', async () => {
+    const value = backend()
+    value.sessions.events = vi.fn(async () => ({
+      schema_version: 1,
+      events: [{
+        sequence: 0,
+        payload: {
+          seq: 0,
+          time: event.time,
+          type: 'fact/proposal-decided',
+          surfaceOp: 'append',
+          data: {
+            proposal_id: factDecisionData.proposalId,
+            project_id: factDecisionData.projectId,
+            field_key: factDecisionData.fieldKey,
+            label: factDecisionData.label,
+            status: factDecisionData.status,
+            decision_reason: factDecisionData.decisionReason,
+          },
+        },
+      }],
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
+      .rejects.toThrow('invalid XAgent Fact session event')
   })
 
   test('partial or failed mixed append acknowledgement retains every sidecar for the exact retry', async () => {
@@ -393,7 +742,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const events = [
       event,
       { seq: 1, time: event.time + 1, type: 'tool/result', data: {} } as SessionEvent,
-      { seq: 2, time: event.time + 2, type: 'fact/proposal-decided', data: {} } as SessionEvent,
+      factDecisionEvent(2, event.time + 2),
     ]
 
     await expect(persistence.append(id, events)).rejects.toThrow('invalid XAgent session append response')
