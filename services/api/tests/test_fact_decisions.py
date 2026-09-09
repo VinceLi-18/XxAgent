@@ -230,6 +230,63 @@ async def test_approval_replay_rechecks_the_current_manager_role(
 
 
 @pytest.mark.anyio
+async def test_approval_replay_rechecks_current_reviewer_evidence_visibility(
+    client,
+    seeded_database,
+    alice,
+    bob,
+    manager,
+    fact_project_session,
+    fact_admitted_evidence,
+) -> None:
+    """A fresh manager login cannot replay approval after losing Artifact access."""
+    manager_token = await login(client, seeded_database, manager, "manager@example.test")
+    proposal_id = await seed_pending_with_evidence(
+        seeded_database,
+        fact_project_session,
+        alice.id,
+        fact_admitted_evidence[0],
+        field_key="replay_revoked_evidence",
+    )
+    body = approve_body("replay-revoked-evidence")
+    approved = await client.post(
+        f"/internal/xagent/facts/proposals/{proposal_id}/approve",
+        headers=headers(manager_token),
+        json=body,
+    )
+    assert approved.status_code == 200
+
+    async with AsyncSession(seeded_database, expire_on_commit=False) as session:
+        async with session.begin():
+            await session.execute(
+                text(
+                    "UPDATE artifacts SET project_id = NULL, owner_id = :owner "
+                    "WHERE id = :artifact"
+                ),
+                {"owner": bob.id, "artifact": fact_admitted_evidence[0]["artifact"]},
+            )
+            await session.execute(
+                text(
+                    "UPDATE artifact_versions SET project_id = NULL, owner_id = :owner "
+                    "WHERE id = :version"
+                ),
+                {"owner": bob.id, "version": fact_admitted_evidence[0]["version"]},
+            )
+    fresh_login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "manager@example.test", "password": PASSWORD},
+    )
+    assert fresh_login.status_code == 200
+    replay = await client.post(
+        f"/internal/xagent/facts/proposals/{proposal_id}/approve",
+        headers=headers(fresh_login.json()["access_token"]),
+        json=body,
+    )
+    assert replay.status_code == 404
+    assert replay.json() == {"detail": {"code": "not-found"}}
+
+
+@pytest.mark.anyio
 async def test_reject_and_withdraw_do_not_require_current_artifact_visibility(
     client,
     seeded_database,
@@ -273,19 +330,35 @@ async def test_reject_and_withdraw_do_not_require_current_artifact_visibility(
                 {"owner": bob.id, "version": fact_admitted_evidence[0]["version"]},
             )
 
+    reject_request = reject_body("reject-private-evidence")
+    withdraw_request = {
+        "schema_version": 1,
+        "idempotency_key": "withdraw-private-evidence",
+    }
     rejected = await client.post(
         f"/internal/xagent/facts/proposals/{reject_id}/reject",
         headers=headers(manager_token),
-        json=reject_body("reject-private-evidence"),
+        json=reject_request,
     )
     withdrawn = await client.post(
         f"/internal/xagent/facts/proposals/{withdraw_id}/withdraw",
         headers=headers(alice_token),
-        json={"schema_version": 1, "idempotency_key": "withdraw-private-evidence"},
+        json=withdraw_request,
     )
-    assert rejected.status_code == withdrawn.status_code == 200
-    assert rejected.json()["status"] == "rejected"
-    assert withdrawn.json()["status"] == "withdrawn"
+    rejected_replay = await client.post(
+        f"/internal/xagent/facts/proposals/{reject_id}/reject",
+        headers=headers(manager_token),
+        json=reject_request,
+    )
+    withdrawn_replay = await client.post(
+        f"/internal/xagent/facts/proposals/{withdraw_id}/withdraw",
+        headers=headers(alice_token),
+        json=withdraw_request,
+    )
+    assert rejected.status_code == rejected_replay.status_code == 200
+    assert withdrawn.status_code == withdrawn_replay.status_code == 200
+    assert rejected.json() == rejected_replay.json()
+    assert withdrawn.json() == withdrawn_replay.json()
 
 
 @pytest.mark.anyio

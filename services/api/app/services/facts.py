@@ -911,11 +911,14 @@ async def _decision_replay(
         or outbox.payload_sha256 != canonical_sha256(event)
     ):
         raise FactServiceError(FactErrorCode.SERVICE_UNAVAILABLE)
-    evidence_count = await session.scalar(
-        select(func.count())
-        .select_from(FactProposalEvidence)
-        .where(FactProposalEvidence.proposal_id == proposal.id)
-    )
+    if operation == "approve":
+        evidence_count = await _authorize_decision_evidence(session, proposal)
+    else:
+        evidence_count = await session.scalar(
+            select(func.count())
+            .select_from(FactProposalEvidence)
+            .where(FactProposalEvidence.proposal_id == proposal.id)
+        )
     await write_audit_event(
         session,
         principal.actor_id,
