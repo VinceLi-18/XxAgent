@@ -333,6 +333,7 @@ flowchart LR
   svc_clientModules --> pkg_hmr
   svc_codeRuntime --> pkg_tools
   svc_compaction --> pkg_compaction_basic
+  svc_connectionRequestAuthorizer --> pkg_api_gateway
   svc_connectionRequestAuthorizer --> pkg_apiproxy
   svc_connectionRequestContextResolver --> pkg_connection
   svc_cordisInspect --> pkg_tool_cordis
@@ -458,7 +459,7 @@ flowchart LR
 | `ctx.typert` | `core` | [`typert-registry`](../packages/typert/registry) | - | [`typert-loader`](../packages/typert/loader), [`api-gateway`](../packages/api/gateway) | - | Plugins register live zod contributions directly or through dsh-typert-loader; the API gateway consumes invocation descriptors and providers, while other runtime consumers query schemas and reflection metadata at their own edges. |
 | `ctx.typertGateway` | `core` | [`api-gateway`](../packages/api/gateway) | - | - | - | Associates generated Remote descriptors with live Cordis services, resolves registered identities, and exposes unary calls through the shared Connection RPC carrier. |
 | `ctx.sessionPersistence` | `seam` | [`session-persistence`](../packages/session/session-persistence) | [`session-persistence-jsonl`](../packages/session/session-persistence-jsonl), [`session-persistence-sqlite`](../packages/session/session-persistence-sqlite) | [`agent-loop`](../packages/core/agent-loop), [`tool-bash`](../packages/shell/tool-bash), [`hooks-claude-code`](../packages/hooks/hooks-claude-code), [`hooks-codex`](../packages/hooks/hooks-codex), [`session-query`](../packages/session-query/session-query), [`session-query-sqlite`](../packages/session-query/session-query-sqlite), [`message-feedback`](../packages/feedback/message-feedback) | - | Backends persist the same SessionEvent vocabulary; apps choose a backend at composition time. |
-| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy` | - | Validates a Host-created Principal against closed Session, project, and Artifact method tables, then runs admitted operations inside their explicit request scopes. |
+| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy`, [`api-gateway`](../packages/api/gateway) | - | Validates a Host-created Principal against closed Session, project, Artifact, and Fact method tables, then runs admitted operations inside their explicit request scopes. |
 | `ctx.connectionRequestContextResolver` | `core` | `xagent-connection-auth` | - | `connection` | - | Exchanges Host-managed cookies for a FastAPI-introspected Principal bound to the physical HTTP or WebSocket connection. |
 | `ctx.xagentPrincipal` | `seam` | `xagent-principal` | - | - | - | Defines the immutable validated actor contract; browser payloads and identity-like headers cannot construct a Principal. |
 | `ctx.xagentArtifact` | `core` | `xagent-artifact` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | Reads the user token only from its own active authenticated request scope and forwards eight fixed Artifact operations to FastAPI without caching data or URLs. |

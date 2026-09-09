@@ -10,6 +10,7 @@ import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
 import type { XAgentArtifactScopeRunner } from '@xagent/dsh-artifact'
+import type { XAgentFactScopeRunner } from '@xagent/dsh-fact'
 import {
   runWithXAgentAuthenticatedRequestScope,
   type XAgentAuthenticatedRequestScope,
@@ -87,6 +88,15 @@ const ARTIFACT_METHODS = new Set([
   'preview',
   'download',
 ])
+const FACT_METHODS = new Set([
+  'list-heads',
+  'list-proposals',
+  'revision',
+  'proposal',
+  'approve',
+  'reject',
+  'withdraw',
+])
 
 function projectNamespace(endpoint: string): boolean {
   return endpoint.startsWith('xagentProject/') || endpoint.startsWith('xagentProject.')
@@ -112,6 +122,15 @@ function citationNamespace(endpoint: string): boolean {
 
 function citationMethod(endpoint: string): 'resolve' | undefined {
   return endpoint === 'xagentCitation/resolve' ? 'resolve' : undefined
+}
+
+function factNamespace(endpoint: string): boolean {
+  return endpoint.startsWith('xagentFact/') || endpoint.startsWith('xagentFact.')
+}
+
+function factMethod(endpoint: string): string | undefined {
+  const method = endpoint.slice('xagentFact'.length + 1)
+  return FACT_METHODS.has(method) ? method : undefined
 }
 
 function sessionPermission(
@@ -233,7 +252,35 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     private readonly project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
     private readonly artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
     private readonly citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
+    private readonly fact?: XAgentFactScopeRunner | (() => XAgentFactScopeRunner | undefined),
   ) {}
+
+  private async runInSessionScope<T>(
+    request: ConnectionRequestContext & { userToken: string; principal: XAgentPrincipal },
+    signal: AbortSignal,
+    sessionId: string,
+    scopedOperation: (scope: XAgentAuthenticatedSessionRequestScope) => Promise<RpcResult<T>>,
+    unavailableMessage: string,
+  ): Promise<RpcResult<T>> {
+    try {
+      return await this.persistence.withUserToken(request.userToken, async () => {
+        const requestScope = authenticatedScope(request, signal)
+        const scoped = authenticatedSessionScope(
+          await this.backend.sessions.list(request.userToken, signal), sessionId, requestScope,
+        )
+        return scopedOperation(scoped)
+      })
+    } catch (error) {
+      if (error instanceof XAgentBackendError && error.code === 'unauthenticated') return unauthenticated()
+      if (error instanceof XAgentBackendError && error.code === 'not-found') {
+        return {
+          ok: false,
+          error: { code: 'session-not-found', message: 'session not found', details: { sessionId: sessionId as never } },
+        }
+      }
+      return { ok: false, error: { code: 'internal', message: unavailableMessage, details: {} } }
+    }
+  }
 
   async run<T>(
     endpoint: string,
@@ -242,6 +289,21 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     signal: AbortSignal,
     operation: () => Promise<RpcResult<T>>,
   ): Promise<RpcResult<T>> {
+    if (factNamespace(endpoint)) {
+      if (!authenticated(request)) return unauthenticated()
+      if (factMethod(endpoint) === undefined) return unauthenticated()
+      const values = args(payload)
+      const sessionId = values?.sessionId
+      if (typeof sessionId !== 'string') return unauthenticated()
+      const fact = typeof this.fact === 'function' ? this.fact() : this.fact
+      if (fact === undefined) {
+        return { ok: false, error: { code: 'internal', message: 'Fact service unavailable', details: {} } }
+      }
+      return this.runInSessionScope(request, signal, sessionId, (scoped) => {
+        if (scoped.visibility !== 'project') throw new XAgentBackendError('not-found')
+        return fact.withRequest(scoped, operation)
+      }, 'Fact operation unavailable')
+    }
     if (citationNamespace(endpoint)) {
       if (!authenticated(request)) return unauthenticated()
       if (citationMethod(endpoint) === undefined) return unauthenticated()
@@ -253,24 +315,10 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
       if (citation === undefined) {
         return { ok: false, error: { code: 'internal', message: 'citation service unavailable', details: {} } }
       }
-      try {
-        return await this.persistence.withUserToken(request.userToken, async () => {
-          const requestScope = authenticatedScope(request, signal)
-          const scoped = authenticatedSessionScope(
-            await this.backend.sessions.list(request.userToken, signal), sessionId, requestScope,
-          )
-          return citation.withRequest(scoped, operation)
-        })
-      } catch (error) {
-        if (error instanceof XAgentBackendError && error.code === 'unauthenticated') return unauthenticated()
-        if (error instanceof XAgentBackendError && error.code === 'not-found') {
-          return {
-            ok: false,
-            error: { code: 'session-not-found', message: 'session not found', details: { sessionId: sessionId as never } },
-          }
-        }
-        return { ok: false, error: { code: 'internal', message: 'citation operation unavailable', details: {} } }
-      }
+      return this.runInSessionScope(
+        request, signal, sessionId, scoped => citation.withRequest(scoped, operation),
+        'citation operation unavailable',
+      )
     }
     if (artifactNamespace(endpoint)) {
       if (!authenticated(request)) return unauthenticated()
@@ -331,10 +379,10 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
           )
         }
         let result: RpcResult<T>
-        if (method === 'prompt') {
+        if (method === 'prompt' || (method === 'create' && typeof values?.sessionId === 'string')) {
           const requestScope = authenticatedScope(request, signal)
           const scoped = authenticatedSessionScope(
-            await this.backend.sessions.list(request.userToken, signal), promptSessionId as string, requestScope,
+            await this.backend.sessions.list(request.userToken, signal), values?.sessionId as string, requestScope,
           )
           result = await runWithXAgentAuthenticatedRequestScope(scoped, operation)
         } else {
@@ -428,9 +476,10 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     project?: XAgentProjectScopeRunner | (() => XAgentProjectScopeRunner | undefined),
     artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
     citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
+    fact?: XAgentFactScopeRunner | (() => XAgentFactScopeRunner | undefined),
   ) {
     super(ctx, 'connectionRequestAuthorizer')
-    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact, citation)
+    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact, citation, fact)
   }
 
   /**
@@ -483,5 +532,6 @@ export function apply(ctx: Context, config: Config): void {
     () => ctx.get('xagentProject'),
     () => ctx.get('xagentArtifact'),
     () => ctx.get('xagentCitation'),
+    () => ctx.get('xagentFact'),
   )
 }

@@ -45,7 +45,7 @@ describe('XAgent Fact invariant', () => {
     await ctx.fiber.dispose()
   })
 
-  test('accepts the live Typert binding and two distinct private registries', async () => {
+  test('accepts two distinct private registries and no inconsistent live owners', async () => {
     const ctx = new Context()
     await ctx.plugin(InvariantRegistry)
     const service = fact(ctx)
@@ -55,7 +55,7 @@ describe('XAgent Fact invariant', () => {
     await ctx.fiber.dispose()
   })
 
-  test('rejects a service whose Typert identity or private registry ownership diverges', () => {
+  test('ignores fixed Typert metadata and rejects mutable registry or owner divergence', () => {
     const fail = (message: string): never => { throw new Error(message) }
     const wrongBinding = fact(new Context())
     Object.defineProperty(wrongBinding, 'typertRemote', {
@@ -63,7 +63,7 @@ describe('XAgent Fact invariant', () => {
     })
     expect(() => {
       invariant.validateXAgentFactRelationships(wrongBinding, fail)
-    }).toThrow('Typert binding')
+    }).not.toThrow()
 
     const sharedRegistry = fact(new Context())
     Object.defineProperty(sharedRegistry, 'outbox', { value: sharedRegistry.receipts })
@@ -76,5 +76,21 @@ describe('XAgent Fact invariant', () => {
     expect(() => {
       invariant.validateXAgentFactRelationships(wrongOwner, fail)
     }).toThrow('owner mismatch')
+  })
+
+  test('disposes and reinstalls its package registration across companion HMR', async () => {
+    const ctx = new Context()
+    await ctx.plugin(InvariantRegistry)
+    fact(ctx)
+    const first = ctx.plugin(invariant)
+    await first
+    expect(() => ctx.invariants.register('@xagent/dsh-fact', () => undefined)).toThrow('already registered')
+
+    await first.dispose()
+    const second = ctx.plugin(invariant)
+    await expect(second).resolves.toBeDefined()
+    expect(() => ctx.invariants.register('@xagent/dsh-fact', () => undefined)).toThrow('already registered')
+    await second.dispose()
+    await ctx.fiber.dispose()
   })
 })

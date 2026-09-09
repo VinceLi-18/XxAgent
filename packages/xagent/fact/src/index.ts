@@ -97,6 +97,13 @@ interface RequestScopeState {
   active: boolean
 }
 
+type XAgentFactProjectRequestScope = XAgentAuthenticatedSessionRequestScope & {
+  readonly visibility: 'project'
+  readonly projectId: string
+  readonly requestSignal: AbortSignal
+  readonly connectionSignal: AbortSignal
+}
+
 interface MessageScopeBinding {
   readonly agent: Agent
   readonly scope?: XAgentAuthenticatedSessionRequestScope
@@ -105,7 +112,7 @@ interface MessageScopeBinding {
 
 interface OutboxOwner {
   readonly session: Session
-  readonly scope: XAgentAuthenticatedSessionRequestScope
+  readonly scope: XAgentFactProjectRequestScope
   readonly controller: AbortController
   readonly settlement: Promise<void>
   readonly closeSignals: () => void
@@ -116,12 +123,7 @@ function backendSessionId(value: string): string | undefined {
   return SESSION_ID.exec(value)?.[1]
 }
 
-function isProjectScope(value: unknown): value is XAgentAuthenticatedSessionRequestScope & {
-  readonly visibility: 'project'
-  readonly projectId: string
-  readonly requestSignal: AbortSignal
-  readonly connectionSignal: AbortSignal
-} {
+function isProjectScope(value: unknown): value is XAgentFactProjectRequestScope {
   if (typeof value !== 'object' || value === null) return false
   const scope = value as XAgentAuthenticatedSessionRequestScope
   return isXAgentAuthenticatedRequestScope(scope)
@@ -545,7 +547,8 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
         || backendSessionId(sessionId) !== owner.scope.sessionId
         || !isProjectScope(owner.scope)
         || !owner.active
-        || owner.controller.signal.aborted) {
+        || owner.controller.signal.aborted
+        || this.ctx.sessions.get(owner.session.id) !== owner.session) {
         return 'Fact Outbox owner must be active and match its physical Project Session'
       }
     }
@@ -704,7 +707,7 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
       signal => this.backend.pullOutbox(owner.scope.userToken, owner.scope.sessionId, { limit: 32 }, signal),
       error => this.factError(error),
     )
-    if (!owner.active || !this.accepting || this.outboxOwners.get(String(owner.session.id)) !== owner) return
+    if (!this.isLiveOutboxOwner(owner)) return
     const ids = new Set<string>()
     for (const item of result.items) {
       if (ids.has(item.outboxId) || item.event.data.projectId !== owner.scope.projectId) {
@@ -714,6 +717,7 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
     }
     for (const item of result.items) {
       const sessionId = String(owner.session.id)
+      if (!this.isLiveOutboxOwner(owner)) return
       if (this.outbox.has(sessionId, item.outboxId)) continue
       const eventSequence = owner.session.seq
       let registered = false
@@ -726,14 +730,31 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
         })
         /* v8 ignore next -- `has` and `register` run synchronously on the same registry with no intervening mutation. */
         if (!registered) continue
+        if (!this.isLiveOutboxOwner(owner)) {
+          this.outbox.discard(sessionId, item.outboxId, eventSequence)
+          return
+        }
         const event = owner.session.append(item.event.type, item.event.data)
         /* v8 ignore next -- Session append reserves and returns its current sequence synchronously. */
         if (event.seq !== eventSequence) throw new Error('xagent Fact Outbox event sequence changed')
+        // Let observer-triggered Session disposal detach before considering the next row.
+        await Promise.resolve()
       } catch (error: unknown) {
         if (registered) this.outbox.discard(sessionId, item.outboxId, eventSequence)
         throw this.factError(error)
       }
     }
+  }
+
+  private isLiveOutboxOwner(owner: OutboxOwner): boolean {
+    const sessionId = String(owner.session.id)
+    return this.accepting
+      && owner.active
+      && !owner.controller.signal.aborted
+      && !owner.scope.requestSignal.aborted
+      && !owner.scope.connectionSignal.aborted
+      && this.outboxOwners.get(sessionId) === owner
+      && this.ctx.sessions.get(owner.session.id) === owner.session
   }
 
   private closeOutboxOwner(sessionId: string): void {

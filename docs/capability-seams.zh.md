@@ -335,6 +335,7 @@ flowchart LR
   svc_clientModules --> pkg_hmr
   svc_codeRuntime --> pkg_tools
   svc_compaction --> pkg_compaction_basic
+  svc_connectionRequestAuthorizer --> pkg_api_gateway
   svc_connectionRequestAuthorizer --> pkg_apiproxy
   svc_connectionRequestContextResolver --> pkg_connection
   svc_cordisInspect --> pkg_tool_cordis
@@ -460,12 +461,12 @@ flowchart LR
 | `ctx.typert` | `core` | [`typert-registry`](../packages/typert/registry) | - | [`typert-loader`](../packages/typert/loader), [`api-gateway`](../packages/api/gateway) | - | 插件直接或通过 dsh-typert-loader 注册实时 zod 贡献；API 网关消费调用描述符和提供方，其他运行时消费方则在各自边界查询 schema 与反射元数据。 |
 | `ctx.typertGateway` | `core` | [`api-gateway`](../packages/api/gateway) | - | - | - | 将生成的 Remote 描述符与实时 Cordis 服务关联，解析已注册的身份，并通过共享的 Connection RPC 载体提供一元调用。 |
 | `ctx.sessionPersistence` | `seam` | [`session-persistence`](../packages/session/session-persistence) | [`session-persistence-jsonl`](../packages/session/session-persistence-jsonl), [`session-persistence-sqlite`](../packages/session/session-persistence-sqlite) | [`agent-loop`](../packages/core/agent-loop), [`tool-bash`](../packages/shell/tool-bash), [`hooks-claude-code`](../packages/hooks/hooks-claude-code), [`hooks-codex`](../packages/hooks/hooks-codex), [`session-query`](../packages/session-query/session-query), [`session-query-sqlite`](../packages/session-query/session-query-sqlite), [`message-feedback`](../packages/feedback/message-feedback) | - | 各后端持久化同一套 SessionEvent 词汇；应用在组合时选择后端。 |
-| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy` | - | 对照封闭的 Session、项目与 Artifact 方法表校验 Host 创建的 Principal，再在对应的显式请求作用域内运行获准的操作。 |
+| `ctx.connectionRequestAuthorizer` | `core` | `xagent-authorization` | - | `apiproxy`, [`api-gateway`](../packages/api/gateway) | - | 对照封闭的会话、项目、Artifact 与 Fact 方法表校验 Host 创建的 Principal，再在对应的显式请求作用域内运行获准的操作。 |
 | `ctx.connectionRequestContextResolver` | `core` | `xagent-connection-auth` | - | `connection` | - | 将 Host 管理的 Cookie 交换为 FastAPI introspection 后、绑定到物理 HTTP 或 WebSocket 连接的 Principal。 |
 | `ctx.xagentPrincipal` | `seam` | `xagent-principal` | - | - | - | 定义不可变且经过校验的 actor 契约；浏览器 payload 和身份外观请求头不能构造 Principal。 |
 | `ctx.xagentArtifact` | `core` | `xagent-artifact` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | 只从自身当前已认证请求作用域读取用户令牌，并将八个固定 Artifact 操作转发给 FastAPI，不缓存数据或 URL。 |
 | `ctx.xagentProject` | `core` | `xagent-project` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | 只从当前连接请求作用域读取用户令牌，并将 4 个固定工作台操作转发给 FastAPI。 |
-| `ctx.xagentFact` | `seam` | `xagent-fact` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway), `session-persistence-api` | - | 从物理 Project Session 派生提案与评审权限；私有 receipt 与 Outbox 注册表只向 Session 持久化传递 append 标识。 |
+| `ctx.xagentFact` | `seam` | `xagent-fact` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway), `session-persistence-api` | - | 从物理项目会话派生提案与评审权限；私有收据与 Outbox 注册表只向会话持久化传递追加身份。 |
 | `ctx.xagentRetrieval` | `seam` | `xagent-retrieval` | - | `tool-retrieval`, `session-persistence-api` | - | 消费一个不可变的认证 prompt 作用域，为每次调用签发一份精确委托，并在 Session append 确认前私下保存 receipt。 |
 | `ctx.xagentCitation` | `core` | `xagent-retrieval` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | 只解析当前已认证 Session 中持久化的 citation，签发全新委托，并返回不含 URL 的不可变 Artifact 导航身份。 |
 | `ctx.settings` | `seam` | [`settings`](../packages/settings/settings) | [`settings-file`](../packages/settings/settings-file) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | 插件注册命名空间 schema 并解析分层值；提供方存储原始文档。LLM（大语言模型）适配器在用户分区下将其入口配置注册为组合基础；Web 网关提供经过脱敏的分层描述符，并写入用户层。 |

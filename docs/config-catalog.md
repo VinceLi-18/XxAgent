@@ -3055,7 +3055,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/authorization/src/index.ts:52`](../packages/xagent/authorization/src/index.ts)
+Source: [`packages/xagent/authorization/src/index.ts:53`](../packages/xagent/authorization/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 

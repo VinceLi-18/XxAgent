@@ -8,4 +8,6 @@ FastAPI returns the public pending result together with a private admission rece
 
 One Outbox owner may pull for a Session at a time. Session-open and `agent/pre-step` triggers with the same immutable physical scope share that owner. A different or cancelled scope closes the prior owner before replacement. The owner validates the fixed project and duplicate row identities, reserves each event sequence, and appends the closed decision event through `Session.append`; it never calls Agent send, follow-up, or loop APIs.
 
+The appended `fact/proposal-decided` event is log-only and has no surface operation. This package does not project it into model history, so delivery has zero model-token and KV-cache effect until a separate Consumer performs that projection.
+
 Disposal rejects new work before aborting owned operations, removes every effect, synchronously clears both registries and scope ownership, then awaits in-flight settlement. Results observed after request, connection, Session, or plugin cancellation are discarded.

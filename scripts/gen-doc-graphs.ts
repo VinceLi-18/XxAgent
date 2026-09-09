@@ -175,8 +175,8 @@ const SERVICE_ROLES: ServiceRole[] = [
     pkg: 'xagent-authorization',
     title: 'Connection-bound XAgent authorization',
     mode: 'core',
-    consumers: ['apiproxy'],
-    note: 'Validates a Host-created Principal against closed Session, project, and Artifact method tables, then runs admitted operations inside their explicit request scopes.',
+    consumers: ['apiproxy', 'api-gateway'],
+    note: 'Validates a Host-created Principal against closed Session, project, Artifact, and Fact method tables, then runs admitted operations inside their explicit request scopes.',
   },
   {
     key: 'connectionRequestContextResolver',

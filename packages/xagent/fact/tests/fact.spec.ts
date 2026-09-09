@@ -588,6 +588,54 @@ describe('XAgent Fact provider', () => {
     expect(created.outbox.attachments(RUNTIME_SESSION, 0, 10)).toEqual([])
   })
 
+  test.each(['request-abort', 'session-dispose'] as const)(
+    'stops a multi-row Outbox page after the first synchronous observer %s',
+    async (stop) => {
+      const release = Promise.withResolvers<{ items: readonly XAgentFactOutboxItem[] }>()
+      const value = backend()
+      value.pullOutbox = vi.fn(async () => release.promise)
+      const created = service(value)
+      await created.ctx.plugin(SessionStore)
+      const request = new AbortController()
+      const opened = await pluginSession(created.ctx, scope({ requestSignal: request.signal }))
+      const sessionOwner = opened.owner
+      created.ctx.on('session/event', (_session, event) => {
+        if (event.type !== 'fact/proposal-decided') return
+        if (stop === 'request-abort') request.abort(new Error('request closed'))
+        else void sessionOwner.dispose()
+      })
+      await vi.waitFor(() => { expect(value.pullOutbox).toHaveBeenCalledOnce() })
+
+      release.resolve({ items: [decision(1), decision(2)] })
+      await vi.waitFor(() => { expect(factEvents(opened.session)).toHaveLength(1) })
+      await new Promise<undefined>((resolve) => { setImmediate(resolve, undefined) })
+
+      expect(factEvents(opened.session)).toHaveLength(1)
+      expect(created.outbox.attachments(RUNTIME_SESSION, 0, 10)).toHaveLength(1)
+    },
+  )
+
+  test('discards an Outbox reservation when its request is cancelled before append', async () => {
+    const value = backend()
+    value.pullOutbox = vi.fn(async () => ({ items: [decision(1)] }))
+    const created = service(value)
+    await created.ctx.plugin(SessionStore)
+    const request = new AbortController()
+    const register = created.outbox.register.bind(created.outbox)
+    vi.spyOn(created.outbox, 'register').mockImplementation((input) => {
+      const inserted = register(input)
+      request.abort(new Error('request closed'))
+      return inserted
+    })
+
+    const { session } = await pluginSession(created.ctx, scope({ requestSignal: request.signal }))
+    await vi.waitFor(() => { expect(value.pullOutbox).toHaveBeenCalledOnce() })
+    await new Promise<undefined>((resolve) => { setImmediate(resolve, undefined) })
+
+    expect(factEvents(session)).toEqual([])
+    expect(created.outbox.attachments(RUNTIME_SESSION, 0, 10)).toEqual([])
+  })
+
   test('service disposal rejects new work before abort and waits for in-flight settlement without publishing late receipts', async () => {
     const release = Promise.withResolvers<Awaited<ReturnType<XAgentFactBackend['prepare']>>>()
     const value = backend()
@@ -1106,7 +1154,7 @@ describe('XAgent Fact provider', () => {
     expect(factEvents(session)).toEqual([])
   })
 
-  test('live owner invariant detects mismatched Agent and Outbox ownership fields', () => {
+  test('live owner invariant detects mismatched Agent and Outbox ownership fields', async () => {
     type Internals = {
       activeScopes: Map<Agent, XAgentAuthenticatedSessionRequestScope>
       outboxOwners: Map<string, {
@@ -1119,8 +1167,9 @@ describe('XAgent Fact provider', () => {
       }>
     }
     const created = service()
+    await created.ctx.plugin(SessionStore)
+    const { session: validSession } = await pluginSession(created.ctx, undefined)
     const internals = created.fact as unknown as Internals
-    const validSession = { id: RUNTIME_SESSION } as Session
     const validAgent = agentFor(validSession)
     internals.activeScopes.set(validAgent, scope())
     expect(created.fact.relationshipIssue()).toBeUndefined()
@@ -1155,6 +1204,7 @@ describe('XAgent Fact provider', () => {
     const aborted = new AbortController()
     aborted.abort()
     expect(check(RUNTIME_SESSION, owner({ controller: aborted }))).toContain('Fact Outbox owner')
+    await created.ctx.fiber.dispose()
   })
 
   test('request cancellation closes an Outbox owner before a late backend result', async () => {

@@ -7,9 +7,11 @@ import type { XAgentArtifactScopeRunner } from '../../artifact/src/index.ts'
 import {
   currentXAgentAuthenticatedRequestScope,
   type XAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedSessionRequestScope,
 } from '../../principal/src/index.ts'
 import type { XAgentProjectScopeRunner } from '../../project/src/index.ts'
 import type { XAgentCitationScopeRunner } from '../../retrieval/src/index.ts'
+import type { XAgentFactScopeRunner } from '../../fact/src/types.ts'
 import { describe, expect, test, vi } from 'vitest'
 import * as authorizationModule from '../src/index.ts'
 import {
@@ -103,6 +105,25 @@ function citationScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => voi
     active: () => active,
     async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Promise<T>): Promise<T> {
       if (active !== undefined) throw new Error('nested citation request scope')
+      active = scope
+      onScope?.(scope)
+      try {
+        return await operation()
+      } finally {
+        active = undefined
+      }
+    },
+  }
+}
+
+function factScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => void): XAgentFactScopeRunner & {
+  readonly active: () => XAgentAuthenticatedRequestScope | undefined
+} {
+  let active: XAgentAuthenticatedRequestScope | undefined
+  return {
+    active: () => active,
+    async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> {
+      if (active !== undefined) throw new Error('nested Fact request scope')
       active = scope
       onScope?.(scope)
       try {
@@ -737,6 +758,133 @@ describe('XAgent Session 授权', () => {
     await expect(auth.run('xagentCitation/resolve', payload, context, new AbortController().signal, success))
       .resolves.toEqual({ ok: true, value: 'ok' })
     expect(first.active()).toBeUndefined()
+  })
+
+  test.each([
+    'xagentFact/list-heads',
+    'xagentFact/list-proposals',
+    'xagentFact/revision',
+    'xagentFact/proposal',
+    'xagentFact/approve',
+    'xagentFact/reject',
+    'xagentFact/withdraw',
+  ])('%s 在当前物理连接的唯一 Project Session scope 内运行', async (endpoint) => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const runner = factScope()
+    const operation = vi.fn(async (): Promise<RpcResult<string>> => {
+      expect(runner.active()).toMatchObject({
+        principal: context.principal,
+        userToken: 'alice-token',
+        connectionId: 'connection-1',
+        sessionId: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        projectId: '00000000-0000-0000-0000-000000000401',
+      })
+      return { ok: true, value: 'ok' }
+    })
+    const auth = new XAgentAuthorization(
+      remote, persistence(), undefined, undefined, undefined, runner,
+    )
+
+    await expect(auth.run(
+      endpoint,
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+    expect(operation).toHaveBeenCalledOnce()
+    expect(runner.active()).toBeUndefined()
+  })
+
+  test('Fact namespace 拒绝未知方法、匿名连接、Private Session、Session 串号和缺失服务', async () => {
+    const operation = vi.fn(success)
+    const remote = backend()
+    const runner = factScope()
+    const auth = new XAgentAuthorization(
+      remote, persistence(), undefined, undefined, undefined, runner,
+    )
+    const payload = { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } }
+
+    await expect(auth.run(
+      'xagentFact/unknown', payload, context, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentFact/list-heads', { args: {} }, context, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentFact/list-heads', payload, { connectionId: 'anonymous' }, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    await expect(auth.run(
+      'xagentFact/list-heads', payload, context, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'session-not-found' } })
+
+    remote.sessions.list = vi.fn(async () => { throw new XAgentBackendError('unauthenticated') })
+    await expect(auth.run(
+      'xagentFact/list-heads', payload, context, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+
+    remote.sessions.list = vi.fn(async () => { throw new Error('backend unavailable') })
+    await expect(auth.run(
+      'xagentFact/list-heads', payload, context, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'internal' } })
+
+    remote.sessions.list = vi.fn(async () => ({ schema_version: 1, sessions: [] }))
+    await expect(auth.run(
+      'xagentFact/list-heads', payload, context, new AbortController().signal, operation,
+    )).resolves.toMatchObject({ ok: false, error: { code: 'session-not-found' } })
+
+    const missing = new XAgentAuthorization(remote, persistence())
+    await expect(missing.run(
+      'xagentFact/list-heads', payload, context, new AbortController().signal, operation,
+    )).resolves.toEqual({
+      ok: false,
+      error: { code: 'internal', message: 'Fact service unavailable', details: {} },
+    })
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test('显式 Session 恢复在同一物理连接派生的 Session scope 内发布 session/created', async () => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const auth = new XAgentAuthorization(remote, persistence())
+    let observed: XAgentAuthenticatedRequestScope | undefined
+
+    await expect(auth.run(
+      'session/create',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      context,
+      new AbortController().signal,
+      async () => {
+        observed = currentXAgentAuthenticatedRequestScope()
+        return { ok: true, value: 'ok' }
+      },
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+
+    expect(observed).toMatchObject({
+      sessionId: '00000000-0000-0000-0000-000000000701',
+      visibility: 'project',
+      projectId: '00000000-0000-0000-0000-000000000401',
+      userToken: 'alice-token',
+      connectionId: 'connection-1',
+    })
   })
 
   test.each([

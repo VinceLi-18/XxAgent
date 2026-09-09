@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-`@xagent/dsh-fact` provides the governed Fact service for XAgent Business Project Sessions. It prepares model-proposed facts for later human review, exposes authenticated browser reads and decisions, and projects durable decision events back into the source Session.
+`@xagent/dsh-fact` provides the governed Fact service for XAgent Business Project Sessions. It prepares model-proposed facts for later human review, exposes authenticated browser reads and decisions, and appends durable decision events to the source Session log.
 
 The service accepts proposal authority only from the physical authenticated request scope. It issues an exact, short-lived delegation for the current actor, permission revision, fixed project, Session, tool, and tool call. The browser Remote likewise derives the user token and fixed project from its connection scope; no caller supplies identity or ownership fields.
 
@@ -14,15 +14,15 @@ Proposal receipts and Outbox identities remain in separate private registries. S
 
 #### What the model sees
 
-The provider itself adds no prompt text or tool schema. A separate Consumer may return only a proposal ID and `pending` status. A durable human decision becomes model-visible as a closed `fact/proposal-decided` Session event on a later user-initiated Turn; receipts, tokens, and evidence content are never projected.
+The provider itself adds no prompt text or tool schema. A separate Consumer may return only a proposal ID and `pending` status. Outbox delivery appends `fact/proposal-decided` as a log-only, non-surface Session event; it is not model-visible until a separate Consumer explicitly projects it. Receipts, tokens, and evidence content are never projected.
 
 #### Token effect
 
-The provider adds no tokens by itself. A later decision event contributes only its bounded public fields when another component projects that event into a model request.
+The provider and its decision event add no model tokens by themselves. A future Consumer may contribute only the event's bounded public fields when it explicitly projects them into a model request.
 
 #### KV Cache effect
 
-Outbox delivery appends Session history without scheduling a model request, so it does not invalidate or extend a live KV Cache on receipt. The next user-initiated request incorporates the durable event through normal Session reconstruction.
+Outbox delivery appends Session history without scheduling a model request, so it neither invalidates nor extends a live KV Cache. Until a separate Consumer projects the event, later model requests also ignore it.
 
 ## Known Limitations and Deferred Work
 

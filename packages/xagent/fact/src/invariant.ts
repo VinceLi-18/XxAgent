@@ -13,7 +13,7 @@ export const name = 'xagent-fact-invariant'
 export const inject = ['invariants']
 
 /**
- * Validate the live Remote binding and distinct private-registry ownership.
+ * Validate distinct private-registry ownership and live lifecycle relationships.
  * @param service - active Fact service selected by the current Cordis scope.
  * @param fail - package-attributed invariant failure reporter.
  */
@@ -23,14 +23,6 @@ export function validateXAgentFactRelationships(service: XAgentFactService, fail
   if (registryIssue !== undefined) fail(registryIssue)
   const ownerIssue = original.relationshipIssue()
   if (ownerIssue !== undefined) fail(ownerIssue)
-  const binding = original.typertRemote
-  if (
-    binding.service !== original
-    || binding.serviceKey !== original.name
-    || binding.namespace !== binding.serviceKey
-  ) {
-    fail('xagentFact Typert binding must identify its live Cordis service and namespace')
-  }
 }
 
 /** Validate the optional provider when this companion is installed. */

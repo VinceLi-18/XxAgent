@@ -99,3 +99,60 @@ git diff --check
 No blocking concerns. Task 6 must emit the exact public Fact result metadata expected by receipt admission: `{ kind: 'xagent-fact', status: 'pending', proposalId }` on the successful `tool/result`. Outbox delivery intentionally pulls one 32-row page per Session-open or pre-step trigger; later rows wait for another trigger, as documented.
 
 The branch was not pushed.
+
+## Review fix round 1
+
+### Root causes and corrections
+
+- Physical authorization had no closed `xagentFact` namespace, no Fact scope-runner dependency, and no authenticated Session-restore scope. Added the exact seven-method table, resolved the Fact service per request, derived one Project Session from the authenticated connection and authoritative backend Session list, rejected anonymous, Private, missing, duplicate, and mismatched Sessions, and ran the complete Remote operation through `fact.withRequest`. An explicit `session/create` restore now runs within the same derived authenticated Session scope so `session/created` Outbox delivery sees the physical request.
+- Source-plane tests loaded the built Fact entry because `@xagent/dsh-fact` was absent from the root TypeScript paths. That split Typert's private marker identity, so a real Loader composition could install the service while Gateway discovered no methods. Added the source paths and package graph edges, then covered the real Loader, registry, Gateway, authorizer, Session store, and Fact provider together.
+- Outbox delivery checked ownership only after the pull. Added a single live-owner predicate covering service acceptance, owner state, request and connection cancellation, current owner-map identity, and the live Session registry relationship. It is checked before each reservation and append; a reservation made concurrently with cancellation is discarded. A microtask boundary after synchronous append lets observer-triggered Session disposal finish before another row is considered.
+- The package invariant asserted fixed Typert metadata. It now inspects only the two authoritative mutable registries and live Agent/Session/Outbox ownership. Companion HMR coverage observes the first registration, disposes its fiber, reinstalls it, and observes the replacement registration.
+- Package and architecture prose now states that `fact/proposal-decided` is a log-only, non-surface event with zero model-token and KV-cache effect until a separate Consumer projects it. Chinese Fact prose uses the glossary terms for provider, consumer, registry, receipt, identity, attachment, append, commit, plugin, and Turn. Generated graphs and catalogs were changed only through their owning generators, and every reviewed bilingual pair was re-recorded.
+
+### RED evidence
+
+The first authorization selection covered all seven Fact methods, anonymous and unknown calls, and explicit Session restore before implementation. It failed nine cases: admitted operations had no Fact scope, unknown and anonymous calls fell through, and restore exposed no authenticated Session scope.
+
+The first real Loader composition loaded `ctx.xagentFact` but Gateway did not claim `xagentFact/list-heads`; cold-open Outbox delivery consequently appended no event. This isolated the missing source-plane alias rather than a service implementation error.
+
+The first multi-row Outbox regressions both failed with two registered and appended decisions after the first synchronous observer aborted the request or disposed the Session; the required count was one. The first revised invariant case also failed because changing fixed Typert metadata still raised a runtime invariant error.
+
+The repository duplication gate later found two Fact/Citation authorization clones (`17` duplicated lines, `151` tokens). A private `runInSessionScope` helper removed the duplication without combining either namespace's closed method table or changing its error messages.
+
+### GREEN and final verification
+
+```sh
+./node_modules/.bin/vitest run packages/xagent/authorization/tests/authorization.spec.ts packages/xagent/authorization/tests/fact-loader-composition.spec.ts --reporter=dot
+```
+
+Result: `2` files and `91` tests passed. The Loader composition proves an authenticated Fact Remote reaches FastAPI through Gateway and Authorizer, an explicit cold Session open delivers one Outbox decision with no `turn/start`, and anonymous and Private calls are denied before the Fact backend.
+
+```sh
+./node_modules/.bin/vitest run packages/xagent/fact/tests packages/xagent/authorization/tests --coverage --coverage.include='packages/xagent/{fact,authorization}/src/**/*.ts' --reporter=dot
+```
+
+Result: `5` files and `133` tests passed; statements `726/726`, branches `571/571`, functions `133/133`, and lines `608/608` are all 100%.
+
+```sh
+./node_modules/.bin/tsc -b packages/xagent/fact packages/xagent/authorization --pretty false
+./node_modules/.bin/tsc -p tsconfig.host.json --noEmit --pretty false
+node --import tsx scripts/run-oxlint.ts packages/xagent/fact packages/xagent/authorization scripts/gen-doc-graphs.ts
+env CI=true corepack pnpm run lint
+env CI=true corepack pnpm run hygiene
+env CI=true corepack pnpm run duplication
+env CI=true corepack pnpm run doc-sync
+git diff --check
+```
+
+Results: both TypeScript programs and both lint selections passed; hygiene completed its package, publication, invariant, NodeNext, and runtime-closure checks; duplication reported `0` clones; doc-sync passed `28/28` gates; the diff check was clean. The sandboxed tsx launchers failed only because IPC sockets were denied and were rerun unchanged with narrow host permission. The lockfile was regenerated with the repository's Corepack-pinned pnpm `11.7.0` and contains only the expected authorization importer edges.
+
+### Review self-check and concerns
+
+- The authorization table exactly matches the seven Task 5 Typert exports and accepts no authority fields from browser payloads.
+- The derived Fact scope retains the authenticated physical connection, user token, Principal, exact Session, fixed project, and both cancellation signals only for the operation lifetime.
+- The separate `xagentFact.receipts` and `xagentFact.outbox` registries and Task 4 codecs are unchanged. Delegation remains exactly 60 seconds.
+- Outbox delivery uses only `Session.append`, revalidates the current live owner before every row mutation, and never starts a Turn.
+- Runtime invariants observe mutable package-owned relationships only; Loader/build coverage retains responsibility for Typert metadata.
+
+No blocking concerns. Model projection of the durable decision event remains deferred to the separate Consumer owned by Task 8. The branch was not pushed.
