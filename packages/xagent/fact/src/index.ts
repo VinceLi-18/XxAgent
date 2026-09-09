@@ -210,11 +210,23 @@ function projectedDecisionSequences(session: Session): Set<number> {
   return projected
 }
 
-function factDecisionProjection(session: Session): UserMessage | undefined {
+function unprojectedFactDecisions(session: Session): SessionEvent<'fact/proposal-decided'>[] {
   const projected = projectedDecisionSequences(session)
-  const decisions = session.events.filter((event): event is SessionEvent<'fact/proposal-decided'> => (
+  return session.events.filter((event): event is SessionEvent<'fact/proposal-decided'> => (
     event.type === 'fact/proposal-decided' && !projected.has(event.seq)
   ))
+}
+
+function hasPendingFactDecisionDelivery(session: Session): boolean {
+  if (unprojectedFactDecisions(session).length > 0) return true
+  return session.surface.nodes.some((seq) => {
+    const event = session.events[seq]
+    return event?.type === 'user/message' && isFactDecisionNotice(event.data)
+  })
+}
+
+function factDecisionProjection(session: Session): UserMessage | undefined {
+  const decisions = unprojectedFactDecisions(session)
   if (decisions.length === 0) return
   return createUserMessage({
     content: [{
@@ -419,7 +431,7 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
         ctx.logger.warn(`xagent Fact receipt binding rejected: ${error instanceof Error ? error.message : 'unknown error'}`)
       }
     }, { global: true })
-    const closePreStep = ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
+    const closePreStep = ctx.on('agent/pre-step', async ({ agent, messages, step, signal }, next) => {
       if (messages.length > 0) {
         const scopes: XAgentAuthenticatedSessionRequestScope[] = []
         let invalid = false
@@ -442,7 +454,9 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
       }
       const decision = await next()
       if (decision.kind === 'reject') this.activeScopes.delete(agent)
-      if (decision.kind === 'reject' || !messages.some(message => message.source.kind === 'user')) return decision
+      if (decision.kind === 'reject' || step !== 1 || !messages.some(message => message.source.kind === 'user')) {
+        return decision
+      }
       const projection = factDecisionProjection(agent.session)
       return projection === undefined
         ? decision
@@ -824,6 +838,7 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
       await Promise.allSettled([current.settlement])
       if (!this.accepting) throw new XAgentFactError('service-unavailable')
     }
+    if (hasPendingFactDecisionDelivery(session)) return
     const controller = new AbortController()
     const externalSignals = [scope.requestSignal, scope.connectionSignal, signal]
       .filter((value): value is AbortSignal => value !== undefined)

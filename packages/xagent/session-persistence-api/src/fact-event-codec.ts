@@ -12,7 +12,6 @@ type FactStatus = FactProposalDecidedEvent['data']['status']
 type FactSessionEvent = FactProposalDecidedEvent & {
   readonly seq: number
   readonly time: number
-  readonly surfaceOp: 'append'
 }
 type FactFieldNames = {
   readonly proposalId: string
@@ -90,8 +89,8 @@ function reason(value: unknown): string {
 }
 
 function parseFactSessionEvent(value: unknown, fields: FactFieldNames): FactSessionEvent {
-  const event = exactRecord(value, ['seq', 'time', 'type', 'surfaceOp', 'data'])
-  if (event.type !== FACT_EVENT_TYPE || event.surfaceOp !== 'append') invalidFactEvent()
+  const event = exactRecord(value, ['seq', 'time', 'type', 'data'])
+  if (event.type !== FACT_EVENT_TYPE) invalidFactEvent()
   const data = exactRecord(
     event.data,
     [fields.proposalId, fields.projectId, fields.fieldKey, 'label', 'status'],
@@ -112,7 +111,6 @@ function parseFactSessionEvent(value: unknown, fields: FactFieldNames): FactSess
     seq: nonNegativeInteger(event.seq),
     time: nonNegativeInteger(event.time),
     type: FACT_EVENT_TYPE,
-    surfaceOp: 'append',
     data: {
       proposalId: uuid(data[fields.proposalId]),
       projectId: uuid(data[fields.projectId]),
@@ -139,7 +137,6 @@ export function encodeFactSessionEvent(value: unknown): Record<string, unknown> 
     seq: event.seq,
     time: event.time,
     type: event.type,
-    surfaceOp: event.surfaceOp,
     data: {
       proposal_id: event.data.proposalId,
       project_id: event.data.projectId,

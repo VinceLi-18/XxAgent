@@ -254,14 +254,14 @@ class ErrorThenFactAdapter extends RequestProbeAdapter {
   }
 }
 
-function toolResponse(): StreamChunk[] {
+function toolResponse(callId = 'fact-projection-noop'): StreamChunk[] {
   return [
     { type: 'block-start', index: 0, blockType: 'tool-call' },
-    { type: 'tool-call-delta', index: 0, id: CallId('fact-projection-noop'), name: 'fact_projection_noop', argumentsDelta: '{}' },
+    { type: 'tool-call-delta', index: 0, id: CallId(callId), name: 'fact_projection_noop', argumentsDelta: '{}' },
     {
       type: 'block-end',
       index: 0,
-      block: { type: 'tool-call', id: CallId('fact-projection-noop'), name: 'fact_projection_noop', arguments: '{}' },
+      block: { type: 'tool-call', id: CallId(callId), name: 'fact_projection_noop', arguments: '{}' },
     },
     { type: 'finish', reason: { kind: 'tool-calls' } },
   ]
@@ -298,7 +298,7 @@ async function loopHarness(seed?: readonly SessionEvent[], adapter: RequestProbe
   return { ctx, adapter, backend: value, fact, agent: handle.agent }
 }
 
-async function runUserTurn(ctx: Context, agent: Agent, text: string): Promise<void> {
+async function runMessageTurn(ctx: Context, agent: Agent, message: ReturnType<typeof createUserMessage>): Promise<void> {
   const idle = new Promise<void>((resolve) => {
     const close = ctx.on('agent/status', ({ agent: subject, status }) => {
       if (subject !== agent || status !== 'idle') return
@@ -307,9 +307,17 @@ async function runUserTurn(ctx: Context, agent: Agent, text: string): Promise<vo
     })
   })
   runWithXAgentAuthenticatedRequestScope(scope(), () => {
-    agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+    agent.followup(message)
   })
   await idle
+}
+
+async function runUserTurn(ctx: Context, agent: Agent, text: string): Promise<void> {
+  await runMessageTurn(
+    ctx,
+    agent,
+    createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
+  )
 }
 
 function requestText(request: GenerateOptions): string {
@@ -525,6 +533,98 @@ describe('XAgent Fact provider', () => {
     await runUserTurn(restarted.ctx, restarted.agent, 'after restart')
     const resumed = requestText(restarted.adapter.requests[0]!)
     for (const item of decisions) expect(resumed).not.toContain(item.proposalId)
+    await restarted.ctx.fiber.dispose()
+  })
+
+  test('defers a decision pulled during a user-steered tool continuation until the next Turn', async () => {
+    const created = await loopHarness()
+    const pending = decision(8)
+    let pulls = 0
+    created.backend.pullOutbox = vi.fn(async () => ({ items: ++pulls === 2 ? [pending] : [] }))
+    created.agent.ctx.tools.register(defineContentToolFixture({
+      name: 'fact_projection_noop',
+      description: 'Steer one real user message into the next step.',
+      parameters: {},
+      execute: () => {
+        created.agent.steer(createUserMessage({
+          content: [{ type: 'text', text: 'steered user correction' }],
+          source: { kind: 'user' },
+        }))
+        return Promise.resolve([{ type: 'text', text: 'steered' }])
+      },
+    }))
+    created.adapter.scripted.push(toolResponse(), textResponse('continued'))
+
+    await runUserTurn(created.ctx, created.agent, 'start tool work')
+
+    expect(created.adapter.requests).toHaveLength(2)
+    expect(requestText(created.adapter.requests[1]!)).not.toContain(pending.event.data.proposalId)
+    await runUserTurn(created.ctx, created.agent, 'new Turn')
+    expect(requestText(created.adapter.requests[2]!)).toContain(pending.event.data.proposalId)
+    await runUserTurn(created.ctx, created.agent, 'later Turn')
+    expect(requestText(created.adapter.requests[3]!)).not.toContain(pending.event.data.proposalId)
+    await created.ctx.fiber.dispose()
+  })
+
+  test('does not project a pending decision into a plugin-initiated Turn', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'baseline')
+    const pending = decision(9).event.data
+    created.agent.session.append('fact/proposal-decided', pending)
+
+    await runMessageTurn(created.ctx, created.agent, createUserMessage({
+      content: [{ type: 'text', text: 'background refresh' }],
+      source: { kind: 'plugin', plugin: 'fact-test' },
+    }))
+
+    expect(requestText(created.adapter.requests[1]!)).not.toContain(pending.proposalId)
+    await runUserTurn(created.ctx, created.agent, 'real user Turn')
+    expect(requestText(created.adapter.requests[2]!)).toContain(pending.proposalId)
+    await runUserTurn(created.ctx, created.agent, 'later Turn')
+    expect(requestText(created.adapter.requests[3]!)).not.toContain(pending.proposalId)
+    await created.ctx.fiber.dispose()
+  })
+
+  test('keeps Outbox pages bounded across tool continuations and restart', async () => {
+    let pulls = 0
+    const pullOutbox = vi.fn(async () => {
+      const page = ++pulls
+      return { items: Array.from({ length: 32 }, (_, offset) => decision(page * 100 + offset)) }
+    })
+    const created = await loopHarness()
+    created.backend.pullOutbox = pullOutbox
+    created.agent.ctx.tools.register(defineContentToolFixture({
+      name: 'fact_projection_noop',
+      description: 'Continue one bounded Fact projection Turn.',
+      parameters: {},
+      execute: () => Promise.resolve([{ type: 'text', text: 'continued' }]),
+    }))
+    created.adapter.scripted.push(toolResponse('fact-page-step-1'), toolResponse('fact-page-step-2'), textResponse('done'))
+
+    await runUserTurn(created.ctx, created.agent, 'process one bounded page')
+    const seed = [...created.agent.session.events]
+    await created.ctx.fiber.dispose()
+
+    const restarted = await loopHarness(seed)
+    restarted.backend.pullOutbox = pullOutbox
+    await runUserTurn(restarted.ctx, restarted.agent, 'project the pending page after restart')
+    await runUserTurn(restarted.ctx, restarted.agent, 'pull the following page')
+
+    const visibleCounts = [
+      ...created.adapter.requests.map(request => request.messages
+        .reduce((count, message) => message.source.kind === 'xagent-fact-decisions'
+          ? count + message.source.eventSeqs.length
+          : count, 0)),
+      ...restarted.adapter.requests.map(request => request.messages
+        .reduce((count, message) => message.source.kind === 'xagent-fact-decisions'
+          ? count + message.source.eventSeqs.length
+          : count, 0)),
+    ]
+    expect(visibleCounts).toEqual([32, 0, 0, 32, 32])
+    expect(pullOutbox).toHaveBeenCalledTimes(3)
+    expect(requestText(restarted.adapter.requests[0]!)).toContain(decision(200).event.data.proposalId)
+    expect(requestText(restarted.adapter.requests[0]!)).not.toContain(decision(300).event.data.proposalId)
+    expect(requestText(restarted.adapter.requests[1]!)).toContain(decision(300).event.data.proposalId)
     await restarted.ctx.fiber.dispose()
   })
 

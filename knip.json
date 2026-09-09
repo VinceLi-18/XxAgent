@@ -79,6 +79,7 @@
       "ignoreDependencies": [
         "@deepseek-ai/.+",
         "@xagent/dsh-fact",
+        "@xagent/dsh-session-persistence-api",
         "@xagent/dsh-tool-fact",
         "@xagent/dsh-tool-retrieval"
       ]

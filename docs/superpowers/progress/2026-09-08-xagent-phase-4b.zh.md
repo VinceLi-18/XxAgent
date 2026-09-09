@@ -12,7 +12,7 @@ Business bundle 现在一并安装 Fact provider、提案 Consumer、生成式 R
 
 ## 决定交付与模型行为
 
-审核完成会写入一条 required-on-read 的 `fact/proposal-decided` 事件，它只包含封闭的公开提案、项目、字段、标签、终态、可选的已确认修订字段和可选的决定理由。Outbox 交付绝不调用 Agent send 或 follow-up API。Fact 插件只从持久 Session 日志派生按序且未消费的决定，并只把它们加入下一次由用户发起的模型请求。插件等待下游流开始，持久替换临时通知并在产生输出前 flush；下游失败、取消、追加失败或 flush 失败都会保留决定以供精确重试。同一轮次的后续步骤、再后续轮次和重启重放不会重复已经消费的通知。
+审核完成会写入一条 required-on-read 的 `fact/proposal-decided` 事件，它只包含封闭的公开提案、项目、字段、标签、终态、可选的已确认修订字段和可选的决定理由。Outbox 交付绝不调用 Agent send 或 follow-up API。它最多拉取 32 条决定，并在当前页持久消费前不会拉取下一页。Fact 插件只从持久 Session 日志派生该有序页，并只把它加入下一次由用户发起轮次的第一个模型步骤。插件等待下游迭代器产生第一个结果，持久替换临时通知并在产生任何输出前 flush；下游失败、取消、追加失败或 flush 失败都会保留决定以供精确重试。同一轮次的后续步骤、再后续轮次和重启重放不会重复已经消费的通知。
 
 仓库内的无密钥 Loader 快照运行真实 Agent loop、Retrieval 与 Fact provider、工具注册表、收据绑定、Outbox 拉取、决定投影及 cited-answer 终态策略。它准备一条证据支持的 Fact 和一条理由支持的 Fact，记录两者精确的公开 pending 结果，把两个私有 Fact 收据及 Retrieval 收据绑定到对应公开事件序号，只在稍后一个用户轮次呈现已确认决定，并通过 `submit_cited_answer` 完成每个含证据回答。
 

@@ -11,6 +11,7 @@ import {
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { describe, expect, test, vi } from 'vitest'
 import * as persistenceModule from '../src/index.ts'
+import { decodeFactSessionEvent, encodeFactSessionEvent } from '../src/fact-event-codec.ts'
 import {
   XAgentSessionPersistence,
 } from '../src/index.ts'
@@ -42,7 +43,6 @@ function factDecisionEvent(seq: number, time: number): SessionEvent {
     seq,
     time,
     type: 'fact/proposal-decided',
-    surfaceOp: 'append',
     data: factDecisionData,
   } as unknown as SessionEvent
 }
@@ -119,6 +119,13 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
 }
 
 describe('XAgent FastAPI Session Persistence', () => {
+  test('Fact codec rejects a wrong event type with an otherwise exact log-only payload', () => {
+    const wrongType = { ...factDecisionEvent(0, event.time), type: 'turn/start' }
+
+    expect(() => encodeFactSessionEvent(wrongType)).toThrow('invalid XAgent Fact session event')
+    expect(() => decodeFactSessionEvent(wrongType)).toThrow('invalid XAgent Fact session event')
+  })
+
   test('fork uses the source-derived backend transaction and binds its returned child identity', async () => {
     const value = backend()
     const childId = SessionId('session-00000000-0000-0000-0000-000000000702')
@@ -364,7 +371,6 @@ describe('XAgent FastAPI Session Persistence', () => {
             seq: 2,
             time: event.time + 2,
             type: 'fact/proposal-decided',
-            surfaceOp: 'append',
             data: {
               proposal_id: factDecisionData.proposalId,
               project_id: factDecisionData.projectId,
@@ -474,7 +480,6 @@ describe('XAgent FastAPI Session Persistence', () => {
       seq: 0,
       time: 1_787_587_200_001,
       ...pulled.event,
-      surfaceOp: 'append',
     } as unknown as SessionEvent
     const ctx = new Context()
     ctx.provide('xagentFact', {
@@ -498,7 +503,6 @@ describe('XAgent FastAPI Session Persistence', () => {
       seq: 0,
       time: 1_787_587_200_001,
       type: 'fact/proposal-decided',
-      surfaceOp: 'append',
       data: wireEvent.data,
     })
     expect(appendBody).not.toContain('proposalId')
@@ -527,6 +531,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     ['boolean sequence', { ...factDecisionEvent(0, event.time), seq: true }],
     ['boolean time', { ...factDecisionEvent(0, event.time), time: true }],
     ['negative time', { ...factDecisionEvent(0, event.time), time: -1 }],
+    ['append surface', { ...factDecisionEvent(0, event.time), surfaceOp: 'append' }],
     ['replacement surface', {
       ...factDecisionEvent(0, event.time),
       surfaceOp: { op: 'replace', start: 0, end: 0 },
@@ -615,6 +620,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     ['unknown data field', { data: { private_receipt: 'secret' } }],
     ['boolean sequence', { seq: true }],
     ['boolean time', { time: true }],
+    ['append surface', { surfaceOp: 'append' }],
     ['replacement surface', { surfaceOp: { op: 'replace', start: 0, end: 0 } }],
     ['incomplete confirmed revision', {
       data: {
@@ -643,7 +649,6 @@ describe('XAgent FastAPI Session Persistence', () => {
       seq: 0,
       time: event.time,
       type: 'fact/proposal-decided',
-      surfaceOp: 'append',
       data: {
         proposal_id: factDecisionData.proposalId,
         project_id: factDecisionData.projectId,
@@ -679,7 +684,6 @@ describe('XAgent FastAPI Session Persistence', () => {
           seq: 0,
           time: event.time,
           type: 'fact/proposal-decided',
-          surfaceOp: 'append',
           data: {
             proposal_id: factDecisionData.proposalId,
             project_id: factDecisionData.projectId,

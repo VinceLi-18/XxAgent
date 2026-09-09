@@ -4,12 +4,7 @@
 - id: agent
   name: '@deepseek-ai/dsh-agent-spine-demo'
   config:
-    agents:
-      - id: xagent-fact-snapshot
-        sessionId: session-00000000-0000-0000-0000-000000000701
-        provider: xagent-fact-snapshot
-        model: snapshot
-        cwd: !!js process.cwd()
+    agents: []
     workspaceContext: false
     skills:
       enabled: false
@@ -19,6 +14,12 @@
 
 - id: llm
   name: './mock-llm.ts'
+
+- id: persistence
+  name: '@xagent/dsh-session-persistence-api'
+  config:
+    backendOrigin: 'http://xagent.snapshot'
+    serviceToken: snapshot-service-token
 
 - id: retrieval
   name: '@xagent/dsh-retrieval'

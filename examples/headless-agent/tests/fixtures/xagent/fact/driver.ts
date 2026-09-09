@@ -3,7 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { boot, installFailLoud, loadEnv, resolveConfigPath } from '@deepseek-ai/dsh-app-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { runWithXAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
 
 const SESSION = '00000000-0000-0000-0000-000000000701'
@@ -16,32 +16,39 @@ let ctx: Context | undefined
 try {
   loadEnv('xagent-fact-approval-driver')
   ctx = await boot('xagent-fact-approval-driver', resolveConfigPath(configPath, undefined))
-  const [agent] = ctx.agents.roots()
-  if (agent === undefined || ctx.agents.roots().length !== 1) throw new Error('expected one XAgent Fact snapshot agent')
+  const requestScope = Object.freeze({
+    principal: Object.freeze({
+      actorId: '00000000-0000-0000-0000-000000000001',
+      role: 'specialist' as const,
+      permissionRevision: 3,
+      authSessionId: '00000000-0000-0000-0000-000000000101',
+      connectionId: 'snapshot-connection',
+    }),
+    userToken: 'snapshot-user-token',
+    connectionId: 'snapshot-connection',
+    sessionId: SESSION,
+    requestSignal: new AbortController().signal,
+    connectionSignal: new AbortController().signal,
+    visibility: 'project' as const,
+    projectId: PROJECT,
+  })
+  const persistence = ctx.sessionPersistence as Context['sessionPersistence'] & {
+    withUserToken<T>(userToken: string, operation: () => Promise<T>): Promise<T>
+  }
+  const agent = (await persistence.withUserToken(requestScope.userToken, () => (
+    runWithXAgentAuthenticatedRequestScope(requestScope, () => ctx!.agents.create({
+      sessionId: SessionId(`session-${SESSION}`),
+      meta: { cwd: process.cwd() },
+      agentOptions: { provider: 'xagent-fact-snapshot', model: 'snapshot' },
+    }))
+  ))).agent
   const errors: unknown[] = []
   ctx.on('agent/error', ({ agent: subject, error }) => {
     if (subject === agent) errors.push(error)
   })
 
   const followup = (prompt: string): void => {
-    const request = new AbortController()
-    const connection = new AbortController()
-    runWithXAgentAuthenticatedRequestScope(Object.freeze({
-      principal: Object.freeze({
-        actorId: '00000000-0000-0000-0000-000000000001',
-        role: 'specialist' as const,
-        permissionRevision: 3,
-        authSessionId: '00000000-0000-0000-0000-000000000101',
-        connectionId: 'snapshot-connection',
-      }),
-      userToken: 'snapshot-user-token',
-      connectionId: 'snapshot-connection',
-      sessionId: SESSION,
-      requestSignal: request.signal,
-      connectionSignal: connection.signal,
-      visibility: 'project' as const,
-      projectId: PROJECT,
-    }), () => {
+    runWithXAgentAuthenticatedRequestScope(requestScope, () => {
       agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } }))
     })
   }
@@ -69,11 +76,9 @@ try {
     }))
   const decisions = agent.session.events.filter(event => event.type === 'fact/proposal-decided')
     .map(event => event.data)
-  const factAdmissions = ctx.xagentFact.receipts.attachments(String(agent.session.id), 0, agent.session.seq)
-    .map(({ eventSequence, toolCallId, proposalId }) => ({ eventSequence, toolCallId, proposalId }))
-  const retrievalAdmissions = ctx.xagentRetrieval.receipts.attachments(String(agent.session.id), 0, agent.session.seq)
-    .map(({ eventSequence, toolCallId }) => ({ eventSequence, toolCallId }))
-  process.stdout.write(`${JSON.stringify({ type: 'session', facts, decisions, factAdmissions, retrievalAdmissions })}\n`)
+  await ctx.sessions.flush(agent.session)
+  const persistenceAdmissions = ctx.xagentFactSnapshotBackend.persistenceAdmissions()
+  process.stdout.write(`${JSON.stringify({ type: 'session', facts, decisions, persistenceAdmissions })}\n`)
 } catch (error: unknown) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
   process.exitCode = 1

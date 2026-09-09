@@ -121,6 +121,7 @@
     "@xagent/dsh-fact": "workspace:*",
     "@xagent/dsh-principal": "workspace:*",
     "@xagent/dsh-retrieval": "workspace:*",
+    "@xagent/dsh-session-persistence-api": "workspace:*",
     "@xagent/dsh-tool-fact": "workspace:*",
     "@xagent/dsh-tool-retrieval": "workspace:*"
   }

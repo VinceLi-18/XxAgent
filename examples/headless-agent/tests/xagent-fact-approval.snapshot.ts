@@ -25,6 +25,11 @@ describe('XAgent fact proposal approval Loader snapshot', () => {
     })
 
     expect(result.stderr).toBe('')
+    const transcript = result.stdout.trimEnd().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+    const summary = transcript.at(-1)
+    expect(summary).toHaveProperty('persistenceAdmissions')
+    expect(summary).not.toHaveProperty('retrievalAdmissions')
+    expect(summary).not.toHaveProperty('factAdmissions')
     expect(result.stdout).toBe(await readFile(expectedPath, 'utf8'))
   }, LOADER_SMOKE_TEST_TIMEOUT_MS)
 })

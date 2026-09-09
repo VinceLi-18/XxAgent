@@ -806,6 +806,9 @@ importers:
       '@xagent/dsh-retrieval':
         specifier: workspace:*
         version: link:../packages/xagent/retrieval
+      '@xagent/dsh-session-persistence-api':
+        specifier: workspace:*
+        version: link:../packages/xagent/session-persistence-api
       '@xagent/dsh-tool-fact':
         specifier: workspace:*
         version: link:../packages/xagent/tool-fact
