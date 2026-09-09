@@ -24,8 +24,14 @@ interface MessageBinding {
 interface ToolRegistration {
   readonly scope: ProjectScope
   readonly definition: ToolDefinition
+  readonly provisional: boolean
   readonly dispose: () => unknown
   readonly closeSignals: () => void
+}
+
+interface ActiveDefinition {
+  readonly fact: XAgentFactServiceContract
+  readonly definition: ToolDefinition
 }
 
 interface FactToolRelationship {
@@ -290,120 +296,151 @@ function proposeFactDefinition(fact: XAgentFactServiceContract): ToolDefinition 
 
 /** Install the Project-scoped Fact proposal Consumer. */
 export function apply(ctx: Context): void {
-  ctx.inject(['xagentFact'], (factCtx) => {
-    const messages = new Map<string, MessageBinding>()
-    const registrations = new Map<Agent, ToolRegistration>()
-    const definition = proposeFactDefinition(factCtx.xagentFact)
-    const relationship = { registrations }
-    const key = relationshipKey(ctx)
-    const toolRelationships = relationships.get(key) ?? new Set<FactToolRelationship>()
-    toolRelationships.add(relationship)
-    relationships.set(key, toolRelationships)
+  const messages = new Map<string, MessageBinding>()
+  const registrations = new Map<Agent, ToolRegistration>()
+  let activeDefinition: ActiveDefinition | undefined
+  const relationship = { registrations }
+  const key = relationshipKey(ctx)
+  const toolRelationships = relationships.get(key) ?? new Set<FactToolRelationship>()
+  toolRelationships.add(relationship)
+  relationships.set(key, toolRelationships)
 
-    const deleteMessage = (messageId: string): void => {
-      const binding = messages.get(messageId)
-      messages.delete(messageId)
-      binding?.close?.()
-    }
-    const deleteAgentMessages = (agent: Agent): void => {
-      for (const [messageId, binding] of messages) {
-        if (binding.agent === agent) deleteMessage(messageId)
+  const deleteMessage = (messageId: string, releaseProvisional = false): void => {
+    const binding = messages.get(messageId)
+    messages.delete(messageId)
+    binding?.close?.()
+    if (releaseProvisional && binding?.scope !== undefined) {
+      const registration = registrations.get(binding.agent)
+      if (registration?.provisional === true && sameScope(registration.scope, binding.scope)) {
+        unregister(binding.agent)
       }
     }
-
-    const unregister = (agent: Agent): void => {
-      const registration = registrations.get(agent)
-      if (registration === undefined) return
-      registrations.delete(agent)
-      registration.closeSignals()
-      registration.dispose()
+  }
+  const deleteAgentMessages = (agent: Agent): void => {
+    for (const [messageId, binding] of messages) {
+      if (binding.agent === agent) deleteMessage(messageId)
     }
-    const register = (agent: Agent, scope: ProjectScope): void => {
-      const current = registrations.get(agent)
-      if (current !== undefined && sameScope(current.scope, scope)) return
+  }
+  const unregister = (agent: Agent): void => {
+    const registration = registrations.get(agent)
+    if (registration === undefined) return
+    registrations.delete(agent)
+    registration.closeSignals()
+    registration.dispose()
+  }
+  const clear = (): void => {
+    for (const messageId of [...messages.keys()]) deleteMessage(messageId)
+    for (const agent of [...registrations.keys()]) unregister(agent)
+  }
+  const register = (agent: Agent, scope: ProjectScope, provisional: boolean): void => {
+    const active = activeDefinition
+    if (active === undefined) {
       unregister(agent)
-      const abort = (): void => { unregister(agent) }
+      return
+    }
+    const current = registrations.get(agent)
+    if (current !== undefined
+      && current.definition === active.definition
+      && sameScope(current.scope, scope)
+      && (current.provisional === provisional || (!current.provisional && provisional))) return
+    unregister(agent)
+    const abort = (): void => { unregister(agent) }
+    if (!provisional) {
       scope.requestSignal.addEventListener('abort', abort, { once: true })
       scope.connectionSignal.addEventListener('abort', abort, { once: true })
-      const dispose = agent.ctx.tools.register(definition)
-      registrations.set(agent, {
+    }
+    const dispose = agent.ctx.tools.register(active.definition)
+    registrations.set(agent, {
+      scope,
+      definition: active.definition,
+      provisional,
+      dispose,
+      closeSignals: () => {
+        if (provisional) return
+        scope.requestSignal.removeEventListener('abort', abort)
+        scope.connectionSignal.removeEventListener('abort', abort)
+      },
+    })
+  }
+
+  ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+    const scope = currentProjectScope(agent)
+    const messageId = String(message.id)
+    deleteMessage(messageId)
+    if (scope === undefined) {
+      messages.set(messageId, { agent })
+    } else {
+      const invalidate = (): void => { deleteMessage(messageId, true) }
+      scope.requestSignal.addEventListener('abort', invalidate, { once: true })
+      scope.connectionSignal.addEventListener('abort', invalidate, { once: true })
+      messages.set(messageId, {
+        agent,
         scope,
-        definition,
-        dispose,
-        closeSignals: () => {
-          scope.requestSignal.removeEventListener('abort', abort)
-          scope.connectionSignal.removeEventListener('abort', abort)
+        close: () => {
+          scope.requestSignal.removeEventListener('abort', invalidate)
+          scope.connectionSignal.removeEventListener('abort', invalidate)
         },
       })
     }
-
-    factCtx.on('agent/inbox/inserted', ({ agent, message }) => {
-      const scope = currentProjectScope(agent)
-      const messageId = String(message.id)
-      deleteMessage(messageId)
-      if (scope === undefined) {
-        messages.set(messageId, { agent })
-      } else {
-        const invalidate = (): void => { deleteMessage(messageId) }
-        scope.requestSignal.addEventListener('abort', invalidate, { once: true })
-        scope.connectionSignal.addEventListener('abort', invalidate, { once: true })
-        messages.set(messageId, {
-          agent,
-          scope,
-          close: () => {
-            scope.requestSignal.removeEventListener('abort', invalidate)
-            scope.connectionSignal.removeEventListener('abort', invalidate)
-          },
-        })
-      }
-      const active = registrations.get(agent)
-      if (active !== undefined && (scope === undefined || !sameScope(active.scope, scope))) unregister(agent)
-    })
-    factCtx.on('agent/inbox/discarded', ({ message }) => {
-      deleteMessage(String(message.id))
-    })
-    factCtx.on('agent/pre-step', async ({ agent, messages: claimed }, next) => {
-      if (claimed.length > 0) {
-        const scopes = claimed.map((message) => {
-          const binding = messages.get(String(message.id))
-          deleteMessage(String(message.id))
-          const scope = binding?.agent === agent ? binding.scope : undefined
-          return scope !== undefined
-            && !scope.requestSignal.aborted
-            && !scope.connectionSignal.aborted
-            ? scope
-            : undefined
-        })
-        const scope = scopes[0]
-        if (scope !== undefined && scopes.every(value => value !== undefined && sameScope(value, scope))) {
-          register(agent, scope)
-        } else {
-          unregister(agent)
-        }
-      }
-      const decision = await next()
-      if (decision.kind === 'reject') unregister(agent)
-      return decision
-    })
-    factCtx.on('session/event', (session, event) => {
-      if (event.type !== 'turn/end') return
-      for (const agent of registrations.keys()) {
-        if (agent.session === session) unregister(agent)
-      }
-    })
-    factCtx.on('agent/error', ({ agent }) => {
-      unregister(agent)
-    })
-    factCtx.on('agent/disposed', ({ agent }) => {
-      deleteAgentMessages(agent)
-      unregister(agent)
-    })
-    factCtx.effect(() => () => {
-      for (const messageId of [...messages.keys()]) deleteMessage(messageId)
-      for (const agent of [...registrations.keys()]) unregister(agent)
-      toolRelationships.delete(relationship)
-      /* v8 ignore else -- one Fact-service injection owns the relationship until its fiber disposes. */
-      if (toolRelationships.size === 0) relationships.delete(key)
-    }, 'xagent Fact tool scopes')
+    if (scope === undefined) unregister(agent)
+    else register(agent, scope, true)
   })
+  ctx.on('agent/inbox/discarded', ({ message }) => {
+    deleteMessage(String(message.id), true)
+  })
+  ctx.on('agent/pre-step', async ({ agent, messages: claimed }, next) => {
+    if (claimed.length > 0) {
+      const scopes = claimed.map((message) => {
+        const binding = messages.get(String(message.id))
+        deleteMessage(String(message.id))
+        const scope = binding?.agent === agent ? binding.scope : undefined
+        return scope !== undefined
+          && !scope.requestSignal.aborted
+          && !scope.connectionSignal.aborted
+          ? scope
+          : undefined
+      })
+      const scope = scopes[0]
+      if (scope !== undefined && scopes.every(value => value !== undefined && sameScope(value, scope))) {
+        register(agent, scope, false)
+      } else {
+        unregister(agent)
+      }
+    }
+    const decision = await next()
+    if (decision.kind === 'reject') unregister(agent)
+    return decision
+  })
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'turn/end') return
+    for (const agent of registrations.keys()) {
+      if (agent.session === session) unregister(agent)
+    }
+  })
+  ctx.on('agent/error', ({ agent }) => {
+    unregister(agent)
+  })
+  ctx.on('agent/disposed', ({ agent }) => {
+    deleteAgentMessages(agent)
+    unregister(agent)
+  })
+  ctx.inject(['xagentFact'], (factCtx) => {
+    const active = {
+      fact: factCtx.xagentFact,
+      definition: proposeFactDefinition(factCtx.xagentFact),
+    }
+    clear()
+    activeDefinition = active
+    factCtx.effect(() => () => {
+      if (activeDefinition !== active) return
+      activeDefinition = undefined
+      clear()
+    }, 'xagent Fact tool provider scopes')
+  })
+  ctx.effect(() => () => {
+    clear()
+    toolRelationships.delete(relationship)
+    /* v8 ignore else -- one tool plugin owns the relationship until its fiber disposes. */
+    if (toolRelationships.size === 0) relationships.delete(key)
+  }, 'xagent Fact tool scopes')
 }

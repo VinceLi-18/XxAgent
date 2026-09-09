@@ -1,7 +1,8 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import LlmRuntime, { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { TOOL_RUNTIME_CODE_SCHEMAS, type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
@@ -20,6 +21,22 @@ const RUNTIME_SESSION = `session-${SESSION}`
 const PROJECT = '00000000-0000-0000-0000-000000000301'
 const PROPOSAL = '00000000-0000-0000-0000-000000000401'
 const roots: Context[] = []
+
+class RequestProbeAdapter extends LlmAdapter {
+  readonly requests: GenerateOptions[] = []
+
+  override resolveModel(provider: string, model: string) {
+    return Promise.resolve({ provider, id: model, name: model })
+  }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+}
 
 afterEach(async () => {
   for (const ctx of roots.splice(0)) await ctx.fiber.dispose()
@@ -127,6 +144,24 @@ function executeProposal(
 }
 
 describe('Project-only propose_fact registration', () => {
+  test('enters the real Agent-loop request under the authenticated Project carrier', async () => {
+    const { agent, ctx } = await setup()
+    const adapter = new RequestProbeAdapter()
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const request = new AbortController()
+    const active = requestScope({ requestSignal: request.signal })
+    runWithXAgentAuthenticatedRequestScope(active, () => {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'propose a fact' }], source: { kind: 'user' } }))
+    })
+    await agent.whenIdle()
+
+    expect(adapter.requests).toHaveLength(1)
+    expect(adapter.requests[0]?.tools?.map(tool => tool.name)).toContain('propose_fact')
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+    request.abort()
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+  })
+
   test('assembles the tool only for the authenticated Project Agent and removes it on scope change', async () => {
     const { agent, ctx } = await setup()
     const sibling = ctx.agentLoop.create(SessionId('session-00000000-0000-0000-0000-000000000202'), {
@@ -209,7 +244,7 @@ describe('Project-only propose_fact registration', () => {
       runWithXAgentAuthenticatedRequestScope(changed, () => {
         agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
       })
-      expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+      expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
     }
 
     await enterProjectStep(ctx, agent, stable)
@@ -275,7 +310,10 @@ describe('Project-only propose_fact registration', () => {
     runWithXAgentAuthenticatedRequestScope(replacement, () => {
       agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
     })
-    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
+    firstRequest.abort()
+    firstConnection.abort()
+    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
 
     await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
