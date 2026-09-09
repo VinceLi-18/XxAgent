@@ -385,7 +385,6 @@ export function apply(ctx: Context): void {
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
     let batch = claimedBatches.get(agent)
     if (batch?.turn !== turn) {
-      unregister(agent)
       batch = { turn, invalid: false }
       claimedBatches.set(agent, batch)
     }
@@ -403,6 +402,7 @@ export function apply(ctx: Context): void {
     else register(agent, batch.scope)
   }, { global: true })
   ctx.on('agent/pre-step', async ({ agent }, next) => {
+    claimedBatches.delete(agent)
     const decision = await next()
     if (decision.kind === 'reject') unregister(agent)
     return decision
@@ -433,7 +433,6 @@ export function apply(ctx: Context): void {
     clear()
     activeDefinition = active
     factCtx.effect(() => () => {
-      if (activeDefinition !== active) return
       activeDefinition = undefined
       clear()
     }, 'xagent Fact tool provider scopes')

@@ -61,6 +61,49 @@ class BlockingAdapter extends RequestProbeAdapter {
   }
 }
 
+class SameTurnScopeAdapter extends RequestProbeAdapter {
+  constructor(
+    private readonly agent: Agent,
+    private readonly replacement: XAgentAuthenticatedSessionRequestScope,
+    private readonly firstRequest: AbortController,
+  ) {
+    super()
+  }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    if (this.requests.length === 1) {
+      runWithXAgentAuthenticatedRequestScope(this.replacement, () => {
+        this.agent.inject(createUserMessage({
+          content: [{ type: 'text', text: 'same-turn replacement scope' }],
+          source: { kind: 'plugin', plugin: 'fixture' },
+        }))
+      })
+      const id = CallId('call-first-scope')
+      const argumentsJson = JSON.stringify(proposal())
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+      yield { type: 'tool-call-delta', index: 0, id, name: 'propose_fact', argumentsDelta: argumentsJson }
+      yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: 'propose_fact', arguments: argumentsJson } }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    if (this.requests.length === 2) {
+      this.firstRequest.abort()
+      const id = CallId('call-replacement-scope')
+      const argumentsJson = JSON.stringify(proposal({ field_key: 'customer.owner' }))
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+      yield { type: 'tool-call-delta', index: 0, id, name: 'propose_fact', argumentsDelta: argumentsJson }
+      yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: 'propose_fact', arguments: argumentsJson } }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+}
+
 afterEach(async () => {
   for (const ctx of roots.splice(0)) await ctx.fiber.dispose()
 })
@@ -218,6 +261,56 @@ describe('Project-only propose_fact registration', () => {
     expect(adapter.requests).toHaveLength(2)
     expect(adapter.requests.map(request => request.tools?.some(value => value.name === 'propose_fact') ?? false))
       .toEqual([true, true])
+  })
+
+  test('rotates physical cancellation ownership for a later step in the same real Turn', async () => {
+    const { agent, ctx, fact } = await setup('native', true, true)
+    const firstRequest = new AbortController()
+    const firstConnection = new AbortController()
+    const replacementRequest = new AbortController()
+    const replacementConnection = new AbortController()
+    const replacement = requestScope({
+      requestSignal: replacementRequest.signal,
+      connectionSignal: replacementConnection.signal,
+    })
+    const adapter = new SameTurnScopeAdapter(agent, replacement, firstRequest)
+    ctx.llm.registerAdapter(['mock'], adapter)
+    runWithXAgentAuthenticatedRequestScope(requestScope({
+      requestSignal: firstRequest.signal,
+      connectionSignal: firstConnection.signal,
+    }), () => {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'first scope' }], source: { kind: 'user' } }))
+    })
+    await agent.whenIdle()
+
+    expect(adapter.requests).toHaveLength(3)
+    expect(adapter.requests.map(request => request.tools?.some(value => value.name === 'propose_fact') ?? false))
+      .toEqual([true, true, true])
+    expect(fact?.proposeFact).toHaveBeenCalledTimes(2)
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+    replacementRequest.abort()
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+  })
+
+  test('coalesces an exact claimed batch and clears queued bindings with its Fact definition', async () => {
+    const { agent, ctx, factFiber } = await setup()
+    const active = requestScope()
+    const first = createUserMessage({ content: [{ type: 'text', text: 'first' }], source: { kind: 'plugin', plugin: 'fixture' } })
+    const second = createUserMessage({ content: [{ type: 'text', text: 'second' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(active, () => {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message: first })
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message: second })
+    })
+    claimMessage(ctx, agent, first, 1)
+    claimMessage(ctx, agent, second, 1)
+    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
+
+    const queued = createUserMessage({ content: [{ type: 'text', text: 'queued' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(active, () => {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message: queued })
+    })
+    await factFiber?.dispose()
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
   })
 
   test('omits the schema when one real claimed batch mixes physical Project scopes', async () => {

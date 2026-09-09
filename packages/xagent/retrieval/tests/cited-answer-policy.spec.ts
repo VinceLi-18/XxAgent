@@ -422,6 +422,7 @@ describe('cited-answer request runtime', () => {
     runWithXAgentAuthenticatedRequestScope(projectScope(sessionId), () => {
       agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
     })
+    agentEvents(ctx, agent).emit('agent/inbox/claimed', { message, turn: 1 })
     await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
       { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
