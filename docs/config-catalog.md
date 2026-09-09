@@ -3232,6 +3232,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-tool-subagent-control` — requires `tools` · `subagents` ([`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts))
 - `@deepseek-ai/dsh-user-questions` ([`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts))
 - `@deepseek-ai/dsh-workspace` — requires `storageDomain` · `sessionPersistence` ([`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts))
+- `@xagent/dsh-tool-fact` — requires `agents` · `tools` ([`packages/xagent/tool-fact/src/index.ts`](../packages/xagent/tool-fact/src/index.ts))
 - `@xagent/dsh-tool-retrieval` — requires `tools` ([`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts))
 - `@xagent/dsh-ui-account` ([`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts))
 - `@xagent/dsh-ui-artifact` ([`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts))

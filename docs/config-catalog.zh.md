@@ -3234,6 +3234,7 @@ export interface Config {
 - `@deepseek-ai/dsh-tool-subagent-control` — 需要 `tools` · `subagents`（[`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)）
 - `@deepseek-ai/dsh-user-questions`（[`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts)）
 - `@deepseek-ai/dsh-workspace` — 需要 `storageDomain` · `sessionPersistence`（[`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts)）
+- `@xagent/dsh-tool-fact` — 需要 `agents` · `tools`（[`packages/xagent/tool-fact/src/index.ts`](../packages/xagent/tool-fact/src/index.ts)）
 - `@xagent/dsh-tool-retrieval` — 需要 `tools`（[`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts)）
 - `@xagent/dsh-ui-account`（[`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts)）
 - `@xagent/dsh-ui-artifact`（[`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts)）

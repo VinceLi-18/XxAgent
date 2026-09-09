@@ -99,7 +99,7 @@ interface ToolDefinition extends ToolSchema {
 
 ## The unified JSON-value schema DSL
 
-Plugin authors use one vocabulary for typed parameters and typed output values. `ValueSchemaSpec` supports `string`, `number`, `integer`, `boolean`, `null`, `array`, `object`, author-only `json`, and exact-one `oneOf`; scalar `enum` and `const` values must match their node type. An explicit object node always declares `additionalProperties: true | false`. Parameter definitions remain an implicit open object property map, with `required: true` attached to each required property.
+Plugin authors use one vocabulary for typed parameters and typed output values. `ValueSchemaSpec` supports `string`, `number`, `integer`, `boolean`, `null`, `array`, `object`, author-only `json`, and exact-one `oneOf`; scalar `enum` and `const` values must match their node type, strings may declare a compilable JavaScript regular-expression `pattern`, and arrays may declare non-negative safe-integer `maxItems` and boolean `uniqueItems`. Uniqueness compares lossless JSON structurally, so object key order is irrelevant. An explicit object node always declares `additionalProperties: true | false`. Parameter definitions remain an implicit open object property map, with `required: true` attached to each required property.
 
 Source: [`packages/core/tools/src/schema.ts`](../../packages/core/tools/src/schema.ts)
 
@@ -407,7 +407,7 @@ Post-policy may replace either content or value, never both. Content replacement
 
 ## The enforced raw JSON Schema subset
 
-Raw schemas from subagents, workflows, MCP, and dynamic registrations use the wire-level counterpart of the author DSL. `assertSupportedJsonSchema()` accepts any JSON root, `validateJsonSchemaValue()` enforces it, and `JsonSchemaError` reports every unsupported or malformed schema path. The empty annotation-only node means unconstrained lossless JSON. `oneOf` requires at least two branches and a value must match exactly one. Consumers that still require an object root call `assertObjectJsonSchema()` and carry `ObjectJsonSchema`; this is how subagent/workflow caller-defined structured output remains object-rooted without restricting the shared vocabulary.
+Raw schemas from subagents, workflows, MCP, and dynamic registrations use the wire-level counterpart of the author DSL. `assertSupportedJsonSchema()` accepts any JSON root, validates the declaration and placement of `pattern`, `maxItems`, and `uniqueItems`, and rejects invalid or unsupported keywords. `validateJsonSchemaValue()` enforces every accepted constraint, including key-order-independent JSON structural uniqueness, while `JsonSchemaError` reports every unsupported or malformed schema path. The empty annotation-only node means unconstrained lossless JSON. `oneOf` requires at least two branches and a value must match exactly one. Consumers that still require an object root call `assertObjectJsonSchema()` and carry `ObjectJsonSchema`; this is how subagent/workflow caller-defined structured output remains object-rooted without restricting the shared vocabulary.
 
 ```ts type-equiv
 /** Scalar JSON values supported by `enum` and `const`. */
@@ -438,6 +438,12 @@ interface JsonSchemaNode {
   additionalProperties?: boolean
   /** Item schema (`type: 'array'` only); absent accepts any JSON item. */
   items?: JsonSchemaNode
+  /** Regular-expression source that every string value must match. */
+  pattern?: string
+  /** Maximum array length as a non-negative safe integer. */
+  maxItems?: number
+  /** Whether array items must be distinct by JSON structural equality. */
+  uniqueItems?: boolean
   /** Allowed values for a scalar node. */
   enum?: JsonSchemaScalar[]
   /** The single allowed value for a scalar node. */

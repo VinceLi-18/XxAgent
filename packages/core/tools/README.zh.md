@@ -90,7 +90,7 @@ ctx.tools.register(defineTool({
 }))
 ```
 
-统一 schema DSL 使用 `ParameterSchemaSpec` 表示隐式开放参数对象，使用 `ValueSchemaSpec` 表示任意 JSON 值根。它支持 `string`、`number`、`integer`、`boolean`、`null`、`array`、`object`、仅供作者使用的 `json`，以及恰好匹配一个分支的 `oneOf`；标量 `enum`/`const` 值必须符合其声明类型。每个显式 DSL 对象都声明 `additionalProperties: true | false`，而隐式参数根和原始 JSON Schema 保持标准的开放默认值。schema 记录只接受自身可枚举字符串键，schema 数组必须是稠密普通数组。编译、验证、从注册表分离以及 schema 到 TypeScript 的呈现均使用显式工作栈，因此，对有效深层 schema 的运行时处理受内存而非调用栈限制；`InferValue` 在 16 层容器内保留精确类型，之后回退到 `JsonValue`，使 TypeScript 自身也保持栈安全。
+统一 schema DSL 使用 `ParameterSchemaSpec` 表示隐式开放参数对象，使用 `ValueSchemaSpec` 表示任意 JSON 值根。它支持 `string`、`number`、`integer`、`boolean`、`null`、`array`、`object`、仅供作者使用的 `json`，以及恰好匹配一个分支的 `oneOf`；标量 `enum`/`const` 值必须符合其声明类型，字符串可以声明能够编译的 JavaScript 正则表达式 `pattern`，数组可以声明非负安全整数 `maxItems` 与 boolean `uniqueItems`。唯一性使用 JSON 结构相等语义，对象键顺序不影响比较结果。每个显式 DSL 对象都声明 `additionalProperties: true | false`，而隐式参数根和原始 JSON Schema 保持标准的开放默认值。schema 记录只接受自身可枚举字符串键，schema 数组必须是稠密普通数组。编译、验证、从注册表分离以及 schema 到 TypeScript 的呈现均使用显式工作栈，因此，对有效深层 schema 的运行时处理受内存而非调用栈限制；`InferValue` 在 16 层容器内保留精确类型，之后回退到 `JsonValue`，使 TypeScript 自身也保持栈安全。
 
 `defineTool` 定义会在执行前验证模型参数，并把缺失必填值、基本类型错误、无效枚举成员和嵌套违规转换为 `ToolArgsError`（`INVALID_ARGS`），进入普通错误结果路径。它还会根据 `output.schema` 推断主体返回类型和纯输出投影器；注册表在呈现前快照并验证返回的无损 JSON。隐式参数根是开放的；显式对象只有在设置 `additionalProperties: true` 时才接受额外键，而没有声明属性的封闭对象只接受 `{}`。原始 JSON Schema 对象保持开放，除非显式设置 `additionalProperties: false`。系统不会应用默认值；没有 `properties` 的开放对象和没有 `items` 的数组只接受容器类型检查。通过原始方式注册的工具负责输入验证，但仍需声明输出，并由注册表强制校验输出。
 
@@ -102,7 +102,7 @@ ctx.tools.register(defineTool({
 
 ### 强制执行的原始 JSON Schema 子集
 
-`JsonSchemaNode` 是工具输出、Code Mode 生成、subagent 和工作流共享的原始 JSON Schema 对应类型。它允许任意 JSON 根、仅含注解且不施加约束的 JSON 节点，以及恰好匹配一个分支的 `oneOf`；注解必须保持为无损 JSON。`assertSupportedJsonSchema()` 拒绝不受支持的构造，而 `validateJsonSchemaValue()` 返回带路径的违规信息。subagent 和工作流通过 `assertObjectJsonSchema()` 与 `ObjectJsonSchema` 保留调用方定义的对象根要求，而不是依赖共享词汇的限制。
+`JsonSchemaNode` 是工具输出、Code Mode 生成、subagent 和工作流共享的原始 JSON Schema 对应类型。它允许任意 JSON 根、仅含注解且不施加约束的 JSON 节点、恰好匹配一个分支的 `oneOf`、字符串 `pattern` 与数组 `maxItems`／`uniqueItems`；注解必须保持为无损 JSON。关键字声明与位置会安全拒绝，而 `validateJsonSchemaValue()` 返回带路径的违规信息并强制执行所有已接受约束。subagent 和工作流通过 `assertObjectJsonSchema()` 与 `ObjectJsonSchema` 保留调用方定义的对象根要求，而不是依赖共享词汇的限制。
 
 ### 由工具定义的 UI 呈现
 

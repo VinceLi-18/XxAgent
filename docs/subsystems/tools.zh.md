@@ -99,7 +99,7 @@ interface ToolDefinition extends ToolSchema {
 
 ## 统一的 JSON 值 schema DSL
 
-插件作者使用同一套词汇描述类型化参数和类型化输出值。`ValueSchemaSpec` 支持 `string`、`number`、`integer`、`boolean`、`null`、`array`、`object`、仅作者侧可用的 `json`，以及要求恰好命中一个分支的 `oneOf`；标量 `enum` 和 `const` 值必须与节点类型匹配。显式对象节点始终声明 `additionalProperties: true | false`。参数定义仍是隐式的开放对象属性映射，每个必填属性都附带 `required: true`。
+插件作者使用同一套词汇描述类型化参数和类型化输出值。`ValueSchemaSpec` 支持 `string`、`number`、`integer`、`boolean`、`null`、`array`、`object`、仅作者侧可用的 `json`，以及要求恰好命中一个分支的 `oneOf`；标量 `enum` 和 `const` 值必须与节点类型匹配，字符串可以声明能够编译的 JavaScript 正则表达式 `pattern`，数组可以声明非负安全整数 `maxItems` 与 boolean `uniqueItems`。唯一性按无损 JSON 结构比较，因此对象键顺序不影响结果。显式对象节点始终声明 `additionalProperties: true | false`。参数定义仍是隐式的开放对象属性映射，每个必填属性都附带 `required: true`。
 
 源码：[`packages/core/tools/src/schema.ts`](../../packages/core/tools/src/schema.ts)
 
@@ -407,7 +407,7 @@ type PostToolDecision =
 
 ## 已强制执行的原始 JSON Schema 子集
 
-subagent、工作流、MCP 和动态注册提供的原始 schema 使用作者侧 DSL 在协议层的对应表示。`assertSupportedJsonSchema()` 接受任意 JSON 根，`validateJsonSchemaValue()` 强制执行该 schema，`JsonSchemaError` 则报告每条不受支持或格式错误的 schema 路径。仅含注解的空节点表示不受约束的无损 JSON。`oneOf` 至少要求两个分支，且一个值必须恰好匹配其中一个。仍要求对象根的消费方调用 `assertObjectJsonSchema()` 并携带 `ObjectJsonSchema`；这样，subagent/工作流中由调用方定义的结构化输出可以继续以对象为根，而不会限制共享词汇。
+subagent、工作流、MCP 和动态注册提供的原始 schema 使用作者侧 DSL 在协议层的对应表示。`assertSupportedJsonSchema()` 接受任意 JSON 根，校验 `pattern`、`maxItems` 与 `uniqueItems` 的声明和位置，并拒绝无效或不受支持的关键字。`validateJsonSchemaValue()` 强制执行所有已接受约束，包括与对象键顺序无关的 JSON 结构唯一性；`JsonSchemaError` 则报告每条不受支持或格式错误的 schema 路径。仅含注解的空节点表示不受约束的无损 JSON。`oneOf` 至少要求两个分支，且一个值必须恰好匹配其中一个。仍要求对象根的消费方调用 `assertObjectJsonSchema()` 并携带 `ObjectJsonSchema`；这样，subagent/工作流中由调用方定义的结构化输出可以继续以对象为根，而不会限制共享词汇。
 
 ```ts type-equiv
 /** Scalar JSON values supported by `enum` and `const`. */
@@ -438,6 +438,12 @@ interface JsonSchemaNode {
   additionalProperties?: boolean
   /** Item schema (`type: 'array'` only); absent accepts any JSON item. */
   items?: JsonSchemaNode
+  /** Regular-expression source that every string value must match. */
+  pattern?: string
+  /** Maximum array length as a non-negative safe integer. */
+  maxItems?: number
+  /** Whether array items must be distinct by JSON structural equality. */
+  uniqueItems?: boolean
   /** Allowed values for a scalar node. */
   enum?: JsonSchemaScalar[]
   /** The single allowed value for a scalar node. */

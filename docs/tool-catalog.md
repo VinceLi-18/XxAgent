@@ -15,6 +15,7 @@ This table connects model-visible tool names to the plugin package and service s
 
 | Tool package | Model-visible names | Requires | Writes / affects | Shipped aliases | Deployment note |
 | --- | --- | --- | --- | --- | --- |
+| `@xagent/dsh-tool-fact` | `propose_fact` | `ctx.tools`, `ctx.xagentFact`, `an authenticated Project Session Agent` | `tool/call`, `tool/result with private receipt admission sidecar` | - | Native-only and registered only for the exact authenticated Project Session Agent. The Fact provider keeps preparation receipts private; success exposes only the proposal UUID and pending status, and the tool does not conclude the Turn. |
 | `@xagent/dsh-tool-retrieval` | `list_accessible_projects`, `search_artifacts` | `ctx.tools`, `ctx.xagentRetrieval and an owning Agent at execution time` | `tool/call`, `tool/result` | - | Native-only XAgent Business project discovery and read-only Artifact evidence search; Code SDKs and nested Code dispatch exclude both tools. Private Sessions require explicit project and/or private selectors, while Project Sessions use only their fixed project. |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`, `ctx.userQuestions` | `tool/call`, `tool/result after a UI/provider answers the question` | - | ask_user_question pauses the tool call until the active UI provider returns a human answer. |
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`, `ctx.codeRuntime (execution time)`, `ctx.systemPrompt` | `tool/call`, `one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`, `tool/result` | - | Owned by the tool registry as a reserved transport outside filterable capability layers under `mode: code` / `mode: both` (see the Code Mode Agent Note). Under `code` it is the registry's only wire contribution; the other visible capabilities are declared in a generated SDK section in the loaded runtime's language, and a program calls them through bindings scheduled under the native concurrency contract (submission-ordered starts and policy; concurrency-safe bodies overlap up to `maxParallelSubCalls`) that re-enter the complete guarded tool pipeline and link each nested execution to this outer result. |
@@ -40,6 +41,140 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
+
+<a id="xagentdsh-tool-fact"></a>
+
+## `@xagent/dsh-tool-fact`
+
+### `propose_fact`
+
+Propose a project Fact for manager review.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "field_key": {
+      "type": "string",
+      "description": "Stable lowercase field key using letters, digits, dots, underscores, or hyphens; at most 128 UTF-8 bytes."
+    },
+    "label": {
+      "type": "string",
+      "description": "Non-empty human-readable Fact label, at most 255 UTF-8 bytes."
+    },
+    "value": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "A text Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use text for a text value.",
+              "const": "text"
+            },
+            "value": {
+              "type": "string",
+              "description": "Text value, at most 16 KiB in UTF-8."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "description": "A finite numeric Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use number for a numeric value.",
+              "const": "number"
+            },
+            "value": {
+              "type": "number",
+              "description": "Finite number; integral values must be safe integers."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "description": "A boolean Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use boolean for a true or false value.",
+              "const": "boolean"
+            },
+            "value": {
+              "type": "boolean",
+              "description": "Boolean value."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "description": "A calendar-date Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use date for a calendar date.",
+              "const": "date"
+            },
+            "value": {
+              "type": "string",
+              "description": "Valid Gregorian calendar date in YYYY-MM-DD form.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        }
+      ],
+      "description": "Typed value proposed for the project Fact."
+    },
+    "evidence_ids": {
+      "type": "array",
+      "description": "Up to 64 distinct citation IDs already admitted to this Session.",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "description": "Admitted citation ID in [资料N] form."
+      }
+    },
+    "assertion_reason": {
+      "type": "string",
+      "description": "Non-blank assertion basis, at most 4 KiB in UTF-8; required when evidence_ids is empty or omitted."
+    }
+  },
+  "required": [
+    "field_key",
+    "label",
+    "value"
+  ],
+  "additionalProperties": false
+}
+```
+
+Source: [`packages/xagent/tool-fact/src/index.ts`](../packages/xagent/tool-fact/src/index.ts)
+
+Native-only and registered only for the exact authenticated Project Session Agent. The Fact provider keeps preparation receipts private; success exposes only the proposal UUID and pending status, and the tool does not conclude the Turn.
 
 <a id="xagentdsh-tool-retrieval"></a>
 
@@ -1799,7 +1934,7 @@ Run a JavaScript workflow script that orchestrates subagents at scale. Use this 
 The workflow's identity rides the `meta` parameter as JSON: required `name` (short kebab-case) and `description` strings, optional `whenToUse` string and `phases` array (`{title, detail?, provider?, model?}`). The `script` parameter is the plain JavaScript body ONLY (NOT TypeScript, and NO `export const meta` statement — meta is a parameter, not code), running with top-level await; end with `return <value>` — the value must be JSON-serializable and is this tool's result.
 
 Script-body hooks:
-- `agent(prompt, opts?): Promise<any>` — run one subagent to completion. Without `opts.schema` it resolves to the child's final text; with `opts.schema` (an object-rooted JSON Schema using ONLY type/properties/required/additionalProperties/items/enum/const/oneOf — no pattern/format/numeric bounds) it resolves to the validated object. Resolves `null` when the child fails (filter with `.filter(Boolean)`). Other opts: `label` (display), `phase` (progress group), and independent `provider`/`model` LLM target overrides (either may be provided alone). Anything else (`effort`/`isolation`/`agentType`) is rejected loudly.
+- `agent(prompt, opts?): Promise<any>` — run one subagent to completion. Without `opts.schema` it resolves to the child's final text; with `opts.schema` (an object-rooted JSON Schema using ONLY type/properties/required/additionalProperties/items/pattern/maxItems/uniqueItems/enum/const/oneOf — no format or numeric bounds) it resolves to the validated object. Resolves `null` when the child fails (filter with `.filter(Boolean)`). Other opts: `label` (display), `phase` (progress group), and independent `provider`/`model` LLM target overrides (either may be provided alone). Anything else (`effort`/`isolation`/`agentType`) is rejected loudly.
 - `pipeline(items, ...stages): Promise<any[]>` — run each item through the stages independently with NO barrier between stages (prefer this for multi-stage work). Each stage receives `(prev, item, index)`. An ordinary stage throw drops that ITEM to `null` and skips its remaining stages.
 - `parallel(thunks): Promise<any[]>` — run zero-argument functions concurrently and await ALL of them (a barrier; use only when a stage genuinely needs every prior result together). A throwing thunk resolves to `null`.
 - `phase(title)` — start a progress phase; `log(message)` — narrate progress; `args` — the tool call's `args` input, verbatim.

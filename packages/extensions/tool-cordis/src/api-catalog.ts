@@ -3524,7 +3524,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'JsonSchemaNode',
-    declaration: 'export interface JsonSchemaNode {\n    type?: JsonSchemaType;\n    oneOf?: JsonSchemaNode[];\n    properties?: Record<string, JsonSchemaNode>;\n    required?: string[];\n    additionalProperties?: boolean;\n    items?: JsonSchemaNode;\n    enum?: JsonSchemaScalar[];\n    const?: JsonSchemaScalar;\n    description?: string;\n    title?: string;\n    default?: JsonValue;\n    examples?: JsonValue;\n}',
+    declaration: 'export interface JsonSchemaNode {\n    type?: JsonSchemaType;\n    oneOf?: JsonSchemaNode[];\n    properties?: Record<string, JsonSchemaNode>;\n    required?: string[];\n    additionalProperties?: boolean;\n    items?: JsonSchemaNode;\n    pattern?: string;\n    maxItems?: number;\n    uniqueItems?: boolean;\n    enum?: JsonSchemaScalar[];\n    const?: JsonSchemaScalar;\n    description?: string;\n    title?: string;\n    default?: JsonValue;\n    examples?: JsonValue;\n}',
   },
   {
     name: 'JsonSchemaScalar',

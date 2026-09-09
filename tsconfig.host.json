@@ -171,6 +171,7 @@
     { "path": "./packages/xagent/project" },
     { "path": "./packages/xagent/retrieval" },
     { "path": "./packages/xagent/tool-retrieval" },
+    { "path": "./packages/xagent/tool-fact" },
     { "path": "./packages/session/session-telemetry-otel" },
     { "path": "./packages/core/system-prompt" },
     { "path": "./packages/core/agent" },

@@ -54,6 +54,7 @@ export const privateXagentPackages: Readonly<Record<string, string>> = {
   'packages/xagent/retrieval': '@xagent/dsh-retrieval',
   'packages/xagent/session-persistence-api': '@xagent/dsh-session-persistence-api',
   'packages/xagent/tool-retrieval': '@xagent/dsh-tool-retrieval',
+  'packages/xagent/tool-fact': '@xagent/dsh-tool-fact',
   'packages/xagent/ui-account': '@xagent/dsh-ui-account',
   'packages/xagent/ui-artifact': '@xagent/dsh-ui-artifact',
   'packages/xagent/ui-citation': '@xagent/dsh-ui-citation',

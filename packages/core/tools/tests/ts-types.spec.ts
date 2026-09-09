@@ -7,6 +7,7 @@ describe('jsonSchemaToTs', () => {
   it('maps every unified schema construct', () => {
     const cases: [unknown, string][] = [
       [{ type: 'string' }, 'string'],
+      [{ type: 'string', pattern: '^[a-z]+$' }, 'string'],
       [{ type: 'number' }, 'number'],
       [{ type: 'integer' }, 'number'],
       [{ type: 'boolean' }, 'boolean'],
@@ -19,6 +20,7 @@ describe('jsonSchemaToTs', () => {
       [{ type: 'string', enum: ['a', 'b'], const: 'a' }, '"a"'],
       [{ oneOf: [{ type: 'string' }, { type: 'null' }] }, 'string | null'],
       [{ type: 'array', items: { type: 'number' } }, 'number[]'],
+      [{ type: 'array', items: { type: 'number' }, maxItems: 2, uniqueItems: true }, 'number[]'],
       [{ type: 'array', items: { type: 'string', enum: ['x', 'y'] } }, '("x" | "y")[]'],
       [{ type: 'array' }, 'JsonValue[]'],
       [{ type: 'object' }, 'Record<string, JsonValue>'],

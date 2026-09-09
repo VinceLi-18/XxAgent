@@ -47,6 +47,7 @@
       "@xagent/dsh-retrieval/cited-answer-meta": ["./packages/xagent/retrieval/src/cited-answer-meta.ts"],
       "@xagent/dsh-retrieval/types": ["./packages/xagent/retrieval/src/types.ts"],
       "@xagent/dsh-tool-retrieval": ["./packages/xagent/tool-retrieval/src/index.ts"],
+      "@xagent/dsh-tool-fact": ["./packages/xagent/tool-fact/src/index.ts"],
       "@xagent/dsh-ui-account": ["./packages/xagent/ui-account/src/index.ts"],
       "@xagent/dsh-ui-account/client": ["./packages/xagent/ui-account/src/client/index.ts"],
       "@xagent/dsh-ui-project": ["./packages/xagent/ui-project/src/index.ts"],
