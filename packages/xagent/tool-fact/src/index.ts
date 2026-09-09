@@ -392,7 +392,6 @@ export function apply(ctx: Context): void {
       }
     })
     factCtx.on('agent/error', ({ agent }) => {
-      deleteAgentMessages(agent)
       unregister(agent)
     })
     factCtx.on('agent/disposed', ({ agent }) => {

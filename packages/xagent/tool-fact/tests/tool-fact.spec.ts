@@ -287,7 +287,7 @@ describe('Project-only propose_fact registration', () => {
     expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
   })
 
-  test.each(['disposed', 'error'] as const)('releases queued scope listeners when an Agent is %s before claim', async (event) => {
+  test('releases queued scope listeners when an Agent is disposed before claim', async () => {
     const { agent, ctx } = await setup()
     const siblingSession = '00000000-0000-0000-0000-000000000202'
     const sibling = ctx.agentLoop.create(SessionId(`session-${siblingSession}`), { provider: 'mock', model: 'mock' })
@@ -307,11 +307,7 @@ describe('Project-only propose_fact registration', () => {
       agentEvents(ctx, sibling).emit('agent/inbox/inserted', { message: siblingMessage })
     })
 
-    if (event === 'disposed') {
-      agentEvents(ctx, agent).emit('agent/disposed', {})
-    } else {
-      agentEvents(ctx, agent).emit('agent/error', { turn: 1, step: 1, error: new Error('fixture') })
-    }
+    agentEvents(ctx, agent).emit('agent/disposed', {})
     expect(removeRequest).toHaveBeenCalledWith('abort', expect.any(Function))
     expect(removeConnection).toHaveBeenCalledWith('abort', expect.any(Function))
 
@@ -327,6 +323,34 @@ describe('Project-only propose_fact registration', () => {
       () => Promise.resolve({ kind: 'enter' as const, messages: [siblingMessage] }),
     )
     expect(ctx.tools.get('propose_fact', sibling)).toBeDefined()
+  })
+
+  test('retains a queued Project scope when an earlier Turn emits agent/error', async () => {
+    const { agent, ctx } = await setup()
+    const request = new AbortController()
+    const connection = new AbortController()
+    const removeRequest = vi.spyOn(request.signal, 'removeEventListener')
+    const removeConnection = vi.spyOn(connection.signal, 'removeEventListener')
+    const message = createUserMessage({ content: [{ type: 'text', text: 'follow up after error' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(requestScope({
+      requestSignal: request.signal,
+      connectionSignal: connection.signal,
+    }), () => {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+    })
+
+    agentEvents(ctx, agent).emit('agent/error', { turn: 1, step: 1, error: new Error('fixture') })
+    expect(removeRequest).not.toHaveBeenCalled()
+    expect(removeConnection).not.toHaveBeenCalled()
+
+    await agentEvents(ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [message], turn: 2, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
+    )
+    expect(removeRequest).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(removeConnection).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
   })
 
   test('removes the registration on physical cancellation, Turn end, Consumer disposal, and Fact HMR', async () => {
