@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-`@xagent/dsh-tool-fact` 为已认证的 Project Session 注册仅限 Native 的 `propose_fact` 模型工具。该 Consumer 在 inbox 工作入账时捕获物理请求作用域，并在请求装配前将 schema 临时注册到对应 Agent 的工具 registry；只有已领取批次中的每条消息都具有同一有效作用域时，注册才会转为本次步骤的有效注册。作用域替换、请求或连接取消、Turn 完成、Agent 失败、服务替换以及插件销毁都会移除注册。匿名请求、Private 请求、其他 Session、缺少 Fact 服务以及 Code Mode 都不会暴露可调用的提案 schema。
+`@xagent/dsh-tool-fact` 为已认证的 Project Session 注册仅限 Native 的 `propose_fact` 模型工具。该 Consumer 捕获每条 inbox 消息的物理请求作用域；只有在请求装配前领取的完整批次共享同一个有效作用域时，才会在对应 Agent 的工具 registry 中注册 schema。已排队消息各自持有作用域绑定，不受更早 Turn 完成或失败的影响。请求或连接取消、Turn 完成、Agent 失败、服务替换以及插件销毁都会移除有效注册。匿名请求、Private 请求、混合物理作用域、其他 Session、缺少 Fact 服务以及 Code Mode 都不会暴露可调用的提案 schema。
 
 封闭参数 schema 接受字段键、显示标签、一项精确的 `text`／`number`／`boolean`／`date` tagged value、最多 64 个按 JSON 结构互异的已入账 citation ID，以及可选的依据说明。共享 JSON 值 schema 校验器强制执行字符串 `pattern`、数组 `maxItems` 和数组 `uniqueItems`。该 Consumer 还强制执行与 FastAPI 一致的 UTF-8 字节上限、字段键与 citation 格式、公历日期、安全整数规则，以及没有 citation 证据时必须提供非空依据说明的要求。
 

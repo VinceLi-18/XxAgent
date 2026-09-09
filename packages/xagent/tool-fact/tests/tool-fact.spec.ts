@@ -21,6 +21,7 @@ const RUNTIME_SESSION = `session-${SESSION}`
 const PROJECT = '00000000-0000-0000-0000-000000000301'
 const PROPOSAL = '00000000-0000-0000-0000-000000000401'
 const roots: Context[] = []
+let syntheticTurn = 0
 
 class RequestProbeAdapter extends LlmAdapter {
   readonly requests: GenerateOptions[] = []
@@ -31,6 +32,28 @@ class RequestProbeAdapter extends LlmAdapter {
 
   override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+}
+
+class BlockingAdapter extends RequestProbeAdapter {
+  readonly firstStarted = Promise.withResolvers<undefined>()
+  readonly releaseFirst = Promise.withResolvers<undefined>()
+
+  constructor(private readonly failFirst = false) {
+    super()
+  }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    if (this.requests.length === 1) {
+      this.firstStarted.resolve(undefined)
+      await this.releaseFirst.promise
+      if (this.failFirst) throw new Error('first request failed')
+    }
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text: 'done' }
     yield { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } }
@@ -75,7 +98,7 @@ class FakeFact extends Service {
   }
 }
 
-async function setup(mode: 'native' | 'code' = 'native', withFact = true) {
+async function setup(mode: 'native' | 'code' = 'native', withFact = true, siblingScope = false) {
   const ctx = new Context()
   roots.push(ctx)
   await ctx.plugin(LlmRuntime)
@@ -87,9 +110,14 @@ async function setup(mode: 'native' | 'code' = 'native', withFact = true) {
   let fact: FakeFact | undefined
   const factFiber = withFact ? ctx.plugin((child) => { fact = new FakeFact(child) }) : undefined
   if (factFiber !== undefined) await factFiber
-  const fiber = ctx.plugin(tool)
-  await fiber
   const agent = ctx.agentLoop.create(SessionId(RUNTIME_SESSION), { provider: 'mock', model: 'mock' })
+  const sibling = siblingScope
+    ? ctx.agentLoop.create(SessionId('session-00000000-0000-0000-0000-000000000202'), {
+      provider: 'mock', model: 'mock',
+    })
+    : undefined
+  const fiber = sibling === undefined ? ctx.plugin(tool) : sibling.ctx.plugin(tool)
+  await fiber
   return { agent, ctx, fact, factFiber, fiber }
 }
 
@@ -98,13 +126,15 @@ async function enterProjectStep(
   agent: Agent,
   scope = requestScope(),
 ): Promise<void> {
+  const turn = ++syntheticTurn
   const message = createUserMessage({ content: [{ type: 'text', text: 'propose a fact' }], source: { kind: 'user' } })
   runWithXAgentAuthenticatedRequestScope(scope, () => {
     agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
   })
+  agentEvents(ctx, agent).emit('agent/inbox/claimed', { message, turn })
   await agentEvents(ctx, agent).waterfall(
     'agent/pre-step',
-    { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
+    { messages: [message], turn, step: 1, signal: new AbortController().signal },
     () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
   )
 }
@@ -143,9 +173,13 @@ function executeProposal(
   })
 }
 
+function claimMessage(ctx: Context, agent: Agent, message: ReturnType<typeof createUserMessage>, turn = 1): void {
+  agentEvents(ctx, agent).emit('agent/inbox/claimed', { message, turn })
+}
+
 describe('Project-only propose_fact registration', () => {
   test('enters the real Agent-loop request under the authenticated Project carrier', async () => {
-    const { agent, ctx } = await setup()
+    const { agent, ctx } = await setup('native', true, true)
     const adapter = new RequestProbeAdapter()
     ctx.llm.registerAdapter(['mock'], adapter)
     const request = new AbortController()
@@ -160,6 +194,98 @@ describe('Project-only propose_fact registration', () => {
     expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
     request.abort()
     expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+  })
+
+  test('assembles each queued Project follow-up from its claimed physical scope after the prior Turn completes', async () => {
+    const { agent, ctx } = await setup('native', true, true)
+    const adapter = new BlockingAdapter()
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const first = requestScope()
+    const second = requestScope({
+      connectionId: 'connection-2',
+      principal: Object.freeze({ ...first.principal, connectionId: 'connection-2' }),
+    })
+    runWithXAgentAuthenticatedRequestScope(first, () => {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'first' }], source: { kind: 'user' } }))
+    })
+    await adapter.firstStarted.promise
+    runWithXAgentAuthenticatedRequestScope(second, () => {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'second' }], source: { kind: 'user' } }))
+    })
+    adapter.releaseFirst.resolve(undefined)
+    await agent.whenIdle()
+
+    expect(adapter.requests).toHaveLength(2)
+    expect(adapter.requests.map(request => request.tools?.some(value => value.name === 'propose_fact') ?? false))
+      .toEqual([true, true])
+  })
+
+  test('omits the schema when one real claimed batch mixes physical Project scopes', async () => {
+    const { agent, ctx } = await setup('native', true, true)
+    const adapter = new RequestProbeAdapter()
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const first = requestScope()
+    const second = requestScope({
+      connectionId: 'connection-2',
+      principal: Object.freeze({ ...first.principal, connectionId: 'connection-2' }),
+    })
+    runWithXAgentAuthenticatedRequestScope(first, () => {
+      agent.inject(createUserMessage({ content: [{ type: 'text', text: 'injected' }], source: { kind: 'plugin', plugin: 'fixture' } }))
+    })
+    runWithXAgentAuthenticatedRequestScope(second, () => {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'wake' }], source: { kind: 'user' } }))
+    })
+    await agent.whenIdle()
+
+    expect(adapter.requests).toHaveLength(1)
+    expect(adapter.requests[0]?.tools?.some(value => value.name === 'propose_fact') ?? false).toBe(false)
+  })
+
+  test('restores a queued Project follow-up after the prior Turn errors', async () => {
+    const { agent, ctx } = await setup('native', true, true)
+    const adapter = new BlockingAdapter(true)
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const scope = requestScope()
+    const followup = (text: string): void => {
+      runWithXAgentAuthenticatedRequestScope(scope, () => {
+        agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+      })
+    }
+    followup('first')
+    await adapter.firstStarted.promise
+    followup('queued after failure')
+    adapter.releaseFirst.resolve(undefined)
+    await agent.whenIdle()
+    followup('wake queued work')
+    await agent.whenIdle()
+
+    expect(adapter.requests).toHaveLength(3)
+    expect(adapter.requests.map(request => request.tools?.some(value => value.name === 'propose_fact') ?? false))
+      .toEqual([true, true, true])
+  })
+
+  test('assembles the surviving claimed Project scope after selective discard', async () => {
+    const { agent, ctx } = await setup('native', true, true)
+    const adapter = new RequestProbeAdapter()
+    ctx.llm.registerAdapter(['mock'], adapter)
+    const scope = requestScope()
+    const discardedScope = requestScope({
+      connectionId: 'connection-2',
+      principal: Object.freeze({ ...scope.principal, connectionId: 'connection-2' }),
+    })
+    const release = Promise.withResolvers<undefined>()
+    const maintenance = agent.runMaintenance(() => release.promise)
+    const retained = createUserMessage({ content: [{ type: 'text', text: 'retained' }], source: { kind: 'plugin', plugin: 'fixture' } })
+    const discarded = createUserMessage({ content: [{ type: 'text', text: 'discarded' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(scope, () => { agent.inject(retained) })
+    runWithXAgentAuthenticatedRequestScope(discardedScope, () => { agent.followup(discarded) })
+    agent.inbox.remove(discarded.id)
+    release.resolve(undefined)
+    await maintenance
+    await agent.whenIdle()
+
+    expect(adapter.requests).toHaveLength(1)
+    expect(adapter.requests[0]?.tools?.some(value => value.name === 'propose_fact') ?? false).toBe(true)
   })
 
   test('assembles the tool only for the authenticated Project Agent and removes it on scope change', async () => {
@@ -179,6 +305,7 @@ describe('Project-only propose_fact registration', () => {
     runWithXAgentAuthenticatedRequestScope(requestScope({ visibility: 'private', projectId: null }), () => {
       agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
     })
+    claimMessage(ctx, agent, message, 2)
     expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
 
     await enterProjectStep(ctx, agent, requestScope({ projectId: 'not-a-project' }))
@@ -215,6 +342,7 @@ describe('Project-only propose_fact registration', () => {
           agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
         })
       }
+      claimMessage(ctx, agent, message, 2)
       expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
     }
   })
@@ -244,6 +372,7 @@ describe('Project-only propose_fact registration', () => {
       runWithXAgentAuthenticatedRequestScope(changed, () => {
         agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
       })
+      claimMessage(ctx, agent, message, 2)
       expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
     }
 
@@ -253,6 +382,7 @@ describe('Project-only propose_fact registration', () => {
       agentEvents(ctx, agent).emit('agent/inbox/inserted', { message: discarded })
     })
     agentEvents(ctx, agent).emit('agent/inbox/discarded', { message: discarded })
+    claimMessage(ctx, agent, discarded, 2)
     await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
       { messages: [discarded], turn: 1, step: 1, signal: new AbortController().signal },
@@ -281,6 +411,7 @@ describe('Project-only propose_fact registration', () => {
     })
 
     controller.abort()
+    claimMessage(ctx, agent, message)
     await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
       { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
@@ -313,8 +444,9 @@ describe('Project-only propose_fact registration', () => {
     expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
     firstRequest.abort()
     firstConnection.abort()
-    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
 
+    claimMessage(ctx, agent, message, 2)
     await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
       { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
@@ -355,6 +487,7 @@ describe('Project-only propose_fact registration', () => {
       () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
     )
     expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+    claimMessage(ctx, sibling, siblingMessage)
     await agentEvents(ctx, sibling).waterfall(
       'agent/pre-step',
       { messages: [siblingMessage], turn: 1, step: 1, signal: new AbortController().signal },
@@ -381,6 +514,7 @@ describe('Project-only propose_fact registration', () => {
     expect(removeRequest).not.toHaveBeenCalled()
     expect(removeConnection).not.toHaveBeenCalled()
 
+    claimMessage(ctx, agent, message, 2)
     await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
       { messages: [message], turn: 2, step: 1, signal: new AbortController().signal },

@@ -24,9 +24,14 @@ interface MessageBinding {
 interface ToolRegistration {
   readonly scope: ProjectScope
   readonly definition: ToolDefinition
-  readonly provisional: boolean
   readonly dispose: () => unknown
   readonly closeSignals: () => void
+}
+
+interface ClaimedBatch {
+  readonly turn: number
+  scope?: ProjectScope
+  invalid: boolean
 }
 
 interface ActiveDefinition {
@@ -298,6 +303,7 @@ function proposeFactDefinition(fact: XAgentFactServiceContract): ToolDefinition 
 export function apply(ctx: Context): void {
   const messages = new Map<string, MessageBinding>()
   const registrations = new Map<Agent, ToolRegistration>()
+  const claimedBatches = new Map<Agent, ClaimedBatch>()
   let activeDefinition: ActiveDefinition | undefined
   const relationship = { registrations }
   const key = relationshipKey(ctx)
@@ -305,16 +311,10 @@ export function apply(ctx: Context): void {
   toolRelationships.add(relationship)
   relationships.set(key, toolRelationships)
 
-  const deleteMessage = (messageId: string, releaseProvisional = false): void => {
+  const deleteMessage = (messageId: string): void => {
     const binding = messages.get(messageId)
     messages.delete(messageId)
     binding?.close?.()
-    if (releaseProvisional && binding?.scope !== undefined) {
-      const registration = registrations.get(binding.agent)
-      if (registration?.provisional === true && sameScope(registration.scope, binding.scope)) {
-        unregister(binding.agent)
-      }
-    }
   }
   const deleteAgentMessages = (agent: Agent): void => {
     for (const [messageId, binding] of messages) {
@@ -331,8 +331,9 @@ export function apply(ctx: Context): void {
   const clear = (): void => {
     for (const messageId of [...messages.keys()]) deleteMessage(messageId)
     for (const agent of [...registrations.keys()]) unregister(agent)
+    claimedBatches.clear()
   }
-  const register = (agent: Agent, scope: ProjectScope, provisional: boolean): void => {
+  const register = (agent: Agent, scope: ProjectScope): void => {
     const active = activeDefinition
     if (active === undefined) {
       unregister(agent)
@@ -341,22 +342,17 @@ export function apply(ctx: Context): void {
     const current = registrations.get(agent)
     if (current !== undefined
       && current.definition === active.definition
-      && sameScope(current.scope, scope)
-      && (current.provisional === provisional || (!current.provisional && provisional))) return
+      && sameScope(current.scope, scope)) return
     unregister(agent)
     const abort = (): void => { unregister(agent) }
-    if (!provisional) {
-      scope.requestSignal.addEventListener('abort', abort, { once: true })
-      scope.connectionSignal.addEventListener('abort', abort, { once: true })
-    }
+    scope.requestSignal.addEventListener('abort', abort, { once: true })
+    scope.connectionSignal.addEventListener('abort', abort, { once: true })
     const dispose = agent.ctx.tools.register(active.definition)
     registrations.set(agent, {
       scope,
       definition: active.definition,
-      provisional,
       dispose,
       closeSignals: () => {
-        if (provisional) return
         scope.requestSignal.removeEventListener('abort', abort)
         scope.connectionSignal.removeEventListener('abort', abort)
       },
@@ -370,7 +366,7 @@ export function apply(ctx: Context): void {
     if (scope === undefined) {
       messages.set(messageId, { agent })
     } else {
-      const invalidate = (): void => { deleteMessage(messageId, true) }
+      const invalidate = (): void => { deleteMessage(messageId) }
       scope.requestSignal.addEventListener('abort', invalidate, { once: true })
       scope.connectionSignal.addEventListener('abort', invalidate, { once: true })
       messages.set(messageId, {
@@ -382,48 +378,53 @@ export function apply(ctx: Context): void {
         },
       })
     }
-    if (scope === undefined) unregister(agent)
-    else register(agent, scope, true)
-  })
+  }, { global: true })
   ctx.on('agent/inbox/discarded', ({ message }) => {
-    deleteMessage(String(message.id), true)
-  })
-  ctx.on('agent/pre-step', async ({ agent, messages: claimed }, next) => {
-    if (claimed.length > 0) {
-      const scopes = claimed.map((message) => {
-        const binding = messages.get(String(message.id))
-        deleteMessage(String(message.id))
-        const scope = binding?.agent === agent ? binding.scope : undefined
-        return scope !== undefined
-          && !scope.requestSignal.aborted
-          && !scope.connectionSignal.aborted
-          ? scope
-          : undefined
-      })
-      const scope = scopes[0]
-      if (scope !== undefined && scopes.every(value => value !== undefined && sameScope(value, scope))) {
-        register(agent, scope, false)
-      } else {
-        unregister(agent)
-      }
+    deleteMessage(String(message.id))
+  }, { global: true })
+  ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
+    let batch = claimedBatches.get(agent)
+    if (batch?.turn !== turn) {
+      unregister(agent)
+      batch = { turn, invalid: false }
+      claimedBatches.set(agent, batch)
     }
+    const binding = messages.get(String(message.id))
+    deleteMessage(String(message.id))
+    const scope = binding?.agent === agent ? binding.scope : undefined
+    if (scope === undefined || scope.requestSignal.aborted || scope.connectionSignal.aborted) {
+      batch.invalid = true
+    } else if (batch.scope === undefined) {
+      batch.scope = scope
+    } else if (!sameScope(batch.scope, scope)) {
+      batch.invalid = true
+    }
+    if (batch.invalid || batch.scope === undefined) unregister(agent)
+    else register(agent, batch.scope)
+  }, { global: true })
+  ctx.on('agent/pre-step', async ({ agent }, next) => {
     const decision = await next()
     if (decision.kind === 'reject') unregister(agent)
     return decision
-  })
+  }, { global: true })
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/end') return
     for (const agent of registrations.keys()) {
-      if (agent.session === session) unregister(agent)
+      if (agent.session === session) {
+        claimedBatches.delete(agent)
+        unregister(agent)
+      }
     }
-  })
+  }, { global: true })
   ctx.on('agent/error', ({ agent }) => {
+    claimedBatches.delete(agent)
     unregister(agent)
-  })
+  }, { global: true })
   ctx.on('agent/disposed', ({ agent }) => {
     deleteAgentMessages(agent)
+    claimedBatches.delete(agent)
     unregister(agent)
-  })
+  }, { global: true })
   ctx.inject(['xagentFact'], (factCtx) => {
     const active = {
       fact: factCtx.xagentFact,
