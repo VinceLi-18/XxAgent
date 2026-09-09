@@ -92,6 +92,8 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 带项目引用的私有 Session 在 list、open、事件读取、append、fork、archive 和 authorize 时重新检查全部项目权限。任一引用失权时列表不返回该 Session，其他入口返回 `session-not-found`；恢复全部项目权限后原日志重新可见。fork 请求只命名源 Session、包含式末 sequence 和稳定幂等键；服务端在同一事务重新授权并锁定源、分配子 ID，并继承事件前缀、`visibility`、`project_id`、私有项目引用以及前缀内已入账和已引用的证据关系。同一请求的传输、resume 或附加重试返回同一个子 Session，修改 cut 的重放返回幂等冲突。请求不能指定目标范围。项目 Session 继续按自身 `project_id` 和项目 RLS 授权。
 
+Fact Outbox admission 只接受字段严格为 `seq`、`time`、`type`、`data` 的 `fact/proposal-decided` 日志事件；`surfaceOp` 或任何其他附加字段都会失败关闭。服务端在同一事务核对 Outbox 身份与摘要、写入规范事件并消费对应 Outbox 行。
+
 检索 receipt admission 会在 `xagent_admitted_evidence` 保存短 citation ID、admission sequence 及精确 Artifact、Version、Index generation 与 Chunk。规范 `xagent-cited-answer` append 只把首次使用的 citation ID 绑定到该 Session 中更早的已入账关系，并在 `xagent_cited_answer_evidence` 保存 answer 与证据关系；复合外键要求全部不可变身份精确一致。没有 cited answer 的批次不查询 provenance 或历史事件；有 cited answer 的批次仅以当前引用 ID 经主键索引和显式行上限读取已入账证据，工作量不随日志长度增加。这两张不可变关系表不读取表层消息投影，也不把原 actor 的私有 receipt 当作后续读取授权。Citation resolve 只接受短 ID，先通过 Session RLS 读取持久 provenance，再以当前 actor 的 Artifact RLS 和权限 finalizer 重新授权精确不可变版本；reload、resume、compaction、有效 fork 和仍获授权的 Project 成员可继续打开，撤权后失败关闭。
 
 ### 资料读取 URL

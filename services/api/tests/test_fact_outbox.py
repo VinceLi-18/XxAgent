@@ -75,7 +75,6 @@ def append_body(item: dict, *, sequence: int, key: str) -> dict[str, object]:
                 "seq": sequence,
                 "time": 1_789_056_000_000 + sequence,
                 "type": "fact/proposal-decided",
-                "surfaceOp": "append",
                 "data": event["data"],
             },
         }],
@@ -277,6 +276,7 @@ async def test_outbox_append_validates_identity_consumes_atomically_and_replays(
         assert row.consumed_event_sequence == 0
         assert len(events) == 1
         assert events[0].event_type == "fact/proposal-decided"
+        assert set(events[0].payload) == {"seq", "time", "type", "data"}
         assert events[0].payload == body["events"][0]["payload"]
         assert events[0].audit_id is not None
         assert all(event.event_type != "turn/start" for event in events)
@@ -296,6 +296,7 @@ async def test_outbox_append_validates_identity_consumes_atomically_and_replays(
         ("outer_unknown", 422),
         ("event_schema_boolean", 422),
         ("sequence_boolean", 404),
+        ("surface_operation", 404),
         ("content_revision_boolean", 404),
         ("decision_data_unknown", 404),
     ),
@@ -338,6 +339,8 @@ async def test_fact_outbox_append_rejects_non_strict_decision_events(
         body["events"][0]["schema_version"] = True
     elif corruption == "sequence_boolean":
         body["events"][0]["payload"]["seq"] = False
+    elif corruption == "surface_operation":
+        body["events"][0]["payload"]["surfaceOp"] = "append"
     elif corruption == "content_revision_boolean":
         body["events"][0]["payload"]["data"]["content_revision"] = True
     else:
