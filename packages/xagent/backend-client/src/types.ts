@@ -8,6 +8,22 @@ export interface XAgentSessionRetrievalReceiptAttachment {
   readonly payload_hash: string
 }
 
+/** Private wire receipt for admitting one prepared Fact proposal with its public result. */
+export interface XAgentSessionFactProposalReceiptAttachment {
+  readonly event_sequence: number
+  readonly tool_call_id: string
+  readonly proposal_id: string
+  readonly receipt: string
+  readonly payload_hash: string
+}
+
+/** Private wire identity for consuming one Fact decision Outbox row with its Session event. */
+export interface XAgentSessionFactOutboxAttachment {
+  readonly event_sequence: number
+  readonly outbox_id: string
+  readonly payload_hash: string
+}
+
 /** Closed Session append request including its private retrieval sidecar. */
 export interface XAgentSessionAppendInput {
   readonly schema_version: 1
@@ -15,6 +31,8 @@ export interface XAgentSessionAppendInput {
   readonly idempotency_key: string
   readonly events: readonly unknown[]
   readonly retrieval_receipts: readonly XAgentSessionRetrievalReceiptAttachment[]
+  readonly fact_proposal_receipts?: readonly XAgentSessionFactProposalReceiptAttachment[]
+  readonly fact_outbox_events?: readonly XAgentSessionFactOutboxAttachment[]
 }
 
 /** Closed acknowledgement for one committed Session append batch. */
@@ -39,6 +57,14 @@ export type XAgentBackendErrorCode =
   | 'evidence-expired'
   | 'evidence-conflict'
   | 'citation-invalid'
+  | 'fact-input-invalid'
+  | 'fact-evidence-invalid'
+  | 'fact-session-invalid'
+  | 'fact-receipt-invalid'
+  | 'fact-receipt-expired'
+  | 'fact-revision-conflict'
+  | 'fact-already-decided'
+  | 'stale-permission'
   | 'unsupported-version'
   | 'service-unavailable'
 
@@ -339,6 +365,258 @@ export interface XAgentRetrievalBackend {
   ): Promise<XAgentResolvedCitation>
 }
 
+/** Closed value accepted for one governed project Fact. */
+export type ProjectFactValue =
+  | { readonly type: 'text'; readonly value: string }
+  | { readonly type: 'number'; readonly value: number }
+  | { readonly type: 'boolean'; readonly value: boolean }
+  | { readonly type: 'date'; readonly value: string }
+
+/** Public lifecycle states for an admitted Fact proposal. */
+export type FactProposalPublicStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'rejected'
+  | 'withdrawn'
+  | 'conflicted'
+
+/** Model-authored fields accepted by the `propose_fact` Consumer. */
+export interface ProposeFactInput {
+  readonly field_key: string
+  readonly label: string
+  readonly value: ProjectFactValue
+  readonly evidence_ids?: readonly string[]
+  readonly assertion_reason?: string
+}
+
+/** Minimal public result admitted with a successful Fact proposal. */
+export interface ProposeFactResult {
+  readonly proposalId: string
+  readonly status: 'pending'
+}
+
+/** Private prepared-proposal receipt bound to one future Session event. */
+export interface XAgentFactProposalReceiptAttachment {
+  readonly eventSequence: number
+  readonly toolCallId: string
+  readonly proposalId: string
+  readonly receipt: string
+  readonly payloadHash: string
+}
+
+/** Private Outbox identity bound to one future Session decision event. */
+export interface XAgentFactOutboxAttachment {
+  readonly eventSequence: number
+  readonly outboxId: string
+  readonly payloadHash: string
+}
+
+/** Private prepared-proposal sidecars consumed only after an acknowledged Session append. */
+export interface XAgentFactReceiptRegistryContract {
+  attachments(
+    sessionId: string,
+    fromSequence: number,
+    toSequence: number,
+  ): readonly XAgentFactProposalReceiptAttachment[]
+  commit(sessionId: string, throughSequence: number): void
+}
+
+/** Private Outbox sidecars consumed only after an acknowledged Session append. */
+export interface XAgentFactOutboxRegistryContract {
+  attachments(
+    sessionId: string,
+    fromSequence: number,
+    toSequence: number,
+  ): readonly XAgentFactOutboxAttachment[]
+  commit(sessionId: string, throughSequence: number): void
+}
+
+/** Optional Fact service fields used exclusively by Session persistence. */
+export interface XAgentFactPersistenceSidecars {
+  readonly receipts: XAgentFactReceiptRegistryContract
+  readonly outbox: XAgentFactOutboxRegistryContract
+}
+
+/** Terminal Fact decision projected into the source Session. */
+export interface FactProposalDecidedEvent {
+  readonly type: 'fact/proposal-decided'
+  readonly data: {
+    readonly proposalId: string
+    readonly projectId: string
+    readonly fieldKey: string
+    readonly label: string
+    readonly status: Exclude<FactProposalPublicStatus, 'pending'>
+    readonly factRevisionId?: string
+    readonly contentRevision?: number
+    readonly decisionReason?: string
+  }
+}
+
+/** Exact immutable Artifact evidence attached to a Fact proposal or revision. */
+export interface XAgentFactEvidence {
+  readonly citationId: string
+  readonly artifactId: string
+  readonly versionId: string
+  readonly indexId: string
+  readonly indexGeneration: number
+  readonly chunkId: string
+  readonly lineStart: number
+  readonly lineEnd: number
+}
+
+/** Public fields of one admitted Fact proposal. */
+export interface XAgentFactProposal {
+  readonly id: string
+  readonly projectId: string
+  readonly fieldKey: string
+  readonly label: string
+  readonly value: ProjectFactValue
+  readonly proposerId: string
+  readonly baseRevision: number
+  readonly assertionReason?: string
+  readonly status: FactProposalPublicStatus
+  readonly decisionActorId?: string
+  readonly decisionReason?: string
+  readonly evidence: readonly XAgentFactEvidence[]
+  readonly createdAt: string
+  readonly admittedAt: string
+  readonly decidedAt?: string
+}
+
+/** One immutable confirmed revision of a governed project Fact. */
+export interface XAgentFactRevision {
+  readonly id: string
+  readonly projectId: string
+  readonly fieldKey: string
+  readonly label: string
+  readonly value: ProjectFactValue
+  readonly contentRevision: number
+  readonly proposalId: string
+  readonly proposerId: string
+  readonly confirmedById: string
+  readonly assertionReason?: string
+  readonly evidence: readonly XAgentFactEvidence[]
+  readonly createdAt: string
+}
+
+/** Bounded Fact query page. */
+export interface XAgentFactPage<T> {
+  readonly items: readonly T[]
+  readonly nextCursor?: string
+}
+
+/** One selected Fact revision and its newest bounded field history. */
+export interface XAgentFactRevisionDetail {
+  readonly revision: XAgentFactRevision
+  readonly history: readonly XAgentFactRevision[]
+}
+
+/** Public result of a successful terminal proposal operation. */
+export interface XAgentFactProposalDecision {
+  readonly proposalId: string
+  readonly status: Exclude<FactProposalPublicStatus, 'pending' | 'conflicted'>
+  readonly factRevisionId?: string
+  readonly contentRevision?: number
+}
+
+/** Private Host result of preparing a proposal before Session admission. */
+export interface XAgentFactPrepareResult {
+  readonly result: ProposeFactResult
+  readonly receipt: string
+  readonly payloadHash: string
+}
+
+/** One verified Fact decision and the private Outbox identity that admits it. */
+export interface XAgentFactOutboxItem {
+  readonly outboxId: string
+  readonly payloadHash: string
+  readonly event: FactProposalDecidedEvent
+}
+
+/** Host-only inputs for preparing one Fact proposal. */
+export interface XAgentFactPrepareInput {
+  readonly sessionId: string
+  readonly toolCallId: string
+  readonly permissionRevision: number
+  readonly idempotencyKey: string
+  readonly fieldKey: string
+  readonly label: string
+  readonly value: ProjectFactValue
+  readonly evidenceIds: readonly string[]
+  readonly assertionReason?: string
+}
+
+/** Cursor and item bound for a Fact list request. */
+export interface XAgentFactPageInput {
+  readonly limit: number
+  readonly cursor?: string
+}
+
+/** Manager-authored fields for approving a pending Fact proposal. */
+export interface XAgentFactApproveInput {
+  readonly idempotencyKey: string
+  readonly decisionNote?: string
+}
+
+/** Manager-authored fields for rejecting a pending Fact proposal. */
+export interface XAgentFactRejectInput {
+  readonly idempotencyKey: string
+  readonly reason: string
+}
+
+/** Proposer-authored identity for withdrawing a pending Fact proposal. */
+export interface XAgentFactWithdrawInput {
+  readonly idempotencyKey: string
+}
+
+/** Strict Host operations for the governed FastAPI Fact routes. */
+export interface XAgentFactBackend {
+  prepare(
+    userToken: string,
+    delegationToken: string,
+    input: XAgentFactPrepareInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentFactPrepareResult>
+  listHeads(
+    userToken: string,
+    projectId: string,
+    input: XAgentFactPageInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentFactPage<XAgentFactRevision>>
+  listProposals(
+    userToken: string,
+    projectId: string,
+    input: XAgentFactPageInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentFactPage<XAgentFactProposal>>
+  revision(userToken: string, revisionId: string, signal?: AbortSignal): Promise<XAgentFactRevisionDetail>
+  proposal(userToken: string, proposalId: string, signal?: AbortSignal): Promise<XAgentFactProposal>
+  approve(
+    userToken: string,
+    proposalId: string,
+    input: XAgentFactApproveInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentFactProposalDecision>
+  reject(
+    userToken: string,
+    proposalId: string,
+    input: XAgentFactRejectInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentFactProposalDecision>
+  withdraw(
+    userToken: string,
+    proposalId: string,
+    input: XAgentFactWithdrawInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentFactProposalDecision>
+  pullOutbox(
+    userToken: string,
+    sessionId: string,
+    input: XAgentFactPageInput,
+    signal?: AbortSignal,
+  ): Promise<XAgentFactPage<XAgentFactOutboxItem>>
+}
+
 /** Authentication, Session, workbench, and Artifact operations implemented by the XAgent FastAPI client. */
 export interface XAgentBackend {
   login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin>
@@ -348,4 +626,5 @@ export interface XAgentBackend {
   readonly workbench?: XAgentWorkbenchBackend
   readonly artifacts?: XAgentArtifactBackend
   readonly retrieval?: XAgentRetrievalBackend
+  readonly facts?: XAgentFactBackend
 }

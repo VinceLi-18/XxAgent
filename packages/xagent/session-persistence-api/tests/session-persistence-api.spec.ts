@@ -1,7 +1,12 @@
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { SessionForkOperationId } from '@deepseek-ai/dsh-session-persistence'
-import { XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
+import {
+  XAgentBackendClient,
+  XAgentBackendError,
+  type XAgentBackend,
+  type XAgentFactPersistenceSidecars,
+} from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { describe, expect, test, vi } from 'vitest'
 import * as persistenceModule from '../src/index.ts'
@@ -263,6 +268,176 @@ describe('XAgent FastAPI Session Persistence', () => {
       }],
     })
     expect(commit).toHaveBeenCalledWith(String(id), 0)
+  })
+
+  test('retrieval, Fact receipt, and Fact Outbox sidecars share one append and commit independently through its acknowledgement', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const retrievalAttachments = vi.fn(() => [{
+      eventSequence: 0,
+      toolCallId: 'call-retrieval',
+      receipt: 'opaque-retrieval',
+      payloadHash: 'a'.repeat(64),
+    }])
+    const retrievalCommit = vi.fn()
+    ctx.provide('xagentRetrieval', { receipts: {
+      attachments: retrievalAttachments,
+      commit: retrievalCommit,
+    } as unknown as XAgentReceiptRegistryContract } as never)
+    const factReceiptAttachments = vi.fn(() => [{
+      eventSequence: 1,
+      toolCallId: 'call-fact',
+      proposalId: '00000000-0000-0000-0000-000000000721',
+      receipt: 'opaque-fact',
+      payloadHash: 'b'.repeat(64),
+    }])
+    const factReceiptCommit = vi.fn()
+    const factOutboxAttachments = vi.fn(() => [{
+      eventSequence: 2,
+      outboxId: '00000000-0000-0000-0000-000000000722',
+      payloadHash: 'c'.repeat(64),
+    }])
+    const factOutboxCommit = vi.fn()
+    ctx.provide('xagentFact', {
+      receipts: { attachments: factReceiptAttachments, commit: factReceiptCommit },
+      outbox: { attachments: factOutboxAttachments, commit: factOutboxCommit },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const events = [
+      event,
+      { seq: 1, time: event.time + 1, type: 'tool/result', data: {} } as SessionEvent,
+      { seq: 2, time: event.time + 2, type: 'fact/proposal-decided', data: {} } as SessionEvent,
+    ]
+
+    await persistence.append(id, events)
+
+    expect(retrievalAttachments).toHaveBeenCalledWith(String(id), 0, 2)
+    expect(factReceiptAttachments).toHaveBeenCalledWith(String(id), 0, 2)
+    expect(factOutboxAttachments).toHaveBeenCalledWith(String(id), 0, 2)
+    expect(value.calls.find(call => call.name === 'append')?.args[2]).toEqual({
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: `append:${id}:0:2`,
+      events: events.map(item => ({
+        event_type: item.type,
+        schema_version: 1,
+        payload: item,
+      })),
+      retrieval_receipts: [{
+        event_sequence: 0,
+        tool_call_id: 'call-retrieval',
+        receipt: 'opaque-retrieval',
+        payload_hash: 'a'.repeat(64),
+      }],
+      fact_proposal_receipts: [{
+        event_sequence: 1,
+        tool_call_id: 'call-fact',
+        proposal_id: '00000000-0000-0000-0000-000000000721',
+        receipt: 'opaque-fact',
+        payload_hash: 'b'.repeat(64),
+      }],
+      fact_outbox_events: [{
+        event_sequence: 2,
+        outbox_id: '00000000-0000-0000-0000-000000000722',
+        payload_hash: 'c'.repeat(64),
+      }],
+    })
+    expect(retrievalCommit).toHaveBeenCalledWith(String(id), 2)
+    expect(factReceiptCommit).toHaveBeenCalledWith(String(id), 2)
+    expect(factOutboxCommit).toHaveBeenCalledWith(String(id), 2)
+  })
+
+  test('partial or failed mixed append acknowledgement retains every sidecar for the exact retry', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const retrievalAttachment = {
+      eventSequence: 0,
+      toolCallId: 'call-retrieval-retry',
+      receipt: 'opaque-retrieval-retry',
+      payloadHash: 'd'.repeat(64),
+    }
+    const factReceiptAttachment = {
+      eventSequence: 1,
+      toolCallId: 'call-fact-retry',
+      proposalId: '00000000-0000-0000-0000-000000000723',
+      receipt: 'opaque-fact-retry',
+      payloadHash: 'e'.repeat(64),
+    }
+    const factOutboxAttachment = {
+      eventSequence: 2,
+      outboxId: '00000000-0000-0000-0000-000000000724',
+      payloadHash: 'f'.repeat(64),
+    }
+    const retrievalAttachments = vi.fn(() => [retrievalAttachment])
+    const retrievalCommit = vi.fn()
+    const factReceiptAttachments = vi.fn(() => [factReceiptAttachment])
+    const factReceiptCommit = vi.fn()
+    const factOutboxAttachments = vi.fn(() => [factOutboxAttachment])
+    const factOutboxCommit = vi.fn()
+    ctx.provide('xagentRetrieval', { receipts: {
+      attachments: retrievalAttachments,
+      commit: retrievalCommit,
+    } as unknown as XAgentReceiptRegistryContract } as never)
+    ctx.provide('xagentFact', {
+      receipts: { attachments: factReceiptAttachments, commit: factReceiptCommit },
+      outbox: { attachments: factOutboxAttachments, commit: factOutboxCommit },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const append = vi.fn()
+      .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 1 })
+      .mockRejectedValueOnce(new Error('append unavailable'))
+      .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 2 })
+    value.sessions.append = append
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const events = [
+      event,
+      { seq: 1, time: event.time + 1, type: 'tool/result', data: {} } as SessionEvent,
+      { seq: 2, time: event.time + 2, type: 'fact/proposal-decided', data: {} } as SessionEvent,
+    ]
+
+    await expect(persistence.append(id, events)).rejects.toThrow('invalid XAgent session append response')
+    await expect(persistence.append(id, events)).rejects.toThrow('append unavailable')
+    expect(retrievalCommit).not.toHaveBeenCalled()
+    expect(factReceiptCommit).not.toHaveBeenCalled()
+    expect(factOutboxCommit).not.toHaveBeenCalled()
+    await expect(persistence.append(id, events)).resolves.toBeUndefined()
+
+    expect(append.mock.calls[0]?.[2]).toEqual(append.mock.calls[1]?.[2])
+    expect(append.mock.calls[1]?.[2]).toEqual(append.mock.calls[2]?.[2])
+    expect(retrievalAttachments).toHaveBeenCalledTimes(3)
+    expect(factReceiptAttachments).toHaveBeenCalledTimes(3)
+    expect(factOutboxAttachments).toHaveBeenCalledTimes(3)
+    expect(retrievalCommit).toHaveBeenCalledExactlyOnceWith(String(id), 2)
+    expect(factReceiptCommit).toHaveBeenCalledExactlyOnceWith(String(id), 2)
+    expect(factOutboxCommit).toHaveBeenCalledExactlyOnceWith(String(id), 2)
+  })
+
+  test('append bytes remain identical when the optional Fact service is absent', async () => {
+    let encodedBody: string | undefined
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async (_input, init) => {
+        if (typeof init?.body !== 'string') throw new TypeError('expected a JSON request body')
+        encodedBody = init.body
+        return Response.json({ schema_version: 1, version: 2, last_event_sequence: 0 })
+      },
+    })
+    const persistence = new XAgentSessionPersistence(new Context(), client)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await persistence.append(id, [event])
+
+    expect(encodedBody).toBe(
+      '{"schema_version":1,"expected_sequence":-1,'
+      + `"idempotency_key":"append:${id}:0:0",`
+      + '"events":[{"event_type":"turn/start","schema_version":1,'
+      + `"payload":{"seq":0,"time":${String(event.time)},"type":"turn/start","data":{"turn":0}}}],`
+      + '"retrieval_receipts":[]}',
+    )
+    expect(encodedBody).not.toContain('fact_proposal_receipts')
+    expect(encodedBody).not.toContain('fact_outbox_events')
   })
 
   test('failed append retains the same owned receipt attachment for an exact retry', async () => {

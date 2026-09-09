@@ -20,7 +20,7 @@ import {
   type SessionHeader,
   type SessionId as SessionIdType,
 } from '@deepseek-ai/dsh-session'
-import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
+import { XAgentBackendClient, XAgentBackendError, type XAgentBackend, type XAgentFactPersistenceSidecars } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
@@ -345,6 +345,9 @@ export class XAgentSessionPersistence extends SessionPersistence {
     }
     const receipts = this.receiptRegistry()
     const attachments = receipts?.attachments(String(id), first.seq, last.seq) ?? []
+    const fact = this.factSidecars()
+    const factReceiptAttachments = fact?.receipts.attachments(String(id), first.seq, last.seq) ?? []
+    const factOutboxAttachments = fact?.outbox.attachments(String(id), first.seq, last.seq) ?? []
     const body = {
       schema_version: 1 as const,
       expected_sequence: first.seq - 1,
@@ -360,10 +363,26 @@ export class XAgentSessionPersistence extends SessionPersistence {
         receipt: attachment.receipt,
         payload_hash: attachment.payloadHash,
       })),
+      ...(fact === undefined ? {} : {
+        fact_proposal_receipts: factReceiptAttachments.map(attachment => ({
+          event_sequence: attachment.eventSequence,
+          tool_call_id: attachment.toolCallId,
+          proposal_id: attachment.proposalId,
+          receipt: attachment.receipt,
+          payload_hash: attachment.payloadHash,
+        })),
+        fact_outbox_events: factOutboxAttachments.map(attachment => ({
+          event_sequence: attachment.eventSequence,
+          outbox_id: attachment.outboxId,
+          payload_hash: attachment.payloadHash,
+        })),
+      }),
     }
     const response = await this.backend.sessions.append(token, backendSessionId(id), body, undefined)
     validateAppendResult(response, last.seq)
     receipts?.commit(String(id), last.seq)
+    fact?.receipts.commit(String(id), last.seq)
+    fact?.outbox.commit(String(id), last.seq)
     if (events.some(event => event.type === 'turn/end')) this.turnTokens.delete(id)
   }
 
@@ -469,6 +488,10 @@ export class XAgentSessionPersistence extends SessionPersistence {
 
   private receiptRegistry(): XAgentReceiptRegistryContract | undefined {
     return this.ctx.get('xagentRetrieval')?.receipts
+  }
+
+  private factSidecars(): XAgentFactPersistenceSidecars | undefined {
+    return this.ctx.get('xagentFact') as XAgentFactPersistenceSidecars | undefined
   }
 
   private async readInspection(id: SessionIdType, signal?: AbortSignal): Promise<SessionInspection> {

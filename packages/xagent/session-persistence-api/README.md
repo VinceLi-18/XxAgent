@@ -10,6 +10,8 @@
 
 检索工具的不透明 receipt 由检索注册表按已绑定的 `tool/result` sequence 提供。provider 只在对应 append 的私有 `retrieval_receipts` sidecar 中传输它，并在 FastAPI 返回关闭的 schema、精确末事件 sequence 和有效 Session version 后才从注册表确认删除。FastAPI 接受运行时真实 `tool/result` provenance，其中 `surfaceOp` 必须为 `append`，可选 `sourceEventSeqs` 只能引用同一 Session 中 sequence 更小且不重复的事件；检查点可以先持久化 `tool/call`，再由后续 append 持久化对应的 `tool/result`。这些字段会进入规范公开事件。网络、后端或响应校验失败保留原事件批次与同一 sidecar，下一次 checkpoint 精确重试；receipt 不进入 Session 事件、模型内容、读取响应、日志或审计。
 
+可选 `xagentFact` 服务通过独立 `receipts` 和 `outbox` 注册表提供 Fact proposal receipt 与 Outbox 事件附件。provider 按同一首尾 sequence 窗口同时收集 retrieval、Fact receipt 和 Fact Outbox sidecar，将它们放入一次 append，只在关闭响应确认精确末 sequence 后才以该 sequence 分别 commit 三个注册表。部分确认、取消、超时、请求失败或响应校验失败都不 commit 任何注册表。`xagentFact` 缺失时，provider 不访问这两个注册表，也不添加空 Fact 数组，普通 append 正文字节保持不变。
+
 每个 Session 的后台写入只在确有 pending 或 retry 批次时建立 flush owner。空队列 flush 立即返回，不会留下已结算 owner 覆盖同步到达的新事件；并发入队因此仍会安排下一次远端 append。
 
 ## Model Experience
@@ -34,3 +36,4 @@ provider 不增加提示词或工具 token。
 - 本后端不提供逐 Session 原始文件导出；产品导出需要使用受授权的结构化事件接口。
 - 请求令牌作用域为保证多用户隔离而串行执行；后台 append 按 Session 独立使用已认证租约。
 - 工作上下文切换不会迁移既有 Session；fork 由 FastAPI 从已授权源 Session 派生范围和子身份。
+- Fact sidecar 只在 `xagentFact` 服务已装配时参与 append；provider 不持有也不重建其私有注册表。
