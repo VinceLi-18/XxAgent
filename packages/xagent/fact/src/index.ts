@@ -5,13 +5,14 @@ import { createHash, createPrivateKey, type KeyObject } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ToolDispatchExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { Remote, TypertRemoteFailure, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
   XAgentBackendClient,
   XAgentBackendError,
-  type FactProposalDecidedEvent,
   type XAgentFactApproveInput,
   type XAgentFactBackend,
   type XAgentFactPage,
@@ -110,6 +111,12 @@ interface MessageScopeBinding {
   readonly close?: () => void
 }
 
+interface ClaimedScopeBatch {
+  readonly turn: number
+  scope?: XAgentAuthenticatedSessionRequestScope
+  invalid: boolean
+}
+
 interface OutboxOwner {
   readonly session: Session
   readonly scope: XAgentFactProjectRequestScope
@@ -177,16 +184,121 @@ function factRemoteFailure(error: unknown): TypertRemoteFailure {
   return new TypertRemoteFailure({ code, message: 'XAgent Fact request failed', details: {} })
 }
 
+function isFactDecisionNotice(message: GenerateOptions['messages'][number]): message is UserMessage & {
+  readonly source: { readonly kind: 'xagent-fact-decisions'; readonly eventSeqs: readonly number[] }
+} {
+  return message.role === 'user' && message.source.kind === 'xagent-fact-decisions'
+}
+
+function projectedDecisionSequences(session: Session): Set<number> {
+  const projected = new Set<number>()
+  for (const event of session.events) {
+    if (event.type !== 'user/message' || !isFactDecisionNotice(event.data)) continue
+    let previous = -1
+    for (const seq of event.data.source.eventSeqs) {
+      if (!Number.isSafeInteger(seq) || seq < 0 || seq >= event.seq || seq <= previous) {
+        throw new Error(`xagent Fact decision notice at seq ${String(event.seq)} has invalid ordered event provenance`)
+      }
+      const source = session.events[seq]
+      if (source?.type !== 'fact/proposal-decided') {
+        throw new Error(`xagent Fact decision notice at seq ${String(event.seq)} cites non-decision seq ${String(seq)}`)
+      }
+      projected.add(seq)
+      previous = seq
+    }
+  }
+  return projected
+}
+
+function factDecisionProjection(session: Session): UserMessage | undefined {
+  const projected = projectedDecisionSequences(session)
+  const decisions = session.events.filter((event): event is SessionEvent<'fact/proposal-decided'> => (
+    event.type === 'fact/proposal-decided' && !projected.has(event.seq)
+  ))
+  if (decisions.length === 0) return
+  return createUserMessage({
+    content: [{
+      type: 'text',
+      text: [
+        '<fact-proposal-decisions>',
+        'These terminal human review outcomes are authoritative project state:',
+        JSON.stringify(decisions.map(event => event.data)),
+        '</fact-proposal-decisions>',
+      ].join('\n'),
+    }],
+    source: {
+      kind: 'xagent-fact-decisions',
+      eventSeqs: decisions.map(event => event.seq),
+    },
+  })
+}
+
+function consumeFactDecisionNotices(
+  ctx: Context,
+  session: Session,
+  notices: readonly UserMessage[],
+  next: () => AsyncIterable<StreamChunk>,
+): AsyncIterable<StreamChunk> {
+  const stream = next()
+  return (async function* () {
+    const iterator = stream[Symbol.asyncIterator]()
+    let complete = false
+    try {
+      const first = await iterator.next()
+      const surface = [...session.surface.nodes]
+      const replacements = notices.map((notice) => {
+        const noticeIndex = surface.findIndex((seq) => {
+          const event = session.events[seq]
+          return event?.type === 'user/message' && event.data.id === notice.id
+        })
+        const previousSeq = surface[noticeIndex - 1]
+        const noticeSeq = surface[noticeIndex]
+        const previous = previousSeq === undefined ? undefined : session.events[previousSeq]
+        if (noticeIndex < 1 || previousSeq === undefined || noticeSeq === undefined || previous?.type !== 'user/message') {
+          throw new Error(`xagent Fact decision notice "${String(notice.id)}" is not adjacent to a prior user surface node`)
+        }
+        return { notice, previous, previousSeq, noticeSeq }
+      })
+      for (const { previous, previousSeq, noticeSeq } of replacements.toReversed()) {
+        session.append('user/message', previous.data, {
+          surfaceOp: { op: 'replace', start: previousSeq, end: noticeSeq },
+          sourceEventSeqs: [previousSeq, noticeSeq],
+        })
+      }
+      try {
+        await ctx.sessions.flush(session)
+      } catch (error: unknown) {
+        for (const { notice, noticeSeq } of replacements) {
+          session.append('user/message', createUserMessage({
+            content: notice.content,
+            source: notice.source,
+          }), { surfaceOp: 'append', sourceEventSeqs: [noticeSeq] })
+        }
+        await ctx.sessions.flush(session)
+        throw error
+      }
+      if (first.done) {
+        complete = true
+        return
+      }
+      yield first.value
+      for (;;) {
+        const item = await iterator.next()
+        if (item.done) {
+          complete = true
+          return
+        }
+        yield item.value
+      }
+    } finally {
+      if (!complete) await iterator.return?.()
+    }
+  })()
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     xagentFact: XAgentFactService
-  }
-}
-
-declare module '@deepseek-ai/dsh-session' {
-  interface SessionEventMap {
-    /** Terminal governed Fact decision delivered from the durable backend Outbox. */
-    'fact/proposal-decided': FactProposalDecidedEvent['data']
   }
 }
 
@@ -204,6 +316,7 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
   private readonly controllers = new Map<AbortController, Promise<void>>()
   private readonly messageScopes = new Map<string, MessageScopeBinding>()
   private readonly activeScopes = new Map<Agent, XAgentAuthenticatedSessionRequestScope>()
+  private readonly claimedScopeBatches = new Map<Agent, ClaimedScopeBatch>()
   private readonly outboxOwners = new Map<string, OutboxOwner>()
   private readonly issuer: string
   private readonly audience: string
@@ -243,36 +356,58 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
           scope.connectionSignal.removeEventListener('abort', invalidate)
         },
       })
-    })
+    }, { global: true })
     const closeDiscarded = ctx.on('agent/inbox/discarded', ({ message }) => {
       this.deleteMessageScope(String(message.id))
-    })
+    }, { global: true })
+    const closeClaimed = ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
+      let batch = this.claimedScopeBatches.get(agent)
+      if (batch?.turn !== turn) {
+        this.activeScopes.delete(agent)
+        batch = { turn, invalid: false }
+        this.claimedScopeBatches.set(agent, batch)
+      }
+      const binding = this.messageScopes.get(String(message.id))
+      const messageScope = binding?.agent === agent ? binding.scope : undefined
+      if (messageScope === undefined || !isProjectScope(messageScope)) {
+        batch.invalid = true
+      } else if (batch.scope === undefined) {
+        batch.scope = messageScope
+      } else if (!samePhysicalScope(batch.scope, messageScope)) {
+        batch.invalid = true
+      }
+      if (batch.invalid || batch.scope === undefined) this.activeScopes.delete(agent)
+      else this.activeScopes.set(agent, batch.scope)
+    }, { global: true })
     const closeAgentDisposed = ctx.on('agent/disposed', ({ agent }) => {
       this.clearAgent(agent)
       this.receipts.discardSession(String(agent.session.id))
-    })
+    }, { global: true })
     const closeAgentError = ctx.on('agent/error', ({ agent }) => {
-      this.clearAgent(agent)
+      this.releaseAgent(agent)
       this.receipts.discardSession(String(agent.session.id))
-    })
+    }, { global: true })
     const closeSessionCreated = ctx.on('session/created', (session) => {
       const scope = currentXAgentAuthenticatedRequestScope()
       if (!isProjectScope(scope) || backendSessionId(String(session.id)) !== scope.sessionId) return
       void this.deliverOutbox(session, scope).catch((error: unknown) => {
         ctx.logger.warn(`xagent Fact Outbox delivery failed for "${String(session.id)}": ${String(error)}`)
       })
-    })
+    }, { global: true })
     const closeSessionDisposed = ctx.on('session/disposed', (session) => {
       this.closeOutboxOwner(String(session.id))
       this.receipts.discardSession(String(session.id))
       for (const agent of this.activeScopes.keys()) {
         if (String(agent.session.id) === String(session.id)) this.clearAgent(agent)
       }
-    })
+    }, { global: true })
     const closeSessionEvent = ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/end') {
         for (const agent of this.activeScopes.keys()) {
-          if (String(agent.session.id) === String(session.id)) this.activeScopes.delete(agent)
+          if (String(agent.session.id) === String(session.id)) {
+            this.activeScopes.delete(agent)
+            this.claimedScopeBatches.delete(agent)
+          }
         }
       }
       const result = factToolResult(event)
@@ -283,7 +418,7 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
         this.receipts.discard(String(session.id), result.toolCallId)
         ctx.logger.warn(`xagent Fact receipt binding rejected: ${error instanceof Error ? error.message : 'unknown error'}`)
       }
-    })
+    }, { global: true })
     const closePreStep = ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
       if (messages.length > 0) {
         const scopes: XAgentAuthenticatedSessionRequestScope[] = []
@@ -307,8 +442,22 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
       }
       const decision = await next()
       if (decision.kind === 'reject') this.activeScopes.delete(agent)
-      return decision
-    })
+      if (decision.kind === 'reject' || !messages.some(message => message.source.kind === 'user')) return decision
+      const projection = factDecisionProjection(agent.session)
+      return projection === undefined
+        ? decision
+        : { ...decision, messages: [...decision.messages, projection] }
+    }, { global: true })
+    const closeStream = ctx.on('llm/stream', (options, next) => {
+      if (!isAgentLoopRequest(options) || options.sessionId === undefined) return next()
+      const notices = options.messages.filter(isFactDecisionNotice)
+      if (notices.length === 0) return next()
+      const session = ctx.sessions.get(options.sessionId)
+      if (session === undefined) {
+        throw new Error(`xagent Fact decision request has no live Session "${String(options.sessionId)}"`)
+      }
+      return consumeFactDecisionNotices(ctx, session, notices, next)
+    }, { global: true })
     const closeToolExecution = ctx.on('tools/execute', (
       execution: ToolDispatchExecution,
       next: () => Promise<ToolExecutionResult>,
@@ -318,16 +467,18 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
       return scope === undefined
         ? runWithoutXAgentAuthenticatedRequestScope(next)
         : runWithXAgentAuthenticatedRequestScope(scope, next)
-    })
+    }, { global: true })
     this.closeObservers = [
       closeInserted,
       closeDiscarded,
+      closeClaimed,
       closeAgentDisposed,
       closeAgentError,
       closeSessionCreated,
       closeSessionDisposed,
       closeSessionEvent,
       closePreStep,
+      closeStream,
       closeToolExecution,
     ]
     ctx.effect(() => () => this.dispose(), 'xagent Fact service')
@@ -515,6 +666,7 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
       for (const close of this.closeObservers) close()
       for (const messageId of this.messageScopes.keys()) this.deleteMessageScope(messageId)
       this.activeScopes.clear()
+      this.claimedScopeBatches.clear()
       const outboxOwners = [...this.outboxOwners.values()]
       this.outboxOwners.clear()
       for (const owner of outboxOwners) {
@@ -777,11 +929,16 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
   }
 
   private clearAgent(agent: Agent): void {
-    this.activeScopes.delete(agent)
-    this.closeOutboxOwner(String(agent.session.id))
+    this.releaseAgent(agent)
     for (const [messageId, binding] of this.messageScopes) {
       if (binding.agent === agent) this.deleteMessageScope(messageId)
     }
+  }
+
+  private releaseAgent(agent: Agent): void {
+    this.activeScopes.delete(agent)
+    this.claimedScopeBatches.delete(agent)
+    this.closeOutboxOwner(String(agent.session.id))
   }
 }
 

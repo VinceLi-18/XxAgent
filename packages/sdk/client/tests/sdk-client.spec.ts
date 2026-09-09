@@ -126,6 +126,28 @@ describe('DeepSeekHarness', () => {
     await harness.close()
   })
 
+  it('projects the exact governed Fact decision event payload', async () => {
+    const harness = harnessWith({ FAKE_FACT_DECISION: '1' })
+    const result = await harness.run('continue after review', { sessionId: 'fact-session' })
+    const event = result.events.find(item => item.type === 'fact/proposal-decided')
+    expect(event).toEqual({
+      type: 'fact/proposal-decided',
+      seq: 4,
+      time: 0,
+      data: {
+        proposalId: '00000000-0000-0000-0000-000000000401',
+        projectId: '00000000-0000-0000-0000-000000000301',
+        fieldKey: 'customer.name',
+        label: 'Customer name',
+        status: 'confirmed',
+        factRevisionId: '00000000-0000-0000-0000-000000000501',
+        contentRevision: 2,
+        decisionReason: 'verified by manager',
+      },
+    })
+    await harness.close()
+  })
+
   it('keeps events root-scoped while streaming notifications for the session tree', async () => {
     const harness = harnessWith({ FAKE_SUBAGENT: '1' })
     const seen: HarnessNotification[] = []

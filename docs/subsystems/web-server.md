@@ -341,7 +341,7 @@ async dispose(): Promise<void>
 relationshipIssue(): string | undefined
 ```
 
-Source: [`packages/xagent/fact/src/index.ts:202`](../../packages/xagent/fact/src/index.ts)
+Source: [`packages/xagent/fact/src/index.ts:314`](../../packages/xagent/fact/src/index.ts)
 
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 

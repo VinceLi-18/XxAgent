@@ -336,6 +336,31 @@ describe('xagent business bundle', () => {
     })
   })
 
+  it('composes governed Fact Host, Native tool, and Browser UI only after authorization', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const patch = loadPatch(resolve(root, 'cordis.patch.yml'))
+    const rows = patch.flatMap(row => row.insert ?? [row])
+    const byId = new Map(rows.map(row => [row.id, row]))
+    const index = (id: string): number => rows.findIndex(row => row.id === id)
+
+    expect(index('xagent-fact')).toBeGreaterThan(index('xagent-authorization'))
+    expect(index('xagent-tool-fact')).toBeGreaterThan(index('xagent-fact'))
+    expect(index('xagent-ui-fact')).toBeGreaterThan(index('xagent-ui-project'))
+    expect(byId.get('xagent-fact')).toEqual({
+      id: 'xagent-fact',
+      name: '@xagent/dsh-fact',
+      config: {
+        backendOrigin: { __jsExpr: 'process.env.XAGENT_API_ORIGIN' },
+        serviceToken: { __jsExpr: 'process.env.XAGENT_SERVICE_TOKEN' },
+        delegationPrivateKey: { __jsExpr: 'process.env.XAGENT_DELEGATION_PRIVATE_KEY' },
+        delegationIssuer: { __jsExpr: 'process.env.XAGENT_DELEGATION_ISSUER' },
+        delegationAudience: { __jsExpr: 'process.env.XAGENT_DELEGATION_AUDIENCE' },
+      },
+    })
+    expect(byId.get('xagent-tool-fact')).toEqual({ id: 'xagent-tool-fact', name: '@xagent/dsh-tool-fact' })
+    expect(byId.get('xagent-ui-fact')).toEqual({ id: 'xagent-ui-fact', name: '@xagent/dsh-ui-fact' })
+  })
+
   it('keeps retrieval credentials and opaque references out of every Browser row', () => {
     const home = mkdtempSync(resolve(tmpdir(), 'xagent-business-browser-rows-'))
     try {
@@ -346,6 +371,7 @@ describe('xagent business bundle', () => {
         immediately: client.immediately === true,
       }))
       expect(browserRows.map(({ row }) => row.id)).toContain('xagent-ui-citation')
+      expect(browserRows.map(({ row }) => row.id)).toContain('xagent-ui-fact')
       expect(() => { assertNoForbiddenBrowserData({ rows: browserRows.map(item => item.row), graph }) }).not.toThrow()
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -368,7 +394,7 @@ describe('xagent business bundle', () => {
     }
   })
 
-  it('keeps Artifact and retrieval packages out of every shipped non-Business Profile dump', () => {
+  it('keeps Artifact, retrieval, and Fact packages out of every shipped non-Business Profile dump', () => {
     const home = mkdtempSync(resolve(tmpdir(), 'xagent-artifact-profile-dumps-'))
     const anchor = fileURLToPath(new URL('../../../../apps/cli/package.json', import.meta.url))
     try {
@@ -382,6 +408,9 @@ describe('xagent business bundle', () => {
         expect(names, `${profileName} retrieval provider dump`).not.toContain('@xagent/dsh-retrieval')
         expect(names, `${profileName} retrieval tools dump`).not.toContain('@xagent/dsh-tool-retrieval')
         expect(names, `${profileName} citation Browser dump`).not.toContain('@xagent/dsh-ui-citation')
+        expect(names, `${profileName} Fact provider dump`).not.toContain('@xagent/dsh-fact')
+        expect(names, `${profileName} Fact tool dump`).not.toContain('@xagent/dsh-tool-fact')
+        expect(names, `${profileName} Fact Browser dump`).not.toContain('@xagent/dsh-ui-fact')
         expect(warnings, `${profileName} dump warnings`).toEqual([])
       }
     } finally {
@@ -401,19 +430,22 @@ describe('xagent business bundle', () => {
       '@xagent/dsh-backend-client': 'workspace:^',
       '@xagent/dsh-connection-auth': 'workspace:^',
       '@xagent/dsh-delegation-token': 'workspace:^',
+      '@xagent/dsh-fact': 'workspace:^',
       '@xagent/dsh-principal': 'workspace:^',
       '@xagent/dsh-project': 'workspace:^',
       '@xagent/dsh-retrieval': 'workspace:^',
       '@xagent/dsh-session-persistence-api': 'workspace:^',
       '@xagent/dsh-tool-retrieval': 'workspace:^',
+      '@xagent/dsh-tool-fact': 'workspace:^',
       '@xagent/dsh-ui-account': 'workspace:^',
       '@xagent/dsh-ui-artifact': 'workspace:^',
       '@xagent/dsh-ui-citation': 'workspace:^',
+      '@xagent/dsh-ui-fact': 'workspace:^',
       '@xagent/dsh-ui-project': 'workspace:^',
     })
   })
 
-  it('keeps every Artifact and retrieval package in the CLI resolver manifest', () => {
+  it('keeps every Artifact, retrieval, and Fact package in the CLI resolver manifest', () => {
     const manifest = JSON.parse(readFileSync(
       fileURLToPath(new URL('../../../../apps/cli/package.json', import.meta.url)),
       'utf8',
@@ -422,10 +454,13 @@ describe('xagent business bundle', () => {
     expect(manifest.dependencies).toMatchObject({
       '@xagent/dsh-artifact': 'workspace:^',
       '@xagent/dsh-delegation-token': 'workspace:^',
+      '@xagent/dsh-fact': 'workspace:^',
       '@xagent/dsh-retrieval': 'workspace:^',
       '@xagent/dsh-tool-retrieval': 'workspace:^',
+      '@xagent/dsh-tool-fact': 'workspace:^',
       '@xagent/dsh-ui-artifact': 'workspace:^',
       '@xagent/dsh-ui-citation': 'workspace:^',
+      '@xagent/dsh-ui-fact': 'workspace:^',
     })
   })
 })

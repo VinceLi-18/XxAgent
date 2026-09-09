@@ -1,4 +1,5 @@
 import type {
+  FactProposalDecidedEvent,
   FactProposalPublicStatus,
   ProjectFactValue,
   XAgentFactApproveInput,
@@ -12,6 +13,38 @@ import type {
   XAgentFactWithdrawInput,
 } from '@xagent/dsh-backend-client'
 import type { XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
+
+/** Durable provenance for one ordered batch of Fact decisions shown to a model request. */
+export interface XAgentFactDecisionMessageSource {
+  readonly kind: 'xagent-fact-decisions'
+  /** Session event sequences, in presentation order. */
+  readonly eventSeqs: readonly number[]
+}
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /** Ordered terminal Fact decisions presented once to a later user request. */
+    'xagent-fact-decisions': XAgentFactDecisionMessageSource
+  }
+}
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /**
+     * One terminal human review outcome delivered from the durable business Outbox.
+     * The Fact plugin presents ordered outcomes once in the next user-initiated model request.
+     * @param data.proposalId - Reviewed proposal identity.
+     * @param data.projectId - Authoritative project identity.
+     * @param data.fieldKey - Governed Fact field key.
+     * @param data.label - Bounded public field label.
+     * @param data.status - Irreversible confirmed, rejected, withdrawn, or conflicted outcome.
+     * @param data.factRevisionId - Confirmed immutable revision identity, absent for other outcomes.
+     * @param data.contentRevision - Confirmed positive field revision, absent for other outcomes.
+     * @param data.decisionReason - Optional bounded public review reason.
+     */
+    'fact/proposal-decided': FactProposalDecidedEvent['data']
+  }
+}
 
 export type {
   FactProposalDecidedEvent,

@@ -52,7 +52,7 @@ Business 项目工作台把账号能力、可见项目、所选工作台或项�
 
 Business 资料管理复用同一认证作用域，且不增加模型工具。FastAPI 与 PostgreSQL 拥有私人和项目资料权限、不可变版本、五种扫描状态、审计与持久 PostgreSQL 处理队列；使用独立凭据的 worker 通过 ClamAV 扫描暂存正文，并把干净对象晋级到启用版本化的私有 MinIO bucket。`@xagent/dsh-artifact` 只公开固定的人工界面 Remote 与同源正文代理，`@xagent/dsh-ui-artifact` 则占用项目详情 Slot，提供上传、历史、重试、预览与下载。浏览器只在内存中保留资料状态，账号或项目变化时会清空该状态，并且绝不把资料正文或 signed 读取写入 Session 事件或模型请求。
 
-受治理的 Fact 访问使用同一物理授权路径。`@xagent/dsh-authorization` 从经过认证的连接与后端权威会话列表中解析唯一项目会话，再通过 `@xagent/dsh-fact` 的请求上下文运行封闭表中的每个 `xagentFact/*` 远程调用。会话恢复使用相同的派生上下文，使提供方能在会话打开时拉取一页有界 Outbox。交付会追加只进入日志且不进入表面的 `fact/proposal-decided` 事件，且绝不启动轮次；在独立消费方明确投影该事件之前，它对模型令牌和 KV 缓存均无影响。
+受治理的 Fact 访问使用同一物理授权路径。`@xagent/dsh-authorization` 从经过认证的连接与后端权威会话列表中解析唯一项目会话，再通过 `@xagent/dsh-fact` 的请求上下文运行封闭表中的每个 `xagentFact/*` 远程调用。会话恢复使用相同的派生上下文，使提供方能在会话打开时拉取一页有界 Outbox。交付会追加只进入日志且不进入表面的 `fact/proposal-decided` 事件，且绝不启动轮次。Fact 插件只从未消费日志事件派生有序通知，把它加入下一次由用户发起的模型请求，并在下游流开始后持久替换临时通知；同一轮次的后续步骤、再后续轮次和重启重放都不会重复它。`propose_fact` 与 Fact 浏览器工作台只由 `xagent-business` 装配。
 
 Business 检索只在 `xagent-business` 中组装。`@xagent/dsh-retrieval` 把每次 Native 工具调用绑定到认证物理请求与 Session 范围，签发新的委托签名，并向 FastAPI 发送一次有界请求。Project Session 使用固定项目；Private Session 必须显式选择项目和／或私人资料。FastAPI 验证委托和一次性 nonce，在 serializable 检索事务中重新校验登录与权限 revision，应用 PostgreSQL RLS，并在当前 clean 索引 head 上执行混合检索。不透明 receipt 在匹配的公开 `tool/result` 完成持久 append 且后端原子接纳证据身份前，只存在于私有持久化 sidecar。
 

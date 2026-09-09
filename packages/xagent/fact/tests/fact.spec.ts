@@ -1,9 +1,13 @@
 import { generateKeyPairSync } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { agentEvents } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import AgentRegistry, { agentEvents } from '@deepseek-ai/dsh-agent'
+import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import LlmRuntime, { CallId, createUserMessage, LlmAdapter, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import { remoteMethods, TypertRemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import {
   XAgentBackendError,
@@ -204,7 +208,526 @@ function factEvents(session: Session): SessionEvent[] {
   return session.events.filter(event => (event as { readonly type: string }).type === 'fact/proposal-decided')
 }
 
+function textResponse(text: string): StreamChunk[] {
+  return [
+    { type: 'block-start', index: 0, blockType: 'text' },
+    { type: 'text-delta', index: 0, text },
+    { type: 'block-end', index: 0, block: { type: 'text', text } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]
+}
+
+class RequestProbeAdapter extends LlmAdapter {
+  readonly requests: GenerateOptions[] = []
+  readonly scripted: StreamChunk[][] = []
+
+  override resolveModel(provider: string, model: string) {
+    return Promise.resolve({ provider, id: model, name: model })
+  }
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    yield* this.scripted.shift() ?? textResponse(`answer-${String(this.requests.length)}`)
+  }
+}
+
+class ErrorThenFactAdapter extends RequestProbeAdapter {
+  readonly firstStarted = Promise.withResolvers<undefined>()
+  readonly releaseFirst = Promise.withResolvers<undefined>()
+
+  override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.requests.push(options)
+    if (this.requests.length === 1) {
+      this.firstStarted.resolve(undefined)
+      await this.releaseFirst.promise
+      throw new Error('first request failed')
+    }
+    if (this.requests.length === 2) {
+      const id = CallId('queued-fact-call')
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+      yield { type: 'tool-call-delta', index: 0, id, name: 'propose_fact', argumentsDelta: '{}' }
+      yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: 'propose_fact', arguments: '{}' } }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    yield* textResponse('done')
+  }
+}
+
+function toolResponse(): StreamChunk[] {
+  return [
+    { type: 'block-start', index: 0, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 0, id: CallId('fact-projection-noop'), name: 'fact_projection_noop', argumentsDelta: '{}' },
+    {
+      type: 'block-end',
+      index: 0,
+      block: { type: 'tool-call', id: CallId('fact-projection-noop'), name: 'fact_projection_noop', arguments: '{}' },
+    },
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ]
+}
+
+async function loopHarness(seed?: readonly SessionEvent[], adapter: RequestProbeAdapter = new RequestProbeAdapter()): Promise<{
+  readonly ctx: Context
+  readonly adapter: RequestProbeAdapter
+  readonly backend: BackendProbe
+  readonly fact: XAgentFactService
+  readonly agent: Agent
+}> {
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SystemPrompt, { persona: 'Fact projection test' })
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await ctx.plugin(AgentLoop, { agents: [] })
+  const value = backend()
+  const fact = new XAgentFactService(
+    ctx,
+    value,
+    new XAgentFactReceiptRegistry(),
+    new XAgentFactOutboxRegistry(),
+    { issuer: 'xagent-host', audience: 'xagent-api', privateKey },
+  )
+  ctx.llm.registerAdapter(['mock'], adapter)
+  const handle = await ctx.agents.create({
+    sessionId: SessionId(RUNTIME_SESSION),
+    ...seed === undefined ? {} : { seed },
+    agentOptions: { provider: 'mock', model: 'mock' },
+  })
+  return { ctx, adapter, backend: value, fact, agent: handle.agent }
+}
+
+async function runUserTurn(ctx: Context, agent: Agent, text: string): Promise<void> {
+  const idle = new Promise<void>((resolve) => {
+    const close = ctx.on('agent/status', ({ agent: subject, status }) => {
+      if (subject !== agent || status !== 'idle') return
+      close()
+      resolve()
+    })
+  })
+  runWithXAgentAuthenticatedRequestScope(scope(), () => {
+    agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+  })
+  await idle
+}
+
+function requestText(request: GenerateOptions): string {
+  return request.messages.flatMap(message => message.content)
+    .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+}
+
+async function drainStream(stream: AsyncIterable<StreamChunk>): Promise<void> {
+  for await (const chunk of stream) void chunk
+}
+
 describe('XAgent Fact provider', () => {
+  test('executes a queued follow-up under its physical scope after the active Turn errors', async () => {
+    const adapter = new ErrorThenFactAdapter()
+    const created = await loopHarness(undefined, adapter)
+    created.agent.ctx.tools.register(defineContentToolFixture({
+      name: 'propose_fact',
+      description: 'Exercise the Fact provider scope wrapper.',
+      parameters: {},
+      execute: async (_args, execution) => {
+        const result = await created.fact.proposeFact(proposalInput(String(execution.callId)))
+        return [{ type: 'text', text: JSON.stringify(result) }]
+      },
+    }))
+    const firstScope = scope()
+    const queuedScope = scope({
+      userToken: 'queued-user-token',
+      connectionId: 'connection-2',
+      principal: Object.freeze({ ...firstScope.principal, connectionId: 'connection-2' }),
+    })
+    runWithXAgentAuthenticatedRequestScope(firstScope, () => {
+      created.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'first' }], source: { kind: 'user' } }))
+    })
+    await adapter.firstStarted.promise
+    runWithXAgentAuthenticatedRequestScope(queuedScope, () => {
+      created.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'queued' }], source: { kind: 'user' } }))
+    })
+    adapter.releaseFirst.resolve(undefined)
+    await created.agent.whenIdle()
+    runWithXAgentAuthenticatedRequestScope(queuedScope, () => {
+      created.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'wake queued work' }], source: { kind: 'user' } }))
+    })
+    await created.agent.whenIdle()
+
+    expect(adapter.requests).toHaveLength(4)
+    expect(created.backend.prepare).toHaveBeenCalledWith(
+      'queued-user-token',
+      expect.any(String),
+      expect.objectContaining({ toolCallId: 'queued-fact-call' }),
+      expect.any(AbortSignal),
+    )
+    await created.ctx.fiber.dispose()
+  })
+
+  test('claims one complete physical scope before pre-step and preserves queued bindings across an earlier error', async () => {
+    const created = service()
+    await created.ctx.plugin(SessionStore)
+    const { session } = await pluginSession(created.ctx, undefined)
+    const agent = agentFor(session)
+    const firstScope = scope()
+    const secondScope = scope({
+      userToken: 'replacement-token',
+      connectionId: 'connection-2',
+      principal: Object.freeze({ ...firstScope.principal, connectionId: 'connection-2' }),
+    })
+    const first = createUserMessage({ content: [{ type: 'text', text: 'first' }], source: { kind: 'user' } })
+    const queued = createUserMessage({ content: [{ type: 'text', text: 'queued' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(firstScope, () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: first })
+    })
+    agentEvents(created.ctx, agent).emit('agent/inbox/claimed', { message: first, turn: 1 })
+    const activeScopes = (created.fact as unknown as {
+      activeScopes: Map<Agent, XAgentAuthenticatedSessionRequestScope>
+    }).activeScopes
+    expect(activeScopes.get(agent)).toBe(firstScope)
+
+    runWithXAgentAuthenticatedRequestScope(secondScope, () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: queued })
+    })
+    agentEvents(created.ctx, agent).emit('agent/error', { turn: 1, step: 1, error: new Error('fixture') })
+    expect((created.fact as unknown as { messageScopes: Map<string, unknown> }).messageScopes.has(String(queued.id))).toBe(true)
+    agentEvents(created.ctx, agent).emit('agent/inbox/claimed', { message: queued, turn: 2 })
+    expect(activeScopes.get(agent)).toBe(secondScope)
+    await agentEvents(created.ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [queued], turn: 2, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [queued] }),
+    )
+    expect(created.backend.pullOutbox).toHaveBeenLastCalledWith(
+      'replacement-token', SESSION, { limit: 32 }, expect.any(AbortSignal),
+    )
+  })
+
+  test('fails closed for mixed claimed scopes and accepts the surviving scope after discard', async () => {
+    const created = service()
+    await created.ctx.plugin(SessionStore)
+    const { session } = await pluginSession(created.ctx, undefined)
+    const agent = agentFor(session)
+    const firstScope = scope()
+    const secondScope = scope({
+      connectionId: 'connection-2',
+      principal: Object.freeze({ ...firstScope.principal, connectionId: 'connection-2' }),
+    })
+    const first = createUserMessage({ content: [{ type: 'text', text: 'first' }], source: { kind: 'plugin', plugin: 'fixture' } })
+    const second = createUserMessage({ content: [{ type: 'text', text: 'second' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(firstScope, () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: first })
+    })
+    runWithXAgentAuthenticatedRequestScope(secondScope, () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: second })
+    })
+    agentEvents(created.ctx, agent).emit('agent/inbox/claimed', { message: first, turn: 1 })
+    agentEvents(created.ctx, agent).emit('agent/inbox/claimed', { message: second, turn: 1 })
+    const activeScopes = (created.fact as unknown as {
+      activeScopes: Map<Agent, XAgentAuthenticatedSessionRequestScope>
+    }).activeScopes
+    expect(activeScopes.has(agent)).toBe(false)
+    await agentEvents(created.ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [first, second], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [first, second] }),
+    )
+    expect(created.backend.pullOutbox).not.toHaveBeenCalled()
+
+    const retained = createUserMessage({ content: [{ type: 'text', text: 'retained' }], source: { kind: 'user' } })
+    const retainedPeer = createUserMessage({ content: [{ type: 'text', text: 'retained peer' }], source: { kind: 'user' } })
+    const discarded = createUserMessage({ content: [{ type: 'text', text: 'discarded' }], source: { kind: 'plugin', plugin: 'fixture' } })
+    runWithXAgentAuthenticatedRequestScope(firstScope, () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: retained })
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: retainedPeer })
+    })
+    runWithXAgentAuthenticatedRequestScope(secondScope, () => {
+      agentEvents(created.ctx, agent).emit('agent/inbox/inserted', { message: discarded })
+    })
+    agentEvents(created.ctx, agent).emit('agent/inbox/discarded', { message: discarded })
+    agentEvents(created.ctx, agent).emit('agent/inbox/claimed', { message: retained, turn: 2 })
+    agentEvents(created.ctx, agent).emit('agent/inbox/claimed', { message: retainedPeer, turn: 2 })
+    expect(activeScopes.get(agent)).toBe(firstScope)
+
+    const foreign = createUserMessage({ content: [{ type: 'text', text: 'foreign' }], source: { kind: 'user' } })
+    const otherAgent = agentFor(session)
+    runWithXAgentAuthenticatedRequestScope(firstScope, () => {
+      agentEvents(created.ctx, otherAgent).emit('agent/inbox/inserted', { message: foreign })
+    })
+    agentEvents(created.ctx, agent).emit('agent/inbox/claimed', { message: foreign, turn: 3 })
+    expect(activeScopes.has(agent)).toBe(false)
+  })
+
+  test('projects ordered terminal decisions into exactly the next user model request across restart', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'first')
+
+    const decisions = [
+      {
+        ...decision(1).event.data,
+        status: 'confirmed' as const,
+        factRevisionId: REVISION,
+        contentRevision: 1,
+        decisionReason: 'approved by manager',
+      },
+      { ...decision(2).event.data, status: 'rejected' as const, decisionReason: 'unsupported' },
+      { ...decision(3).event.data, status: 'withdrawn' as const, decisionReason: 'superseded' },
+      { ...decision(4).event.data, status: 'conflicted' as const, decisionReason: 'head advanced' },
+    ]
+    for (const data of decisions) created.agent.session.append('fact/proposal-decided', data)
+    expect(created.adapter.requests).toHaveLength(1)
+    expect(created.agent.status).toBe('idle')
+
+    await runUserTurn(created.ctx, created.agent, 'second')
+    const second = requestText(created.adapter.requests[1]!)
+    expect(decisions.map(item => second.indexOf(item.proposalId))).toEqual([
+      expect.any(Number), expect.any(Number), expect.any(Number), expect.any(Number),
+    ])
+    expect(decisions.map(item => second.indexOf(item.proposalId)))
+      .toEqual([...decisions].map(item => second.indexOf(item.proposalId)).toSorted((left, right) => left - right))
+    expect(second).toContain('approved by manager')
+    expect(second).toContain('unsupported')
+    expect(second).toContain('superseded')
+    expect(second).toContain('head advanced')
+    const notice = created.agent.session.events.find(event => (
+      event.type === 'user/message' && event.data.source.kind === 'xagent-fact-decisions'
+    ))
+    expect(notice?.type).toBe('user/message')
+    if (notice?.type !== 'user/message') throw new Error('Fact decision notice missing')
+    const replacement = created.agent.session.events.find(event => (
+      event.type === 'user/message'
+      && event.surfaceOp !== 'append'
+      && event.sourceEventSeqs?.includes(notice.seq) === true
+    ))
+    expect(replacement?.type).toBe('user/message')
+    if (replacement?.type !== 'user/message' || replacement.surfaceOp === 'append') {
+      throw new Error('Fact decision replacement missing')
+    }
+    const previousSeq = replacement.sourceEventSeqs?.[0]
+    expect(previousSeq).toBeTypeOf('number')
+    const previous = previousSeq === undefined ? undefined : created.agent.session.events[previousSeq]
+    expect(previous?.type).toBe('user/message')
+    if (previous?.type !== 'user/message') throw new Error('Fact decision predecessor missing')
+    expect(replacement.sourceEventSeqs).toEqual([previous.seq, notice.seq])
+    expect(replacement.surfaceOp).toEqual({ op: 'replace', start: previous.seq, end: notice.seq })
+    expect(replacement.data).toEqual(previous.data)
+    expect(created.agent.session.surface.nodes).not.toContain(notice.seq)
+
+    await runUserTurn(created.ctx, created.agent, 'third')
+    const third = requestText(created.adapter.requests[2]!)
+    for (const item of decisions) expect(third).not.toContain(item.proposalId)
+
+    const seed = [...created.agent.session.events]
+    await created.ctx.fiber.dispose()
+    const restarted = await loopHarness(seed)
+    await runUserTurn(restarted.ctx, restarted.agent, 'after restart')
+    const resumed = requestText(restarted.adapter.requests[0]!)
+    for (const item of decisions) expect(resumed).not.toContain(item.proposalId)
+    await restarted.ctx.fiber.dispose()
+  })
+
+  test('rejects malformed projected-decision provenance before another model request', async () => {
+    for (const sourceEventSeqs of [[-1], [0]]) {
+      const created = await loopHarness()
+      await runUserTurn(created.ctx, created.agent, 'baseline')
+      const citedSeqs = sourceEventSeqs[0] === 0
+        ? [created.agent.session.events.find(event => event.type === 'user/message')?.seq ?? 0]
+        : sourceEventSeqs
+      const malformed = createUserMessage({
+        content: [{ type: 'text', text: 'malformed Fact decision notice' }],
+        source: { kind: 'xagent-fact-decisions' as const, eventSeqs: citedSeqs },
+      })
+      created.agent.session.append('user/message', malformed, { surfaceOp: 'append' })
+
+      await runUserTurn(created.ctx, created.agent, 'must fail closed')
+
+      expect(created.adapter.requests).toHaveLength(1)
+      expect(created.agent.session.events.findLast(event => event.type === 'turn/end')).toMatchObject({
+        data: { reason: { kind: 'error' } },
+      })
+      await created.ctx.fiber.dispose()
+    }
+  })
+
+  test('ignores non-loop streams and rejects missing Sessions or non-surface notices', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'baseline')
+    const request = created.adapter.requests[0]!
+    const notice = createUserMessage({
+      content: [{ type: 'text', text: 'detached Fact decision notice' }],
+      source: { kind: 'xagent-fact-decisions' as const, eventSeqs: [] },
+    })
+
+    await drainStream(created.ctx.llm.stream({ ...request, messages: [notice] }))
+    expect(created.adapter.requests).toHaveLength(2)
+
+    const missing = markAgentLoopRequest({
+      ...request,
+      sessionId: SessionId('session-00000000-0000-0000-0000-000000000299'),
+      messages: [notice],
+    })
+    expect(() => created.ctx.llm.stream(missing)).toThrow('has no live Session')
+
+    const detached = markAgentLoopRequest({ ...request, messages: [notice] })
+    await expect(drainStream(created.ctx.llm.stream(detached)))
+      .rejects.toThrow('is not adjacent to a prior user surface node')
+    await created.ctx.fiber.dispose()
+  })
+
+  test('consumes a projected decision when the downstream stream is empty', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'baseline')
+    const pending = decision(1).event.data
+    created.agent.session.append('fact/proposal-decided', pending)
+    created.adapter.scripted.push([])
+
+    await runUserTurn(created.ctx, created.agent, 'empty response')
+    expect(requestText(created.adapter.requests[1]!)).toContain(pending.proposalId)
+    await runUserTurn(created.ctx, created.agent, 'later')
+    expect(requestText(created.adapter.requests[2]!)).not.toContain(pending.proposalId)
+    await created.ctx.fiber.dispose()
+  })
+
+  test('retains an unconsumed decision when downstream throws before entering the model stream', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'baseline')
+    const pending = decision(1).event.data
+    created.agent.session.append('fact/proposal-decided', pending)
+    let reject = true
+    created.ctx.on('llm/stream', (_options, next) => {
+      if (!reject) return next()
+      reject = false
+      return (async function* () {
+        throw new Error('downstream unavailable')
+      })()
+    })
+
+    await runUserTurn(created.ctx, created.agent, 'failed attempt')
+    expect(created.adapter.requests).toHaveLength(1)
+    expect(created.agent.session.deriveMessages().some(message => JSON.stringify(message).includes(pending.proposalId))).toBe(true)
+
+    await runUserTurn(created.ctx, created.agent, 'retry')
+    expect(requestText(created.adapter.requests[1]!)).toContain(pending.proposalId)
+    await runUserTurn(created.ctx, created.agent, 'later')
+    expect(requestText(created.adapter.requests[2]!)).not.toContain(pending.proposalId)
+    await created.ctx.fiber.dispose()
+  })
+
+  test('reconstructs an unconsumed decision after restart and hides it from the same-Turn continuation', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'baseline')
+    const pending = decision(1).event.data
+    created.agent.session.append('fact/proposal-decided', pending)
+    const seed = [...created.agent.session.events]
+    await created.ctx.fiber.dispose()
+
+    const restarted = await loopHarness(seed)
+    restarted.agent.ctx.tools.register(defineContentToolFixture({
+      name: 'fact_projection_noop',
+      description: 'Return one fixed value.',
+      parameters: {},
+      execute: () => Promise.resolve([{ type: 'text', text: 'ok' }]),
+    }))
+    restarted.adapter.scripted.push(toolResponse(), textResponse('continued'))
+    await runUserTurn(restarted.ctx, restarted.agent, 'after restart')
+
+    expect(requestText(restarted.adapter.requests[0]!)).toContain(pending.proposalId)
+    expect(requestText(restarted.adapter.requests[1]!)).not.toContain(pending.proposalId)
+    await runUserTurn(restarted.ctx, restarted.agent, 'later')
+    expect(requestText(restarted.adapter.requests[2]!)).not.toContain(pending.proposalId)
+    await restarted.ctx.fiber.dispose()
+  })
+
+  test('fails closed when decision-notice replacement append or durability flush fails', async () => {
+    const appendFailure = await loopHarness()
+    await runUserTurn(appendFailure.ctx, appendFailure.agent, 'baseline')
+    const appendDecision = decision(1).event.data
+    appendFailure.agent.session.append('fact/proposal-decided', appendDecision)
+    const originalAppend = appendFailure.agent.session.append.bind(appendFailure.agent.session)
+    const append = vi.spyOn(appendFailure.agent.session, 'append').mockImplementation((type, data, ...options) => {
+      const surface = options[0] as { readonly surfaceOp?: unknown } | undefined
+      if (type === 'user/message' && surface?.surfaceOp !== 'append') throw new Error('replacement append failed')
+      return originalAppend(type as never, data as never, ...options as never)
+    })
+    await runUserTurn(appendFailure.ctx, appendFailure.agent, 'append failure')
+    expect(requestText(appendFailure.adapter.requests[1]!)).toContain(appendDecision.proposalId)
+    expect(appendFailure.agent.session.deriveMessages().some(message => JSON.stringify(message).includes(appendDecision.proposalId)))
+      .toBe(true)
+    append.mockRestore()
+    await runUserTurn(appendFailure.ctx, appendFailure.agent, 'append recovery')
+    expect(requestText(appendFailure.adapter.requests[2]!)).toContain(appendDecision.proposalId)
+    await appendFailure.ctx.fiber.dispose()
+
+    const flushFailure = await loopHarness()
+    await runUserTurn(flushFailure.ctx, flushFailure.agent, 'baseline')
+    const flushDecision = decision(2).event.data
+    flushFailure.agent.session.append('fact/proposal-decided', flushDecision)
+    const flush = vi.spyOn(flushFailure.ctx.sessions, 'flush').mockRejectedValueOnce(new Error('durability failed'))
+    await runUserTurn(flushFailure.ctx, flushFailure.agent, 'flush failure')
+    expect(requestText(flushFailure.adapter.requests[1]!)).toContain(flushDecision.proposalId)
+    expect(flush).toHaveBeenCalledTimes(2)
+    expect(flushFailure.agent.session.deriveMessages().some(message => JSON.stringify(message).includes(flushDecision.proposalId)))
+      .toBe(true)
+    expect(flushFailure.agent.session.events.findLast(event => event.type === 'turn/end')).toMatchObject({
+      data: { reason: { kind: 'error' } },
+    })
+    await runUserTurn(flushFailure.ctx, flushFailure.agent, 'flush recovery')
+    expect(requestText(flushFailure.adapter.requests[2]!)).toContain(flushDecision.proposalId)
+    await runUserTurn(flushFailure.ctx, flushFailure.agent, 'after flush recovery')
+    expect(requestText(flushFailure.adapter.requests[3]!)).not.toContain(flushDecision.proposalId)
+    await flushFailure.ctx.fiber.dispose()
+  })
+
+  test('retains one retry notice without yielding a model chunk when replacement and restoration flush both fail', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'baseline')
+    const baselineAssistantCount = created.agent.session.events.filter(event => event.type === 'assistant/message').length
+    const pending = decision(3).event.data
+    created.agent.session.append('fact/proposal-decided', pending)
+    const flush = vi.spyOn(created.ctx.sessions, 'flush')
+      .mockRejectedValueOnce(new Error('replacement durability failed'))
+      .mockRejectedValueOnce(new Error('restoration durability failed'))
+
+    await runUserTurn(created.ctx, created.agent, 'persistent flush failure')
+
+    expect(flush).toHaveBeenCalledTimes(2)
+    expect(created.agent.session.events.filter(event => event.type === 'assistant/message')).toHaveLength(baselineAssistantCount)
+    expect(requestText(created.adapter.requests[1]!).split(pending.proposalId)).toHaveLength(2)
+    const visible = requestText({ ...created.adapter.requests[1]!, messages: created.agent.session.deriveMessages() })
+    expect(visible.split(pending.proposalId)).toHaveLength(2)
+
+    flush.mockRestore()
+    await runUserTurn(created.ctx, created.agent, 'persistent flush recovery')
+    expect(requestText(created.adapter.requests[2]!).split(pending.proposalId)).toHaveLength(2)
+    await runUserTurn(created.ctx, created.agent, 'after persistent flush recovery')
+    expect(requestText(created.adapter.requests[3]!)).not.toContain(pending.proposalId)
+    await created.ctx.fiber.dispose()
+  })
+
+  test('consumes an entered decision request before cancellation reaches the loop', async () => {
+    const created = await loopHarness()
+    await runUserTurn(created.ctx, created.agent, 'baseline')
+    const pending = decision(1).event.data
+    created.agent.session.append('fact/proposal-decided', pending)
+    created.ctx.on('session/event', (session, event) => {
+      if (session !== created.agent.session || event.type !== 'user/message' || event.surfaceOp === 'append') return
+      if (event.sourceEventSeqs?.some((seq) => {
+        const source = created.agent.session.events[seq]
+        return source?.type === 'user/message' && source.data.source.kind === 'xagent-fact-decisions'
+      }) === true) {
+        created.agent.cancel({ kind: 'user' })
+      }
+    })
+
+    await runUserTurn(created.ctx, created.agent, 'cancelled request')
+    expect(requestText(created.adapter.requests[1]!)).toContain(pending.proposalId)
+    await runUserTurn(created.ctx, created.agent, 'after cancellation')
+    expect(requestText(created.adapter.requests[2]!)).not.toContain(pending.proposalId)
+    await created.ctx.fiber.dispose()
+  })
+
   test('registers one Service, fixed Remote methods, and no receipt-bearing Remote', async () => {
     const created = service()
     expect(created.fact.typertRemote).toMatchObject({

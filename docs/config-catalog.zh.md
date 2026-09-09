@@ -3105,7 +3105,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/fact/src/index.ts:47`](../packages/xagent/fact/src/index.ts)
+来源：[`packages/xagent/fact/src/index.ts:48`](../packages/xagent/fact/src/index.ts)
 
 <a id="xagentdsh-project"></a>
 

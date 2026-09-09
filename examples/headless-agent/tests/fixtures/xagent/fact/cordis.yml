@@ -1,0 +1,45 @@
+- id: backend
+  name: './backend.ts'
+
+- id: agent
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: xagent-fact-snapshot
+        sessionId: session-00000000-0000-0000-0000-000000000701
+        provider: xagent-fact-snapshot
+        model: snapshot
+        cwd: !!js process.cwd()
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
+    goals: false
+
+- id: llm
+  name: './mock-llm.ts'
+
+- id: retrieval
+  name: '@xagent/dsh-retrieval'
+  config:
+    backendOrigin: 'http://xagent.snapshot'
+    serviceToken: snapshot-service-token
+    delegationPrivateKey: !!js process.env.XAGENT_SNAPSHOT_PRIVATE_KEY
+    delegationIssuer: xagent-host
+    delegationAudience: xagent-api
+
+- id: tool-retrieval
+  name: '@xagent/dsh-tool-retrieval'
+
+- id: fact
+  name: '@xagent/dsh-fact'
+  config:
+    backendOrigin: 'http://xagent.snapshot'
+    serviceToken: snapshot-service-token
+    delegationPrivateKey: !!js process.env.XAGENT_SNAPSHOT_PRIVATE_KEY
+    delegationIssuer: xagent-host
+    delegationAudience: xagent-api
+
+- id: tool-fact
+  name: '@xagent/dsh-tool-fact'

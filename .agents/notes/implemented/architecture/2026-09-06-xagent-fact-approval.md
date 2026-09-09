@@ -1,6 +1,6 @@
 # Agent Note: Governed Project Fact Approval
 
-Status: proposed
+Status: implemented
 
 English | [中文](2026-09-06-xagent-fact-approval.zh.md)
 
@@ -10,9 +10,9 @@ Project Sessions can retrieve and cite project evidence, but no durable path let
 
 The first governed write also needs to enter the source Session history without allowing a database decision to start an Agent Turn. The proposal result must become reviewable only when the matching public tool result is durably admitted, and retries or concurrent decisions must not duplicate a Fact revision, audit outcome, or Session projection.
 
-## Proposal
+## Decision
 
-FastAPI and PostgreSQL will own typed project Facts, immutable proposals, exact evidence, authorization, decisions, idempotency, audit, and delivery state. The first implementation will govern only the project Fact object instead of introducing a generic approval framework before another approved object exists.
+FastAPI and PostgreSQL own typed project Facts, immutable proposals, exact evidence, authorization, decisions, idempotency, audit, and delivery state. The implementation governs only the project Fact object instead of introducing a generic approval framework before another approved object exists.
 
 ### Durable approval
 
@@ -36,7 +36,7 @@ Proposal evidence references at most 64 distinct citation IDs already admitted f
 
 Each terminal proposal owns exactly one immutable `business_outbox` row for aggregate kind `fact_proposal`. The Fact UI reads FastAPI directly; the Outbox exists only to project the decision into the source Session's durable event log.
 
-The Host pulls bounded rows for the source Session and appends a closed `fact/proposal-decided` event. FastAPI validates the Outbox identity, proposal, Session, payload hash, and event identity, then marks the row consumed in the same transaction that admits the Session event. A lost response can replay without adding another event, and a decision event never starts a Turn.
+The Host pulls bounded rows for the source Session and appends a closed `fact/proposal-decided` event. FastAPI validates the Outbox identity, proposal, Session, payload hash, and event identity, then marks the row consumed in the same transaction that admits the Session event. A lost response can replay without adding another event, and a decision event never starts a Turn. The Fact plugin derives ordered undelivered decisions solely from the Session log for the next user-initiated model request. Once downstream streaming begins, it durably replaces the temporary notice so same-Turn continuations, later Turns, and restart replay do not repeat it.
 
 ### Authorization and audit
 
@@ -62,7 +62,7 @@ The review surface uses bounded current-head and proposal pages, reauthorized de
 
 **Trust citation or chunk fields supplied by the model.** Those fields can name inaccessible or mismatched evidence. Composite references to admitted evidence and the exact immutable chunk range make the database enforce the authorized identity.
 
-## Acceptance criteria
+## Verification
 
 - Seven Fact relations enforce closed value, lifecycle, aggregate, operation, field-key, revision, identity, and uniqueness rules, including same-project and same-field head references and exact admitted-evidence ranges.
 - Database triggers reject mutation of confirmed revisions, terminal proposals, decision Outbox rows, and invalid head advancement; the migration rejects downgrade before any schema change when a Fact relation or Fact audit row is non-empty.
@@ -70,7 +70,7 @@ The review surface uses bounded current-head and proposal pages, reauthorized de
 - Proposal admission consumes only a matching unexpired digest-backed receipt; approval or conflict writes proposal, revision when applicable, head, audit, idempotency, and one Outbox row atomically.
 - Outbox delivery is bounded and exactly-once at Session append, creates no Agent Turn, and exposes no receipt, token, evidence text, URL, or object key.
 
-## Risks
+## Consequences
 
 Composite references and mutation triggers make the first migration intentionally strict; application transactions must acquire rows in the prescribed order and cannot repair inconsistent data through compatibility fallbacks. Downgrade is available only when all seven Fact relations and the Fact audit stream are empty, so rollback of deployed business data requires a reviewed backup.
 
