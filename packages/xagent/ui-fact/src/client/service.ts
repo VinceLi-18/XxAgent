@@ -307,15 +307,13 @@ export class XAgentFactController {
 
   private async loadRevisionValue(scope: XAgentFactScope, id: string, signal: AbortSignal): Promise<ReadyState['detail']> {
     const result = await this.remote.revision(scope.sessionId, id, signal)
-    if (!result.ok || result.value.revision.id !== id || result.value.revision.projectId !== scope.projectId
-      || !result.value.history.every(item => item.projectId === scope.projectId
-        && item.fieldKey === result.value.revision.fieldKey)) return undefined
+    if (!result.ok || !this.validRevisionDetail(result.value, id, scope.projectId)) return undefined
     return { kind: 'revision', value: result.value }
   }
 
   private async loadProposalValue(scope: XAgentFactScope, id: string, signal: AbortSignal): Promise<ReadyState['detail']> {
     const result = await this.remote.proposal(scope.sessionId, id, signal)
-    return result.ok && result.value.id === id && result.value.projectId === scope.projectId
+    return result.ok && this.validProposal(result.value, id, scope.projectId)
       ? { kind: 'proposal', value: result.value }
       : undefined
   }
@@ -352,8 +350,8 @@ export class XAgentFactController {
         this.snapshot.replaceReady({ action: undefined, permissionBlocked: true, decisionError: '权限已变更，请重新加载当前工作范围' })
       } else {
         this.retry = undefined
-        await this.refreshAfterDecision(request.proposalId, operation)
-        if (!this.staleOperation(operation)) this.snapshot.replaceReady({
+        const refreshed = await this.refreshAfterDecision(request.proposalId, operation)
+        if (!this.staleOperation(operation) && refreshed) this.snapshot.replaceReady({
           action: undefined,
           decisionError: result.error.code === 'fact-revision-conflict'
             ? '当前事实已更新，该提案已标记冲突'
@@ -364,12 +362,12 @@ export class XAgentFactController {
       return
     }
     this.retry = undefined
-    await this.refreshAfterDecision(request.proposalId, operation)
-    if (!this.staleOperation(operation)) this.snapshot.replaceReady({ action: undefined })
+    const refreshed = await this.refreshAfterDecision(request.proposalId, operation)
+    if (!this.staleOperation(operation) && refreshed) this.snapshot.replaceReady({ action: undefined })
     this.finishDecision(operation.controller)
   }
 
-  private async refreshAfterDecision(proposalId: string, operation: Operation): Promise<void> {
+  private async refreshAfterDecision(proposalId: string, operation: Operation): Promise<boolean> {
     const state = this.snapshot.getSnapshot() as ReadyState
     const detailRequest = state.selection?.kind === 'revision'
       ? this.remote.revision(operation.scope.sessionId, state.selection.id, operation.controller.signal)
@@ -379,15 +377,50 @@ export class XAgentFactController {
       this.remote['list-proposals'](operation.scope.sessionId, { limit: PAGE_LIMIT }, operation.controller.signal),
       detailRequest,
     ])
-    if (this.staleOperation(operation)) return
-    const detailValue = detail.status === 'fulfilled' && detail.value.ok ? detail.value.value : undefined
-    const detailKind = state.selection?.kind === 'revision' ? 'revision' : 'proposal'
+    if (this.staleOperation(operation)) return false
+    if (heads.status !== 'fulfilled' || proposals.status !== 'fulfilled' || detail.status !== 'fulfilled'
+      || !heads.value.ok || !proposals.value.ok || !detail.value.ok
+      || !this.sameProject(heads.value.value.items, operation.scope.projectId)
+      || !this.sameProject(proposals.value.value.items, operation.scope.projectId)) {
+      this.failClosedRefresh()
+      return false
+    }
+    let nextDetail: ReadyState['detail']
+    if (state.selection?.kind === 'revision') {
+      const value = detail.value.value as XAgentFactRevisionDetail
+      if (!this.validRevisionDetail(value, state.selection.id, operation.scope.projectId)) {
+        this.failClosedRefresh()
+        return false
+      }
+      nextDetail = { kind: 'revision', value }
+    } else {
+      const value = detail.value.value as XAgentFactProposal
+      if (!this.validProposal(value, proposalId, operation.scope.projectId) || value.status === 'pending') {
+        this.failClosedRefresh()
+        return false
+      }
+      nextDetail = { kind: 'proposal', value }
+    }
+    const refreshedProposals = mergeFactRows(proposals.value.value.items)
+    const nextProposals = nextDetail.kind === 'proposal'
+      ? refreshedProposals.map(item => item.id === proposalId ? nextDetail.value : item)
+      : refreshedProposals.filter(item => item.id !== proposalId || item.status !== 'pending')
     this.snapshot.replaceReady({
-      ...(heads.status === 'fulfilled' && heads.value.ok && this.sameProject(heads.value.value.items, operation.scope.projectId)
-        ? { heads: mergeFactRows(heads.value.value.items), headsCursor: heads.value.value.nextCursor } : {}),
-      ...(proposals.status === 'fulfilled' && proposals.value.ok && this.sameProject(proposals.value.value.items, operation.scope.projectId)
-        ? { proposals: mergeFactRows(proposals.value.value.items), proposalsCursor: proposals.value.value.nextCursor } : {}),
-      ...(detailValue === undefined ? {} : { detail: { kind: detailKind, value: detailValue } as ReadyState['detail'] }),
+      heads: mergeFactRows(heads.value.value.items),
+      headsCursor: heads.value.value.nextCursor,
+      proposals: nextProposals,
+      proposalsCursor: proposals.value.value.nextCursor,
+      detail: nextDetail,
+    })
+    return true
+  }
+
+  private failClosedRefresh(): void {
+    this.snapshot.replaceReady({
+      heads: [], proposals: [], headsCursor: undefined, proposalsCursor: undefined,
+      headsLoading: false, proposalsLoading: false, selection: undefined, detail: undefined,
+      detailLoading: false, detailError: undefined, action: undefined, decisionError: undefined,
+      listError: '提案状态可能已变更，无法重新加载事实',
     })
   }
 
@@ -410,7 +443,17 @@ export class XAgentFactController {
 
   private detailEvidence(state: ReadyState): readonly XAgentFactEvidence[] {
     if (state.detail?.kind === 'proposal') return state.detail.value.evidence
-    return state.detail?.value.revision.evidence ?? []
+    if (state.detail?.kind !== 'revision') return []
+    return [state.detail.value.revision, ...state.detail.value.history].flatMap(item => item.evidence)
+  }
+
+  private validRevisionDetail(value: XAgentFactRevisionDetail, id: string, projectId: string): boolean {
+    return value.revision.id === id && value.revision.projectId === projectId
+      && value.history.every(item => item.projectId === projectId && item.fieldKey === value.revision.fieldKey)
+  }
+
+  private validProposal(value: XAgentFactProposal, id: string, projectId: string): boolean {
+    return value.id === id && value.projectId === projectId
   }
 
   private sameEvidence(left: XAgentFactEvidence, right: XAgentFactEvidence): boolean {

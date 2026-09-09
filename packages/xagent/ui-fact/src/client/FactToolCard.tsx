@@ -1,5 +1,5 @@
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
-import { factLocale as text } from './locales.ts'
+import { factLocale as text, factStatusText } from './locales.ts'
 import css from './fact.module.css'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
@@ -19,5 +19,7 @@ export function FactToolCard(props: ToolCallViewProps) {
   if (props.block.isError) return <p className={css.toolStatus} role="status">{text.toolFailed}</p>
   const meta = parseFactToolMeta(props.block.meta)
   if (meta === undefined) return <p className={css.error} role="alert">{text.toolMalformed}</p>
-  return <p className={css.toolStatus} role="status">{text.toolPending}</p>
+  return <p className={css.toolStatus} role="status">
+    {text.toolProposal} {meta.proposalId} · {text.toolStatus}：{factStatusText(meta.status)}
+  </p>
 }

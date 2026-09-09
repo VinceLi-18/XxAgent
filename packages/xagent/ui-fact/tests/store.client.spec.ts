@@ -110,6 +110,9 @@ describe('XAgent Fact memory controller', () => {
       ],
       proposals: [{ value: { type: 'date', value: '2027-03-15' } }],
     })
+    await controller.setScope(scope())
+    expect(client['list-heads']).toHaveBeenCalledOnce()
+    expect(client['list-proposals']).toHaveBeenCalledOnce()
   })
 
   it('appends stable cursor pages once, rejects duplicate identities, and freezes concurrent cursor ownership', async () => {
@@ -183,6 +186,37 @@ describe('XAgent Fact memory controller', () => {
     expect(openCitation).toHaveBeenCalledOnce()
   })
 
+  it('opens evidence owned only by an older loaded revision', async () => {
+    const historicalEvidence: XAgentFactEvidence = {
+      ...evidence,
+      citationId: '[历史资料]',
+      chunkId: '00000000-0000-0000-0000-000000000605',
+      lineStart: 21,
+      lineEnd: 24,
+    }
+    const current = revision()
+    const older = revision({
+      id: '00000000-0000-0000-0000-000000000502',
+      contentRevision: 1,
+      evidence: [historicalEvidence],
+    })
+    const client = remote([current])
+    client.revision.mockResolvedValueOnce({ ok: true, value: { revision: current, history: [current, older] } })
+    const openCitation = vi.fn(async () => {})
+    const controller = new XAgentFactController(client, { openCitation })
+    await controller.setScope(scope())
+    await controller.selectHead(REVISION)
+
+    await controller.openEvidence(SESSION, historicalEvidence)
+
+    expect(openCitation).toHaveBeenCalledWith({
+      artifactId: historicalEvidence.artifactId,
+      versionId: historicalEvidence.versionId,
+      lineStart: historicalEvidence.lineStart,
+      lineEnd: historicalEvidence.lineEnd,
+    })
+  })
+
   it('enforces manager/proposer actions and allows a manager to approve their own proposal', async () => {
     const specialistClient = remote([], [proposal()])
     const specialist = new XAgentFactController(specialistClient, { openCitation: vi.fn(async () => {}) })
@@ -194,17 +228,23 @@ describe('XAgent Fact memory controller', () => {
     await specialist.withdraw(PROPOSAL)
     expect(specialistClient.withdraw).toHaveBeenCalledOnce()
 
-    const managerClient = remote([], [proposal({ proposerId: MANAGER })])
-    const manager = new XAgentFactController(managerClient, { openCitation: vi.fn(async () => {}) })
-    await manager.setScope(scope())
-    await manager.approve(PROPOSAL, '复核通过')
-    expect(managerClient.approve).toHaveBeenCalledOnce()
-    await manager.setScope(scope())
-    await manager.reject(PROPOSAL, '信息不足')
-    expect(managerClient.reject).toHaveBeenCalledOnce()
-    await manager.setScope(scope())
-    await manager.withdraw(PROPOSAL)
-    expect(managerClient.withdraw).toHaveBeenCalledOnce()
+    const approveClient = remote([], [proposal({ proposerId: MANAGER })])
+    const approvingManager = new XAgentFactController(approveClient, { openCitation: vi.fn(async () => {}) })
+    await approvingManager.setScope(scope())
+    await approvingManager.approve(PROPOSAL, '复核通过')
+    expect(approveClient.approve).toHaveBeenCalledOnce()
+
+    const rejectClient = remote([], [proposal({ proposerId: MANAGER })])
+    const rejectingManager = new XAgentFactController(rejectClient, { openCitation: vi.fn(async () => {}) })
+    await rejectingManager.setScope(scope())
+    await rejectingManager.reject(PROPOSAL, '信息不足')
+    expect(rejectClient.reject).toHaveBeenCalledOnce()
+
+    const withdrawClient = remote([], [proposal({ proposerId: MANAGER })])
+    const withdrawingManager = new XAgentFactController(withdrawClient, { openCitation: vi.fn(async () => {}) })
+    await withdrawingManager.setScope(scope())
+    await withdrawingManager.withdraw(PROPOSAL)
+    expect(withdrawClient.withdraw).toHaveBeenCalledOnce()
   })
 
   it('reuses one idempotency key only for explicit retry after an uncertain decision', async () => {
@@ -233,8 +273,11 @@ describe('XAgent Fact memory controller', () => {
     await controller.setScope(scope())
     await controller.selectProposal(PROPOSAL)
     client.proposal.mockResolvedValueOnce({ ok: true, value: proposal({ status: 'conflicted', decidedAt: '2026-09-08T10:00:00+00:00' }) })
+    const otherProposal = proposal({ id: '00000000-0000-0000-0000-000000000402', label: '其他提案' })
+    client['list-proposals'].mockResolvedValueOnce({ ok: true, value: { items: [otherProposal, proposal()] } })
     await controller.approve(PROPOSAL, '')
     expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { kind: 'proposal', value: { status: 'conflicted' } } })
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ proposals: [{ id: otherProposal.id }, { id: PROPOSAL, status: 'conflicted' }] })
     expect(controller.snapshot.getSnapshot()).toMatchObject({ action: undefined })
 
     const staleClient = remote([], [proposal()])
@@ -319,6 +362,9 @@ describe('XAgent Fact memory controller', () => {
     await controller.approve(PROPOSAL, '')
     expect(controller.snapshot.getSnapshot()).toMatchObject({ action: { phase: 'uncertain' } })
     client.approve.mockImplementationOnce(() => fail('fact-already-decided'))
+    client.proposal.mockResolvedValueOnce({ ok: true, value: proposal({
+      status: 'confirmed', decisionActorId: MANAGER, decidedAt: '2026-09-08T10:00:00+00:00',
+    }) })
     await controller.retryDecision()
     expect(controller.snapshot.getSnapshot()).toMatchObject({ decisionError: '该提案已被处理，状态已刷新' })
     expect(controller.relationshipIssue(client)).toBeUndefined()
@@ -422,7 +468,7 @@ describe('XAgent Fact memory controller', () => {
     expect(controller.snapshot.getSnapshot()).toEqual({ phase: 'empty', accountId: ACCOUNT })
   })
 
-  it('refreshes selected revision and tolerates partial refresh failures', async () => {
+  it('refreshes a selected revision after a decision', async () => {
     const client = remote([revision()], [proposal()])
     const controller = new XAgentFactController(client, { openCitation: vi.fn(async () => {}) })
     await controller.setScope(scope())
@@ -430,12 +476,57 @@ describe('XAgent Fact memory controller', () => {
     await controller.approve(PROPOSAL, '')
     expect(client.revision.mock.calls.length).toBeGreaterThan(1)
 
-    await controller.setScope(scope({ sessionId: 'session-next' }))
-    client['list-heads'].mockRejectedValueOnce(new Error('refresh heads'))
-    client['list-proposals'].mockResolvedValueOnce({ ok: false, error: { code: 'service-unavailable', message: 'x', details: {} } })
-    client.proposal.mockRejectedValueOnce(new Error('refresh detail'))
+  })
+
+  it.each([
+    ['heads after success', 'success', 'heads'],
+    ['proposals after success', 'success', 'proposals'],
+    ['detail after success', 'success', 'detail'],
+    ['detail after a terminal conflict', 'terminal', 'detail'],
+  ] as const)('fails closed when reloading %s fails', async (_label, decision, failedRoute) => {
+    const stale = proposal({ label: '不得保留的待审提案' })
+    const client = remote([revision()], [stale])
+    if (decision === 'terminal') client.approve.mockImplementationOnce(() => fail('fact-revision-conflict'))
+    const controller = new XAgentFactController(client, { openCitation: vi.fn(async () => {}) }, () => 'key')
+    await controller.setScope(scope())
+    await controller.selectProposal(PROPOSAL)
+    const decided = proposal({
+      status: decision === 'terminal' ? 'conflicted' : 'confirmed',
+      decisionActorId: MANAGER,
+      decidedAt: '2026-09-08T10:00:00+00:00',
+    })
+    if (failedRoute !== 'detail') client.proposal.mockResolvedValueOnce({ ok: true, value: decided })
+    if (failedRoute === 'heads') client['list-heads'].mockRejectedValueOnce(new Error('refresh heads'))
+    if (failedRoute === 'proposals') client['list-proposals'].mockImplementationOnce(() => fail('service-unavailable'))
+    if (failedRoute === 'detail') client.proposal.mockRejectedValueOnce(new Error('refresh detail'))
+
     await controller.approve(PROPOSAL, '')
-    expect(controller.snapshot.getSnapshot()).toMatchObject({ action: undefined })
+
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      heads: [], proposals: [], selection: undefined, detail: undefined, action: undefined,
+      listError: '提案状态可能已变更，无法重新加载事实',
+    })
+    expect(JSON.stringify(controller.snapshot.getSnapshot())).not.toContain('不得保留的待审提案')
+    await controller.approve(PROPOSAL, '')
+    expect(client.approve).toHaveBeenCalledOnce()
+  })
+
+  it('fails closed when a selected revision refresh returns a mismatched detail', async () => {
+    const client = remote([revision()], [proposal()])
+    const controller = new XAgentFactController(client, { openCitation: vi.fn(async () => {}) }, () => 'key')
+    await controller.setScope(scope())
+    await controller.selectHead(REVISION)
+    client.revision.mockResolvedValueOnce({ ok: true, value: {
+      revision: revision({ projectId: 'other-project' }),
+      history: [],
+    } })
+
+    await controller.approve(PROPOSAL, '')
+
+    expect(controller.snapshot.getSnapshot()).toMatchObject({
+      heads: [], proposals: [], selection: undefined, detail: undefined,
+      listError: '提案状态可能已变更，无法重新加载事实',
+    })
   })
 
   it('suppresses a refresh that settles after the scope is cleared', async () => {

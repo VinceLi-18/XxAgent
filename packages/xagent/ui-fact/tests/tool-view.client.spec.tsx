@@ -13,7 +13,7 @@ function props(block: unknown): ToolCallViewProps {
 describe('propose_fact ToolView', () => {
   it('renders only strict closed success metadata', () => {
     render(<FactToolCard {...props({ kind: 'tool-result', isError: false, meta: { kind: 'xagent-fact', status: 'pending', proposalId: '00000000-0000-0000-0000-000000000401' }, call: { argsRaw: '{"secret":"never"}' }, content: [{ text: 'never' }] })} />)
-    expect(screen.getByRole('status').textContent).toContain('已提交事实提案')
+    expect(screen.getByRole('status').textContent).toBe('事实提案 00000000-0000-0000-0000-000000000401 · 状态：待审')
     expect(document.body.textContent).not.toContain('secret')
   })
 

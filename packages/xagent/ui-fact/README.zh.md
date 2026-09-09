@@ -2,13 +2,13 @@
 
 [English](README.md) | 中文
 
-`@xagent/dsh-ui-fact` 为 XAgent Project Session 详情栏增加可选的“事实”页签，并拥有 keyed `propose_fact` ToolView。只有 root-scope Slot occupant 存活时才显示该页签；未组合本包时保留原来的三个页签，且不会发出 Fact 调用。
+`@xagent/dsh-ui-fact` 为 XAgent Project Session 详情栏增加可选的“事实”页签，并拥有 keyed `propose_fact` ToolView。每项贡献都会等待父 Slot 声明，在声明撤销时消失，并在 owner 重新挂载时恢复。只有 root-scope Slot occupant 存活时才显示该页签；未组合本包时保留原来的三个页签，且不会发出 Fact 调用。
 
-浏览器控制器根据已连接 Host generation、当前账号、服务器下发的 `sessionScopes`、已选项目、当前 Session 和活动的“事实”页签推导一个精确的已授权 Project Session。当前 head、提案、详情和修订历史的有界页面只保存在内存中。账号、项目、Session、页签或连接一旦变化，视图会同步清空，取消自有请求，并拒绝迟到结果。
+浏览器控制器根据已连接 Host generation、当前账号、服务器下发的 `sessionScopes`、已选项目、当前 Session 和活动的“事实”页签推导一个精确的已授权 Project Session。当前 head、提案、详情和修订历史的有界页面只保存在内存中。待审提案进入审阅列表，终态提案则在独立区域显示其状态。账号、项目、Session、页签或连接一旦变化，视图会同步清空，取消自有请求，并拒绝迟到结果。
 
-经理可以批准或拒绝待审提案，包括自己的提案；提案人可以撤回自己的待审提案。这些控件只提供操作入口，FastAPI 会重新授权每次动作。每个新意图获得一个只保留在控制器内存中的 key；传输结果不确定或返回 `service-unavailable` 时，界面只提供显式重试，并复用该请求的原始 key 和字段。冲突和已决定响应会刷新权威状态；权限过期会禁止后续决定。
+经理可以批准或拒绝待审提案，包括自己的提案；提案人可以撤回自己的待审提案。这些控件只提供操作入口，FastAPI 会重新授权每次动作。每个新意图获得一个只保留在控制器内存中的 key；传输结果不确定或返回 `service-unavailable` 时，界面只提供显式重试，并复用该请求的原始 key 和字段。终态结果必须同时刷新当前 head、提案和已选详情；任一响应失败或无效都会清空这些视图、关闭陈旧决定控件并显示重新加载错误。权限过期会禁止后续决定。
 
-只有服务器证据的每个身份字段都与已选详情和 Session 匹配时，Fact 证据才会打开。Handoff 仅把不可变 Artifact、Version 和行范围交给 `xagentArtifactCitationOpener`；浏览器绝不把 Tool 参数、URL、文件名、结果正文、收据或模型文字当作授权依据。`propose_fact` renderer 只接受封闭的公开 metadata `{ kind: "xagent-fact", status: "pending", proposalId }`，其余情况显示中性的运行／失败状态或关闭式警报。
+只有服务器证据的每个身份字段都与已选提案、当前修订或已加载历史及 Session 匹配时，Fact 证据才会打开。Handoff 仅把不可变 Artifact、Version 和行范围交给 `xagentArtifactCitationOpener`；浏览器绝不把 Tool 参数、URL、文件名、结果正文、收据或模型文字当作授权依据。无证据提案和修订稳定显示 `No artifact evidence` 状态。`propose_fact` renderer 只接受封闭的公开 metadata `{ kind: "xagent-fact", status: "pending", proposalId }`，显示其中已经验证的 ID 与状态，其余情况显示中性的运行／失败状态或关闭式警报。
 
 ## Model Experience
 

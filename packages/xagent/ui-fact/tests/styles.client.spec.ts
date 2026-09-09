@@ -14,6 +14,8 @@ describe('Fact workbench styles', () => {
     expect([...referenced].filter(token => !declared.has(token))).toEqual([])
     expect(styles).toContain('flex-wrap: wrap')
     expect(styles).toContain(':focus-visible')
+    expect(styles).not.toMatch(/(^|,)\s*button:focus-visible/m)
+    expect(styles).not.toMatch(/(^|,)\s*textarea:focus-visible/m)
     expect(styles).toContain('@media (max-width: 46rem)')
     expect(styles).toContain('@media (prefers-reduced-motion: reduce)')
     expect(styles).not.toContain('gradient')

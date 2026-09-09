@@ -48,6 +48,7 @@ function RevisionLedger({ sessionId, items, open }: { sessionId: string; items: 
     <strong>{formatValue(item.value)}</strong>
     <span className={css.ledgerMeta}>已确认 · 提案人：{item.proposerId}</span>
     <span className={css.ledgerMeta}>确认人：{item.confirmedById}</span>
+    {item.assertionReason !== undefined && <span className={css.ledgerMeta}>断言理由：{item.assertionReason}</span>}
     <time dateTime={item.createdAt}>{item.createdAt.slice(0, 10)}</time>
     <EvidenceList sessionId={sessionId} items={item.evidence} open={open} />
   </li>)}</ol>
@@ -66,6 +67,7 @@ export function FactDetail({ state, actions }: { state: Extract<XAgentFactState,
   const pending = proposal?.status === 'pending'
   const manager = pending && state.role === 'manager' && !state.permissionBlocked
   const proposer = pending && item.proposerId === state.actorId && !state.permissionBlocked
+  const decisionLocked = state.action !== undefined
   const closeDialog = (): void => { setDialog(undefined) }
   const submit = (): void => {
     /* v8 ignore next -- submit is rendered only from proposal detail with an open dialog. */
@@ -81,21 +83,25 @@ export function FactDetail({ state, actions }: { state: Extract<XAgentFactState,
     {proposal !== undefined && <><span className={css.badge}>{factStatusText(proposal.status)}</span>
       <p className={css.attribution}>提案人：{proposal.proposerId}</p>
       {proposal.assertionReason !== undefined && <p><strong>提案说明：</strong>{proposal.assertionReason}</p>}
+      {proposal.decisionActorId !== undefined && <p className={css.attribution}>决定人：{proposal.decisionActorId}</p>}
+      {proposal.decidedAt !== undefined && <p className={css.attribution}>
+        <strong>决定时间：</strong><time dateTime={proposal.decidedAt}>{proposal.decidedAt}</time>
+      </p>}
       {proposal.decisionReason !== undefined && <p><strong>决定理由：</strong>{proposal.decisionReason}</p>}</>}
     {detail.kind === 'proposal' && <><h4>{text.evidence}</h4><EvidenceList sessionId={state.sessionId} items={item.evidence} open={actions.openEvidence} /></>}
     {detail.kind === 'revision' && <><h4>{text.history}</h4><RevisionLedger sessionId={state.sessionId} items={detail.value.history} open={actions.openEvidence} /></>}
     {(manager || proposer) && <div className={css.actions}>
-      {manager && <><button type="button" onClick={() => { setDialog('approve') }}>{text.approve}</button><button type="button" onClick={() => { setDialog('reject') }}>{text.reject}</button></>}
-      {proposer && <button type="button" onClick={() => { setDialog('withdraw') }}>{text.withdraw}</button>}
+      {manager && <><button type="button" disabled={decisionLocked} onClick={() => { setDialog('approve') }}>{text.approve}</button><button type="button" disabled={decisionLocked} onClick={() => { setDialog('reject') }}>{text.reject}</button></>}
+      {proposer && <button type="button" disabled={decisionLocked} onClick={() => { setDialog('withdraw') }}>{text.withdraw}</button>}
     </div>}
     {state.decisionError !== undefined && <p role="alert" className={css.error}>{state.decisionError}</p>}
     {state.action?.phase === 'uncertain' && <button type="button" onClick={() => { void actions.retryDecision() }}>{text.retry}</button>}
     {dialog !== undefined && <Modal
       open title={`${dialog === 'approve' ? '批准' : dialog === 'reject' ? '拒绝' : '撤回'}事实提案`}
-      closeLabel="取消事实决定" onClose={closeDialog} className={css.dialog ?? ''}
+      closeLabel="取消事实决定" onClose={closeDialog} className={css.dialog as string}
       footer={<div className={css.actions}>
         <button type="button" onClick={closeDialog}>取消</button>
-        <button type="button" disabled={dialog === 'reject' && reason.trim() === ''} onClick={submit}>
+        <button type="button" disabled={decisionLocked || (dialog === 'reject' && reason.trim() === '')} onClick={submit}>
           {`确认${dialog === 'approve' ? '批准' : dialog === 'reject' ? '拒绝' : '撤回'}`}
         </button>
       </div>}
@@ -114,33 +120,46 @@ function Row({ item, proposal, selected, activate }: {
   selected: boolean
   activate: () => void
 }) {
-  const action = proposal ? '审阅提案' : '打开当前事实'
-  return <button
+  const status = proposal ? (item as XAgentFactProposal).status : undefined
+  const action = status === undefined ? '打开当前事实' : status === 'pending' ? '审阅提案' : '查看已处理提案'
+  const label = status === undefined || status === 'pending'
+    ? `${action}“${item.label}”`
+    : `${action}“${item.label}”，状态${factStatusText(status)}`
+  return <li><button
     type="button" className={css.row} aria-current={selected || undefined}
-    aria-label={`${action}“${item.label}”`} onClick={activate}
+    aria-label={label} onClick={activate}
   >
-    <span><strong>{item.label}</strong><small>{item.fieldKey}</small></span><span>{formatValue(item.value)}</span>
-  </button>
+    <span><strong>{item.label}</strong><small>{item.fieldKey}</small></span>
+    <span className={css.rowValue}>{formatValue(item.value)}{status !== undefined && <small>{factStatusText(status)}</small>}</span>
+  </button></li>
 }
 
 /** Compact list/detail review surface for one authorized Project Session. */
 export function FactPanel(props: FactPanelProps) {
   const state = props.useFacts(value => value)
-  if (state.phase === 'empty' || state.phase === 'loading') return <p role="status">{text.loading}</p>
+  if (state.phase === 'empty') return <p className={css.muted}>{text.scopeEmpty}</p>
+  if (state.phase === 'loading') return <p role="status">{text.loading}</p>
   if (state.phase === 'unavailable') return <p role="alert" className={css.error}>{state.error}</p>
+  const pending = state.proposals.filter(item => item.status === 'pending')
+  const processed = state.proposals.filter(item => item.status !== 'pending')
   return <section className={css.workbench} role="region" aria-label={text.title}>
     <div className={css.collection}>
       <header><h3>{text.current}</h3><span>{state.heads.length}</span></header>
-      {state.heads.map(item => <Row
+      <ul className={css.rows} aria-label={text.currentList}>{state.heads.map(item => <Row
         key={item.id} item={item} proposal={false} selected={state.selection?.id === item.id}
         activate={() => { void props.selectHead(item.id) }}
-      />)}
+      />)}</ul>
       {state.headsCursor !== undefined && <button type="button" disabled={state.headsLoading} onClick={() => { void props.loadMoreHeads() }}>{text.more}</button>}
-      <header><h3>{text.pending}</h3><span>{state.proposals.filter(item => item.status === 'pending').length}</span></header>
-      {state.proposals.map(item => <Row
+      <header><h3>{text.pending}</h3><span>{pending.length}</span></header>
+      <ul className={css.rows} aria-label={text.pendingList}>{pending.map(item => <Row
         key={item.id} item={item} proposal selected={state.selection?.id === item.id}
         activate={() => { void props.selectProposal(item.id) }}
-      />)}
+      />)}</ul>
+      {processed.length > 0 && <><header><h3>{text.processed}</h3><span>{processed.length}</span></header>
+        <ul className={css.rows} aria-label={text.processedList}>{processed.map(item => <Row
+          key={item.id} item={item} proposal selected={state.selection?.id === item.id}
+          activate={() => { void props.selectProposal(item.id) }}
+        />)}</ul></>}
       {state.proposalsCursor !== undefined && <button type="button" disabled={state.proposalsLoading} onClick={() => { void props.loadMoreProposals() }}>{text.more}</button>}
       {state.heads.length === 0 && state.proposals.length === 0 && <p className={css.muted}>{text.empty}</p>}
       {state.listError !== undefined && <p role="alert" className={css.error}>{state.listError}</p>}

@@ -61,7 +61,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     scope.effect(() => workbench.details.subscribe(sync), 'xagent facts: follow details tab')
     scope.effect(() => sessions.list.subscribe(sync), 'xagent facts: follow current Session')
     scope.effect(() => connection.hostDescription.subscribe(sync), 'xagent facts: follow connected generation')
-    const panelEntry = scope.slots.register({
+    scope.slots.inject('xagent.workbench.facts', () => scope.slots.register({
       name: 'xagent.workbench.facts', registrant: 'xagent-fact-panel',
       inject: (): FactPanelInjected => ({
         hooks: { facts: controller.snapshot },
@@ -71,17 +71,21 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         withdraw: id => controller.withdraw(id), retryDecision: () => controller.retryDecision(),
         openEvidence: (sessionId: string, evidence: XAgentFactEvidence) => controller.openEvidence(sessionId, evidence),
       }),
-    }, FactPanel)
-    scope.effect(() => panelEntry, 'xagent facts: contribute Project details panel')
-    const toolEntry = scope.slots.register({ name: 'tool.call.toolview', key: 'propose_fact', registrant: 'xagent-fact-proposal' }, FactToolCard)
-    scope.effect(() => toolEntry, 'xagent facts: contribute propose_fact ToolView')
+    }, FactPanel))
+    scope.slots.inject('tool.call.toolview', () => scope.slots.register({
+      name: 'tool.call.toolview', key: 'propose_fact', registrant: 'xagent-fact-proposal',
+    }, FactToolCard))
     const relationships: XAgentFactUiRelationships = { issue: () => {
       const panel = scope.slots.entries('xagent.workbench.facts').find(entry => entry.registrant === 'xagent-fact-panel')
-      if (panel?.component !== FactPanel) return 'Fact workbench Slot occupant is not live'
+      if (scope.slots.spec('xagent.workbench.facts') !== undefined && panel?.component !== FactPanel) {
+        return 'Fact workbench Slot occupant is not live'
+      }
       const tool = scope.slots.entries('tool.call.toolview').find(entry => entry.registrant === 'xagent-fact-proposal')
-      if (tool?.component !== FactToolCard) return 'propose_fact ToolView renderer is not live'
-      const injected = panel.inject?.() as FactPanelInjected | undefined
-      if (injected?.hooks.facts !== controller.snapshot) return 'Fact Slot does not expose its controller snapshot'
+      if (scope.slots.spec('tool.call.toolview') !== undefined && tool?.component !== FactToolCard) {
+        return 'propose_fact ToolView renderer is not live'
+      }
+      const injected = panel?.inject?.() as FactPanelInjected | undefined
+      if (panel !== undefined && injected?.hooks.facts !== controller.snapshot) return 'Fact Slot does not expose its controller snapshot'
       return controller.relationshipIssue(remote)
     } }
     scope.provide('xagentFactUiRelationships', relationships)

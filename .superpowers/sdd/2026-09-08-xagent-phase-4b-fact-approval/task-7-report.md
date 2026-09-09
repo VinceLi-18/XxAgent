@@ -67,3 +67,36 @@ The first doc-sync run identified missing exported parameter/return contracts, t
 No blocking concerns. Task 8 must assemble the Fact browser plugin into the Business bundle and own durable decision-event projection and snapshot coverage. Task 9 owns the real Browser E2E and GIF.
 
 The branch was not pushed.
+
+## Fix round 1
+
+The Fact occupant and `propose_fact` renderer now use declaration injection. A missing parent declaration leaves each contribution dormant instead of failing plugin startup; declaration collapse removes the entry, a later declaration reinstalls it, and plugin disposal prevents resurrection. The relationship check treats a missing optional declaration as dormant while continuing to require the exact component and injected controller whenever that declaration is live.
+
+Revision evidence authorization now includes the selected immutable revision and every loaded history row. The regression fixture gives the older revision its own citation, Artifact, Version, index, generation, chunk, and line range so opening it cannot succeed through the current revision's evidence.
+
+The view distinguishes a stable unavailable-scope empty state from an active load. Pending proposals occupy the named review list, terminal proposals occupy a separate named processed list with visible status, and current Facts have their own named list. Proposal and revision detail includes assertion reason, proposer and confirmer attribution, decision actor and time where present, distinct evidence actions, and the exact `No artifact evidence` status. The strict ToolView displays only its validated proposal ID and pending status. Focus selectors are limited to package classes.
+
+A decision keeps all decision controls disabled while submission is active. A terminal success or error publishes refreshed heads, proposals, and selected detail only when all three authoritative reads succeed and pass identity checks. Any rejected, failed, cross-project, or mismatched response clears those views and their cursors, removes the old selection and pending action data, and displays a reload error. Transport uncertainty still retains only the explicit exact-key retry path.
+
+The focused regression selection ran before the production changes:
+
+```sh
+./node_modules/.bin/vitest run packages/xagent/ui-fact/tests/plugin.client.spec.tsx packages/xagent/ui-fact/tests/store.client.spec.ts packages/xagent/ui-fact/tests/fact-panel.client.spec.tsx packages/xagent/ui-fact/tests/tool-view.client.spec.tsx packages/xagent/ui-fact/tests/styles.client.spec.ts
+```
+
+RED result: `13 failed, 28 passed`, plus the undeclared direct registration's unhandled rejection. The failures covered declaration lifecycle, history-only evidence, every post-decision refresh route, scope empty state, pending/terminal separation, ToolView identity and status, detail attribution and evidence-free wording, disabled submissions, named lists, and package-scoped focus selectors. The same selection then passed `41/41`; the final focused suite passed `42/42` after adding the mismatched revision-detail and non-target proposal fixtures needed for complete branch coverage.
+
+```sh
+./node_modules/.bin/vitest run packages/xagent/ui-fact/tests packages/xagent/ui-project/tests/details.client.spec.tsx packages/xagent/ui-project/tests/plugin.client.spec.tsx --coverage.enabled --coverage.provider=v8 --coverage.include='packages/xagent/ui-fact/src/client/**/*.{ts,tsx}' --coverage.reporter=text
+```
+
+Result: `7` files and `57` tests passed. Fact client source reached 100% statements (`412/412`), branches (`350/350`), functions (`115/115`), and lines (`333/333`).
+
+```sh
+npm run typecheck -- --pretty false
+node --import tsx/esm scripts/run-oxlint.ts packages/xagent/ui-fact/src packages/xagent/ui-fact/tests
+env CI=true corepack pnpm run doc-sync
+git diff --check
+```
+
+Results: Host and Client typecheck exited `0`; scoped source and test lint exited `0`; doc-sync passed `28/28` gates in `47.90s`; the working diff passed the whitespace check. The scoped translation-pairing write and check confirmed the updated English and Chinese README. The sandbox blocked the pairing launcher's tsx IPC socket, so the unchanged command ran successfully with narrow host permission.

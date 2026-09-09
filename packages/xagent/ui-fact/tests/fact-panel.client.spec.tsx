@@ -13,6 +13,7 @@ const ACTOR = '00000000-0000-0000-0000-000000000102'
 const PROPOSAL = '00000000-0000-0000-0000-000000000401'
 const REVISION = '00000000-0000-0000-0000-000000000501'
 const evidence = { citationId: '[资料1]', artifactId: 'a', versionId: 'v', indexId: 'i', indexGeneration: 1, chunkId: 'c', lineStart: 2, lineEnd: 4 }
+const olderEvidence = { citationId: '[资料2]', artifactId: 'a2', versionId: 'v2', indexId: 'i2', indexGeneration: 2, chunkId: 'c2', lineStart: 8, lineEnd: 11 }
 
 const head: XAgentFactRevision = { id: REVISION, projectId: PROJECT, fieldKey: 'customer.arr', label: '年度金额', value: { type: 'number', value: 810000 }, contentRevision: 2, proposalId: PROPOSAL, proposerId: 'p', confirmedById: ACTOR, evidence: [evidence], createdAt: '2026-09-08T09:00:00Z' }
 const pending: XAgentFactProposal = { id: PROPOSAL, projectId: PROJECT, fieldKey: 'renewal.date', label: '续约日期', value: { type: 'date', value: '2027-03-15' }, proposerId: ACTOR, baseRevision: 1, assertionReason: '客户当面确认', status: 'pending', evidence: [evidence], createdAt: '2026-09-08T08:00:00Z', admittedAt: '2026-09-08T08:01:00Z' }
@@ -41,25 +42,37 @@ afterEach(cleanup)
 describe('Fact review workbench', () => {
   it('renders compact current and pending lists and keeps typed values legible', () => {
     const store = new XAgentFactStore()
-    store.replace({ phase: 'ready', accountId: 'a', actorId: ACTOR, role: 'manager', projectId: PROJECT, sessionId: SESSION, heads: [head], proposals: [pending] })
-    render(<FactPanel {...props(store)} />)
+    const decided = { ...pending, id: 'decided', label: '已处理续约日期', status: 'rejected' as const, decisionActorId: 'reviewer', decisionReason: '已过期', decidedAt: '2026-09-09T08:00:00Z' }
+    store.replace({ phase: 'ready', accountId: 'a', actorId: ACTOR, role: 'manager', projectId: PROJECT, sessionId: SESSION, heads: [head], proposals: [pending, decided] })
+    const injected = props(store)
+    render(<FactPanel {...injected} />)
     expect(screen.getByRole('region', { name: '事实审阅工作台' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /打开当前事实“年度金额”/ }).textContent).toContain('810,000')
-    expect(screen.getByRole('button', { name: /审阅提案“续约日期”/ }).textContent).toContain('2027-03-15')
+    const heads = screen.getByRole('list', { name: '当前事实列表' })
+    const review = screen.getByRole('list', { name: '待审提案列表' })
+    const processed = screen.getByRole('list', { name: '已处理提案列表' })
+    expect(within(heads).getByRole('button', { name: /打开当前事实“年度金额”/ }).textContent).toContain('810,000')
+    expect(within(review).getByRole('button', { name: /审阅提案“续约日期”/ }).textContent).toContain('2027-03-15')
+    expect(within(review).queryByText('已处理续约日期')).toBeNull()
+    expect(within(processed).getByRole('button', { name: /查看已处理提案“已处理续约日期”，状态已拒绝/ })).toBeTruthy()
+    fireEvent.click(within(review).getByRole('button', { name: /审阅提案“续约日期”/ }))
+    expect(injected.selectProposal).toHaveBeenCalledWith(PROPOSAL)
   })
 
   it('shows a newest-first revision ledger and opens exact evidence', () => {
     const store = new XAgentFactStore()
-    const older = { ...head, id: 'older', contentRevision: 1, value: { type: 'number' as const, value: 700000 } }
-    store.replace({ phase: 'ready', accountId: 'a', actorId: ACTOR, role: 'manager', projectId: PROJECT, sessionId: SESSION, heads: [head], proposals: [], selection: { kind: 'revision', id: REVISION }, detail: { kind: 'revision', value: { revision: head, history: [head, older] } } })
+    const current = { ...head, assertionReason: '当前签字页', evidence: [] }
+    const older = { ...head, id: 'older', contentRevision: 1, value: { type: 'number' as const, value: 700000 }, assertionReason: '历史合同', evidence: [olderEvidence] }
+    store.replace({ phase: 'ready', accountId: 'a', actorId: ACTOR, role: 'manager', projectId: PROJECT, sessionId: SESSION, heads: [current], proposals: [], selection: { kind: 'revision', id: REVISION }, detail: { kind: 'revision', value: { revision: current, history: [current, older] } } })
     const injected = props(store)
     render(<FactPanel {...injected} />)
     const ledger = screen.getByRole('list', { name: '修订记录' })
     expect(within(ledger).getAllByRole('listitem').map(item => item.textContent)).toEqual(expect.arrayContaining([expect.stringContaining('v2'), expect.stringContaining('v1')]))
     expect(within(ledger).getAllByText(`确认人：${ACTOR}`)).toHaveLength(2)
-    expect(within(ledger).getAllByRole('button', { name: '打开证据 [资料1]，第 2 至 4 行' })).toHaveLength(2)
-    fireEvent.click(within(ledger).getAllByRole('button', { name: '打开证据 [资料1]，第 2 至 4 行' })[0]!)
-    expect(injected.openEvidence).toHaveBeenCalledWith(SESSION, evidence)
+    expect(within(ledger).getByText('断言理由：当前签字页')).toBeTruthy()
+    expect(within(ledger).getByText('断言理由：历史合同')).toBeTruthy()
+    expect(within(ledger).getByText('No artifact evidence')).toBeTruthy()
+    fireEvent.click(within(ledger).getByRole('button', { name: '打开证据 [资料2]，第 8 至 11 行' }))
+    expect(injected.openEvidence).toHaveBeenCalledWith(SESSION, olderEvidence)
   })
 
   it('offers role-aware confirm dialogs and exact uncertain retry', async () => {
@@ -88,7 +101,10 @@ describe('Fact review workbench', () => {
     const store = new XAgentFactStore()
     const injected = props(store)
     const view = render(<FactPanel {...injected} />)
-    expect(screen.getByRole('status')).toBeTruthy()
+    expect(screen.getByText('仅可在已连接的项目会话中审阅事实')).toBeTruthy()
+    expect(screen.queryByText('正在加载事实…')).toBeNull()
+    store.replace({ phase: 'loading', accountId: 'a', projectId: PROJECT, sessionId: SESSION })
+    expect(await screen.findByText('正在加载事实…')).toBeTruthy()
     store.replace({ phase: 'unavailable', accountId: 'a', error: '暂不可用' })
     expect((await screen.findByRole('alert')).textContent).toContain('暂不可用')
     store.replace({ phase: 'ready', accountId: 'a', actorId: 'other', role: 'specialist', projectId: PROJECT, sessionId: SESSION,
@@ -101,7 +117,7 @@ describe('Fact review workbench', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '加载更多' })[0]!)
     fireEvent.click(screen.getAllByRole('button', { name: '加载更多' })[1]!)
     fireEvent.click(screen.getAllByRole('button', { name: /打开当前事实“年度金额”/ })[0]!)
-    fireEvent.click(screen.getByRole('button', { name: /审阅提案/ }))
+    fireEvent.click(screen.getByRole('button', { name: /查看已处理提案/ }))
     expect(injected.loadMoreHeads).toHaveBeenCalledOnce()
     expect(injected.loadMoreProposals).toHaveBeenCalledOnce()
     expect(injected.selectHead).toHaveBeenCalledOnce()
@@ -119,9 +135,12 @@ describe('Fact review workbench', () => {
     expect(screen.getByRole('status').textContent).toContain('正在加载详情')
     store.replaceReady({ detailLoading: false, detailError: '详情中断' })
     expect((await screen.findByRole('alert')).textContent).toContain('详情中断')
-    store.replaceReady({ detailError: undefined, detail: { kind: 'proposal', value: { ...pending, evidence: [], status: 'confirmed', decisionReason: '经理确认' } } })
+    store.replaceReady({ detailError: undefined, detail: { kind: 'proposal', value: { ...pending, evidence: [], status: 'confirmed', decisionActorId: 'manager-2', decisionReason: '经理确认', decidedAt: '2026-09-09T10:30:00Z' } } })
     expect(await screen.findByText('已确认')).toBeTruthy()
-    expect(screen.getByText('未提供证据')).toBeTruthy()
+    expect(screen.getByText('No artifact evidence')).toBeTruthy()
+    expect(screen.getByText('提案说明：').parentElement?.textContent).toBe('提案说明：客户当面确认')
+    expect(screen.getByText('决定人：manager-2')).toBeTruthy()
+    expect(screen.getByText('决定时间：').parentElement?.textContent).toContain('2026-09-09T10:30:00Z')
     expect(screen.getByText(/经理确认/)).toBeTruthy()
     store.replaceReady({ detail: { kind: 'proposal', value: pending } })
     fireEvent.click(await screen.findByRole('button', { name: '批准提案' }))
@@ -137,6 +156,19 @@ describe('Fact review workbench', () => {
     store.replaceReady({ detail: undefined })
     expect(await screen.findByText('选择一项查看服务器详情')).toBeTruthy()
     expect(factStatusText('future')).toBe('future')
+  })
+
+  it('disables every decision control while a submission is in flight', async () => {
+    const store = new XAgentFactStore()
+    const injected = props(store)
+    store.replace({ phase: 'ready', accountId: 'a', actorId: ACTOR, role: 'manager', projectId: PROJECT, sessionId: SESSION, heads: [], proposals: [pending], selection: { kind: 'proposal', id: PROPOSAL }, detail: { kind: 'proposal', value: pending } })
+    render(<FactPanel {...injected} />)
+    fireEvent.click(screen.getByRole('button', { name: '批准提案' }))
+    store.replaceReady({ action: { phase: 'submitting', kind: 'approve', proposalId: PROPOSAL } })
+
+    for (const name of ['批准提案', '拒绝提案', '撤回提案', '确认批准']) {
+      expect((await screen.findByRole('button', { name })).hasAttribute('disabled')).toBe(true)
+    }
   })
 
   it('contains subscriber failures and ignores ready patches outside a ready scope', () => {
