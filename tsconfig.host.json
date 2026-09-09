@@ -164,6 +164,7 @@
     { "path": "./packages/xagent/backend-client" },
     { "path": "./packages/xagent/artifact" },
     { "path": "./packages/xagent/delegation-token" },
+    { "path": "./packages/xagent/fact" },
     { "path": "./packages/xagent/connection-auth" },
     { "path": "./packages/xagent/authorization" },
     { "path": "./packages/xagent/session-persistence-api" },

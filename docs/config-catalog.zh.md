@@ -3083,6 +3083,30 @@ export interface Config {
 
 来源：[`packages/xagent/connection-auth/src/index.ts:23`](../packages/xagent/connection-auth/src/index.ts)
 
+<a id="xagentdsh-fact"></a>
+
+## `@xagent/dsh-fact`
+
+需要：`sessions`
+
+```ts config-catalog
+/** Host configuration for the governed Fact provider. */
+export interface Config {
+  /** FastAPI service origin. */
+  backendOrigin: string
+  /** Host service identity for internal calls. */
+  serviceToken: string
+  /** Ed25519 private key PEM used only for proposal delegation. */
+  delegationPrivateKey: string
+  /** Exact delegation issuer accepted by FastAPI. */
+  delegationIssuer: string
+  /** Exact delegation audience accepted by FastAPI. */
+  delegationAudience: string
+}
+```
+
+来源：[`packages/xagent/fact/src/index.ts:47`](../packages/xagent/fact/src/index.ts)
+
 <a id="xagentdsh-project"></a>
 
 ## `@xagent/dsh-project`

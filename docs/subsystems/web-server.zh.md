@@ -243,6 +243,106 @@ async dispose(): Promise<void>
 
 Source: [`packages/xagent/retrieval/src/index.ts:270`](../../packages/xagent/retrieval/src/index.ts)
 
+<a id="ctxxagentfact--xagentfactservice"></a>
+
+### `ctx.xagentFact` — `XAgentFactService`
+
+Request-scoped FastAPI Fact provider.
+
+```ts cordis-catalog
+/**
+ * Prepare one proposal and register its private receipt before returning the public result.
+ * @param input - business fields, evidence identities, and the authoritative tool-call identity.
+ * @returns the public pending proposal identity without its private receipt.
+ */
+async proposeFact(input: XAgentProposeFactInput): Promise<{ readonly proposalId: string; readonly status: 'pending' }>
+
+/**
+ * Run one Remote operation under an authenticated Project Session scope.
+ * @param scope - immutable identity derived from the physical authenticated connection.
+ * @param operation - one complete Remote operation to bind to that identity.
+ * @returns the operation result while the scope remains active.
+ */
+async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * List current Fact heads.
+ * @param sessionId - caller-selected Session, which must equal the physical request Session.
+ * @param input - bounded page selection.
+ * @param signal - optional caller cancellation.
+ * @returns one page of current Fact revisions in the fixed project.
+ */
+@Remote('list-heads') listHeads(sessionId: string, input: XAgentFactPageInput, signal?: AbortSignal): Promise<XAgentFactPage<XAgentFactRevision>>
+
+/**
+ * List public proposals.
+ * @param sessionId - caller-selected Session, which must equal the physical request Session.
+ * @param input - bounded page selection.
+ * @param signal - optional caller cancellation.
+ * @returns one page of public proposals in the fixed project.
+ */
+@Remote('list-proposals') listProposals(sessionId: string, input: XAgentFactPageInput, signal?: AbortSignal): Promise<XAgentFactPage<XAgentFactProposal>>
+
+/**
+ * Read one revision.
+ * @param sessionId - caller-selected Session, which must equal the physical request Session.
+ * @param revisionId - immutable revision identity.
+ * @param signal - optional caller cancellation.
+ * @returns the revision and its history under current authorization.
+ */
+@Remote revision(sessionId: string, revisionId: string, signal?: AbortSignal): Promise<XAgentFactRevisionDetail>
+
+/**
+ * Read one proposal.
+ * @param sessionId - caller-selected Session, which must equal the physical request Session.
+ * @param proposalId - proposal identity to reauthorize.
+ * @param signal - optional caller cancellation.
+ * @returns the current public proposal state.
+ */
+@Remote proposal(sessionId: string, proposalId: string, signal?: AbortSignal): Promise<XAgentFactProposal>
+
+/**
+ * Approve one proposal.
+ * @param sessionId - caller-selected Session, which must equal the physical request Session.
+ * @param proposalId - pending proposal identity.
+ * @param input - decision note and fresh operation idempotency key.
+ * @param signal - optional caller cancellation.
+ * @returns the durable terminal decision.
+ */
+@Remote approve( sessionId: string, proposalId: string, input: XAgentFactApproveInput, signal?: AbortSignal, ): Promise<XAgentFactProposalDecision>
+
+/**
+ * Reject one proposal.
+ * @param sessionId - caller-selected Session, which must equal the physical request Session.
+ * @param proposalId - pending proposal identity.
+ * @param input - rejection reason and fresh operation idempotency key.
+ * @param signal - optional caller cancellation.
+ * @returns the durable terminal decision.
+ */
+@Remote reject( sessionId: string, proposalId: string, input: XAgentFactRejectInput, signal?: AbortSignal, ): Promise<XAgentFactProposalDecision>
+
+/**
+ * Withdraw one proposal.
+ * @param sessionId - caller-selected Session, which must equal the physical request Session.
+ * @param proposalId - pending proposal identity.
+ * @param input - fresh operation idempotency key.
+ * @param signal - optional caller cancellation.
+ * @returns the durable terminal decision.
+ */
+@Remote withdraw( sessionId: string, proposalId: string, input: XAgentFactWithdrawInput, signal?: AbortSignal, ): Promise<XAgentFactProposalDecision>
+
+/** Close new work synchronously, abort owned calls, and await their settlement. */
+async dispose(): Promise<void>
+
+/**
+ * Return the first violated live owner relationship without inspecting fixed examples.
+ * @returns a stable diagnostic when active scope or Outbox ownership is inconsistent.
+ */
+relationshipIssue(): string | undefined
+```
+
+Source: [`packages/xagent/fact/src/index.ts:200`](../../packages/xagent/fact/src/index.ts)
+
 <a id="ctxxagentprincipal--xagentprincipalservice-abstract-seam"></a>
 
 ### `ctx.xagentPrincipal` — `XAgentPrincipalService` (abstract seam)

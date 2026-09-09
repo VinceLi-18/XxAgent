@@ -249,6 +249,11 @@
         "zod"
       ]
     },
+    "packages/xagent/fact": {
+      "ignoreDependencies": [
+        "zod"
+      ]
+    },
     "packages/xagent/project": {
       "ignoreDependencies": [
         "zod"

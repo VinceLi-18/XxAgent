@@ -210,6 +210,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Reads the user token only from the active connection request scope and forwards four fixed workbench operations to FastAPI.',
   },
   {
+    key: 'xagentFact',
+    pkg: 'xagent-fact',
+    title: 'Governed XAgent Fact seam',
+    mode: 'seam',
+    consumers: ['xagent-authorization', 'api-gateway', 'session-persistence-api'],
+    note: 'Derives proposal and review authority from the physical Project Session, while private receipt and Outbox registries carry append identities only to Session persistence.',
+  },
+  {
     key: 'xagentRetrieval',
     pkg: 'xagent-retrieval',
     title: 'Authenticated XAgent retrieval seam',

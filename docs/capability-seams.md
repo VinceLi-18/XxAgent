@@ -56,10 +56,12 @@ flowchart LR
   svc_xagentArtifact["ctx.xagentArtifact<br/>XAgent Artifact Remote"]
   pkg_xagent_project["xagent-project"]
   svc_xagentProject["ctx.xagentProject<br/>XAgent project workbench Remote"]
+  pkg_xagent_fact["xagent-fact"]
+  svc_xagentFact["ctx.xagentFact<br/>Governed XAgent Fact seam"]
+  pkg_session_persistence_api["session-persistence-api"]
   pkg_xagent_retrieval["xagent-retrieval"]
   svc_xagentRetrieval["ctx.xagentRetrieval<br/>Authenticated XAgent retrieval seam"]
   pkg_tool_retrieval["tool-retrieval"]
-  pkg_session_persistence_api["session-persistence-api"]
   svc_xagentCitation["ctx.xagentCitation<br/>XAgent citation Remote"]
   pkg_settings["settings"]
   svc_settings["ctx.settings<br/>User-settings seam"]
@@ -312,6 +314,7 @@ flowchart LR
   pkg_xagent_artifact --> svc_xagentArtifact
   pkg_xagent_authorization --> svc_connectionRequestAuthorizer
   pkg_xagent_connection_auth --> svc_connectionRequestContextResolver
+  pkg_xagent_fact --> svc_xagentFact
   pkg_xagent_principal --> svc_xagentPrincipal
   pkg_xagent_project --> svc_xagentProject
   pkg_xagent_retrieval --> svc_xagentCitation
@@ -434,6 +437,9 @@ flowchart LR
   svc_xagentArtifact --> pkg_xagent_authorization
   svc_xagentCitation --> pkg_api_gateway
   svc_xagentCitation --> pkg_xagent_authorization
+  svc_xagentFact --> pkg_api_gateway
+  svc_xagentFact --> pkg_session_persistence_api
+  svc_xagentFact --> pkg_xagent_authorization
   svc_xagentProject --> pkg_api_gateway
   svc_xagentProject --> pkg_xagent_authorization
   svc_xagentRetrieval --> pkg_session_persistence_api
@@ -457,6 +463,7 @@ flowchart LR
 | `ctx.xagentPrincipal` | `seam` | `xagent-principal` | - | - | - | Defines the immutable validated actor contract; browser payloads and identity-like headers cannot construct a Principal. |
 | `ctx.xagentArtifact` | `core` | `xagent-artifact` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | Reads the user token only from its own active authenticated request scope and forwards eight fixed Artifact operations to FastAPI without caching data or URLs. |
 | `ctx.xagentProject` | `core` | `xagent-project` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | Reads the user token only from the active connection request scope and forwards four fixed workbench operations to FastAPI. |
+| `ctx.xagentFact` | `seam` | `xagent-fact` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway), `session-persistence-api` | - | Derives proposal and review authority from the physical Project Session, while private receipt and Outbox registries carry append identities only to Session persistence. |
 | `ctx.xagentRetrieval` | `seam` | `xagent-retrieval` | - | `tool-retrieval`, `session-persistence-api` | - | Consumes one immutable authenticated prompt scope, issues one exact delegation per call, and privately retains receipts until confirmed Session append. |
 | `ctx.xagentCitation` | `core` | `xagent-retrieval` | - | `xagent-authorization`, [`api-gateway`](../packages/api/gateway) | - | Resolves only persisted citations from the authenticated current Session, mints a fresh delegation, and returns immutable Artifact navigation identities without a URL. |
 | `ctx.settings` | `seam` | [`settings`](../packages/settings/settings) | [`settings-file`](../packages/settings/settings-file) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | Plugins register namespace schemas and resolve layered values; providers store the raw document. The LLM adapters register their entry config as the composition base under the user section; the web gateway serves redacted layered descriptors and writes the user layer. |
