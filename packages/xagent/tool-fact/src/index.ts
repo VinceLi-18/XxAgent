@@ -305,6 +305,11 @@ export function apply(ctx: Context): void {
       messages.delete(messageId)
       binding?.close?.()
     }
+    const deleteAgentMessages = (agent: Agent): void => {
+      for (const [messageId, binding] of messages) {
+        if (binding.agent === agent) deleteMessage(messageId)
+      }
+    }
 
     const unregister = (agent: Agent): void => {
       const registration = registrations.get(agent)
@@ -386,8 +391,14 @@ export function apply(ctx: Context): void {
         if (agent.session === session) unregister(agent)
       }
     })
-    factCtx.on('agent/error', ({ agent }) => { unregister(agent) })
-    factCtx.on('agent/disposed', ({ agent }) => { unregister(agent) })
+    factCtx.on('agent/error', ({ agent }) => {
+      deleteAgentMessages(agent)
+      unregister(agent)
+    })
+    factCtx.on('agent/disposed', ({ agent }) => {
+      deleteAgentMessages(agent)
+      unregister(agent)
+    })
     factCtx.effect(() => () => {
       for (const messageId of [...messages.keys()]) deleteMessage(messageId)
       for (const agent of [...registrations.keys()]) unregister(agent)

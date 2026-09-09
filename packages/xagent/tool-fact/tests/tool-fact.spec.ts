@@ -287,6 +287,48 @@ describe('Project-only propose_fact registration', () => {
     expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
   })
 
+  test.each(['disposed', 'error'] as const)('releases queued scope listeners when an Agent is %s before claim', async (event) => {
+    const { agent, ctx } = await setup()
+    const siblingSession = '00000000-0000-0000-0000-000000000202'
+    const sibling = ctx.agentLoop.create(SessionId(`session-${siblingSession}`), { provider: 'mock', model: 'mock' })
+    const request = new AbortController()
+    const connection = new AbortController()
+    const removeRequest = vi.spyOn(request.signal, 'removeEventListener')
+    const removeConnection = vi.spyOn(connection.signal, 'removeEventListener')
+    const message = createUserMessage({ content: [{ type: 'text', text: 'dispose before claim' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(requestScope({
+      requestSignal: request.signal,
+      connectionSignal: connection.signal,
+    }), () => {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+    })
+    const siblingMessage = createUserMessage({ content: [{ type: 'text', text: 'sibling remains queued' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(requestScope({ sessionId: siblingSession }), () => {
+      agentEvents(ctx, sibling).emit('agent/inbox/inserted', { message: siblingMessage })
+    })
+
+    if (event === 'disposed') {
+      agentEvents(ctx, agent).emit('agent/disposed', {})
+    } else {
+      agentEvents(ctx, agent).emit('agent/error', { turn: 1, step: 1, error: new Error('fixture') })
+    }
+    expect(removeRequest).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(removeConnection).toHaveBeenCalledWith('abort', expect.any(Function))
+
+    await agentEvents(ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
+    )
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+    await agentEvents(ctx, sibling).waterfall(
+      'agent/pre-step',
+      { messages: [siblingMessage], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [siblingMessage] }),
+    )
+    expect(ctx.tools.get('propose_fact', sibling)).toBeDefined()
+  })
+
   test('removes the registration on physical cancellation, Turn end, Consumer disposal, and Fact HMR', async () => {
     const request = new AbortController()
     const { agent, ctx, factFiber, fiber } = await setup()
