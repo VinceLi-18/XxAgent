@@ -18,6 +18,7 @@ export const inject = ['agents', 'tools']
 interface MessageBinding {
   readonly agent: Agent
   readonly scope?: ProjectScope
+  readonly close?: () => void
 }
 
 interface ToolRegistration {
@@ -225,6 +226,8 @@ function sameScope(left: XAgentAuthenticatedSessionRequestScope, right: XAgentAu
     && left.principal.actorId === right.principal.actorId
     && left.principal.authSessionId === right.principal.authSessionId
     && left.principal.permissionRevision === right.principal.permissionRevision
+    && left.requestSignal === right.requestSignal
+    && left.connectionSignal === right.connectionSignal
 }
 
 /**
@@ -297,6 +300,12 @@ export function apply(ctx: Context): void {
     toolRelationships.add(relationship)
     relationships.set(key, toolRelationships)
 
+    const deleteMessage = (messageId: string): void => {
+      const binding = messages.get(messageId)
+      messages.delete(messageId)
+      binding?.close?.()
+    }
+
     const unregister = (agent: Agent): void => {
       const registration = registrations.get(agent)
       if (registration === undefined) return
@@ -325,19 +334,40 @@ export function apply(ctx: Context): void {
 
     factCtx.on('agent/inbox/inserted', ({ agent, message }) => {
       const scope = currentProjectScope(agent)
-      messages.set(String(message.id), scope === undefined ? { agent } : { agent, scope })
+      const messageId = String(message.id)
+      deleteMessage(messageId)
+      if (scope === undefined) {
+        messages.set(messageId, { agent })
+      } else {
+        const invalidate = (): void => { deleteMessage(messageId) }
+        scope.requestSignal.addEventListener('abort', invalidate, { once: true })
+        scope.connectionSignal.addEventListener('abort', invalidate, { once: true })
+        messages.set(messageId, {
+          agent,
+          scope,
+          close: () => {
+            scope.requestSignal.removeEventListener('abort', invalidate)
+            scope.connectionSignal.removeEventListener('abort', invalidate)
+          },
+        })
+      }
       const active = registrations.get(agent)
       if (active !== undefined && (scope === undefined || !sameScope(active.scope, scope))) unregister(agent)
     })
     factCtx.on('agent/inbox/discarded', ({ message }) => {
-      messages.delete(String(message.id))
+      deleteMessage(String(message.id))
     })
     factCtx.on('agent/pre-step', async ({ agent, messages: claimed }, next) => {
       if (claimed.length > 0) {
         const scopes = claimed.map((message) => {
           const binding = messages.get(String(message.id))
-          messages.delete(String(message.id))
-          return binding?.agent === agent ? binding.scope : undefined
+          deleteMessage(String(message.id))
+          const scope = binding?.agent === agent ? binding.scope : undefined
+          return scope !== undefined
+            && !scope.requestSignal.aborted
+            && !scope.connectionSignal.aborted
+            ? scope
+            : undefined
         })
         const scope = scopes[0]
         if (scope !== undefined && scopes.every(value => value !== undefined && sameScope(value, scope))) {
@@ -359,7 +389,7 @@ export function apply(ctx: Context): void {
     factCtx.on('agent/error', ({ agent }) => { unregister(agent) })
     factCtx.on('agent/disposed', ({ agent }) => { unregister(agent) })
     factCtx.effect(() => () => {
-      messages.clear()
+      for (const messageId of [...messages.keys()]) deleteMessage(messageId)
       for (const agent of [...registrations.keys()]) unregister(agent)
       toolRelationships.delete(relationship)
       /* v8 ignore else -- one Fact-service injection owns the relationship until its fiber disposes. */

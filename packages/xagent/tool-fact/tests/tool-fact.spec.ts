@@ -234,6 +234,59 @@ describe('Project-only propose_fact registration', () => {
     expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
   })
 
+  test.each(['request', 'connection'] as const)('does not register a %s scope cancelled after inbox insertion and before pre-step', async (kind) => {
+    const { agent, ctx } = await setup()
+    const controller = new AbortController()
+    const scope = kind === 'request'
+      ? requestScope({ requestSignal: controller.signal })
+      : requestScope({ connectionSignal: controller.signal })
+    const message = createUserMessage({ content: [{ type: 'text', text: 'cancel before claim' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(scope, () => {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+    })
+
+    controller.abort()
+    await agentEvents(ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
+    )
+
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+  })
+
+  test('rotates otherwise identical physical scopes when their cancellation signals change', async () => {
+    const { agent, ctx } = await setup()
+    const firstRequest = new AbortController()
+    const firstConnection = new AbortController()
+    await enterProjectStep(ctx, agent, requestScope({
+      requestSignal: firstRequest.signal,
+      connectionSignal: firstConnection.signal,
+    }))
+    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
+
+    const replacementRequest = new AbortController()
+    const replacementConnection = new AbortController()
+    const replacement = requestScope({
+      requestSignal: replacementRequest.signal,
+      connectionSignal: replacementConnection.signal,
+    })
+    const message = createUserMessage({ content: [{ type: 'text', text: 'replace physical request' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(replacement, () => {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+    })
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+
+    await agentEvents(ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
+    )
+    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
+    replacementRequest.abort()
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+  })
+
   test('removes the registration on physical cancellation, Turn end, Consumer disposal, and Fact HMR', async () => {
     const request = new AbortController()
     const { agent, ctx, factFiber, fiber } = await setup()
