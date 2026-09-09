@@ -44,6 +44,12 @@ Every operation rechecks the authenticated account, permission revision, role, p
 
 Fact audit actions contain only identities, counts, hashes, stable outcomes, and latency. An action-aware database validator rejects Fact content, reason text, evidence text, credentials, tokens, receipts, URLs, and object keys before an audit row can be stored.
 
+### Browser review workbench
+
+The Project details panel declares an optional root-scoped Fact Slot. Its fourth tab exists only while the Fact UI occupant is live, so compositions without the package retain the established three tabs and make no Fact calls. A memory-only controller activates solely for the connected, selected, server-authorized Project Session while that tab is visible; every scope or connection change clears state, cancels requests, and rejects late results.
+
+The review surface uses bounded current-head and proposal pages, reauthorized detail reads, and a newest-first immutable revision ledger. Manager approval or rejection and proposer withdrawal remain server-authorized operations. A new decision intent receives one memory-only idempotency key; only an uncertain transport result exposes an explicit retry that reuses the exact request. Evidence navigation requires every immutable server evidence identity to match the current Session detail before handing the Artifact, Version, and line range to the Artifact opener. The `propose_fact` ToolView renders only closed public result metadata and never reads arguments, result prose, receipts, URLs, or model-authored evidence fields.
+
 ## Alternatives considered
 
 **Use the live DSH user-approval capability.** That decision authorizes one operation in a live Turn and cannot represent asynchronous review, PostgreSQL authorization, immutable business history, or restart recovery. It remains unchanged and does not authorize a Fact proposal.

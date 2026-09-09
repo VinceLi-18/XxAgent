@@ -5,7 +5,7 @@ import type {
 } from '@xagent/dsh-project/types'
 
 /** 工作台第三栏可选择的页签。 */
-export type XAgentWorkbenchDetailsTab = 'overview' | 'artifacts' | 'inbox'
+export type XAgentWorkbenchDetailsTab = 'overview' | 'artifacts' | 'facts' | 'inbox'
 
 /** 工作台第三栏当前页签的包内可写快照。 */
 export class XAgentWorkbenchDetailsStore implements HostObservable<XAgentWorkbenchDetailsTab> {

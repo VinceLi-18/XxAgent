@@ -19,6 +19,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
     /** 当前 XAgent 工作范围的资料管理入口。 */
     'xagent.workbench.artifacts': { kind: 'single'; scope: 'root' }
+    /** 当前 XAgent Project Session 的受治理 Fact 工作台。 */
+    'xagent.workbench.facts': { kind: 'single'; scope: 'root' }
   }
 }
 
@@ -55,7 +57,14 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       openSession: (sessionId) => { scope.sessions.open(sessionId as never) },
     })
     const detailsInjected = (): WorkbenchDetailsInjected => ({
-      hooks: { workbench: workbench.snapshot, detailsTab: workbench.details },
+      hooks: {
+        workbench: workbench.snapshot,
+        detailsTab: workbench.details,
+        factsAvailable: {
+          getSnapshot: () => scope.slots.entriesOfSlot('xagent.workbench.facts').length > 0,
+          subscribe: listener => scope.slots.subscribe('xagent.workbench.facts', listener),
+        },
+      },
       loadProject: projectId => workbench.loadProject(projectId),
       selectDetailsTab: (tab) => { workbench.selectDetailsTab(tab) },
     })
@@ -68,7 +77,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     }, ContextMarker))
     scope.slots.inject('shell.details', () => scope.slots.register({
       name: 'shell.details', registrant: 'xagent-workbench-details', inject: detailsInjected,
-      children: { 'xagent.workbench.artifacts': { kind: 'single', scope: 'root' } },
+      children: {
+        'xagent.workbench.artifacts': { kind: 'single', scope: 'root' },
+        'xagent.workbench.facts': { kind: 'single', scope: 'root' },
+      },
     }, WorkbenchDetails))
     scope.slots.inject('shell.overlay', () => scope.slots.register({
       name: 'shell.overlay', id: 'xagent-workbench-operation-shield', order: -90,

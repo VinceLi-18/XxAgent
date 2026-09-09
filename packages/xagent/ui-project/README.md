@@ -1,8 +1,10 @@
 # @xagent/dsh-ui-project
 
-`@xagent/dsh-ui-project` 为 XAgent Business Profile 提供项目工作台界面。左栏展示“我的工作台”、当前账号可访问的项目和当前范围会话；中央区域显示服务器选择的工作上下文；第三栏提供“概览／资料／协作收件箱”页签。
+`@xagent/dsh-ui-project` 为 XAgent Business Profile 提供项目工作台界面。左栏展示“我的工作台”、当前账号可访问的项目和当前范围会话；中央区域显示服务器选择的工作上下文；第三栏默认提供“概览／资料／协作收件箱”页签。
 
 “资料”页签声明 root-scope 单 occupant Slot `xagent.workbench.artifacts`。没有资料插件时只显示稳定空态；资料列表、详情、上传和预览由独立 occupant 拥有，不替换中央 Agent 对话。
+
+工作台还声明可选 root-scope 单 occupant Slot `xagent.workbench.facts`。只有 Fact occupant 存活时，“事实”页签才插入“资料”和“协作收件箱”之间；没有 occupant 时，页签数量、顺序和无调用行为保持不变。
 
 工作台服务拥有响应式第三栏页签状态。人工点击使用同一状态；已验证 citation 的资料 handoff 可以选择“资料”并打开通用详情栏，因此宽屏第三栏和窄屏抽屉共享一条导航路径。
 
@@ -30,3 +32,4 @@
 - 项目创建只对服务器 Bootstrap 返回 `project.create` 能力的账号开放；客户端隐藏入口不是授权边界。
 - 项目和 Session 范围不写入 `localStorage`、`sessionStorage` 或 IndexedDB，页面刷新后从服务器重新装载。
 - “资料”页签只声明组合入口；本包不读取资料 Remote，也不拥有资料状态。
+- “事实”页签只声明可选组合入口；本包不读取 Fact Remote，也不拥有 Fact 状态。

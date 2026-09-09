@@ -58,6 +58,7 @@ export const privateXagentPackages: Readonly<Record<string, string>> = {
   'packages/xagent/ui-account': '@xagent/dsh-ui-account',
   'packages/xagent/ui-artifact': '@xagent/dsh-ui-artifact',
   'packages/xagent/ui-citation': '@xagent/dsh-ui-citation',
+  'packages/xagent/ui-fact': '@xagent/dsh-ui-fact',
   'packages/xagent/ui-project': '@xagent/dsh-ui-project',
 }
 const xagentRepositoryUrl = 'git+https://github.com/VinceLi-18/XxAgent.git'

@@ -163,6 +163,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   theme: 'client-side interface-typed browser service — packages/client/ui-theme/README.md owns the API',
   workspaces: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
   xagentArtifactCitationOpener: 'client-side immutable Artifact navigation service — packages/xagent/ui-artifact/README.md owns the API',
+  xagentFactUiRelationships: 'client-side Fact Slot, ToolView, controller, and Remote relationship check — packages/xagent/ui-fact/README.md owns the API',
   xagentWorkbench: 'client-side account-scoped project workbench service — packages/xagent/ui-project/README.md owns the API',
 }
 

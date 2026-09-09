@@ -11,6 +11,7 @@ export const projectLocale = {
   overview: '概览',
   artifacts: '资料',
   emptyArtifacts: '当前范围暂无资料功能',
+  facts: '事实',
   inbox: '协作收件箱',
   emptyInbox: '暂无待处理协作',
 } as const
