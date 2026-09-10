@@ -147,6 +147,40 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     await ctx.fiber.dispose()
   })
 
+  it('keeps a resumed JSONL suffix unpublished when an early flush precedes an agent veto', async () => {
+    const sessionId = SessionId('resume-early-flush-agent-veto')
+    const seeded = await persistentHarness(new MockAdapter([]))
+    const root = seeded.root
+    await seeded.ctx.sessionPersistence.create({
+      version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, cwd: '/workspace',
+    })
+    await seeded.ctx.sessionPersistence.append(sessionId, [
+      { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+      { type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    ])
+    await seeded.ctx.fiber.dispose()
+    const ctx = await mountPersistentHarness(root, new MockAdapter([]))
+    const before = await ctx.sessionPersistence.readRaw(sessionId)
+    expect(before?.content).not.toContain('session/end-seed')
+    let earlyFlush: Promise<boolean> | undefined
+    ctx.on('session/created', (session) => {
+      earlyFlush = ctx.sessions.flush(session)
+    })
+    ctx.on('agent/created', () => { throw new Error('agent veto after early flush') })
+
+    await expect(ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })).rejects.toThrow('agent veto after early flush')
+
+    if (earlyFlush === undefined) throw new Error('session creation did not request its early flush')
+    await expect(earlyFlush).resolves.toBe(true)
+    const after = await ctx.sessionPersistence.readRaw(sessionId)
+    expect(after?.content).toBe(before?.content)
+    expect(after?.content).not.toContain('session/end-seed')
+    await ctx.fiber.dispose()
+  })
+
   it('releases prepared provider state when cancellation arrives during resume publication', async () => {
     const sessionId = SessionId('resume-preparation-cancel')
     const root = await persistSession(sessionId)

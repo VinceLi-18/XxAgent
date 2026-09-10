@@ -1328,6 +1328,9 @@ export class PersistenceCoordinator<TornMarker = unknown> {
   }
 
   private async flush(session: Session): Promise<void> {
+    // Publication owns the reservation until commit; an earlier flush must not
+    // attach or persist state that a later publication failure still releases.
+    if (this.preparations.reservationFor(session) !== undefined) return
     const live = this.initFor(session)
     live.writes.cancelAutomaticWait()
     try {

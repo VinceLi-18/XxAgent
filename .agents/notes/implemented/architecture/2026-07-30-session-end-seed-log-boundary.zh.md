@@ -24,7 +24,7 @@ Status: implemented
 
 ## 持久化拥有未发布后缀
 
-构造函数中的 append 发生在 `enter()` 之前，因此会话尚无 store attachment：该标记不会在 `session/event` 上发布，与它之前的种子事件完全一样。持久化实现通过 `SessionPreparation` 保留这段由构造器创建的后缀。只有 `session/created`、`agent/created` 与 `agent/session-start` 全部成功且没有取消时，Agent Loop 才提交 preparation；provider 随后把该后缀放在发布期间同步缓冲的实时事件之前入队。通用 coordinator 通过同一套 commit/release 所有权附加已准备的后缀；XAgent FastAPI provider 则按精确 Session 身份保留它。此前任何发布点的取消或回滚都会释放后缀而不产生持久写入，种子已经以该 marker 结束时也没有后缀需要入队。因此监听 firehose 的消费方永远看不到这条边界，必须从日志中读取它。
+构造函数中的 append 发生在 `enter()` 之前，因此会话尚无 store attachment：该标记不会在 `session/event` 上发布，与它之前的种子事件完全一样。持久化实现通过 `SessionPreparation` 保留这段由构造器创建的后缀。只有 `session/created`、`agent/created` 与 `agent/session-start` 全部成功且没有取消时，Agent Loop 才提交 preparation；provider 随后把该后缀放在发布期间同步缓冲的实时事件之前入队。通用 coordinator 通过同一套 commit/release 所有权附加已准备的后缀；XAgent FastAPI provider 则按精确 Session 身份保留它。发布期间的 `session/flush` 监听器会让 reservation 保持原样；只有发布提交后，普通 flush 才能排空它的后缀。此前任何发布点的取消或回滚都会释放后缀而不产生持久写入，种子已经以该 marker 结束时也没有后缀需要入队。因此监听 firehose 的消费方永远看不到这条边界，必须从日志中读取它。
 
 对 seam 的影响：`load()` 仍是纯读取，没有 revision 递增，对平衡日志不走 `commitRepair`，被拒绝的 `append` 也不留下持久标记。但**成功接手不是纯读取**——完整 Agent 发布后的第一个持久化检查点会在此前完全无写入的路径上产生写入，因此只读存储或磁盘写满会在该检查点前失败，而不是在加载时失败。这是本放置方式新增的唯一成本，并且比加载路径方案的成本更窄（后者会让加载本身失败）。
 
