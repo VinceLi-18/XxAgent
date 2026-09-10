@@ -442,7 +442,7 @@ async def test_downgrade_rejects_pending_versions_without_changing_data(
         )
 
     assert row == ("pending", None)
-    assert revision == "016_xagent_fact_approval"
+    assert revision == "017_fact_tool_call_identity"
 
 
 @pytest.mark.anyio
@@ -594,4 +594,4 @@ async def test_artifact_lifecycle_migration_round_trip_backfills_legacy_rows(
         ),
     ]
     assert executor_kind == "account"
-    assert revision == "016_xagent_fact_approval"
+    assert revision == "017_fact_tool_call_identity"

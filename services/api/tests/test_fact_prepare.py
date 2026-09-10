@@ -376,6 +376,47 @@ async def test_prepare_requires_current_project_session_membership_and_exact_del
 
 
 @pytest.mark.anyio
+async def test_prepare_accepts_opaque_provider_tool_call_identity(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    permission_revision = _permission_revision(token)
+    tool_call_id = "call_00_UTka2FfoIbNh3F3j9WZN7457"
+    await _prime_tool_call(
+        seeded_database,
+        fact_project_session.id,
+        alice.id,
+        tool_call_id=tool_call_id,
+    )
+
+    response = await client.post(
+        "/internal/xagent/facts/proposals/prepare",
+        headers={
+            **_headers(token),
+            "X-XAgent-Delegation": _delegation_token(
+                actor_id=alice.id,
+                session_id=fact_project_session.id,
+                project_id=fact_project_session.project_id,
+                tool_call_id=tool_call_id,
+                permission_revision=permission_revision,
+            ),
+        },
+        json={
+            **_prepare_body(fact_project_session.id),
+            "tool_call_id": tool_call_id,
+            "permission_revision": permission_revision,
+            "idempotency_key": "prepare-provider-tool-call",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["status"] == "pending"
+
+
+@pytest.mark.anyio
 async def test_specialist_and_manager_prepare_hidden_proposals_with_private_receipts(
     client,
     seeded_database,

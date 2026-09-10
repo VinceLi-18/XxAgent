@@ -116,7 +116,7 @@ async def _insert_proposal(
 
 
 @pytest.mark.anyio
-async def test_revision_016_installs_all_fact_relations(seeded_database: AsyncEngine) -> None:
+async def test_revision_017_installs_all_fact_relations(seeded_database: AsyncEngine) -> None:
     async with seeded_database.connect() as connection:
         revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
         tables = set(
@@ -125,7 +125,7 @@ async def test_revision_016_installs_all_fact_relations(seeded_database: AsyncEn
             )
         )
 
-    assert revision == "016_xagent_fact_approval"
+    assert revision == "017_fact_tool_call_identity"
     assert FACT_TABLES <= tables
 
 
@@ -886,7 +886,6 @@ async def test_fact_audit_validator_rejects_content_and_secret_keys(
         ("operation", "sk_live_secret"),
         ("result", "customer secret"),
         ("status", "hidden value"),
-        ("tool_call_id", "secret Fact content"),
     ],
 )
 async def test_fact_audit_validator_rejects_secret_like_scalar_values(
@@ -912,6 +911,34 @@ async def test_fact_audit_validator_rejects_secret_like_scalar_values(
                     "details": json.dumps({**_safe_fact_audit_details(), key: value}),
                 },
             )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool_call_id", "expected"),
+    [
+        ("call_00_UTka2FfoIbNh3F3j9WZN7457", True),
+        ("provider opaque identity", True),
+        ("x" * 255, True),
+        ("", False),
+        ("x" * 256, False),
+        (7, False),
+    ],
+)
+async def test_fact_audit_validator_accepts_bounded_opaque_tool_call_identities(
+    seeded_database: AsyncEngine,
+    tool_call_id: object,
+    expected: bool,
+) -> None:
+    details = {**_safe_fact_audit_details(), "tool_call_id": tool_call_id}
+    async with seeded_database.connect() as connection:
+        valid = await connection.scalar(
+            text(
+                "SELECT public.xagent_valid_fact_audit_details(:action, CAST(:details AS jsonb))"
+            ),
+            {"action": "fact.prepare", "details": json.dumps(details)},
+        )
+    assert valid is expected
 
 
 @pytest.mark.anyio
@@ -1046,8 +1073,56 @@ async def test_empty_fact_schema_can_downgrade_and_upgrade_again(
                 text("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
             )
         )
-    assert revision == "016_xagent_fact_approval"
+    assert revision == "017_fact_tool_call_identity"
     assert FACT_TABLES <= tables
+
+
+@pytest.mark.anyio
+async def test_opaque_fact_tool_call_audit_rejects_revision_017_downgrade_before_ddl(
+    seeded_database: AsyncEngine,
+    alice,
+) -> None:
+    audit_id = uuid4()
+    details = {
+        **_safe_fact_audit_details(),
+        "tool_call_id": "call_00_UTka2FfoIbNh3F3j9WZN7457",
+    }
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO audit_events "
+                "(id, actor_id, action, resource_type, resource_id, request_id, result, details) "
+                "VALUES (:id, :actor, 'fact.prepare', 'fact_proposal', :resource, :request, "
+                "'prepared', CAST(:details AS jsonb))"
+            ),
+            {
+                "id": audit_id,
+                "actor": alice.id,
+                "resource": UUID(int=503),
+                "request": uuid4(),
+                "details": json.dumps(details),
+            },
+        )
+    config = _alembic_config(seeded_database.url.render_as_string(hide_password=False))
+    await seeded_database.dispose()
+
+    with pytest.raises(
+        DBAPIError,
+        match="cannot downgrade opaque Fact tool-call identities to revision 016",
+    ):
+        await to_thread.run_sync(
+            command.downgrade,
+            config,
+            "016_xagent_fact_approval",
+        )
+
+    async with seeded_database.connect() as connection:
+        revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+        stored = await connection.scalar(
+            text("SELECT id FROM audit_events WHERE id = :id"), {"id": audit_id}
+        )
+    assert revision == "017_fact_tool_call_identity"
+    assert stored == audit_id
 
 
 @pytest.mark.anyio
@@ -1084,7 +1159,7 @@ async def test_fact_audit_event_rejects_downgrade_before_ddl(
         stored = await connection.scalar(
             text("SELECT id FROM audit_events WHERE id = :id"), {"id": audit_id}
         )
-    assert revision == "016_xagent_fact_approval"
+    assert revision == "017_fact_tool_call_identity"
     assert stored == audit_id
 
 
@@ -1116,6 +1191,6 @@ async def test_non_empty_fact_schema_rejects_downgrade_before_ddl(
                 text("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
             )
         )
-    assert revision == "016_xagent_fact_approval"
+    assert revision == "017_fact_tool_call_identity"
     assert stored == proposal_id
     assert FACT_TABLES <= tables

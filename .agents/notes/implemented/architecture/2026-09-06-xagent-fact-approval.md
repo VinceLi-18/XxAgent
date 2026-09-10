@@ -42,7 +42,7 @@ The Host pulls at most 32 rows for the source Session and appends a closed `fact
 
 Every operation rechecks the authenticated account, permission revision, role, project membership, and related rows through PostgreSQL row-level security. Prepared proposals are hidden from product reads. Guessed identifiers, revoked membership, and a manager without project membership reveal no Fact data. The application role receives only the DML needed by the Fact API, while `xagent_worker` receives no access to Fact relations.
 
-Fact audit actions contain only identities, counts, hashes, stable outcomes, and latency. An action-aware database validator rejects Fact content, reason text, evidence text, credentials, tokens, receipts, URLs, and object keys before an audit row can be stored.
+Fact audit actions contain only identities, counts, hashes, stable outcomes, and latency. Tool-call identities preserve the opaque value supplied by the Session tool provider and follow the shared wire limit of one to 255 characters instead of assuming a provider-specific prefix. An action-aware database validator rejects Fact content, reason text, evidence text, credentials, tokens, receipts, URLs, and object keys before an audit row can be stored.
 
 ### Browser review workbench
 
