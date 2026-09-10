@@ -19,7 +19,9 @@ import {
   FactE2eResourceOwner,
   factApprovalIdentity,
   factBrowserDiagnosticUrl,
+  factChildEnvironment,
   factComposeOverride,
+  factFilesContaining,
   factTrafficObserver,
   redactFactBrowserDiagnosticText,
   restartFactService,
@@ -91,6 +93,21 @@ interface FactProposal {
 }
 
 interface FactPage<T> { readonly items: readonly T[]; readonly nextCursor?: string }
+interface FactRevision {
+  readonly id: string
+  readonly projectId: string
+  readonly fieldKey: string
+  readonly label: string
+  readonly value: JsonObject
+  readonly contentRevision: number
+  readonly proposalId: string
+  readonly proposerId: string
+  readonly confirmedById: string
+  readonly assertionReason?: string
+  readonly evidence: readonly FactEvidence[]
+  readonly createdAt: string
+}
+interface FactRevisionDetail { readonly revision: FactRevision; readonly history: readonly FactRevision[] }
 interface FactDecision {
   readonly proposalId: string
   readonly status: 'confirmed' | 'rejected' | 'withdrawn'
@@ -110,23 +127,22 @@ function compose(project: string, override: string, args: readonly string[], inp
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: 900_000,
-    env: {
-      ...process.env,
+    env: factChildEnvironment(process.env, {
       HF_HUB_OFFLINE: resolveArtifactEmbeddingOffline(process.env),
       XAGENT_EMBEDDING_CACHE_DIR: resolveArtifactEmbeddingCacheDir(
         process.env,
         join(REPO_ROOT, 'services/api/.cache/huggingface'),
       ),
-    },
+    }),
     ...(input === undefined ? {} : { input }),
   }).trim()
 }
 
-function waitForLine(child: ChildProcess, pattern: RegExp, label: string): Promise<string> {
+function waitForLine(child: ChildProcess, pattern: RegExp, label: string, secrets: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let output = ''
     const timeout = setTimeout(() => {
-      reject(new Error(`${label} did not become ready before its deadline:\n${redactFactBrowserDiagnosticText(output)}`))
+      reject(new Error(`${label} did not become ready before its deadline:\n${redactFactBrowserDiagnosticText(output, secrets)}`))
     }, 120_000)
     const read = (chunk: Buffer): void => {
       output += chunk.toString()
@@ -140,7 +156,7 @@ function waitForLine(child: ChildProcess, pattern: RegExp, label: string): Promi
     child.stderr?.on('data', read)
     child.once('exit', (code) => {
       clearTimeout(timeout)
-      reject(new Error(`${label} exited before readiness (${code ?? 'signal'}):\n${redactFactBrowserDiagnosticText(output)}`))
+      reject(new Error(`${label} exited before readiness (${code ?? 'signal'}):\n${redactFactBrowserDiagnosticText(output, secrets)}`))
     })
   })
 }
@@ -457,7 +473,9 @@ function countDecisionNotices(request: CapturedRequest): number {
 function profileDump(root: string, profile: string): string {
   return execFileSync(process.execPath, [join(REPO_ROOT, 'apps/cli/lib/bin.js'), '--profile', profile, '--dump-config'], {
     cwd: root,
-    env: { ...process.env, DSH_HOME: join(root, `profile-${profile}`), DSH_AGENTS_HOME: join(root, `agents-${profile}`) },
+    env: factChildEnvironment(process.env, {
+      DSH_HOME: join(root, `profile-${profile}`), DSH_AGENTS_HOME: join(root, `agents-${profile}`),
+    }),
     encoding: 'utf8', timeout: 120_000,
   })
 }
@@ -467,6 +485,8 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
   () => {
     const suffix = randomUUID().replaceAll('-', '').slice(0, 10)
     const identity = factApprovalIdentity(suffix)
+    const ambientSecretName = 'XAGENT_PHASE4B_AMBIENT_SECRET'
+    const ambientSentinel = `phase4b-ambient-secret-${suffix}`
     const resources = new FactE2eResourceOwner()
     const traffic = factTrafficObserver()
     let root = ''
@@ -487,7 +507,10 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
     let page: Page | undefined
     let composeOwned = false
     const diagnostics: string[] = []
+    const diagnosticSecrets = [ambientSentinel, SERVICE_TOKEN, PASSWORD]
     let dshOutput = ''
+
+    const redact = (value: string): string => redactFactBrowserDiagnosticText(value, diagnosticSecrets)
 
     async function startHost(): Promise<OwnedChildProcess> {
       const owned = spawnOwnedChild(process.execPath, [
@@ -499,25 +522,25 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       }
       owned.child.stdout?.on('data', captureOutput)
       owned.child.stderr?.on('data', captureOutput)
-      await waitForLine(owned.child, /dsh web: (http:\/\/[^\s]+)/u, 'XAgent Business')
+      await waitForLine(owned.child, /dsh web: (http:\/\/[^\s]+)/u, 'XAgent Business', diagnosticSecrets)
       return owned
     }
 
     async function startBrowser(storageState?: string): Promise<Browser> {
-      const next = await chromium.launch({ headless: true })
+      const next = await chromium.launch({ headless: true, env: factChildEnvironment(process.env, {}) })
       context = await next.newContext({
         viewport: { width: 1440, height: 900 }, locale: ZH_BROWSER_LOCALE,
         ...(storageState === undefined ? {} : { storageState }),
       })
       page = await context.newPage()
       page.on('console', (message) => {
-        diagnostics.push(`console:${message.type()}:${redactFactBrowserDiagnosticText(message.text())}`)
+        diagnostics.push(`console:${message.type()}:${redact(message.text())}`)
       })
       page.on('pageerror', (error) => {
-        diagnostics.push(`pageerror:${redactFactBrowserDiagnosticText(error.message)}`)
+        diagnostics.push(`pageerror:${redact(error.message)}`)
       })
       page.on('requestfailed', (request) => {
-        diagnostics.push(`requestfailed:${factBrowserDiagnosticUrl(request.url())}:${redactFactBrowserDiagnosticText(
+        diagnostics.push(`requestfailed:${factBrowserDiagnosticUrl(request.url())}:${redact(
           request.failure()?.errorText ?? '',
         )}`)
       })
@@ -533,6 +556,12 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
     }
 
     beforeAll(async () => {
+      const previousAmbientSecret = process.env[ambientSecretName]
+      process.env[ambientSecretName] = ambientSentinel
+      resources.own('ambient secret sentinel', async () => {
+        if (previousAmbientSecret === undefined) delete process.env.XAGENT_PHASE4B_AMBIENT_SECRET
+        else process.env[ambientSecretName] = previousAmbientSecret
+      })
       requireDist()
       root = mkdtempSync(join(tmpdir(), 'xagent-phase4b-e2e-'))
       override = join(root, 'compose.override.yml')
@@ -553,30 +582,37 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       baseUrl = `http://127.0.0.1:${String(dshPort)}`
       const { privateKey, publicKey } = generateKeyPairSync('ed25519')
       const rawPublicKey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64')
+      const rawPrivateKey = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+      diagnosticSecrets.push(rawPrivateKey)
       writeFileSync(override, factComposeOverride({
         apiImage: API_IMAGE, embeddingImage: EMBEDDING_IMAGE, apiPort, minioPort, postgresPort,
         delegationPublicKey: rawPublicKey,
       }))
-      dshEnvironment = {
-        ...process.env,
+      dshEnvironment = factChildEnvironment(process.env, {
         DSH_HOME: join(root, 'business-home'),
         DSH_AGENTS_HOME: join(root, 'business-agents'),
         XAGENT_API_ORIGIN: apiOrigin,
         XAGENT_SERVICE_TOKEN: SERVICE_TOKEN,
         XAGENT_ALLOWED_ORIGINS: baseUrl,
         XAGENT_ALLOW_INSECURE_COOKIE: '1',
-        XAGENT_DELEGATION_PRIVATE_KEY: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+        XAGENT_DELEGATION_PRIVATE_KEY: rawPrivateKey,
         XAGENT_DELEGATION_ISSUER: 'xagent-host',
         XAGENT_DELEGATION_AUDIENCE: 'xagent-api',
-      }
+      })
       resources.own('temporary root', async () => { rmSync(root, { recursive: true, force: true }) })
       resources.own('Compose project', async () => {
         if (!composeOwned) return
         compose(identity.composeProject, override, ['down', '--volumes', '--remove-orphans'])
         const residue = [
-          execFileSync('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${identity.composeProject}`], { encoding: 'utf8' }).trim(),
-          execFileSync('docker', ['volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${identity.composeProject}`], { encoding: 'utf8' }).trim(),
-          execFileSync('docker', ['network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${identity.composeProject}`], { encoding: 'utf8' }).trim(),
+          execFileSync('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${identity.composeProject}`], {
+            encoding: 'utf8', env: factChildEnvironment(process.env, {}),
+          }).trim(),
+          execFileSync('docker', ['volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${identity.composeProject}`], {
+            encoding: 'utf8', env: factChildEnvironment(process.env, {}),
+          }).trim(),
+          execFileSync('docker', ['network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${identity.composeProject}`], {
+            encoding: 'utf8', env: factChildEnvironment(process.env, {}),
+          }).trim(),
         ].filter(Boolean)
         if (residue.length > 0) throw new Error(`Docker residue: ${residue.join(', ')}`)
       })
@@ -594,7 +630,7 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
         await page!.getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
       } catch (error) {
         const logs = compose(identity.composeProject, override, ['logs', '--no-color', '--tail', '160']).slice(-12_000)
-        throw new Error(`Phase4B stack startup failed: ${String(error)}\n${redactFactBrowserDiagnosticText(logs)}`)
+        throw new Error(`Phase4B stack startup failed: ${redact(String(error))}\n${redact(logs)}`)
       }
     }, 900_000)
 
@@ -637,15 +673,15 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
           ? 'Project not created'
           : psql(identity.composeProject, override,
             "SELECT action || ':' || result FROM audit_events WHERE action LIKE 'fact.%' ORDER BY created_at;")
-        console.error(`Phase4B DSH diagnostics:\n${redactFactBrowserDiagnosticText(dshOutput)}`
+        console.error(`Phase4B DSH diagnostics:\n${redact(dshOutput)}`
           + `\nPhase4B Browser diagnostics:\n${diagnostics.join('\n')}`
           + `\nPhase4B index state:\n${indexState}`
           + `\nPhase4B Session state:\n${sessionState}`
           + `\nPhase4B tool-call state:\n${toolCallState}`
           + `\nPhase4B Fact audit:\n${factAudit}`
           + `\nPhase4B lifecycle:\n${readFileSync(lifecycle, 'utf8')}`
-          + `\nPhase4B worker diagnostics:\n${redactFactBrowserDiagnosticText(workerLogs)}`
-          + `\nPhase4B API diagnostics:\n${redactFactBrowserDiagnosticText(apiLogs)}`)
+          + `\nPhase4B worker diagnostics:\n${redact(workerLogs)}`
+          + `\nPhase4B API diagnostics:\n${redact(apiLogs)}`)
       })
       const activePage = (): Page => page as Page
       await login(activePage(), identity.managerEmail)
@@ -665,6 +701,9 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       await activePage().getByRole('dialog', { name: '登录工作空间' }).waitFor({ timeout: 30_000 })
       await login(activePage(), identity.managerEmail)
       await activePage().getByRole('button', { name: identity.projectName, exact: true }).click()
+      const managerAccountId = value(await browserRpc<WorkbenchBootstrap>(
+        activePage(), 'xagentProject/bootstrap', {},
+      )).account.id
 
       const managerSession = await sendNewPrompt(activePage(), MANAGER_PROMPT)
       const managerSuccess = activePage().getByText('年度预算事实提案已提交。', { exact: true })
@@ -707,6 +746,9 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       const projectButton = activePage().getByRole('button', { name: identity.projectName, exact: true })
       await projectButton.click()
       await expect.poll(async () => await projectButton.getAttribute('aria-current')).toBe('page')
+      const specialistAccountId = value(await browserRpc<WorkbenchBootstrap>(
+        activePage(), 'xagentProject/bootstrap', {},
+      )).account.id
       const specialistSession = await sendNewPrompt(activePage(), EVIDENCE_PROMPT)
       await activePage().getByRole('article', { name: '已验证回答' }).waitFor({ timeout: 120_000 })
       const evidenceProposal = factProposals(identity.composeProject, override, 'delivery.target_date')[0]!
@@ -731,7 +773,23 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
         activePage(), 'xagentFact/list-proposals', {
           sessionId: specialistSession, input: { limit: 50 },
         }))
-      expect(managerAgainstSpecialist.items.map(item => item.id)).toContain(evidenceProposal.id)
+      const exactEvidenceProposal = managerAgainstSpecialist.items.find(item => item.id === evidenceProposal.id)
+      if (exactEvidenceProposal === undefined) throw new Error('manager did not observe the specialist pending proposal')
+      expect(exactEvidenceProposal).toMatchObject({
+        id: evidenceProposal.id,
+        projectId,
+        fieldKey: 'delivery.target_date',
+        label: '目标交付日期',
+        value: { type: 'date', value: '2027-03-15' },
+        proposerId: specialistAccountId,
+        baseRevision: 0,
+        assertionReason: '客户签署的交付条款',
+        status: 'pending',
+        evidence: [{ citationId: '[资料1]' }],
+      })
+      expect(exactEvidenceProposal?.decisionActorId).toBeUndefined()
+      expect(exactEvidenceProposal?.decisionReason).toBeUndefined()
+      expect(managerAgainstSpecialist.items.filter(item => item.id === evidenceProposal.id)).toHaveLength(1)
 
       const staleFirstSession = await sendNewPrompt(activePage(), STALE_FIRST_PROMPT)
       await activePage().getByText('第一版预算事实提案已提交。', { exact: true }).waitFor({ timeout: 90_000 })
@@ -760,19 +818,108 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       expect((await history.getByRole('listitem').allTextContents()).map(text => text.match(/v\d/u)?.[0]))
         .toEqual(['v2', 'v1'])
 
+      const budgetHead = value(await browserRpc<FactPage<FactRevision>>(
+        activePage(), 'xagentFact/list-heads', {
+          sessionId: staleFirstSession, input: { limit: 50 },
+        })).items.find(item => item.fieldKey === 'budget.annual')
+      expect(budgetHead).toBeDefined()
+      const budgetDetail = value(await browserRpc<FactRevisionDetail>(activePage(), 'xagentFact/revision', {
+        sessionId: staleFirstSession, revisionId: budgetHead!.id,
+      }))
+      expect(budgetDetail.revision).toMatchObject({
+        id: budgetHead!.id,
+        projectId,
+        fieldKey: 'budget.annual',
+        label: '年度预算',
+        value: { type: 'number', value: 900000 },
+        contentRevision: 2,
+        proposalId: stale[0]!.id,
+        proposerId: managerAccountId,
+        confirmedById: managerAccountId,
+        assertionReason: '第一版预算复核',
+      })
+      expect(budgetDetail.history.map(item => ({
+        value: item.value,
+        revision: item.contentRevision,
+        proposalId: item.proposalId,
+        proposerId: item.proposerId,
+        confirmedById: item.confirmedById,
+      }))).toEqual([
+        {
+          value: { type: 'number', value: 900000 }, revision: 2, proposalId: stale[0]!.id,
+          proposerId: managerAccountId, confirmedById: managerAccountId,
+        },
+        {
+          value: { type: 'number', value: 810000 }, revision: 1, proposalId: managerProposal.id,
+          proposerId: managerAccountId, confirmedById: managerAccountId,
+        },
+      ])
+
+      const pendingStorageState = join(root, 'pending-browser-state.json')
+      await context!.storageState({ path: pendingStorageState })
+      browser = await restartFactService(browser!, async current => current.close(), async () => startBrowser(pendingStorageState))
+      await activePage().getByText(identity.managerEmail, { exact: true }).waitFor({ timeout: 30_000 })
+      await stopChildProcess(dsh)
+      dsh = undefined
+      await restartFactService(apiOrigin, async () => {
+        compose(identity.composeProject, override, ['stop', 'api'])
+      }, async () => {
+        compose(identity.composeProject, override, ['up', '--detach', '--wait', 'api'])
+        await waitForApi(apiOrigin)
+        return apiOrigin
+      })
+      dsh = await startHost()
       await activePage().reload({ waitUntil: 'domcontentloaded' })
+      await activePage().getByText(identity.managerEmail, { exact: true }).waitFor({ timeout: 30_000 })
+      await activePage().getByRole('button', { name: identity.projectName, exact: true }).click()
+      const pendingSession = activePage().getByRole('button')
+        .filter({ hasText: sessionTitle(identity.composeProject, override, specialistSession) })
+      await pendingSession.click()
+      await activePage().getByText('目标交付日期事实提案已提交。', { exact: true }).waitFor({ timeout: 30_000 })
+      const persistedFactMeta = JSON.parse(psql(identity.composeProject, override, [
+        "SELECT payload #> '{data,meta}' FROM xagent_session_events",
+        `WHERE session_id = ${sqlLiteral(backendSessionId(specialistSession))}::uuid`,
+        "AND event_type = 'tool/result' AND payload #>> '{data,meta,kind}' = 'xagent-fact'",
+        'ORDER BY sequence DESC LIMIT 1;',
+      ].join(' '))) as JsonObject
+      expect(persistedFactMeta).toEqual({
+        kind: 'xagent-fact', status: 'pending', proposalId: evidenceProposal.id,
+      })
+      const pendingToolText = `事实提案 ${evidenceProposal.id} · 状态：待审`
+      const pendingToolStatus = activePage().getByRole('status').filter({ hasText: pendingToolText })
+      await pendingToolStatus.waitFor({ timeout: 30_000 })
+      expect(await pendingToolStatus.allTextContents()).toEqual([pendingToolText])
+      const afterPendingRestart = value(await browserRpc<FactPage<FactProposal>>(
+        activePage(), 'xagentFact/list-proposals', {
+          sessionId: specialistSession, input: { limit: 50 },
+        }))
+      expect(afterPendingRestart.items.filter(item => item.id === evidenceProposal.id)).toEqual([exactEvidenceProposal])
+
       await activePage().getByRole('tab', { name: '事实', exact: true }).click()
-      const evidenceRow = factPanel.getByRole('button', { name: /审阅提案“目标交付日期”/u })
+      const pendingRestartedFactPanel = activePage().getByRole('region', { name: '事实审阅工作台' })
+      const evidenceRow = pendingRestartedFactPanel.getByRole('button', { name: /审阅提案“目标交付日期”/u })
+      await evidenceRow.waitFor({ timeout: 30_000 })
+      expect(await evidenceRow.count()).toBe(1)
       await evidenceRow.click()
       const turnCountBeforeDecision = psql(identity.composeProject, override, [
         'SELECT count(*) FROM xagent_session_events',
         `WHERE session_id = ${sqlLiteral(backendSessionId(specialistSession))}::uuid AND event_type = 'turn/start';`,
       ].join(' '))
-      await factPanel.getByRole('button', { name: '批准提案' }).click()
+      await pendingRestartedFactPanel.getByRole('button', { name: '批准提案' }).click()
       const evidenceDialog = activePage().getByRole('dialog', { name: '批准事实提案' })
       await evidenceDialog.getByLabel('决定备注').fill('合同证据已复核')
       await evidenceDialog.getByRole('button', { name: '确认批准' }).click()
       await expect.poll(() => factProposals(identity.composeProject, override, 'delivery.target_date')[0]?.status).toBe('confirmed')
+      const decidedEvidence = value(await browserRpc<FactProposal>(activePage(), 'xagentFact/proposal', {
+        sessionId: specialistSession, proposalId: evidenceProposal.id,
+      }))
+      expect(decidedEvidence).toMatchObject({
+        id: evidenceProposal.id,
+        proposerId: specialistAccountId,
+        decisionActorId: managerAccountId,
+        decisionReason: '合同证据已复核',
+        status: 'confirmed',
+      })
       expect(psql(identity.composeProject, override, [
         'SELECT count(*) FROM xagent_session_events',
         `WHERE session_id = ${sqlLiteral(backendSessionId(specialistSession))}::uuid AND event_type = 'turn/start';`,
@@ -784,7 +931,7 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
 
       const storageState = join(root, 'browser-state.json')
       await context!.storageState({ path: storageState })
-      browser = await restartFactService(browser!, async current => current.close(), async () => startBrowser(storageState))
+      browser = await restartFactService(browser, async current => current.close(), async () => startBrowser(storageState))
       await activePage().getByText(identity.managerEmail, { exact: true }).waitFor({ timeout: 30_000 })
       await stopChildProcess(dsh)
       dsh = undefined
@@ -851,6 +998,30 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       const restartedFactPanel = activePage().getByRole('region', { name: '事实审阅工作台' })
       const deliveryHead = restartedFactPanel.getByRole('button', { name: /打开当前事实“目标交付日期”/u })
       await deliveryHead.click()
+      const deliveryHeadValue = value(await browserRpc<FactPage<FactRevision>>(
+        activePage(), 'xagentFact/list-heads', {
+          sessionId: specialistSession, input: { limit: 50 },
+        })).items.find(item => item.fieldKey === 'delivery.target_date')
+      if (deliveryHeadValue === undefined) throw new Error('confirmed delivery Fact was absent after restart')
+      const deliveryDetail = value(await browserRpc<FactRevisionDetail>(activePage(), 'xagentFact/revision', {
+        sessionId: specialistSession, revisionId: deliveryHeadValue.id,
+      }))
+      expect(deliveryDetail).toMatchObject({
+        revision: {
+          id: deliveryHeadValue.id,
+          projectId,
+          fieldKey: 'delivery.target_date',
+          label: '目标交付日期',
+          value: { type: 'date', value: '2027-03-15' },
+          contentRevision: 1,
+          proposalId: evidenceProposal.id,
+          proposerId: specialistAccountId,
+          confirmedById: managerAccountId,
+          assertionReason: '客户签署的交付条款',
+          evidence: [{ citationId: '[资料1]' }],
+        },
+      })
+      expect(deliveryDetail.history).toEqual([deliveryDetail.revision])
       const evidenceButton = restartedFactPanel.getByRole('button', { name: /打开证据 \[资料1\]/u }).first()
       await evidenceButton.click()
       await activePage().getByText(/已定位安全版本/u).waitFor({ timeout: 30_000 })
@@ -892,6 +1063,46 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       ].join(' ')).split('\n').filter(line => /^\d+$/u.test(line)).at(-1)
       expect(Number(rlsVisible)).toBeGreaterThanOrEqual(4)
 
+      const exactOnce = JSON.parse(psql(identity.composeProject, override, [
+        'SELECT jsonb_build_object(',
+        "'proposals', (SELECT count(*) FROM fact_proposals WHERE id =",
+        `${sqlLiteral(evidenceProposal.id)}::uuid),`,
+        "'receipts', (SELECT count(*) FROM fact_proposal_receipts WHERE proposal_id =",
+        `${sqlLiteral(evidenceProposal.id)}::uuid),`,
+        "'consumedReceipts', (SELECT count(*) FROM fact_proposal_receipts WHERE proposal_id =",
+        `${sqlLiteral(evidenceProposal.id)}::uuid AND consumed_at IS NOT NULL),`,
+        "'revisions', (SELECT count(*) FROM project_fact_revisions WHERE proposal_id =",
+        `${sqlLiteral(evidenceProposal.id)}::uuid),`,
+        "'outbox', (SELECT count(*) FROM business_outbox WHERE aggregate_id =",
+        `${sqlLiteral(evidenceProposal.id)}::uuid),`,
+        "'consumedOutbox', (SELECT count(*) FROM business_outbox WHERE aggregate_id =",
+        `${sqlLiteral(evidenceProposal.id)}::uuid AND consumed_at IS NOT NULL),`,
+        "'decisionEvents', (SELECT count(*) FROM xagent_session_events WHERE session_id =",
+        `${sqlLiteral(backendSessionId(specialistSession))}::uuid AND event_type = 'fact/proposal-decided'))::text;`,
+      ].join(' '))) as JsonObject
+      expect(exactOnce).toEqual({
+        proposals: 1,
+        receipts: 1,
+        consumedReceipts: 1,
+        revisions: 1,
+        outbox: 1,
+        consumedOutbox: 1,
+        decisionEvents: 1,
+      })
+      const auditCounts = JSON.parse(psql(identity.composeProject, override, [
+        "SELECT coalesce(jsonb_object_agg(action, total), '{}'::jsonb)::text FROM (",
+        'SELECT action, count(*) AS total FROM audit_events',
+        `WHERE details ->> 'proposal_id' = ${sqlLiteral(evidenceProposal.id)}`,
+        'GROUP BY action ORDER BY action) observed;',
+      ].join(' '))) as JsonObject
+      expect(auditCounts).toEqual({
+        'fact.admit': 1,
+        'fact.approve': 1,
+        'fact.confirm': 1,
+        'fact.outbox.project': 1,
+        'fact.prepare': 1,
+      })
+
       psql(identity.composeProject, override, [
         'DELETE FROM project_memberships',
         `WHERE project_id = ${sqlLiteral(projectId)}::uuid AND account_id =`,
@@ -919,9 +1130,16 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       expect(traffic.entries().some(item => item.path === '/api/xagentFact/approve' && item.status === 200)).toBe(true)
       expect(traffic.entries().some(item => item.path.startsWith('/api/session.'))).toBe(true)
       const apiLogs = compose(identity.composeProject, override, ['logs', '--no-color', 'api'])
+      const allServiceLogs = compose(identity.composeProject, override, ['logs', '--no-color'])
       expect(apiLogs).toContain('/internal/xagent/facts/')
       expect(apiLogs).toContain('/internal/xagent/sessions/')
       expect(diagnostics.join('\n')).not.toMatch(/(?:receipt|delegation|object_key|signed_url|bearer\s+eyJ)/iu)
+      await activePage().screenshot({ path: join(root, 'sentinel-check.png'), fullPage: true })
+      expect(redact(ambientSentinel)).toBe('[REDACTED]')
+      expect(JSON.stringify(dshEnvironment)).not.toContain(ambientSentinel)
+      expect([dshOutput, diagnostics.join('\n'), businessDump, apiLogs, allServiceLogs].join('\n'))
+        .not.toContain(ambientSentinel)
+      expect(factFilesContaining(root, ambientSentinel)).toEqual([])
       expect(staleFirstSession).not.toBe(staleSecondSession)
     }, 900_000)
   },

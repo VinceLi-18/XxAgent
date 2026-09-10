@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,7 +8,9 @@ import {
   FactE2eResourceOwner,
   factApprovalIdentity,
   factBrowserDiagnosticUrl,
+  factChildEnvironment,
   factComposeOverride,
+  factFilesContaining,
   factTrafficObserver,
   redactFactBrowserDiagnosticText,
   restartFactService,
@@ -18,18 +20,31 @@ import {
 describe('XAgent Fact Browser E2E ownership', () => {
   it('allocates no task resources when the owning E2E suite is skipped', () => {
     const root = mkdtempSync(join(tmpdir(), 'xagent-phase4b-collection-'))
+    const probeRoot = mkdtempSync(join(tmpdir(), 'xagent-phase4b-collection-probe-'))
+    const sentinel = 'phase4b-collection-ambient-secret'
     try {
-      const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: root }
-      delete env.XAGENT_FACT_APPROVAL_E2E
+      const probe = join(probeRoot, 'ambient-probe.cjs')
+      writeFileSync(probe, "process.stderr.write(process.env.XAGENT_PHASE4B_AMBIENT_SECRET ?? '')\n")
+      const ambient: NodeJS.ProcessEnv = {
+        ...process.env,
+        NODE_OPTIONS: `--require=${probe}`,
+        XAGENT_PHASE4B_AMBIENT_SECRET: sentinel,
+      }
+      delete ambient.XAGENT_FACT_APPROVAL_E2E
+      const env = factChildEnvironment(ambient, { TMPDIR: root })
       const collected = spawnSync(process.execPath, [
         join(REPO_ROOT, 'node_modules/vitest/vitest.mjs'),
         'run', '--config', join(REPO_ROOT, 'vitest.web.config.ts'),
         join(REPO_ROOT, 'apps/web/tests/xagent-fact.e2e.ts'),
       ], { cwd: REPO_ROOT, env, encoding: 'utf8', timeout: 30_000 })
-      expect(collected.status, `${collected.stdout}\n${collected.stderr}`).toBe(0)
+      const diagnostics = redactFactBrowserDiagnosticText(`${collected.stdout}\n${collected.stderr}`, [sentinel])
+      expect(collected.status, diagnostics).toBe(0)
+      expect(collected.stdout.includes(sentinel)).toBe(false)
+      expect(collected.stderr.includes(sentinel)).toBe(false)
       expect(readdirSync(root)).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })
+      rmSync(probeRoot, { recursive: true, force: true })
     }
   })
 
@@ -41,6 +56,31 @@ describe('XAgent Fact Browser E2E ownership', () => {
       projectName: 'Phase 4B Fact abc123',
     })
     expect(() => factApprovalIdentity('../foreign')).toThrow(/suffix/u)
+  })
+
+  it('passes only allowlisted ambient process values plus explicit test variables', () => {
+    const sentinel = 'phase4b-ambient-secret-sentinel'
+    const child = factChildEnvironment({
+      PATH: '/test/bin',
+      HOME: '/test/home',
+      LANG: 'zh_CN.UTF-8',
+      AWS_SECRET_ACCESS_KEY: sentinel,
+      THIRD_PARTY_TOKEN: sentinel,
+      UNRELATED_AMBIENT: 'must-not-pass',
+    }, {
+      XAGENT_SERVICE_TOKEN: 'explicit-test-token',
+      XAGENT_PHASE4B_TEST_PASSWORD: 'explicit-test-password',
+      XAGENT_PHASE4B_UNDEFINED: undefined,
+    })
+
+    expect(child).toEqual({
+      PATH: '/test/bin',
+      HOME: '/test/home',
+      LANG: 'zh_CN.UTF-8',
+      XAGENT_SERVICE_TOKEN: 'explicit-test-token',
+      XAGENT_PHASE4B_TEST_PASSWORD: 'explicit-test-password',
+    })
+    expect(JSON.stringify(child)).not.toContain(sentinel)
   })
 
   it('renders an exact Compose override for isolated real services', () => {
@@ -129,6 +169,23 @@ describe('XAgent Fact Browser E2E ownership', () => {
     expect(redactFactBrowserDiagnosticText(
       'GET http://127.0.0.1:8765/content?signature=abc bearer eyJhbGciOiJIUzI1NiJ9.payload.signature',
     )).toBe('GET http://127.0.0.1:8765/content bearer [REDACTED]')
+    expect(redactFactBrowserDiagnosticText(
+      'host failed with phase4b-ambient-secret-sentinel',
+      ['', 'phase4b-ambient-secret-sentinel'],
+    )).toBe('host failed with [REDACTED]')
+  })
+
+  it('finds forbidden bytes in text and screenshot-like temporary files without following symlinks', () => {
+    const root = mkdtempSync(join(tmpdir(), 'xagent-phase4b-secret-scan-'))
+    try {
+      writeFileSync(join(root, 'host.log'), 'safe')
+      writeFileSync(join(root, 'failure.png'), Buffer.from('png-phase4b-sentinel'))
+      symlinkSync('failure.png', join(root, 'ignored-link'))
+      expect(factFilesContaining(root, 'phase4b-sentinel')).toEqual(['failure.png'])
+      expect(() => factFilesContaining(root, '')).toThrow(/must not be empty/u)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('cleans exact owned resources in reverse order and only once', async () => {

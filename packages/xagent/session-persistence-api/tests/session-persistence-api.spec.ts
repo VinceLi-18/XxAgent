@@ -136,7 +136,7 @@ async function expectResumedPublicationRollback(
   await ctx.plugin(AgentLoop, { agents: [] })
   const value = backend()
   const stored: SessionEvent[] = [
-    { ...event, data: { turn: 1 } },
+    { seq: 0, time: event.time, type: 'turn/start', data: { turn: 1 } },
     {
       seq: 1,
       time: event.time + 1,
@@ -1226,7 +1226,10 @@ describe('XAgent FastAPI Session Persistence', () => {
     const inspected = await persistence.withUserToken('alice-token', () => persistence.inspect(id))
 
     expect(inspected.events).toEqual([result])
-    expect(inspected.events[0]?.data.meta).toEqual({
+    const inspectedResult = inspected.events[0]
+    expect(inspectedResult?.type).toBe('tool/result')
+    if (inspectedResult?.type !== 'tool/result') throw new Error('expected restored Fact tool result')
+    expect(inspectedResult.data.meta).toEqual({
       kind: 'xagent-fact',
       status: 'pending',
       proposalId,

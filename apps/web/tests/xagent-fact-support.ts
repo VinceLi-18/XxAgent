@@ -1,3 +1,6 @@
+import { lstatSync, readFileSync, readdirSync } from 'node:fs'
+import { join, relative } from 'node:path'
+
 /** Stable, per-run identities owned by one Fact approval Browser scenario. */
 export interface FactApprovalIdentity {
   readonly composeProject: string
@@ -17,6 +20,28 @@ export function factApprovalIdentity(suffix: string): FactApprovalIdentity {
     specialistEmail: `specialist.phase4b.${suffix}@example.test`,
     projectName: `Phase 4B Fact ${suffix}`,
   }
+}
+
+/** @returns Child process environment assembled from ambient and explicit values. */
+export function factChildEnvironment(
+  ambient: NodeJS.ProcessEnv,
+  explicit: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const allowed = [
+    'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL',
+    'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+    'CI', 'TERM', 'COLORTERM', 'NO_COLOR', 'FORCE_COLOR',
+    'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'XDG_RUNTIME_DIR',
+  ] as const
+  const child: NodeJS.ProcessEnv = {}
+  for (const name of allowed) {
+    const value = ambient[name]
+    if (value !== undefined) child[name] = value
+  }
+  for (const [name, value] of Object.entries(explicit)) {
+    if (value !== undefined) child[name] = value
+  }
+  return child
 }
 
 /** Inputs for the isolated real-service Compose override. */
@@ -102,11 +127,35 @@ export function factBrowserDiagnosticUrl(value: string): string {
   }
 }
 
-/** @returns Diagnostic text with URL queries and bearer-like values removed. */
-export function redactFactBrowserDiagnosticText(value: string): string {
-  return value
+/** @returns Diagnostic text with supplied secrets, URL queries, and bearer-like values removed. */
+export function redactFactBrowserDiagnosticText(value: string, secrets: readonly string[] = []): string {
+  let redacted = value
+  for (const secret of secrets) {
+    if (secret !== '') redacted = redacted.replaceAll(secret, '[REDACTED]')
+  }
+  return redacted
     .replace(/https?:\/\/[^\s"'<>]+/gu, url => factBrowserDiagnosticUrl(url))
     .replace(/\b(?:bearer\s+)?eyJ[a-z0-9_-]+(?:\.[a-z0-9_-]+){1,2}\b/giu, 'bearer [REDACTED]')
+}
+
+/** @returns Relative regular-file paths whose bytes contain the forbidden value. */
+export function factFilesContaining(root: string, forbidden: string): string[] {
+  if (forbidden === '') throw new Error('Fact E2E forbidden value must not be empty')
+  const matches: string[] = []
+  const needle = Buffer.from(forbidden)
+  const visit = (path: string): void => {
+    const stat = lstatSync(path)
+    if (stat.isSymbolicLink()) return
+    if (stat.isDirectory()) {
+      for (const name of readdirSync(path).sort()) visit(join(path, name))
+      return
+    }
+    /* v8 ignore next -- the task-owned tree contains only directories, symlinks, and regular files. */
+    if (!stat.isFile()) return
+    if (readFileSync(path).indexOf(needle) !== -1) matches.push(relative(root, path))
+  }
+  visit(root)
+  return matches
 }
 
 /** Secret-free observation of one Browser HTTP response. */
