@@ -15,6 +15,7 @@ import {
   SESSION_FORMAT_VERSION,
   adoptSessionEvent,
   interruptedTurnClosers,
+  SessionPreparation,
   type Session,
   type SessionEvent,
   type SessionHeader,
@@ -262,6 +263,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     flushing: Promise<void> | undefined
     timer: ReturnType<typeof setTimeout> | undefined
   }>()
+  private readonly preparedSuffixes = new WeakMap<Session, readonly SessionEvent[]>()
   private scopeTail: Promise<void> = Promise.resolve()
   private activeToken: string | undefined
 
@@ -453,6 +455,26 @@ export class XAgentSessionPersistence extends SessionPersistence {
     })
   }
 
+  /**
+   * Prepare a resumed Session and retain its constructor-created suffix until publication.
+   * @param id - persisted Session identity.
+   * @param signal - optional cancellation for the remote read.
+   * @returns the unpublished Session preparation.
+   */
+  override async prepare(id: SessionIdType, signal?: AbortSignal): Promise<SessionPreparation> {
+    const prepared = await super.prepare(id, signal)
+    const session = prepared.session
+    const suffix = session.events.slice(session.firstLiveSeq).map(event => structuredClone(event))
+    if (suffix.length === 0) return prepared
+    this.preparedSuffixes.set(session, suffix)
+    return SessionPreparation.create(session, {
+      release: () => {
+        this.preparedSuffixes.delete(session)
+        prepared[Symbol.dispose]()
+      },
+    })
+  }
+
   async inspect(id: SessionIdType, signal?: AbortSignal): Promise<SessionInspection> {
     signal?.throwIfAborted()
     const live = this.ctx.get('sessions')?.get(id)
@@ -575,22 +597,14 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   private installWritePath(): void {
+    this.ctx.on('session/created', (session) => {
+      const suffix = this.preparedSuffixes.get(session)
+      if (suffix === undefined) return
+      this.preparedSuffixes.delete(session)
+      this.enqueueWrites(session.id, suffix)
+    })
     this.ctx.on('session/event', (session, event) => {
-      let state = this.writes.get(session.id)
-      if (state === undefined) {
-        state = { pending: [], retry: undefined, flushing: undefined, timer: undefined }
-        this.writes.set(session.id, state)
-      }
-      state.pending.push(structuredClone(event))
-      if (state.timer === undefined) {
-        const writeState = state
-        state.timer = setTimeout(() => {
-          writeState.timer = undefined
-          void this.flushWrites(session.id).catch((error: unknown) => {
-            this.ctx.logger.warn(`xagent session persistence failed for "${session.id}": ${String(error)}`)
-          })
-        }, 200)
-      }
+      this.enqueueWrites(session.id, [event])
     })
     this.ctx.on('session/flush', session => this.flushWrites(session.id))
     this.ctx.on('session/disposed', (session) => {
@@ -604,6 +618,24 @@ export class XAgentSessionPersistence extends SessionPersistence {
     this.ctx.effect(() => async () => {
       await Promise.all([...this.writes.keys()].map(id => this.flushWrites(id)))
     }, 'xagent-session-persistence-api write path')
+  }
+
+  private enqueueWrites(id: SessionIdType, events: readonly SessionEvent[]): void {
+    let state = this.writes.get(id)
+    if (state === undefined) {
+      state = { pending: [], retry: undefined, flushing: undefined, timer: undefined }
+      this.writes.set(id, state)
+    }
+    state.pending.push(...events.map(event => structuredClone(event)))
+    if (state.timer === undefined) {
+      const writeState = state
+      state.timer = setTimeout(() => {
+        writeState.timer = undefined
+        void this.flushWrites(id).catch((error: unknown) => {
+          this.ctx.logger.warn(`xagent session persistence failed for "${id}": ${String(error)}`)
+        })
+      }, 200)
+    }
   }
 
   private flushWrites(id: SessionIdType): Promise<void> {

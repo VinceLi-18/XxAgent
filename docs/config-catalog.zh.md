@@ -3163,7 +3163,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/session-persistence-api/src/index.ts:29`](../packages/xagent/session-persistence-api/src/index.ts)
+来源：[`packages/xagent/session-persistence-api/src/index.ts:31`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## 无配置的可加载插件
 

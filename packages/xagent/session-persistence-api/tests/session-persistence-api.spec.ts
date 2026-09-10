@@ -1264,6 +1264,111 @@ describe('XAgent FastAPI Session Persistence', () => {
     await ctx.fiber.dispose()
   })
 
+  test('恢复发布先持久化 end-seed，再将待投递 Outbox 与用户 Turn 精确追加一次', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const value = backend()
+    const stored = [
+      { ...event, data: { turn: 1 } },
+      {
+        seq: 1,
+        time: event.time + 1,
+        type: 'turn/end',
+        data: { turn: 1, reason: { kind: 'completed' } },
+      } as SessionEvent,
+    ]
+    value.sessions.open = vi.fn(async (...args) => {
+      value.calls.push({ name: 'open', args })
+      return {
+        schema_version: 1,
+        session: { runtime_header: header, version: 2, last_event_sequence: stored.length - 1 },
+        events: stored.map(item => ({ sequence: item.seq, payload: item })),
+      }
+    })
+    const appendCalls: unknown[][] = []
+    value.sessions.append = vi.fn(async (...args) => {
+      appendCalls.push(args)
+      const body = args[2] as { expected_sequence: number; events: readonly { payload: SessionEvent }[] }
+      if (body.expected_sequence !== stored.length - 1) throw new XAgentBackendError('sequence-conflict')
+      stored.push(...body.events.map(item => item.payload))
+      return {
+        schema_version: 1 as const,
+        version: 3,
+        last_event_sequence: stored.length - 1,
+      }
+    })
+    const outboxAttachments = vi.fn((_sessionId: string, first: number, last: number) => (
+      first <= 3 && last >= 3
+        ? [{ eventSequence: 3, outboxId: '00000000-0000-0000-0000-000000000723', payloadHash: 'c'.repeat(64) }]
+        : []
+    ))
+    ctx.provide('xagentFact', {
+      receipts: { attachments: vi.fn(() => []), commit: vi.fn() },
+      outbox: { attachments: outboxAttachments, commit: vi.fn() },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    const cancelled = new AbortController()
+    cancelled.abort(new Error('cancelled before restart'))
+    await expect(persistence.prepare(id, cancelled.signal)).rejects.toThrow('cancelled before restart')
+    const rolledBack = await persistence.prepare(id)
+    rolledBack[Symbol.dispose]()
+    expect(appendCalls).toHaveLength(0)
+
+    using resumed = await persistence.prepare(id)
+    const session = resumed.session
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    session.append('fact/proposal-decided', factDecisionData)
+    session.append('turn/start', { turn: 2 })
+    session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+
+    await ctx.sessions.flush(session)
+
+    expect(appendCalls).toHaveLength(1)
+    const body = appendCalls[0]?.[2] as { expected_sequence: number; events: readonly { event_type: string }[] }
+    expect(body.expected_sequence).toBe(1)
+    expect(body.events.map(item => item.event_type)).toEqual([
+      'session/end-seed',
+      'fact/proposal-decided',
+      'turn/start',
+      'turn/end',
+    ])
+    expect(outboxAttachments).toHaveBeenCalledWith(String(id), 2, 5)
+    detach()
+    await ctx.fiber.dispose()
+  })
+
+  test('恢复已以 end-seed 结束的日志不产生重复追加', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const value = backend()
+    const marker: SessionEvent = {
+      seq: 0,
+      time: event.time,
+      type: 'session/end-seed',
+      data: {},
+    }
+    value.sessions.open = vi.fn(async () => ({
+      schema_version: 1,
+      session: { runtime_header: header, version: 2, last_event_sequence: 0 },
+      events: [{ sequence: 0, payload: marker }],
+    }))
+    const append = vi.spyOn(value.sessions, 'append')
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    using resumed = await persistence.prepare(id)
+    const detach = ctx.sessions.enter(resumed.session)
+    ctx.sessions.announce(resumed.session)
+    await ctx.sessions.flush(resumed.session)
+
+    expect(append).not.toHaveBeenCalled()
+    detach()
+    await ctx.fiber.dispose()
+  })
+
   test('请求令牌作用域串行执行并在成功或失败后清除', async () => {
     const persistence = new XAgentSessionPersistence(new Context(), backend())
     let release!: () => void

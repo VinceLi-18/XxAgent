@@ -22,9 +22,9 @@ Status: implemented
 
 两条守卫让这个标记保持精确。省略种子时不写入任何内容，因为这是全新会话。种子本身已以该事件结尾时不会重复标记，这让写入具备幂等性。幂等性是承重的，而不是为了整洁：每次绑定到 Agent 的冷会话接手都会经过 `agentFor()`；没有这条守卫，重复的控制操作即使没有执行任何工作，也会让日志增长。只执行检查的 `session.history` 与 `session.fork` 源端路径不会在源会话中创建这条边界。
 
-## 持久化无需任何改动
+## 持久化拥有未发布后缀
 
-构造函数中的 append 发生在 `enter()` 之前，因此会话尚无 store attachment：该标记不会在 `session/event` 上发布，与它之前的种子事件完全一样。它属于 `initFor` 捕获的那份创建种子，并通过普通的种子路径落盘——`onCreated` 的 `createCore` + `appendCore`，或无主认领的后缀写入。因此监听 firehose 的消费方永远看不到这条边界，必须从日志中读取它。
+构造函数中的 append 发生在 `enter()` 之前，因此会话尚无 store attachment：该标记不会在 `session/event` 上发布，与它之前的种子事件完全一样。持久化实现必须在 preparation 期间保留这段由构造器创建的后缀，并在 `session/created` 时先于后续实时事件同步入队。通用 coordinator 通过 reservation 附加已准备的后缀；XAgent FastAPI provider 按精确 Session 身份保留后缀，并把它放入同一 append 队列。发布前取消或回滚会释放后缀而不产生持久写入，种子已经以该 marker 结束时也没有后缀需要入队。因此监听 firehose 的消费方永远看不到这条边界，必须从日志中读取它。
 
 对 seam 的影响：`load()` 仍是纯读取，没有 revision 递增，对平衡日志不走 `commitRepair`，被拒绝的 `append` 也不留下持久标记。但**接手不是纯读取**——如今一次拾起会在此前完全无写入的路径上产生写入，因此只读存储或磁盘写满会在 `session/created` 处报错，而不是在第一个真实轮次处。这是本放置方式新增的唯一成本，并且比加载路径方案的成本更窄（后者会让加载本身失败）。
 
