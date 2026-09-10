@@ -935,6 +935,153 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(appendBody.events[1]).not.toHaveProperty('tool_call_id')
   })
 
+  test('创建与追加只从成功的 pending Fact 工具结果剥离 Host 展示元数据', async () => {
+    const proposalId = '00000000-0000-0000-0000-000000000721'
+    const callId = 'call-fact-presentation'
+    const value = backend()
+    const ctx = new Context()
+    const attachments = vi.fn(() => [{
+      eventSequence: 1,
+      toolCallId: callId,
+      proposalId,
+      receipt: 'opaque-fact',
+      payloadHash: 'b'.repeat(64),
+    }])
+    ctx.provide('xagentFact', {
+      receipts: { attachments, commit: vi.fn() },
+      outbox: { attachments: vi.fn(() => []), commit: vi.fn() },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    const call = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId, name: 'propose_fact', arguments: '{}' },
+    } as SessionEvent
+    const result = {
+      seq: 1,
+      time: event.time + 1,
+      type: 'tool/result',
+      surfaceOp: 'append',
+      sourceEventSeqs: [0],
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId },
+          content: [{
+            type: 'tool-result',
+            toolCallId: callId,
+            isError: false,
+            content: [{ type: 'text', text: JSON.stringify({ proposalId, status: 'pending' }) }],
+          }],
+        },
+        meta: { kind: 'xagent-fact', status: 'pending', proposalId },
+      },
+    } as unknown as SessionEvent
+    const other = {
+      ...result,
+      seq: 2,
+      data: { ...result.data, meta: { kind: 'other-tool', marker: 'preserved' } },
+    } as unknown as SessionEvent
+    const publication = { id, header, events: [call, result, other] } as unknown as Session
+
+    await persistence.withUserToken('alice-token', () => persistence.preparePublication(publication))
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    await persistence.append(id, [call, result, other])
+
+    const createEvents = (value.calls.find(candidate => candidate.name === 'create')?.args[1] as {
+      events: Array<{ payload: SessionEvent }>
+    }).events
+    const appendCall = value.calls.find(candidate => candidate.name === 'append')
+    const appendBody = appendCall?.args[2] as {
+      events: Array<{ payload: SessionEvent }>
+      fact_proposal_receipts: readonly unknown[]
+    }
+    for (const projected of [createEvents, appendBody.events]) {
+      expect(projected[1]?.payload.data).not.toHaveProperty('meta')
+      expect(projected[2]?.payload.data).toHaveProperty('meta', { kind: 'other-tool', marker: 'preserved' })
+    }
+    expect(appendBody.fact_proposal_receipts).toEqual([{
+      event_sequence: 1,
+      tool_call_id: callId,
+      proposal_id: proposalId,
+      receipt: 'opaque-fact',
+      payload_hash: 'b'.repeat(64),
+    }])
+    expect(attachments).toHaveBeenCalledWith(String(id), 0, 2)
+  })
+
+  test.each([
+    { kind: 'xagent-fact', status: 'pending', proposalId: 'not-a-uuid' },
+    { kind: 'xagent-fact', status: 'confirmed', proposalId: '00000000-0000-0000-0000-000000000721' },
+    { kind: 'xagent-fact', status: 'pending', proposalId: '00000000-0000-0000-0000-000000000721', extra: true },
+  ])('拒绝不闭合或身份无效的 Fact 工具结果展示元数据 %#', async (meta) => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const result = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/result',
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-fact-invalid' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'call-fact-invalid',
+            isError: false,
+            content: [{ type: 'text', text: '{}' }],
+          }],
+        },
+        meta,
+      },
+    } as unknown as SessionEvent
+
+    await expect(persistence.append(id, [result])).rejects.toThrow('invalid XAgent Fact tool result metadata')
+    expect(value.calls).toEqual([])
+  })
+
+  test('拒绝错误结果携带 pending Fact 展示元数据且不发送远端请求', async () => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const result = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/result',
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-fact-error' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'call-fact-error',
+            isError: true,
+            content: [{ type: 'text', text: 'Error: unavailable' }],
+          }],
+        },
+        meta: {
+          kind: 'xagent-fact',
+          status: 'pending',
+          proposalId: '00000000-0000-0000-0000-000000000721',
+        },
+      },
+    } as unknown as SessionEvent
+
+    await expect(persistence.append(id, [result])).rejects.toThrow('invalid XAgent Fact tool result metadata')
+    expect(value.calls).toEqual([])
+  })
+
   test('创建与追加使用当前请求令牌，后续写入使用按 Session 固定的租约', async () => {
     const value = backend()
     const persistence = new XAgentSessionPersistence(new Context(), value)

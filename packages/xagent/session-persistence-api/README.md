@@ -10,7 +10,7 @@
 
 检索工具的不透明 receipt 由检索注册表按已绑定的 `tool/result` sequence 提供。provider 只在对应 append 的私有 `retrieval_receipts` sidecar 中传输它，并在 FastAPI 返回关闭的 schema、精确末事件 sequence 和有效 Session version 后才从注册表确认删除。每个 `tool/call` 的品牌化 `callId` 同时写入 FastAPI 事件 envelope 的 `tool_call_id`；其他事件不产生该列。FastAPI 接受运行时真实 `tool/result` provenance，其中 `surfaceOp` 必须为 `append`，可选 `sourceEventSeqs` 只能引用同一 Session 中 sequence 更小且不重复的事件；检查点可以先持久化 `tool/call`，再由后续 append 持久化对应的 `tool/result`。这些字段会进入规范公开事件。网络、后端或响应校验失败保留原事件批次与同一 sidecar，下一次 checkpoint 精确重试；receipt 不进入 Session 事件、模型内容、读取响应、日志或审计。
 
-可选 `xagentFact` 服务通过独立 `receipts` 和 `outbox` 注册表提供 Fact proposal receipt 与 Outbox 事件附件。provider 按同一首尾 sequence 窗口同时收集 retrieval、Fact receipt 和 Fact Outbox sidecar，将它们放入一次 append，只在关闭响应确认精确末 sequence 后才以该 sequence 分别 commit 三个注册表。部分确认、取消、超时、请求失败或响应校验失败都不 commit 任何注册表。`xagentFact` 缺失时，provider 不访问这两个注册表，也不添加空 Fact 数组，普通 append 正文字节保持不变。
+可选 `xagentFact` 服务通过独立 `receipts` 和 `outbox` 注册表提供 Fact proposal receipt 与 Outbox 事件附件。provider 按同一首尾 sequence 窗口同时收集 retrieval、Fact receipt 和 Fact Outbox sidecar，将它们放入一次 append，只在关闭响应确认精确末 sequence 后才以该 sequence 分别 commit 三个注册表。成功的 pending Fact `tool/result` 在写入 FastAPI 时删除仅供 Host 展示和私有 receipt 绑定使用的 `data.meta`；该元数据必须包含且只能包含合法 proposal ID、`xagent-fact` kind 和 pending 状态，错误结果或无效元数据会在远端请求前失败。其他事件的 meta 保持原样。部分确认、取消、超时、请求失败或响应校验失败都不 commit 任何注册表。`xagentFact` 缺失时，provider 不访问这两个注册表，也不添加空 Fact 数组，普通 append 正文字节保持不变。
 
 `fact/proposal-decided` 使用持久化层的单一严格 codec。写入把关闭的 camelCase DSH data 转成 FastAPI v1 snake_case，读取执行反向转换；两端都拒绝未知事件或 data 字段、bool 整数、非 `append` placement，以及与终态不一致的 revision 或 reason。其他 Session 事件原样复制，receipt 与 Outbox 身份只存在于 append sidecar。
 

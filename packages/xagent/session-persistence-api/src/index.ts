@@ -100,10 +100,39 @@ function eventFrom(value: unknown, envelopeType?: unknown): SessionEvent {
   return structuredClone(row) as unknown as SessionEvent
 }
 
+function factToolResultPayload(event: SessionEvent): SessionEvent | undefined {
+  if (event.type !== 'tool/result') return undefined
+  const payload = structuredClone(event) as unknown as Record<string, unknown>
+  const row = payload.data as Record<string, unknown>
+  const metadata = row.meta as Record<string, unknown> | undefined
+  if (metadata?.kind !== 'xagent-fact') return undefined
+  const message = row.message as Record<string, unknown>
+  const source = message.source as Record<string, unknown>
+  const content = message.content as readonly Record<string, unknown>[]
+  const result = content[0]
+  if (
+    Object.keys(metadata).length !== 3
+    || metadata.status !== 'pending'
+    || typeof metadata.proposalId !== 'string'
+    || !UUID_PATTERN.test(metadata.proposalId)
+    || metadata.proposalId !== metadata.proposalId.toLowerCase()
+    || payload.surfaceOp !== 'append'
+    || source.kind !== 'tool'
+    || typeof source.callId !== 'string'
+    || content.length !== 1
+    || result?.type !== 'tool-result'
+    || result.isError !== false
+    || result.toolCallId !== source.callId
+  ) throw new TypeError('invalid XAgent Fact tool result metadata')
+  delete row.meta
+  return payload as unknown as SessionEvent
+}
+
 function eventPayload(event: SessionEvent): SessionEvent | Record<string, unknown> {
-  return (event as { readonly type: string }).type === 'fact/proposal-decided'
-    ? encodeFactSessionEvent(event)
-    : structuredClone(event)
+  if ((event as { readonly type: string }).type === 'fact/proposal-decided') {
+    return encodeFactSessionEvent(event)
+  }
+  return factToolResultPayload(event) ?? structuredClone(event)
 }
 
 function eventEnvelope(event: SessionEvent): {
