@@ -643,7 +643,9 @@ export class AgentLoop extends Service implements AgentFactory {
         }
         await persistence?.preparePublication?.(session)
       }
-      return prepared.publish(source)
+      const published = prepared.publish(source)
+      ownedPreparation.commitPublication()
+      return published
     } catch (error: unknown) {
       await prepared.dispose()
       throw error

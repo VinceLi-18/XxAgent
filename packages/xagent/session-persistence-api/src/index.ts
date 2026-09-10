@@ -263,7 +263,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     flushing: Promise<void> | undefined
     timer: ReturnType<typeof setTimeout> | undefined
   }>()
-  private readonly preparedSuffixes = new WeakMap<Session, readonly SessionEvent[]>()
+  private readonly preparedSuffixes = new WeakMap<Session, SessionEvent[]>()
   private scopeTail: Promise<void> = Promise.resolve()
   private activeToken: string | undefined
 
@@ -468,6 +468,11 @@ export class XAgentSessionPersistence extends SessionPersistence {
     if (suffix.length === 0) return prepared
     this.preparedSuffixes.set(session, suffix)
     return SessionPreparation.create(session, {
+      commitPublication: () => {
+        this.preparedSuffixes.delete(session)
+        this.enqueueWrites(session.id, suffix)
+        prepared[Symbol.dispose]()
+      },
       release: () => {
         this.preparedSuffixes.delete(session)
         prepared[Symbol.dispose]()
@@ -597,13 +602,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   private installWritePath(): void {
-    this.ctx.on('session/created', (session) => {
-      const suffix = this.preparedSuffixes.get(session)
-      if (suffix === undefined) return
-      this.preparedSuffixes.delete(session)
-      this.enqueueWrites(session.id, suffix)
-    })
     this.ctx.on('session/event', (session, event) => {
+      const suffix = this.preparedSuffixes.get(session)
+      if (suffix !== undefined) {
+        suffix.push(structuredClone(event))
+        return
+      }
       this.enqueueWrites(session.id, [event])
     })
     this.ctx.on('session/flush', session => this.flushWrites(session.id))

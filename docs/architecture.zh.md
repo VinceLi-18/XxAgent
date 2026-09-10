@@ -44,7 +44,7 @@ XAgent 授权服务依据封闭的方法表校验每个 Session 方法。它把�
 
 FastAPI 拥有密码、可撤销登录记录、权限版本、账号状态、会话 Header 和仅追加的会话事件。PostgreSQL 行级安全策略与应用事务会在每次读写前重新校验 actor。私有会话只对 owner 可见，Manager 也不能例外；不可见与不存在统一返回 not-found。FastAPI 不可用时，Host 不会回退到 Profile 本地会话文件。
 
-新会话跨运行时边界保持发布原子性：远端 Header 与 seed event 必须提交成功，Agent 才能对外可见。恢复会话时保留被中断的持久事件尾，并把所需的关闭事件追加到远端。启动期 Workspace 发现使用独立的 bootstrap 方法；XAgent provider 会刻意返回空会话，因为此时还不存在已认证 Principal。
+新会话跨运行时边界保持发布原子性：远端 Header 与 seed event 必须提交成功，Agent 才能对外可见。恢复会话时保留被中断的持久事件尾；其 provider 自有 preparation 在 Session 创建、Agent 创建与 session start 全部成功前保持可回滚，随后才把构造器生成的后缀及发布期间产生的事件追加到远端。启动期 Workspace 发现使用独立的 bootstrap 方法；XAgent provider 会刻意返回空会话，因为此时还不存在已认证 Principal。
 
 `xagent-developer`、`web`、`headless` 和其他上游 Profile 继续使用原有本地持久化，也不会装载 XAgent 服务凭据、认证、授权或委托密钥。Profile 目录仍只是组织边界，不是多用户安全边界。
 

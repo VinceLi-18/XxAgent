@@ -4,7 +4,7 @@
 
 每个认证 RPC 在串行令牌作用域内执行。成功创建或读取 Session 后，Host 为该 Session 保存内部用户令牌租约，使模型轮次产生的后台 append 继续通过 FastAPI 复核登录记录、权限版本与 RLS。租约不进入事件、模型上下文、浏览器响应或日志。
 
-新 Agent 在注册表发布前，把 Header 与完整 seed 作为一次 FastAPI 创建事务提交。创建请求不接受最终 `visibility` 或 `project_id`；FastAPI 在同一事务内锁定并重新验证账号已保存的工作上下文，决定 private 工作台范围或当前 project 范围。Host 只在响应 Session ID 与范围组合通过校验后建立写入租约；远端失败时 Agent 和 Session 均保持不可见。冷加载会为完整但中断的最终回合生成确定性的关闭事件，先追加到 FastAPI，再返回平衡日志；`inspect()` 只在内存中展示同一逻辑视图。恢复发布会把 Session 构造器生成但未经过 `session/event` 的 `session/end-seed` 与后续实时事件连续写入；取消或发布前回滚会丢弃该未发布后缀，已以 marker 结束的下一次恢复不会重复写入。
+新 Agent 在注册表发布前，把 Header 与完整 seed 作为一次 FastAPI 创建事务提交。创建请求不接受最终 `visibility` 或 `project_id`；FastAPI 在同一事务内锁定并重新验证账号已保存的工作上下文，决定 private 工作台范围或当前 project 范围。Host 只在响应 Session ID 与范围组合通过校验后建立写入租约；远端失败时 Agent 和 Session 均保持不可见。冷加载会为完整但中断的最终回合生成确定性的关闭事件，先追加到 FastAPI，再返回平衡日志；`inspect()` 只在内存中展示同一逻辑视图。恢复 preparation 按精确 Session 保留构造器生成但未经过 `session/event` 的 `session/end-seed`，并缓冲发布期间的实时事件；只有 Session 创建、Agent 创建与 session start 全部成功且未取消后，Agent Loop 才提交并按序入队。此前任何取消或回滚都会丢弃该后缀且不调用 FastAPI append，已以 marker 结束的下一次恢复不会重复写入。
 
 普通 Host fork 不走通用 create。一次 RPC request ID 就是一个逻辑操作身份；provider 先 flush 源 Session，再只提交源 ID、包含式末 sequence 和由该身份派生的幂等键。FastAPI 重新授权并锁定源，在同一事务由服务端分配子 ID、派生 runtime Header，并复制精确事件前缀、`visibility`、`project_id`、私有 Session 项目引用和已进入该前缀的 cited-answer provenance。provider 仅把 XAgent `service-unavailable` 判为可恢复，Host 在返回该 RPC 前立即重试一次持久派生或同一持久子 Session 的 resume；Workspace 附加仅对封闭 errno 集重试一次，且不重复已经成功的阶段。授权、缺失、冲突、响应 schema 与 Workspace 校验失败都不会重试。后续独立 fork RPC 使用新身份并创建新子 Session。当前工作上下文与调用方字段都不能改变 fork 范围。不拥有权威身份的 provider 仍可返回 `undefined`，由 Host 使用进程内 seed 路径。
 

@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
+import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { SessionForkOperationId } from '@deepseek-ai/dsh-session-persistence'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
 import {
   XAgentBackendClient,
   XAgentBackendError,
@@ -116,6 +121,49 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
       authorize: vi.fn(),
     },
   }
+}
+
+async function expectResumedPublicationRollback(
+  installFailure: (ctx: Context, cancellation: AbortController) => void,
+  expected: RegExp,
+): Promise<void> {
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await ctx.plugin(AgentLoop, { agents: [] })
+  const value = backend()
+  const stored: SessionEvent[] = [
+    { ...event, data: { turn: 1 } },
+    {
+      seq: 1,
+      time: event.time + 1,
+      type: 'turn/end',
+      data: { turn: 1, reason: { kind: 'completed' } },
+    },
+  ]
+  value.sessions.open = vi.fn(async () => ({
+    schema_version: 1,
+    session: { runtime_header: header, version: 2, last_event_sequence: 1 },
+    events: stored.map(item => ({ sequence: item.seq, payload: item })),
+  }))
+  const append = vi.fn(async () => ({ schema_version: 1 as const, version: 3, last_event_sequence: 2 }))
+  value.sessions.append = append
+  const persistence = new XAgentSessionPersistence(ctx, value)
+  persistence.authorizeRequest(id, undefined, 'alice-token')
+  const cancellation = new AbortController()
+  installFailure(ctx, cancellation)
+
+  await expect(ctx.agents.resume({
+    resumeSessionId: id,
+    agentOptions: { provider: 'unused', model: 'unused' },
+    signal: cancellation.signal,
+  })).rejects.toThrow(expected)
+  await ctx.fiber.dispose()
+
+  expect(append).not.toHaveBeenCalled()
 }
 
 describe('XAgent FastAPI Session Persistence', () => {
@@ -1368,6 +1416,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     session.append('fact/proposal-decided', factDecisionData)
     session.append('turn/start', { turn: 2 })
     session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    resumed.commitPublication()
 
     await ctx.sessions.flush(session)
 
@@ -1412,6 +1461,26 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(append).not.toHaveBeenCalled()
     detach()
     await ctx.fiber.dispose()
+  })
+
+  test('恢复发布在后续 session/created listener 抛错时不追加 end-seed', async () => {
+    await expectResumedPublicationRollback((ctx) => {
+      ctx.on('session/created', () => { throw new Error('post-session publication failure') })
+    }, /post-session publication failure/)
+  })
+
+  test('恢复发布在 agent/created listener 抛错时不追加 end-seed', async () => {
+    await expectResumedPublicationRollback((ctx) => {
+      ctx.on('agent/created', () => { throw new Error('agent publication failure') })
+    }, /agent publication failure/)
+  })
+
+  test('恢复发布在 session-start 期间取消时不追加 end-seed', async () => {
+    await expectResumedPublicationRollback((ctx, cancellation) => {
+      ctx.on('agent/session-start', () => {
+        cancellation.abort(new Error('publication cancelled'))
+      })
+    }, /publication cancelled/)
   })
 
   test('请求令牌作用域串行执行并在成功或失败后清除', async () => {

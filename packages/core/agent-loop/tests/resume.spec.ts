@@ -37,6 +37,24 @@ async function mountPersistentHarness(root: string, adapter: MockAdapter): Promi
   return ctx
 }
 
+function observePreparationOwnership(ctx: Context, lifecycle: string[]): void {
+  const prepare = ctx.sessionPersistence.prepare.bind(ctx.sessionPersistence)
+  ctx.sessionPersistence.prepare = async (id, signal) => {
+    const owned = await prepare(id, signal)
+    return SessionPreparation.create(owned.session, {
+      commitPublication: () => {
+        lifecycle.push('commit')
+        owned.commitPublication()
+        owned[Symbol.dispose]()
+      },
+      release: () => {
+        lifecycle.push('release')
+        owned[Symbol.dispose]()
+      },
+    })
+  }
+}
+
 async function persistSession(sessionId: SessionId): Promise<string> {
   const { ctx, root } = await persistentHarness(new MockAdapter([textResponse('seed')]))
   // Persistence deliberately has no artifact for a truly empty session. A
@@ -89,6 +107,98 @@ function throwUnknown(value: unknown): never {
 }
 
 describe('the session-persistence Agent Note: AgentLoop factory create/resume', () => {
+  it('commits prepared provider state only after complete resume publication', async () => {
+    const sessionId = SessionId('resume-preparation-commit')
+    const root = await persistSession(sessionId)
+    const ctx = await mountPersistentHarness(root, new MockAdapter([]))
+    const lifecycle: string[] = []
+    observePreparationOwnership(ctx, lifecycle)
+    ctx.on('session/created', () => void lifecycle.push('session'))
+    ctx.on('agent/created', () => void lifecycle.push('agent'))
+    ctx.on('agent/session-start', () => void lifecycle.push('start'))
+
+    const handle = await ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+
+    expect(lifecycle).toEqual(['session', 'agent', 'start', 'commit'])
+    await handle.dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it.each([
+    ['session creation', (ctx: Context) => ctx.on('session/created', () => { throw new Error('session veto') }), /session veto/],
+    ['agent creation', (ctx: Context) => ctx.on('agent/created', () => { throw new Error('agent veto') }), /agent veto/],
+  ])('releases prepared provider state when %s vetoes resume publication', async (_name, install, expected) => {
+    const sessionId = SessionId(`resume-preparation-${_name.replace(' ', '-')}`)
+    const root = await persistSession(sessionId)
+    const ctx = await mountPersistentHarness(root, new MockAdapter([]))
+    const lifecycle: string[] = []
+    observePreparationOwnership(ctx, lifecycle)
+    install(ctx)
+
+    await expect(ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })).rejects.toThrow(expected)
+
+    expect(lifecycle).toEqual(['release'])
+    await ctx.fiber.dispose()
+  })
+
+  it('releases prepared provider state when cancellation arrives during resume publication', async () => {
+    const sessionId = SessionId('resume-preparation-cancel')
+    const root = await persistSession(sessionId)
+    const ctx = await mountPersistentHarness(root, new MockAdapter([]))
+    const lifecycle: string[] = []
+    const cancellation = new AbortController()
+    observePreparationOwnership(ctx, lifecycle)
+    ctx.on('agent/session-start', () => {
+      cancellation.abort(new Error('publication cancelled'))
+    })
+
+    await expect(ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+      signal: cancellation.signal,
+    })).rejects.toThrow('publication cancelled')
+
+    expect(lifecycle).toEqual(['release'])
+    await ctx.fiber.dispose()
+  })
+
+  it('rolls both registries back and releases ownership when the provider commit fails', async () => {
+    const sessionId = SessionId('resume-preparation-commit-failure')
+    const root = await persistSession(sessionId)
+    const ctx = await mountPersistentHarness(root, new MockAdapter([]))
+    const lifecycle: string[] = []
+    const prepare = ctx.sessionPersistence.prepare.bind(ctx.sessionPersistence)
+    ctx.sessionPersistence.prepare = async (id, signal) => {
+      const owned = await prepare(id, signal)
+      return SessionPreparation.create(owned.session, {
+        commitPublication: () => {
+          lifecycle.push('commit')
+          throw new Error('provider commit failed')
+        },
+        release: () => {
+          lifecycle.push('release')
+          owned[Symbol.dispose]()
+        },
+      })
+    }
+
+    await expect(ctx.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })).rejects.toThrow('provider commit failed')
+
+    expect(lifecycle).toEqual(['commit', 'release'])
+    expect(ctx.sessions.get(sessionId)).toBeUndefined()
+    expect(ctx.agents.get(sessionId)).toBeUndefined()
+    await ctx.fiber.dispose()
+  })
+
   it('resumes a pre-react-loop session including pre-identity message events', async () => {
     const sessionId = SessionId('pre-identity-resume')
     const first = await persistentHarness(new MockAdapter([]))

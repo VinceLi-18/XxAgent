@@ -22,7 +22,7 @@
 
 仅在清理必须与另一项资源排序时使用拆分生命周期：
 
-- `prepare(id?, options?)` 校验并构造，但不发布。
+- `prepare(id?, options?)` 校验并构造，但不发布。持久化 provider 可以用互斥的 commit/release 回调把所得 `Session` 包装进 `SessionPreparation`；只有 Session 创建、Agent 创建与 session start 全部成功后，Agent 发布所有方才提交，否则任何回滚都会释放它。
 - `enter(session)` 执行冲突检查，在不通知的情况下发布，并返回一个绑定到该条目的幂等脱离函数。允许并发准备相同 id，但只有一个条目能够成功进入；陈旧的脱离函数无法移除其替代项。
 - `announce(session)` 发出唯一一次创建边，并拒绝重复或重入通知。该次分发期间请求的脱离操作会延后，之后再发出成对的释放边；未通知的条目不会发出任何生命周期边。
 

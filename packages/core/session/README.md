@@ -22,7 +22,7 @@ Creates and holds event-sourced `Session` instances. Persistence is intentionall
 
 Use the split lifecycle only when teardown must be ordered with another resource:
 
-- `prepare(id?, options?)` validates and constructs without publication.
+- `prepare(id?, options?)` validates and constructs without publication. A persistence provider may wrap the resulting `Session` in `SessionPreparation` with mutually exclusive commit/release callbacks; the Agent publication owner commits only after Session creation, Agent creation, and session start all succeed, while every rollback releases it.
 - `enter(session)` performs the collision check, publishes without announcing, and returns an entry-bound idempotent detach. Concurrent same-id preparations are allowed, but only one entry succeeds; a stale detach cannot remove its replacement.
 - `announce(session)` emits the single creation edge and rejects repeat or reentrant announcements. Detach during that dispatch is deferred and later emits the paired disposal edge; an unannounced entry emits neither lifecycle edge.
 

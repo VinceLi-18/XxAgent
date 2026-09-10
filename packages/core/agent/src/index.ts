@@ -205,7 +205,9 @@ export interface AgentFactory {
    * both `ctx.sessionPersistence.prepare` and the optional unpublished setup
    * transaction; must be called after that service exists (consumers inject
    * `sessionPersistence`). Publication follows the same setup-commit and
-   * ordered boundary as {@link createAgent}.
+   * ordered boundary as {@link createAgent}; provider-owned preparation state
+   * commits only after both announcements and session start succeed, otherwise
+   * it is released during rollback.
    * @param ownerCtx - caller-bound context that owns load, setup, and the live handle.
    * @param options - persisted identity, configuration, and optional setup.
    * @returns the owned handle after setup, both announcements, and loop start complete.

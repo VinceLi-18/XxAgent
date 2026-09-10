@@ -189,8 +189,10 @@ export abstract class SessionPersistence extends Service {
   /**
    * Prepare the exact unpublished Session used by resume. Implementations may
    * reuse object graphs retained by an earlier {@link inspect} after confirming
-   * their durable revision is still current; disposal releases an unpublished
-   * reservation. Revision retries require the durable log to remain unchanged
+   * their durable revision is still current. The Agent publication owner calls
+   * {@link SessionPreparation.commitPublication} only after the complete
+   * Session and Agent publication succeeds; earlier rollback disposal releases
+   * the reservation without committing its unpublished suffix. Revision retries require the durable log to remain unchanged
    * for one read/check round trip; continuous external writers may delay completion.
    * @param id - persisted session to prepare.
    * @param signal - optional cancellation for preparation work.
