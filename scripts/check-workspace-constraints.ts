@@ -49,6 +49,7 @@ export const privateXagentPackages: Readonly<Record<string, string>> = {
   'packages/xagent/backend-client': '@xagent/dsh-backend-client',
   'packages/xagent/connection-auth': '@xagent/dsh-connection-auth',
   'packages/xagent/delegation-token': '@xagent/dsh-delegation-token',
+  'packages/xagent/fact': '@xagent/dsh-fact',
   'packages/xagent/principal': '@xagent/dsh-principal',
   'packages/xagent/project': '@xagent/dsh-project',
   'packages/xagent/retrieval': '@xagent/dsh-retrieval',
