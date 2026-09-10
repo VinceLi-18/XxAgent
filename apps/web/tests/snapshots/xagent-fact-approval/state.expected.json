@@ -1,0 +1,39 @@
+{
+  "selfApproval": {
+    "status": "confirmed",
+    "baseRevision": 0
+  },
+  "evidenceProposal": {
+    "status": "confirmed",
+    "evidenceCount": 1
+  },
+  "staleCompetition": [
+    {
+      "status": "confirmed",
+      "baseRevision": 1
+    },
+    {
+      "status": "conflicted",
+      "baseRevision": 1
+    }
+  ],
+  "revisionHistory": [
+    "v2",
+    "v1"
+  ],
+  "decisionNotices": [
+    1,
+    0
+  ],
+  "negativeCodes": [
+    "fact-already-decided",
+    "not-found",
+    "not-found",
+    "session-not-found"
+  ],
+  "restarts": [
+    "browser",
+    "host",
+    "fastapi"
+  ]
+}

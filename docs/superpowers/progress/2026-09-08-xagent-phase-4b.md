@@ -8,7 +8,7 @@ Phase 4B adds one governed Project Fact lifecycle to XAgent Business. FastAPI an
 
 Tasks 1–3 landed the strict schema, admission, decision, audit, and Outbox transactions in commits `8577e17`, `e278440`, `aa12b10`, `589dbe2`, `26ad88e`, `e024136`, `0e6a9cc`, and `4a6e463`. Tasks 4–5 landed the closed TypeScript client, Session codec and persistence sidecars, governed Host provider, authorization mapping, and Browser Remote in `a28ca4b`, `239eab4`, `d19190a`, and `82a3282`. Tasks 6–7 landed the Project-only Native proposal tool and Fact review workbench in `4612f30`, `1310613`, `373fd64`, `6c0ea37`, `6bbabb1`, and `25035b4`.
 
-The Business bundle now installs the Fact provider, proposal Consumer, generated Remote, and browser workbench together. The Native schema appears only for a complete authenticated Project inbox batch and is absent from Code Mode and every non-Business shipped profile. Physical request and connection cancellation remain attached to the batch that supplied them, while an earlier Turn error releases active ownership without deleting a queued follow-up's authorization binding. Loader lifecycle corrections are isolated in `4804279`, `5dde934`, and `fa11891`.
+Task 8 assembled the Fact capability, durable decision projection, and cross-language log-only event codec in `e43ab0d`, `3d3baa2`, and `998b694`. The Business bundle installs the Fact provider, proposal Consumer, generated Remote, and browser workbench together. The Native schema appears only for a complete authenticated Project inbox batch and is absent from Code Mode and every non-Business shipped profile. Physical request and connection cancellation remain attached to the batch that supplied them, while an earlier Turn error releases active ownership without deleting a queued follow-up's authorization binding. Loader lifecycle corrections are isolated in `4804279`, `5dde934`, and `fa11891`.
 
 ## Decision delivery and model behavior
 
@@ -22,11 +22,11 @@ The Project details panel exposes a fourth Fact tab only while the Business Fact
 
 ## Verification status
 
-Focused provider, proposal-tool, cited-answer, bundle closure, TypeScript SDK, Python SDK, CLI Loader, and headless snapshot suites cover the assembled paths. The final commands and results, including typecheck, lint, hygiene, duplication, documentation synchronization, generated-owner checks, and diff review, are recorded in the Task 8 report. The Fact event fields are identical across the Host, persistence codec, TypeScript fake runtime, Python fake runtime, Browser replay, and snapshot fixture.
+Focused provider, proposal-tool, cited-answer, bundle closure, TypeScript SDK, Python SDK, CLI Loader, and headless snapshot suites cover the assembled paths. The built Browser acceptance runs the real Host against FastAPI, PostgreSQL RLS, two authenticated accounts, admitted evidence, and the real Agent loop. It covers evidence-backed and reason-backed proposals, self-approval, duplicate and guessed identities, same-base conflict, newest-first history, the citation opener, Private and non-Business absence, Code Mode absence, membership revocation, and exact cleanup. Browser, Host, and FastAPI restart while a decision remains pending; approval starts no Turn, and the next two genuine user Turns observe decision counts `[1, 0]`. The Fact event fields are identical across the Host, persistence codec, TypeScript fake runtime, Python fake runtime, Browser replay, and snapshot fixture.
 
-## Remaining proof
+## Remaining release work
 
-Phase 4B Task 9 still owns the real Browser walkthrough, failure-state inspection, responsive interaction proof, and GIF. This record does not claim that Browser E2E evidence. Deployment rollback remains strict: a database downgrade is refused while any Fact relation or Fact audit row is non-empty, so deployed business data requires a reviewed backup before rollback.
+The implementation and deterministic Browser acceptance are complete. Independent review, the real-model secret inspection and GIF, PR publication, and required remote checks remain release operations outside the implementation commit. Deployment rollback remains strict: a database downgrade is refused while any Fact relation or Fact audit row is non-empty, so deployed business data requires a reviewed backup before rollback.
 
 ## Agent Note result
 
