@@ -1399,6 +1399,12 @@ describe('XAgent Fact provider', () => {
     )
 
     const success = { isError: false as const, value: null, content: [] }
+    const executionOrder: string[] = []
+    const flush = vi.spyOn(created.ctx.sessions, 'flush').mockImplementation(async (subject) => {
+      expect(subject).toBe(session)
+      executionOrder.push('flush')
+      return true
+    })
     const execution = {
       callId: 'call-1',
       rootCallId: 'call-1',
@@ -1411,10 +1417,12 @@ describe('XAgent Fact provider', () => {
     await expect(created.ctx.waterfall(
       'tools/execute', execution as never,
       async () => {
+        executionOrder.push('next')
         expect(currentXAgentAuthenticatedRequestScope()).toBe(admitted)
         return success
       },
     )).resolves.toBe(success)
+    expect(executionOrder).toEqual(['flush', 'next'])
     await expect(created.ctx.waterfall(
       'tools/execute', { ...execution, name: 'other' } as never,
       async () => {
@@ -1422,6 +1430,7 @@ describe('XAgent Fact provider', () => {
         return success
       },
     )).resolves.toBe(success)
+    expect(flush).toHaveBeenCalledOnce()
     await expect(created.ctx.waterfall(
       'tools/execute', { ...execution, agent: undefined } as never,
       async () => {
@@ -1429,6 +1438,35 @@ describe('XAgent Fact provider', () => {
         return success
       },
     )).resolves.toBe(success)
+    const unmatchedAgent = agentFor(Session.create(SessionId('session-00000000-0000-0000-0000-000000000299')))
+    await expect(created.ctx.waterfall(
+      'tools/execute', { ...execution, agent: unmatchedAgent } as never,
+      async () => {
+        expect(currentXAgentAuthenticatedRequestScope()).toBeUndefined()
+        return success
+      },
+    )).resolves.toBe(success)
+    expect(flush).toHaveBeenCalledOnce()
+
+    const flushFailure = new Error('Fact call checkpoint failed')
+    flush.mockRejectedValueOnce(flushFailure)
+    const afterFlushFailure = vi.fn(async () => success)
+    await expect(created.ctx.waterfall(
+      'tools/execute', execution as never,
+      afterFlushFailure,
+    )).rejects.toBe(flushFailure)
+    expect(afterFlushFailure).not.toHaveBeenCalled()
+
+    const cancelled = new AbortController()
+    const cancellation = new Error('Fact call cancelled')
+    cancelled.abort(cancellation)
+    const afterCancellation = vi.fn(async () => success)
+    await expect(created.ctx.waterfall(
+      'tools/execute', { ...execution, signal: cancelled.signal } as never,
+      afterCancellation,
+    )).rejects.toBe(cancellation)
+    expect(afterCancellation).not.toHaveBeenCalled()
+    expect(flush).toHaveBeenCalledTimes(2)
 
     const third = createUserMessage({ content: [{ type: 'text', text: 'third' }], source: { kind: 'user' } })
     const otherActor = scope({

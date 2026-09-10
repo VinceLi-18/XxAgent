@@ -472,15 +472,19 @@ export class XAgentFactService extends TypertRemoteService implements XAgentFact
       }
       return consumeFactDecisionNotices(ctx, session, notices, next)
     }, { global: true })
-    const closeToolExecution = ctx.on('tools/execute', (
+    const closeToolExecution = ctx.on('tools/execute', async (
       execution: ToolDispatchExecution,
       next: () => Promise<ToolExecutionResult>,
     ) => {
       if (execution.name !== 'propose_fact') return next()
       const scope = execution.agent === undefined ? undefined : this.activeScopes.get(execution.agent)
-      return scope === undefined
-        ? runWithoutXAgentAuthenticatedRequestScope(next)
-        : runWithXAgentAuthenticatedRequestScope(scope, next)
+      if (scope === undefined || execution.agent === undefined) {
+        return runWithoutXAgentAuthenticatedRequestScope(next)
+      }
+      execution.signal.throwIfAborted()
+      await ctx.sessions.flush(execution.agent.session)
+      execution.signal.throwIfAborted()
+      return runWithXAgentAuthenticatedRequestScope(scope, next)
     }, { global: true })
     this.closeObservers = [
       closeInserted,
