@@ -925,10 +925,14 @@ function calendarDate(value: unknown): string {
   const year = Number(match[1])
   const month = Number(match[2])
   const day = Number(match[3])
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-  const monthDays = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-  const maximumDay = monthDays[month - 1]
-  if (year < 1 || day < 1 || maximumDay === undefined || day > maximumDay) failSchema()
+  const candidate = new Date(0)
+  candidate.setUTCFullYear(year, month - 1, day)
+  const canonical = [
+    candidate.getUTCFullYear().toString().padStart(4, '0'),
+    (candidate.getUTCMonth() + 1).toString().padStart(2, '0'),
+    candidate.getUTCDate().toString().padStart(2, '0'),
+  ].join('-')
+  if (year < 1 || canonical !== value) failSchema()
   return value
 }
 
