@@ -28,6 +28,7 @@
  *   string (wire-validation probes).
  * - `FAKE_EMPTY_MESSAGE`: the turn streams a text chunk, then records an empty
  *   assistant/message for a usage-only max-tokens step.
+ * - `FAKE_FACT_DECISION`: emit one exact confirmed `fact/proposal-decided` event.
  * - `FAKE_HANG_INIT`: never answer `initialize` (mid-handshake cancel probe).
  * - `FAKE_INIT_READY` + `FAKE_INIT_GO`: touch the READY file when `initialize`
  *   arrives, then poll for the GO file before answering (deterministic
@@ -125,6 +126,18 @@ function runTurn(sessionId: string): void {
       source: { kind: 'model', provider: 'fake', model: 'fake' },
     },
   })
+  if (env.FAKE_FACT_DECISION !== undefined) {
+    event(sessionId, 'fact/proposal-decided', {
+      proposalId: '00000000-0000-0000-0000-000000000401',
+      projectId: '00000000-0000-0000-0000-000000000301',
+      fieldKey: 'customer.name',
+      label: 'Customer name',
+      status: 'confirmed',
+      factRevisionId: '00000000-0000-0000-0000-000000000501',
+      contentRevision: 2,
+      decisionReason: 'verified by manager',
+    })
+  }
   const reasonKind = env.FAKE_REASON_KIND ?? 'completed'
   event(sessionId, 'turn/end', { turn: 0, reason: { kind: reasonKind } })
   if (env.FAKE_SUBAGENT !== undefined) {

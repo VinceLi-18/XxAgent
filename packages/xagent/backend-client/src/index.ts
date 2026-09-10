@@ -13,6 +13,16 @@ import type {
   XAgentArtifactUpload,
   XAgentArtifactVersionSummary,
   XAgentCapability,
+  XAgentFactBackend,
+  XAgentFactEvidence,
+  XAgentFactOutboxItem,
+  XAgentFactPage,
+  XAgentFactPrepareInput,
+  XAgentFactPrepareResult,
+  XAgentFactProposal,
+  XAgentFactProposalDecision,
+  XAgentFactRevision,
+  XAgentFactRevisionDetail,
   XAgentIssuedLogin,
   XAgentProjectDetail,
   XAgentProjectDiscoveryResult,
@@ -26,6 +36,8 @@ import type {
   XAgentWorkbenchBackend,
   XAgentWorkbenchBootstrap,
   XAgentWorkbenchContext,
+  FactProposalDecidedEvent,
+  ProjectFactValue,
 } from './types.ts'
 
 export type {
@@ -41,6 +53,30 @@ export type {
   XAgentArtifactUploadInput,
   XAgentArtifactVersionSummary,
   XAgentCapability,
+  FactProposalDecidedEvent,
+  FactProposalPublicStatus,
+  ProjectFactValue,
+  ProposeFactInput,
+  ProposeFactResult,
+  XAgentFactApproveInput,
+  XAgentFactBackend,
+  XAgentFactEvidence,
+  XAgentFactOutboxAttachment,
+  XAgentFactOutboxItem,
+  XAgentFactOutboxRegistryContract,
+  XAgentFactPage,
+  XAgentFactPageInput,
+  XAgentFactPrepareInput,
+  XAgentFactPrepareResult,
+  XAgentFactProposal,
+  XAgentFactProposalDecision,
+  XAgentFactProposalReceiptAttachment,
+  XAgentFactReceiptRegistryContract,
+  XAgentFactPersistenceSidecars,
+  XAgentFactRejectInput,
+  XAgentFactRevision,
+  XAgentFactRevisionDetail,
+  XAgentFactWithdrawInput,
   XAgentIssuedLogin,
   XAgentProjectDetail,
   XAgentProjectDiscoveryInput,
@@ -59,6 +95,8 @@ export type {
   XAgentSessionBackend,
   XAgentSessionAppendInput,
   XAgentSessionAppendResult,
+  XAgentSessionFactOutboxAttachment,
+  XAgentSessionFactProposalReceiptAttachment,
   XAgentSessionRetrievalReceiptAttachment,
   XAgentSessionProjectRefsInput,
   XAgentSessionScopeSummary,
@@ -81,6 +119,14 @@ const STABLE_CODES = new Set<XAgentBackendErrorCode>([
   'evidence-expired',
   'evidence-conflict',
   'citation-invalid',
+  'fact-input-invalid',
+  'fact-evidence-invalid',
+  'fact-session-invalid',
+  'fact-receipt-invalid',
+  'fact-receipt-expired',
+  'fact-revision-conflict',
+  'fact-already-decided',
+  'stale-permission',
   'unsupported-version',
   'service-unavailable',
 ])
@@ -157,6 +203,17 @@ function boundedString(value: unknown, maximum: number): string {
   const result = requiredString(value)
   if (Array.from(result).length > maximum) failSchema()
   return result
+}
+
+function boundedUtf8String(value: unknown, maximum: number, allowEmpty = false): string {
+  if (typeof value !== 'string' || (!allowEmpty && value.length === 0)) failSchema()
+  if (new TextEncoder().encode(value).byteLength > maximum) failSchema()
+  return value
+}
+
+function boundedArray(value: unknown, maximum: number, minimum = 0): readonly unknown[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > maximum) failSchema()
+  return value
 }
 
 function positiveInteger(value: unknown): number {
@@ -807,7 +864,9 @@ const SESSION_APPEND_ERRORS: readonly RetrievalErrorPair[] = [
   [409, 'sequence-conflict'],
   [409, 'idempotency-conflict'],
   [409, 'evidence-conflict'],
+  [409, 'fact-receipt-invalid'],
   [410, 'evidence-expired'],
+  [410, 'fact-receipt-expired'],
   [503, 'service-unavailable'],
 ]
 
@@ -827,6 +886,374 @@ function sessionAppendResult(
     version: positiveInteger(row.version),
   }
 }
+
+const FACT_FIELD_KEY_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/
+const FACT_CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/
+const FACT_PUBLIC_STATUSES = new Set([
+  'pending', 'confirmed', 'rejected', 'withdrawn', 'conflicted',
+] as const)
+const FACT_TERMINAL_STATUSES = new Set([
+  'confirmed', 'rejected', 'withdrawn', 'conflicted',
+] as const)
+const FACT_LIST_PAGE_MAX = 100
+const FACT_OUTBOX_PAGE_MAX = 32
+const FACT_MAX_EVIDENCE = 64
+const FACT_CURSOR_MAX_BYTES = 512
+const FACT_TEXT_MAX_BYTES = 16 * 1024
+const FACT_REASON_MAX_BYTES = 4 * 1024
+
+function factFieldKey(value: unknown): string {
+  const result = boundedUtf8String(value, 128)
+  if (!FACT_FIELD_KEY_PATTERN.test(result)) failSchema()
+  return result
+}
+
+function factLabel(value: unknown): string {
+  return boundedUtf8String(value, 255)
+}
+
+function factReason(value: unknown): string {
+  const result = boundedUtf8String(value, FACT_REASON_MAX_BYTES)
+  if (result.trim().length === 0) failSchema()
+  return result
+}
+
+function calendarDate(value: unknown): string {
+  if (typeof value !== 'string') failSchema()
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (match === null) failSchema()
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const candidate = new Date(0)
+  candidate.setUTCFullYear(year, month - 1, day)
+  const canonical = [
+    candidate.getUTCFullYear().toString().padStart(4, '0'),
+    (candidate.getUTCMonth() + 1).toString().padStart(2, '0'),
+    candidate.getUTCDate().toString().padStart(2, '0'),
+  ].join('-')
+  if (year < 1 || canonical !== value) failSchema()
+  return value
+}
+
+function factNumber(value: unknown): number {
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || (Number.isInteger(value) && !Number.isSafeInteger(value))
+  ) failSchema()
+  return value
+}
+
+function parseFactValue(value: unknown): ProjectFactValue {
+  const row = exactRecord(value, ['type', 'value'])
+  if (row.type === 'text') {
+    return { type: 'text', value: boundedUtf8String(row.value, FACT_TEXT_MAX_BYTES, true) }
+  }
+  if (row.type === 'number') return { type: 'number', value: factNumber(row.value) }
+  if (row.type === 'boolean' && typeof row.value === 'boolean') {
+    return { type: 'boolean', value: row.value }
+  }
+  if (row.type === 'date') return { type: 'date', value: calendarDate(row.value) }
+  return failSchema()
+}
+
+function factPublicStatus(value: unknown): XAgentFactProposal['status'] {
+  if (typeof value !== 'string' || !FACT_PUBLIC_STATUSES.has(value as XAgentFactProposal['status'])) failSchema()
+  return value as XAgentFactProposal['status']
+}
+
+function factTerminalStatus(value: unknown): FactProposalDecidedEvent['data']['status'] {
+  if (typeof value !== 'string' || !FACT_TERMINAL_STATUSES.has(value as FactProposalDecidedEvent['data']['status'])) {
+    failSchema()
+  }
+  return value as FactProposalDecidedEvent['data']['status']
+}
+
+function parseFactEvidence(value: unknown): XAgentFactEvidence {
+  const row = exactRecord(value, [
+    'citation_id', 'artifact_id', 'version_id', 'index_id', 'index_generation',
+    'chunk_id', 'line_start', 'line_end',
+  ])
+  const lineStart = positiveInteger(row.line_start)
+  const lineEnd = positiveInteger(row.line_end)
+  if (lineEnd < lineStart) failSchema()
+  return {
+    citationId: citationIdValue(row.citation_id),
+    artifactId: requiredUuid(row.artifact_id),
+    versionId: requiredUuid(row.version_id),
+    indexId: requiredUuid(row.index_id),
+    indexGeneration: positiveInteger(row.index_generation),
+    chunkId: requiredUuid(row.chunk_id),
+    lineStart,
+    lineEnd,
+  }
+}
+
+function parseFactEvidenceList(value: unknown): readonly XAgentFactEvidence[] {
+  const evidence = boundedArray(value, FACT_MAX_EVIDENCE).map(parseFactEvidence)
+  if (new Set(evidence.map(item => item.citationId)).size !== evidence.length) failSchema()
+  return evidence
+}
+
+function nullableFactReason(value: unknown): string | undefined {
+  return value === null ? undefined : factReason(value)
+}
+
+function nullableUuid(value: unknown): string | undefined {
+  return value === null ? undefined : requiredUuid(value)
+}
+
+function nullableInstant(value: unknown): string | undefined {
+  return value === null ? undefined : instant(value)
+}
+
+function parseFactProposal(value: unknown): XAgentFactProposal {
+  const row = exactRecord(value, [
+    'id', 'project_id', 'field_key', 'label', 'value', 'proposer_id', 'base_revision',
+    'assertion_reason', 'status', 'decision_actor_id', 'decision_reason', 'evidence',
+    'created_at', 'admitted_at', 'decided_at',
+  ])
+  const status = factPublicStatus(row.status)
+  const decisionActorId = nullableUuid(row.decision_actor_id)
+  const decisionReason = nullableFactReason(row.decision_reason)
+  const decidedAt = nullableInstant(row.decided_at)
+  if (
+    status === 'pending'
+      ? decisionActorId !== undefined || decisionReason !== undefined || decidedAt !== undefined
+      : decisionActorId === undefined || decidedAt === undefined || (status === 'rejected' && decisionReason === undefined)
+  ) failSchema()
+  const assertionReason = nullableFactReason(row.assertion_reason)
+  return {
+    id: requiredUuid(row.id),
+    projectId: requiredUuid(row.project_id),
+    fieldKey: factFieldKey(row.field_key),
+    label: factLabel(row.label),
+    value: parseFactValue(row.value),
+    proposerId: requiredUuid(row.proposer_id),
+    baseRevision: count(row.base_revision),
+    ...(assertionReason === undefined ? {} : { assertionReason }),
+    status,
+    ...(decisionActorId === undefined ? {} : { decisionActorId }),
+    ...(decisionReason === undefined ? {} : { decisionReason }),
+    evidence: parseFactEvidenceList(row.evidence),
+    createdAt: instant(row.created_at),
+    admittedAt: instant(row.admitted_at),
+    ...(decidedAt === undefined ? {} : { decidedAt }),
+  }
+}
+
+function parseFactRevision(value: unknown): XAgentFactRevision {
+  const row = exactRecord(value, [
+    'id', 'project_id', 'field_key', 'label', 'value', 'content_revision', 'proposal_id',
+    'proposer_id', 'confirmed_by_id', 'assertion_reason', 'evidence', 'created_at',
+  ])
+  const assertionReason = nullableFactReason(row.assertion_reason)
+  return {
+    id: requiredUuid(row.id),
+    projectId: requiredUuid(row.project_id),
+    fieldKey: factFieldKey(row.field_key),
+    label: factLabel(row.label),
+    value: parseFactValue(row.value),
+    contentRevision: positiveInteger(row.content_revision),
+    proposalId: requiredUuid(row.proposal_id),
+    proposerId: requiredUuid(row.proposer_id),
+    confirmedById: requiredUuid(row.confirmed_by_id),
+    ...(assertionReason === undefined ? {} : { assertionReason }),
+    evidence: parseFactEvidenceList(row.evidence),
+    createdAt: instant(row.created_at),
+  }
+}
+
+function parseFactCursor(value: unknown): string {
+  const cursor = boundedUtf8String(value, FACT_CURSOR_MAX_BYTES)
+  if (!FACT_CURSOR_PATTERN.test(cursor)) failSchema()
+  let decoded: string
+  let parsed: unknown
+  try {
+    const bytes = Buffer.from(cursor, 'base64url')
+    if (bytes.toString('base64url') !== cursor) failSchema()
+    decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    parsed = JSON.parse(decoded)
+  } catch (error) {
+    if (error instanceof XAgentBackendError) throw error
+    return failSchema()
+  }
+  const row = exactRecord(parsed, ['created_at', 'id', 'v'])
+  if (row.v !== 1 || decoded !== JSON.stringify(row)) failSchema()
+  const id = requiredUuid(row.id)
+  if (id !== id.toLowerCase()) failSchema()
+  const createdAt = instant(row.created_at)
+  const fraction = /\.(\d+)(?:[+-]\d{2}:\d{2})$/.exec(createdAt)?.[1]
+  if (
+    createdAt.endsWith('Z')
+    || createdAt.endsWith('-00:00')
+    || (fraction !== undefined && (fraction.length !== 6 || /^0+$/u.test(fraction)))
+  ) {
+    failSchema()
+  }
+  return cursor
+}
+
+function parseFactPage<T>(
+  value: unknown,
+  maximum: number,
+  parseItem: (item: unknown) => T,
+): XAgentFactPage<T> {
+  const row = exactRecord(value, ['schema_version', 'items', 'next_cursor'])
+  if (row.schema_version !== 1) failSchema()
+  const items = boundedArray(row.items, maximum).map(parseItem)
+  const nextCursor = row.next_cursor === null ? undefined : parseFactCursor(row.next_cursor)
+  return { items, ...(nextCursor === undefined ? {} : { nextCursor }) }
+}
+
+function parseFactPrepare(value: unknown): XAgentFactPrepareResult {
+  const row = exactRecord(value, ['schema_version', 'result', 'receipt', 'payload_sha256'])
+  const resultRow = exactRecord(row.result, ['proposalId', 'status'])
+  if (row.schema_version !== 1 || resultRow.status !== 'pending') failSchema()
+  const result = { proposalId: requiredUuid(resultRow.proposalId), status: 'pending' as const }
+  const hash = payloadHash(row.payload_sha256)
+  if (canonicalPayloadHash(resultRow) !== hash) failSchema()
+  return { result, receipt: opaqueReceipt(row.receipt), payloadHash: hash }
+}
+
+function parseFactProposalDetail(value: unknown): XAgentFactProposal {
+  const row = exactRecord(value, ['schema_version', 'proposal'])
+  if (row.schema_version !== 1) failSchema()
+  return parseFactProposal(row.proposal)
+}
+
+function parseFactRevisionDetail(value: unknown): XAgentFactRevisionDetail {
+  const row = exactRecord(value, ['schema_version', 'revision', 'history'])
+  if (row.schema_version !== 1) failSchema()
+  return {
+    revision: parseFactRevision(row.revision),
+    history: boundedArray(row.history, FACT_LIST_PAGE_MAX).map(parseFactRevision),
+  }
+}
+
+function parseFactDecision(
+  value: unknown,
+  expectedStatus: XAgentFactProposalDecision['status'],
+): XAgentFactProposalDecision {
+  const row = exactRecordWithOptional(
+    value,
+    ['schema_version', 'proposal_id', 'status'],
+    ['fact_revision_id', 'content_revision'],
+  )
+  if (row.schema_version !== 1 || row.status !== expectedStatus || (
+    row.status !== 'confirmed' && row.status !== 'rejected' && row.status !== 'withdrawn'
+  )) failSchema()
+  const hasRevisionId = Object.hasOwn(row, 'fact_revision_id')
+  const hasContentRevision = Object.hasOwn(row, 'content_revision')
+  if (hasRevisionId !== hasContentRevision || (row.status === 'confirmed') !== hasRevisionId) failSchema()
+  const proposalId = requiredUuid(row.proposal_id)
+  if (row.status === 'confirmed') {
+    return {
+      proposalId,
+      status: 'confirmed',
+      factRevisionId: requiredUuid(row.fact_revision_id),
+      contentRevision: positiveInteger(row.content_revision),
+    }
+  }
+  return { proposalId, status: row.status }
+}
+
+function parseFactDecisionEvent(value: unknown): FactProposalDecidedEvent {
+  const event = exactRecord(value, ['type', 'data'])
+  if (event.type !== 'fact/proposal-decided') failSchema()
+  const row = exactRecordWithOptional(
+    event.data,
+    ['proposal_id', 'project_id', 'field_key', 'label', 'status'],
+    ['fact_revision_id', 'content_revision', 'decision_reason'],
+  )
+  const status = factTerminalStatus(row.status)
+  const hasRevisionId = Object.hasOwn(row, 'fact_revision_id')
+  const hasContentRevision = Object.hasOwn(row, 'content_revision')
+  if (hasRevisionId !== hasContentRevision || (status === 'confirmed') !== hasRevisionId) failSchema()
+  const decisionReason = Object.hasOwn(row, 'decision_reason') ? factReason(row.decision_reason) : undefined
+  if (status === 'rejected' && decisionReason === undefined) failSchema()
+  return {
+    type: 'fact/proposal-decided',
+    data: {
+      proposalId: requiredUuid(row.proposal_id),
+      projectId: requiredUuid(row.project_id),
+      fieldKey: factFieldKey(row.field_key),
+      label: factLabel(row.label),
+      status,
+      ...(hasRevisionId ? {
+        factRevisionId: requiredUuid(row.fact_revision_id),
+        contentRevision: positiveInteger(row.content_revision),
+      } : {}),
+      ...(decisionReason === undefined ? {} : { decisionReason }),
+    },
+  }
+}
+
+function parseFactOutboxItem(value: unknown): XAgentFactOutboxItem {
+  const row = exactRecord(value, ['outbox_id', 'payload_sha256', 'event'])
+  const hash = payloadHash(row.payload_sha256)
+  if (canonicalPayloadHash(row.event) !== hash) failSchema()
+  return {
+    outboxId: requiredUuid(row.outbox_id),
+    payloadHash: hash,
+    event: parseFactDecisionEvent(row.event),
+  }
+}
+
+function factPageBody(input: { readonly limit: number; readonly cursor?: string }, maximum: number): Record<string, unknown> {
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > maximum) failSchema()
+  return {
+    schema_version: 1,
+    limit: input.limit,
+    ...(input.cursor === undefined ? {} : { cursor: parseFactCursor(input.cursor) }),
+  }
+}
+
+function factPrepareBody(input: XAgentFactPrepareInput): Record<string, unknown> {
+  const evidenceIds = boundedArray(input.evidenceIds, FACT_MAX_EVIDENCE).map(citationIdValue)
+  if (new Set(evidenceIds).size !== evidenceIds.length) failSchema()
+  const assertionReason = input.assertionReason === undefined ? undefined : factReason(input.assertionReason)
+  if (evidenceIds.length === 0 && assertionReason === undefined) failSchema()
+  return {
+    schema_version: 1,
+    session_id: requiredUuid(input.sessionId),
+    tool_call_id: boundedString(input.toolCallId, 255),
+    permission_revision: positiveInteger(input.permissionRevision),
+    idempotency_key: boundedString(input.idempotencyKey, 255),
+    field_key: factFieldKey(input.fieldKey),
+    label: factLabel(input.label),
+    value: parseFactValue(input.value),
+    evidence_ids: evidenceIds,
+    ...(assertionReason === undefined ? {} : { assertion_reason: assertionReason }),
+  }
+}
+
+const COMMON_FACT_ERRORS: readonly RetrievalErrorPair[] = [
+  [401, 'unauthenticated'],
+  [404, 'not-found'],
+  [503, 'service-unavailable'],
+]
+const FACT_QUERY_ERRORS = [...COMMON_FACT_ERRORS, [422, 'fact-input-invalid']] as const
+const FACT_PREPARE_ERRORS = [
+  ...FACT_QUERY_ERRORS,
+  [409, 'fact-session-invalid'],
+  [409, 'stale-permission'],
+  [409, 'idempotency-conflict'],
+  [422, 'fact-evidence-invalid'],
+] as const
+const FACT_DECISION_ERRORS = [
+  ...COMMON_FACT_ERRORS,
+  [409, 'stale-permission'],
+  [409, 'idempotency-conflict'],
+  [409, 'fact-already-decided'],
+  [422, 'fact-input-invalid'],
+] as const
+const FACT_APPROVE_ERRORS = [...FACT_DECISION_ERRORS, [409, 'fact-revision-conflict']] as const
+const FACT_OUTBOX_ERRORS = [
+  ...FACT_QUERY_ERRORS,
+  [409, 'fact-session-invalid'],
+] as const
 
 const COMMON_ARTIFACT_ERROR_CODES: readonly (readonly [number, XAgentBackendErrorCode])[] = [
   [401, 'unauthenticated'],
@@ -878,7 +1305,7 @@ function artifactErrorCode(
   return expected !== undefined && code === expected ? expected : 'service-unavailable'
 }
 
-/** Bounded Host client for XAgent authentication, Session, workbench, and Artifact APIs. */
+/** Bounded Host client for XAgent authentication, Session, workbench, Artifact, retrieval, and Fact APIs. */
 export class XAgentBackendClient implements XAgentBackend {
   private readonly origin: URL
   private readonly fetcher: typeof globalThis.fetch
@@ -890,6 +1317,7 @@ export class XAgentBackendClient implements XAgentBackend {
   readonly workbench: XAgentWorkbenchBackend
   readonly artifacts: XAgentArtifactBackend
   readonly retrieval: XAgentRetrievalBackend
+  readonly facts: XAgentFactBackend
 
   constructor(private readonly options: XAgentBackendClientOptions) {
     let origin: URL
@@ -1163,6 +1591,93 @@ export class XAgentBackendClient implements XAgentBackend {
       },
     }
     this.retrieval = Object.freeze(retrieval)
+    const facts: XAgentFactBackend = {
+      prepare: async (token, delegation, input, signal) => parseFactPrepare(await this.factRequest(
+        token,
+        '/internal/xagent/facts/proposals/prepare',
+        factPrepareBody(input),
+        FACT_PREPARE_ERRORS,
+        signal,
+        delegation,
+      )),
+      listHeads: async (token, projectId, input, signal) => parseFactPage(
+        await this.factRequest(
+          token,
+          `/internal/xagent/facts/projects/${encodeURIComponent(requiredUuid(projectId))}/heads/list`,
+          factPageBody(input, FACT_LIST_PAGE_MAX),
+          FACT_QUERY_ERRORS,
+          signal,
+        ),
+        FACT_LIST_PAGE_MAX,
+        parseFactRevision,
+      ),
+      listProposals: async (token, projectId, input, signal) => parseFactPage(
+        await this.factRequest(
+          token,
+          `/internal/xagent/facts/projects/${encodeURIComponent(requiredUuid(projectId))}/proposals/list`,
+          factPageBody(input, FACT_LIST_PAGE_MAX),
+          FACT_QUERY_ERRORS,
+          signal,
+        ),
+        FACT_LIST_PAGE_MAX,
+        parseFactProposal,
+      ),
+      revision: async (token, revisionId, signal) => parseFactRevisionDetail(await this.factRequest(
+        token,
+        `/internal/xagent/facts/revisions/${encodeURIComponent(requiredUuid(revisionId))}`,
+        { schema_version: 1 },
+        COMMON_FACT_ERRORS,
+        signal,
+      )),
+      proposal: async (token, proposalId, signal) => parseFactProposalDetail(await this.factRequest(
+        token,
+        `/internal/xagent/facts/proposals/${encodeURIComponent(requiredUuid(proposalId))}`,
+        { schema_version: 1 },
+        COMMON_FACT_ERRORS,
+        signal,
+      )),
+      approve: async (token, proposalId, input, signal) => parseFactDecision(await this.factRequest(
+        token,
+        `/internal/xagent/facts/proposals/${encodeURIComponent(requiredUuid(proposalId))}/approve`,
+        {
+          schema_version: 1,
+          idempotency_key: boundedString(input.idempotencyKey, 255),
+          ...(input.decisionNote === undefined ? {} : { decision_note: factReason(input.decisionNote) }),
+        },
+        FACT_APPROVE_ERRORS,
+        signal,
+      ), 'confirmed'),
+      reject: async (token, proposalId, input, signal) => parseFactDecision(await this.factRequest(
+        token,
+        `/internal/xagent/facts/proposals/${encodeURIComponent(requiredUuid(proposalId))}/reject`,
+        {
+          schema_version: 1,
+          idempotency_key: boundedString(input.idempotencyKey, 255),
+          reason: factReason(input.reason),
+        },
+        FACT_DECISION_ERRORS,
+        signal,
+      ), 'rejected'),
+      withdraw: async (token, proposalId, input, signal) => parseFactDecision(await this.factRequest(
+        token,
+        `/internal/xagent/facts/proposals/${encodeURIComponent(requiredUuid(proposalId))}/withdraw`,
+        { schema_version: 1, idempotency_key: boundedString(input.idempotencyKey, 255) },
+        FACT_DECISION_ERRORS,
+        signal,
+      ), 'withdrawn'),
+      pullOutbox: async (token, sessionId, input, signal) => parseFactPage(
+        await this.factRequest(
+          token,
+          `/internal/xagent/facts/sessions/${encodeURIComponent(requiredUuid(sessionId))}/outbox/pull`,
+          factPageBody(input, FACT_OUTBOX_PAGE_MAX),
+          FACT_OUTBOX_ERRORS,
+          signal,
+        ),
+        FACT_OUTBOX_PAGE_MAX,
+        parseFactOutboxItem,
+      ),
+    }
+    this.facts = Object.freeze(facts)
   }
 
   async login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin> {
@@ -1238,6 +1753,30 @@ export class XAgentBackendClient implements XAgentBackend {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (delegationToken.length === 0) return Promise.reject(new XAgentBackendError('service-unavailable'))
+    return this.request(
+      userToken,
+      path,
+      body,
+      signal,
+      false,
+      true,
+      200,
+      (status, value) => retrievalErrorCode(status, value, allowedErrors),
+      delegationToken,
+    )
+  }
+
+  private factRequest(
+    userToken: string,
+    path: string,
+    body: unknown,
+    allowedErrors: readonly RetrievalErrorPair[],
+    signal?: AbortSignal,
+    delegationToken?: string,
+  ): Promise<unknown> {
+    if (delegationToken !== undefined && delegationToken.length === 0) {
+      return Promise.reject(new XAgentBackendError('service-unavailable'))
+    }
     return this.request(
       userToken,
       path,

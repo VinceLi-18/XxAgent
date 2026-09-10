@@ -1,10 +1,22 @@
+import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
+import AgentRegistry from '@deepseek-ai/dsh-agent'
+import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { SessionForkOperationId } from '@deepseek-ai/dsh-session-persistence'
-import { XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import {
+  XAgentBackendClient,
+  XAgentBackendError,
+  type XAgentBackend,
+  type XAgentFactPersistenceSidecars,
+} from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { describe, expect, test, vi } from 'vitest'
 import * as persistenceModule from '../src/index.ts'
+import { decodeFactSessionEvent, encodeFactSessionEvent } from '../src/fact-event-codec.ts'
 import {
   XAgentSessionPersistence,
 } from '../src/index.ts'
@@ -22,7 +34,40 @@ const event: SessionEvent = {
   type: 'turn/start',
   data: { turn: 0 },
 }
+const factDecisionData = {
+  proposalId: '00000000-0000-0000-0000-000000000721',
+  projectId: '00000000-0000-0000-0000-000000000722',
+  fieldKey: 'delivery.date',
+  label: '交付日期',
+  status: 'rejected',
+  decisionReason: '已有新版本',
+} as const
+
+function factDecisionEvent(seq: number, time: number): SessionEvent {
+  return {
+    seq,
+    time,
+    type: 'fact/proposal-decided',
+    data: factDecisionData,
+  } as unknown as SessionEvent
+}
+
 const forkOperationId = SessionForkOperationId('fork-request-000000000701')
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (typeof value === 'object' && value !== null) {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function payloadHash(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex')
+}
 
 function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[] } {
   const calls: { name: string; args: unknown[] }[] = []
@@ -78,7 +123,57 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
   }
 }
 
+async function expectResumedPublicationRollback(
+  installFailure: (ctx: Context, cancellation: AbortController) => void,
+  expected: RegExp,
+): Promise<void> {
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(AgentRegistry)
+  await ctx.plugin(AgentLoop, { agents: [] })
+  const value = backend()
+  const stored: SessionEvent[] = [
+    { seq: 0, time: event.time, type: 'turn/start', data: { turn: 1 } },
+    {
+      seq: 1,
+      time: event.time + 1,
+      type: 'turn/end',
+      data: { turn: 1, reason: { kind: 'completed' } },
+    },
+  ]
+  value.sessions.open = vi.fn(async () => ({
+    schema_version: 1,
+    session: { runtime_header: header, version: 2, last_event_sequence: 1 },
+    events: stored.map(item => ({ sequence: item.seq, payload: item })),
+  }))
+  const append = vi.fn(async () => ({ schema_version: 1 as const, version: 3, last_event_sequence: 2 }))
+  value.sessions.append = append
+  const persistence = new XAgentSessionPersistence(ctx, value)
+  persistence.authorizeRequest(id, undefined, 'alice-token')
+  const cancellation = new AbortController()
+  installFailure(ctx, cancellation)
+
+  await expect(ctx.agents.resume({
+    resumeSessionId: id,
+    agentOptions: { provider: 'unused', model: 'unused' },
+    signal: cancellation.signal,
+  })).rejects.toThrow(expected)
+  await ctx.fiber.dispose()
+
+  expect(append).not.toHaveBeenCalled()
+}
+
 describe('XAgent FastAPI Session Persistence', () => {
+  test('Fact codec rejects a wrong event type with an otherwise exact log-only payload', () => {
+    const wrongType = { ...factDecisionEvent(0, event.time), type: 'turn/start' }
+
+    expect(() => encodeFactSessionEvent(wrongType)).toThrow('invalid XAgent Fact session event')
+    expect(() => decodeFactSessionEvent(wrongType)).toThrow('invalid XAgent Fact session event')
+  })
+
   test('fork uses the source-derived backend transaction and binds its returned child identity', async () => {
     const value = backend()
     const childId = SessionId('session-00000000-0000-0000-0000-000000000702')
@@ -265,6 +360,487 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(commit).toHaveBeenCalledWith(String(id), 0)
   })
 
+  test('retrieval, Fact receipt, and Fact Outbox sidecars share one append and commit independently through its acknowledgement', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const retrievalAttachments = vi.fn(() => [{
+      eventSequence: 0,
+      toolCallId: 'call-retrieval',
+      receipt: 'opaque-retrieval',
+      payloadHash: 'a'.repeat(64),
+    }])
+    const retrievalCommit = vi.fn()
+    ctx.provide('xagentRetrieval', { receipts: {
+      attachments: retrievalAttachments,
+      commit: retrievalCommit,
+    } as unknown as XAgentReceiptRegistryContract } as never)
+    const factReceiptAttachments = vi.fn(() => [{
+      eventSequence: 1,
+      toolCallId: 'call-fact',
+      proposalId: '00000000-0000-0000-0000-000000000721',
+      receipt: 'opaque-fact',
+      payloadHash: 'b'.repeat(64),
+    }])
+    const factReceiptCommit = vi.fn()
+    const factOutboxAttachments = vi.fn(() => [{
+      eventSequence: 2,
+      outboxId: '00000000-0000-0000-0000-000000000722',
+      payloadHash: 'c'.repeat(64),
+    }])
+    const factOutboxCommit = vi.fn()
+    ctx.provide('xagentFact', {
+      receipts: { attachments: factReceiptAttachments, commit: factReceiptCommit },
+      outbox: { attachments: factOutboxAttachments, commit: factOutboxCommit },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const events = [
+      event,
+      { seq: 1, time: event.time + 1, type: 'tool/result', data: {} } as SessionEvent,
+      factDecisionEvent(2, event.time + 2),
+    ]
+
+    await persistence.append(id, events)
+
+    expect(retrievalAttachments).toHaveBeenCalledWith(String(id), 0, 2)
+    expect(factReceiptAttachments).toHaveBeenCalledWith(String(id), 0, 2)
+    expect(factOutboxAttachments).toHaveBeenCalledWith(String(id), 0, 2)
+    expect(value.calls.find(call => call.name === 'append')?.args[2]).toEqual({
+      schema_version: 1,
+      expected_sequence: -1,
+      idempotency_key: `append:${id}:0:2`,
+      events: [
+        { event_type: event.type, schema_version: 1, payload: event },
+        { event_type: 'tool/result', schema_version: 1, payload: events[1] },
+        {
+          event_type: 'fact/proposal-decided',
+          schema_version: 1,
+          payload: {
+            seq: 2,
+            time: event.time + 2,
+            type: 'fact/proposal-decided',
+            data: {
+              proposal_id: factDecisionData.proposalId,
+              project_id: factDecisionData.projectId,
+              field_key: factDecisionData.fieldKey,
+              label: factDecisionData.label,
+              status: factDecisionData.status,
+              decision_reason: factDecisionData.decisionReason,
+            },
+          },
+        },
+      ],
+      retrieval_receipts: [{
+        event_sequence: 0,
+        tool_call_id: 'call-retrieval',
+        receipt: 'opaque-retrieval',
+        payload_hash: 'a'.repeat(64),
+      }],
+      fact_proposal_receipts: [{
+        event_sequence: 1,
+        tool_call_id: 'call-fact',
+        proposal_id: '00000000-0000-0000-0000-000000000721',
+        receipt: 'opaque-fact',
+        payload_hash: 'b'.repeat(64),
+      }],
+      fact_outbox_events: [{
+        event_sequence: 2,
+        outbox_id: '00000000-0000-0000-0000-000000000722',
+        payload_hash: 'c'.repeat(64),
+      }],
+    })
+    expect(retrievalCommit).toHaveBeenCalledWith(String(id), 2)
+    expect(factReceiptCommit).toHaveBeenCalledWith(String(id), 2)
+    expect(factOutboxCommit).toHaveBeenCalledWith(String(id), 2)
+  })
+
+  test('an Outbox event round-trips through the real client as snake_case wire and camelCase DSH data', async () => {
+    const wireEvent = {
+      type: 'fact/proposal-decided',
+      data: {
+        proposal_id: '00000000-0000-0000-0000-000000000721',
+        project_id: '00000000-0000-0000-0000-000000000722',
+        field_key: 'delivery.date',
+        label: '交付日期',
+        status: 'confirmed',
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        content_revision: 2,
+      },
+    }
+    let storedPayload: unknown
+    let appendBody: string | undefined
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async (input, init) => {
+        const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).pathname
+        if (path.endsWith('/outbox/pull')) {
+          return Response.json({
+            schema_version: 1,
+            items: [{
+              outbox_id: '00000000-0000-0000-0000-000000000724',
+              payload_sha256: payloadHash(wireEvent),
+              event: wireEvent,
+            }],
+            next_cursor: null,
+          })
+        }
+        if (path.endsWith('/append')) {
+          if (typeof init?.body !== 'string') throw new TypeError('expected JSON append body')
+          appendBody = init.body
+          const body = JSON.parse(init.body) as { events: Array<{ payload: unknown }> }
+          storedPayload = body.events[0]?.payload
+          return Response.json({ schema_version: 1, version: 2, last_event_sequence: 0 })
+        }
+        if (path.endsWith('/list')) {
+          return Response.json({
+            schema_version: 1,
+            sessions: [{ runtime_header: header, version: 2, last_event_sequence: 0 }],
+          })
+        }
+        if (path.endsWith('/events')) {
+          return Response.json({
+            schema_version: 1,
+            events: [{
+              session_id: '00000000-0000-0000-0000-000000000701',
+              sequence: 0,
+              event_type: 'fact/proposal-decided',
+              schema_version: 1,
+              payload: storedPayload,
+              actor_id: '00000000-0000-0000-0000-000000000725',
+              tool_call_id: null,
+              audit_id: '00000000-0000-0000-0000-000000000726',
+              created_at: '2026-09-08T08:00:00+00:00',
+            }],
+          })
+        }
+        return Response.json({ detail: { code: 'not-found' } }, { status: 404 })
+      },
+    })
+    const page = await client.facts.pullOutbox(
+      'alice-token',
+      '00000000-0000-0000-0000-000000000701',
+      { limit: 1 },
+    )
+    const pulled = page.items[0]
+    if (pulled === undefined) throw new TypeError('expected one Outbox event')
+    const factEvent = {
+      seq: 0,
+      time: 1_787_587_200_001,
+      ...pulled.event,
+    } as unknown as SessionEvent
+    const ctx = new Context()
+    ctx.provide('xagentFact', {
+      receipts: { attachments: () => [], commit: vi.fn() },
+      outbox: {
+        attachments: () => [{
+          eventSequence: 0,
+          outboxId: pulled.outboxId,
+          payloadHash: pulled.payloadHash,
+        }],
+        commit: vi.fn(),
+      },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, client)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await persistence.append(id, [factEvent])
+    const replay = await persistence.readFrom(id, 0)
+
+    expect(storedPayload).toEqual({
+      seq: 0,
+      time: 1_787_587_200_001,
+      type: 'fact/proposal-decided',
+      data: wireEvent.data,
+    })
+    expect(appendBody).not.toContain('proposalId')
+    expect(appendBody).not.toContain('factRevisionId')
+    expect(replay.events).toEqual([factEvent])
+  })
+
+  test.each([
+    ['unknown event field', { ...factDecisionEvent(0, event.time), private: 'secret' }],
+    ['unknown data field', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, receipt: 'secret' },
+    }],
+    ['non-object data', { ...factDecisionEvent(0, event.time), data: 1 }],
+    ['array data', { ...factDecisionEvent(0, event.time), data: [] }],
+    ['missing label', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        proposalId: factDecisionData.proposalId,
+        projectId: factDecisionData.projectId,
+        fieldKey: factDecisionData.fieldKey,
+        status: factDecisionData.status,
+        decisionReason: factDecisionData.decisionReason,
+      },
+    }],
+    ['boolean sequence', { ...factDecisionEvent(0, event.time), seq: true }],
+    ['boolean time', { ...factDecisionEvent(0, event.time), time: true }],
+    ['negative time', { ...factDecisionEvent(0, event.time), time: -1 }],
+    ['append surface', { ...factDecisionEvent(0, event.time), surfaceOp: 'append' }],
+    ['replacement surface', {
+      ...factDecisionEvent(0, event.time),
+      surfaceOp: { op: 'replace', start: 0, end: 0 },
+    }],
+    ['non-string proposal id', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, proposalId: 1 },
+    }],
+    ['malformed project id', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, projectId: 'not-a-uuid' },
+    }],
+    ['non-string field key', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, fieldKey: 1 },
+    }],
+    ['invalid field key', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, fieldKey: 'Delivery Date' },
+    }],
+    ['empty label', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, label: '' },
+    }],
+    ['overlong label', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, label: '界'.repeat(86) },
+    }],
+    ['blank reason', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, decisionReason: '  ' },
+    }],
+    ['non-string status', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, status: 1 },
+    }],
+    ['unknown status', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, status: 'pending' },
+    }],
+    ['incomplete confirmed revision', {
+      ...factDecisionEvent(0, event.time),
+      data: { ...factDecisionData, status: 'confirmed', factRevisionId: '00000000-0000-0000-0000-000000000723' },
+    }],
+    ['rejected without reason', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        proposalId: factDecisionData.proposalId,
+        projectId: factDecisionData.projectId,
+        fieldKey: factDecisionData.fieldKey,
+        label: factDecisionData.label,
+        status: 'rejected',
+      },
+    }],
+    ['non-confirmed revision', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        ...factDecisionData,
+        factRevisionId: '00000000-0000-0000-0000-000000000723',
+        contentRevision: 1,
+      },
+    }],
+    ['boolean content revision', {
+      ...factDecisionEvent(0, event.time),
+      data: {
+        ...factDecisionData,
+        status: 'confirmed',
+        factRevisionId: '00000000-0000-0000-0000-000000000723',
+        contentRevision: true,
+      },
+    }],
+  ])('Fact append codec rejects camelCase %s', async (_case, invalid) => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await expect(persistence.append(id, [invalid as never]))
+      .rejects.toThrow(_case === 'boolean sequence'
+        ? 'non-contiguous XAgent session append'
+        : 'invalid XAgent Fact session event')
+    expect(value.calls.find(call => call.name === 'append')).toBeUndefined()
+  })
+
+  test.each([
+    ['unknown event field', { private: 'secret' }],
+    ['unknown data field', { data: { private_receipt: 'secret' } }],
+    ['boolean sequence', { seq: true }],
+    ['boolean time', { time: true }],
+    ['append surface', { surfaceOp: 'append' }],
+    ['replacement surface', { surfaceOp: { op: 'replace', start: 0, end: 0 } }],
+    ['incomplete confirmed revision', {
+      data: {
+        status: 'confirmed',
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        decision_reason: undefined,
+      },
+    }],
+    ['rejected without reason', { data: { status: 'rejected', decision_reason: undefined } }],
+    ['non-confirmed revision', {
+      data: {
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        content_revision: 1,
+      },
+    }],
+    ['boolean content revision', {
+      data: {
+        status: 'confirmed',
+        fact_revision_id: '00000000-0000-0000-0000-000000000723',
+        content_revision: true,
+        decision_reason: undefined,
+      },
+    }],
+  ])('Fact read codec rejects snake_case %s', async (_case, override) => {
+    const valid = {
+      seq: 0,
+      time: event.time,
+      type: 'fact/proposal-decided',
+      data: {
+        proposal_id: factDecisionData.proposalId,
+        project_id: factDecisionData.projectId,
+        field_key: factDecisionData.fieldKey,
+        label: factDecisionData.label,
+        status: factDecisionData.status,
+        decision_reason: factDecisionData.decisionReason,
+      },
+    }
+    const payload = {
+      ...valid,
+      ...override,
+      ...('data' in override ? { data: { ...valid.data, ...override.data } } : {}),
+    }
+    const value = backend()
+    value.sessions.events = vi.fn(async () => ({
+      schema_version: 1,
+      events: [{ sequence: 0, event_type: 'fact/proposal-decided', payload }],
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
+      .rejects.toThrow('invalid XAgent Fact session event')
+  })
+
+  test('Fact read codec rejects a missing event envelope type', async () => {
+    const value = backend()
+    value.sessions.events = vi.fn(async () => ({
+      schema_version: 1,
+      events: [{
+        sequence: 0,
+        payload: {
+          seq: 0,
+          time: event.time,
+          type: 'fact/proposal-decided',
+          data: {
+            proposal_id: factDecisionData.proposalId,
+            project_id: factDecisionData.projectId,
+            field_key: factDecisionData.fieldKey,
+            label: factDecisionData.label,
+            status: factDecisionData.status,
+            decision_reason: factDecisionData.decisionReason,
+          },
+        },
+      }],
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
+      .rejects.toThrow('invalid XAgent Fact session event')
+  })
+
+  test('partial or failed mixed append acknowledgement retains every sidecar for the exact retry', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const retrievalAttachment = {
+      eventSequence: 0,
+      toolCallId: 'call-retrieval-retry',
+      receipt: 'opaque-retrieval-retry',
+      payloadHash: 'd'.repeat(64),
+    }
+    const factReceiptAttachment = {
+      eventSequence: 1,
+      toolCallId: 'call-fact-retry',
+      proposalId: '00000000-0000-0000-0000-000000000723',
+      receipt: 'opaque-fact-retry',
+      payloadHash: 'e'.repeat(64),
+    }
+    const factOutboxAttachment = {
+      eventSequence: 2,
+      outboxId: '00000000-0000-0000-0000-000000000724',
+      payloadHash: 'f'.repeat(64),
+    }
+    const retrievalAttachments = vi.fn(() => [retrievalAttachment])
+    const retrievalCommit = vi.fn()
+    const factReceiptAttachments = vi.fn(() => [factReceiptAttachment])
+    const factReceiptCommit = vi.fn()
+    const factOutboxAttachments = vi.fn(() => [factOutboxAttachment])
+    const factOutboxCommit = vi.fn()
+    ctx.provide('xagentRetrieval', { receipts: {
+      attachments: retrievalAttachments,
+      commit: retrievalCommit,
+    } as unknown as XAgentReceiptRegistryContract } as never)
+    ctx.provide('xagentFact', {
+      receipts: { attachments: factReceiptAttachments, commit: factReceiptCommit },
+      outbox: { attachments: factOutboxAttachments, commit: factOutboxCommit },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const append = vi.fn()
+      .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 1 })
+      .mockRejectedValueOnce(new Error('append unavailable'))
+      .mockResolvedValueOnce({ schema_version: 1, version: 2, last_event_sequence: 2 })
+    value.sessions.append = append
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const events = [
+      event,
+      { seq: 1, time: event.time + 1, type: 'tool/result', data: {} } as SessionEvent,
+      factDecisionEvent(2, event.time + 2),
+    ]
+
+    await expect(persistence.append(id, events)).rejects.toThrow('invalid XAgent session append response')
+    await expect(persistence.append(id, events)).rejects.toThrow('append unavailable')
+    expect(retrievalCommit).not.toHaveBeenCalled()
+    expect(factReceiptCommit).not.toHaveBeenCalled()
+    expect(factOutboxCommit).not.toHaveBeenCalled()
+    await expect(persistence.append(id, events)).resolves.toBeUndefined()
+
+    expect(append.mock.calls[0]?.[2]).toEqual(append.mock.calls[1]?.[2])
+    expect(append.mock.calls[1]?.[2]).toEqual(append.mock.calls[2]?.[2])
+    expect(retrievalAttachments).toHaveBeenCalledTimes(3)
+    expect(factReceiptAttachments).toHaveBeenCalledTimes(3)
+    expect(factOutboxAttachments).toHaveBeenCalledTimes(3)
+    expect(retrievalCommit).toHaveBeenCalledExactlyOnceWith(String(id), 2)
+    expect(factReceiptCommit).toHaveBeenCalledExactlyOnceWith(String(id), 2)
+    expect(factOutboxCommit).toHaveBeenCalledExactlyOnceWith(String(id), 2)
+  })
+
+  test('append bytes remain identical when the optional Fact service is absent', async () => {
+    let encodedBody: string | undefined
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async (_input, init) => {
+        if (typeof init?.body !== 'string') throw new TypeError('expected a JSON request body')
+        encodedBody = init.body
+        return Response.json({ schema_version: 1, version: 2, last_event_sequence: 0 })
+      },
+    })
+    const persistence = new XAgentSessionPersistence(new Context(), client)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    await persistence.append(id, [event])
+
+    expect(encodedBody).toBe(
+      '{"schema_version":1,"expected_sequence":-1,'
+      + `"idempotency_key":"append:${id}:0:0",`
+      + '"events":[{"event_type":"turn/start","schema_version":1,'
+      + `"payload":{"seq":0,"time":${String(event.time)},"type":"turn/start","data":{"turn":0}}}],`
+      + '"retrieval_receipts":[]}',
+    )
+    expect(encodedBody).not.toContain('fact_proposal_receipts')
+    expect(encodedBody).not.toContain('fact_outbox_events')
+  })
+
   test('failed append retains the same owned receipt attachment for an exact retry', async () => {
     const ctx = new Context()
     const value = backend()
@@ -359,6 +935,201 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(call?.args[1]).not.toHaveProperty('project_id')
   })
 
+  test('创建与追加只把 tool/call 的权威 callId 写入远端事件列', async () => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    const toolCall: SessionEvent = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/call',
+      data: {
+        turn: 1,
+        step: 1,
+        callId: 'call-persisted',
+        name: 'propose_fact',
+        arguments: '{}',
+      },
+    } as SessionEvent
+    const ordinary = { ...event, seq: 1, data: { ...event.data, callId: 'must-not-project' } } as SessionEvent
+    const publication = {
+      id,
+      header,
+      events: [toolCall, ordinary],
+    } as unknown as Session
+
+    await persistence.withUserToken('alice-token', () => persistence.preparePublication(publication))
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    await persistence.append(id, [toolCall, ordinary])
+
+    const createBody = value.calls.find(call => call.name === 'create')?.args[1] as {
+      events: Array<Record<string, unknown>>
+    }
+    const appendBody = value.calls.find(call => call.name === 'append')?.args[2] as {
+      events: Array<Record<string, unknown>>
+    }
+    expect(createBody).toMatchObject({
+      events: [
+        { event_type: 'tool/call', tool_call_id: 'call-persisted' },
+        { event_type: 'turn/start' },
+      ],
+    })
+    expect(createBody.events[1]).not.toHaveProperty('tool_call_id')
+    expect(appendBody).toMatchObject({
+      events: [
+        { event_type: 'tool/call', tool_call_id: 'call-persisted' },
+        { event_type: 'turn/start' },
+      ],
+    })
+    expect(appendBody.events[1]).not.toHaveProperty('tool_call_id')
+  })
+
+  test('创建与追加只从成功的 pending Fact 工具结果剥离 Host 展示元数据', async () => {
+    const proposalId = '00000000-0000-0000-0000-000000000721'
+    const callId = 'call-fact-presentation'
+    const value = backend()
+    const ctx = new Context()
+    const attachments = vi.fn(() => [{
+      eventSequence: 1,
+      toolCallId: callId,
+      proposalId,
+      receipt: 'opaque-fact',
+      payloadHash: 'b'.repeat(64),
+    }])
+    ctx.provide('xagentFact', {
+      receipts: { attachments, commit: vi.fn() },
+      outbox: { attachments: vi.fn(() => []), commit: vi.fn() },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    const call = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/call',
+      data: { turn: 1, step: 1, callId, name: 'propose_fact', arguments: '{}' },
+    } as SessionEvent
+    const result = {
+      seq: 1,
+      time: event.time + 1,
+      type: 'tool/result',
+      surfaceOp: 'append',
+      sourceEventSeqs: [0],
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId },
+          content: [{
+            type: 'tool-result',
+            toolCallId: callId,
+            isError: false,
+            content: [{ type: 'text', text: JSON.stringify({ proposalId, status: 'pending' }) }],
+          }],
+        },
+        meta: { kind: 'xagent-fact', status: 'pending', proposalId },
+      },
+    } as unknown as SessionEvent
+    const other = {
+      ...result,
+      seq: 2,
+      data: { ...result.data, meta: { kind: 'other-tool', marker: 'preserved' } },
+    } as unknown as SessionEvent
+    const publication = { id, header, events: [call, result, other] } as unknown as Session
+
+    await persistence.withUserToken('alice-token', () => persistence.preparePublication(publication))
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    await persistence.append(id, [call, result, other])
+
+    const createEvents = (value.calls.find(candidate => candidate.name === 'create')?.args[1] as {
+      events: Array<{ payload: SessionEvent }>
+    }).events
+    const appendCall = value.calls.find(candidate => candidate.name === 'append')
+    const appendBody = appendCall?.args[2] as {
+      events: Array<{ payload: SessionEvent }>
+      fact_proposal_receipts: readonly unknown[]
+    }
+    for (const projected of [createEvents, appendBody.events]) {
+      expect(projected[1]?.payload.data).not.toHaveProperty('meta')
+      expect(projected[2]?.payload.data).toHaveProperty('meta', { kind: 'other-tool', marker: 'preserved' })
+    }
+    expect(appendBody.fact_proposal_receipts).toEqual([{
+      event_sequence: 1,
+      tool_call_id: callId,
+      proposal_id: proposalId,
+      receipt: 'opaque-fact',
+      payload_hash: 'b'.repeat(64),
+    }])
+    expect(attachments).toHaveBeenCalledWith(String(id), 0, 2)
+  })
+
+  test.each([
+    { kind: 'xagent-fact', status: 'pending', proposalId: 'not-a-uuid' },
+    { kind: 'xagent-fact', status: 'confirmed', proposalId: '00000000-0000-0000-0000-000000000721' },
+    { kind: 'xagent-fact', status: 'pending', proposalId: '00000000-0000-0000-0000-000000000721', extra: true },
+  ])('拒绝不闭合或身份无效的 Fact 工具结果展示元数据 %#', async (meta) => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const result = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/result',
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-fact-invalid' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'call-fact-invalid',
+            isError: false,
+            content: [{ type: 'text', text: '{}' }],
+          }],
+        },
+        meta,
+      },
+    } as unknown as SessionEvent
+
+    await expect(persistence.append(id, [result])).rejects.toThrow('invalid XAgent Fact tool result metadata')
+    expect(value.calls).toEqual([])
+  })
+
+  test('拒绝错误结果携带 pending Fact 展示元数据且不发送远端请求', async () => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    const result = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/result',
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-fact-error' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'call-fact-error',
+            isError: true,
+            content: [{ type: 'text', text: 'Error: unavailable' }],
+          }],
+        },
+        meta: {
+          kind: 'xagent-fact',
+          status: 'pending',
+          proposalId: '00000000-0000-0000-0000-000000000721',
+        },
+      },
+    } as unknown as SessionEvent
+
+    await expect(persistence.append(id, [result])).rejects.toThrow('invalid XAgent Fact tool result metadata')
+    expect(value.calls).toEqual([])
+  })
+
   test('创建与追加使用当前请求令牌，后续写入使用按 Session 固定的租约', async () => {
     const value = backend()
     const persistence = new XAgentSessionPersistence(new Context(), value)
@@ -415,6 +1186,54 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(persistence.locate(header)).toBeUndefined()
     expect(persistence.supportsRawArtifacts).toBe(false)
     await expect(persistence.readRaw(id)).rejects.toThrow('does not expose raw artifacts')
+  })
+
+  test('重开 Session 时保留 FastAPI 重建的严格 pending Fact 展示元数据', async () => {
+    const value = backend()
+    const proposalId = '00000000-0000-0000-0000-000000000721'
+    const result = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/result',
+      surfaceOp: 'append',
+      data: {
+        turn: 0,
+        step: 0,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-fact' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'call-fact',
+            isError: false,
+            content: [{ type: 'text', text: JSON.stringify({ proposalId, status: 'pending' }) }],
+          }],
+        },
+        meta: { kind: 'xagent-fact', status: 'pending', proposalId },
+      },
+    } as unknown as SessionEvent
+    value.sessions.open = async (...args) => {
+      value.calls.push({ name: 'open', args })
+      return {
+        schema_version: 1,
+        session: { runtime_header: header, version: 2, last_event_sequence: 0 },
+        events: [{ sequence: 0, payload: result }],
+      }
+    }
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    const inspected = await persistence.withUserToken('alice-token', () => persistence.inspect(id))
+
+    expect(inspected.events).toEqual([result])
+    const inspectedResult = inspected.events[0]
+    expect(inspectedResult?.type).toBe('tool/result')
+    if (inspectedResult?.type !== 'tool/result') throw new Error('expected restored Fact tool result')
+    expect(inspectedResult.data.meta).toEqual({
+      kind: 'xagent-fact',
+      status: 'pending',
+      proposalId,
+    })
   })
 
   test('冷加载会把中断回合的关闭事件持久化后再返回平衡日志', async () => {
@@ -539,6 +1358,132 @@ describe('XAgent FastAPI Session Persistence', () => {
       undefined,
     ])
     await ctx.fiber.dispose()
+  })
+
+  test('恢复发布先持久化 end-seed，再将待投递 Outbox 与用户 Turn 精确追加一次', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const value = backend()
+    const stored = [
+      { ...event, data: { turn: 1 } },
+      {
+        seq: 1,
+        time: event.time + 1,
+        type: 'turn/end',
+        data: { turn: 1, reason: { kind: 'completed' } },
+      } as SessionEvent,
+    ]
+    value.sessions.open = vi.fn(async (...args) => {
+      value.calls.push({ name: 'open', args })
+      return {
+        schema_version: 1,
+        session: { runtime_header: header, version: 2, last_event_sequence: stored.length - 1 },
+        events: stored.map(item => ({ sequence: item.seq, payload: item })),
+      }
+    })
+    const appendCalls: unknown[][] = []
+    value.sessions.append = vi.fn(async (...args) => {
+      appendCalls.push(args)
+      const body = args[2] as { expected_sequence: number; events: readonly { payload: SessionEvent }[] }
+      if (body.expected_sequence !== stored.length - 1) throw new XAgentBackendError('sequence-conflict')
+      stored.push(...body.events.map(item => item.payload))
+      return {
+        schema_version: 1 as const,
+        version: 3,
+        last_event_sequence: stored.length - 1,
+      }
+    })
+    const outboxAttachments = vi.fn((_sessionId: string, first: number, last: number) => (
+      first <= 3 && last >= 3
+        ? [{ eventSequence: 3, outboxId: '00000000-0000-0000-0000-000000000723', payloadHash: 'c'.repeat(64) }]
+        : []
+    ))
+    ctx.provide('xagentFact', {
+      receipts: { attachments: vi.fn(() => []), commit: vi.fn() },
+      outbox: { attachments: outboxAttachments, commit: vi.fn() },
+    } satisfies XAgentFactPersistenceSidecars as never)
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    const cancelled = new AbortController()
+    cancelled.abort(new Error('cancelled before restart'))
+    await expect(persistence.prepare(id, cancelled.signal)).rejects.toThrow('cancelled before restart')
+    const rolledBack = await persistence.prepare(id)
+    rolledBack[Symbol.dispose]()
+    expect(appendCalls).toHaveLength(0)
+
+    using resumed = await persistence.prepare(id)
+    const session = resumed.session
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    session.append('fact/proposal-decided', factDecisionData)
+    session.append('turn/start', { turn: 2 })
+    session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    resumed.commitPublication()
+
+    await ctx.sessions.flush(session)
+
+    expect(appendCalls).toHaveLength(1)
+    const body = appendCalls[0]?.[2] as { expected_sequence: number; events: readonly { event_type: string }[] }
+    expect(body.expected_sequence).toBe(1)
+    expect(body.events.map(item => item.event_type)).toEqual([
+      'session/end-seed',
+      'fact/proposal-decided',
+      'turn/start',
+      'turn/end',
+    ])
+    expect(outboxAttachments).toHaveBeenCalledWith(String(id), 2, 5)
+    detach()
+    await ctx.fiber.dispose()
+  })
+
+  test('恢复已以 end-seed 结束的日志不产生重复追加', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const value = backend()
+    const marker: SessionEvent = {
+      seq: 0,
+      time: event.time,
+      type: 'session/end-seed',
+      data: {},
+    }
+    value.sessions.open = vi.fn(async () => ({
+      schema_version: 1,
+      session: { runtime_header: header, version: 2, last_event_sequence: 0 },
+      events: [{ sequence: 0, payload: marker }],
+    }))
+    const append = vi.spyOn(value.sessions, 'append')
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+
+    using resumed = await persistence.prepare(id)
+    const detach = ctx.sessions.enter(resumed.session)
+    ctx.sessions.announce(resumed.session)
+    await ctx.sessions.flush(resumed.session)
+
+    expect(append).not.toHaveBeenCalled()
+    detach()
+    await ctx.fiber.dispose()
+  })
+
+  test('恢复发布在后续 session/created listener 抛错时不追加 end-seed', async () => {
+    await expectResumedPublicationRollback((ctx) => {
+      ctx.on('session/created', () => { throw new Error('post-session publication failure') })
+    }, /post-session publication failure/)
+  })
+
+  test('恢复发布在 agent/created listener 抛错时不追加 end-seed', async () => {
+    await expectResumedPublicationRollback((ctx) => {
+      ctx.on('agent/created', () => { throw new Error('agent publication failure') })
+    }, /agent publication failure/)
+  })
+
+  test('恢复发布在 session-start 期间取消时不追加 end-seed', async () => {
+    await expectResumedPublicationRollback((ctx, cancellation) => {
+      ctx.on('agent/session-start', () => {
+        cancellation.abort(new Error('publication cancelled'))
+      })
+    }, /publication cancelled/)
   })
 
   test('请求令牌作用域串行执行并在成功或失败后清除', async () => {

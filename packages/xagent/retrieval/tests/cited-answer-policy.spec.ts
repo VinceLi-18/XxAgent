@@ -1,10 +1,16 @@
-import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry from '@deepseek-ai/dsh-agent'
+import { Context, Service } from '@deepseek-ai/cordis'
+import AgentRegistry, { agentEvents } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import LlmRuntime, { CallId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createUserMessage, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type ToolExecutionToken, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type { XAgentProposeFactInput } from '@xagent/dsh-fact'
+import {
+  runWithXAgentAuthenticatedRequestScope,
+  type XAgentAuthenticatedSessionRequestScope,
+} from '@xagent/dsh-principal'
+import * as factTool from '../../tool-fact/src/index.ts'
 import { describe, expect, test, vi } from 'vitest'
 import {
   CITED_ANSWER_INSTRUCTION,
@@ -89,6 +95,36 @@ async function setup() {
   await ctx.plugin(AgentLoop, { agents: [] })
   const agent = ctx.agentLoop.create(SessionId('request-owner'), { provider: 'mock', model: 'mock' })
   return { agent, ctx }
+}
+
+class CitedFact extends Service {
+  readonly proposeFact = vi.fn(async (_input: XAgentProposeFactInput) => ({
+    proposalId: '00000000-0000-0000-0000-000000000401',
+    status: 'pending' as const,
+  }))
+
+  constructor(ctx: Context) {
+    super(ctx, 'xagentFact')
+  }
+}
+
+function projectScope(sessionId: string): XAgentAuthenticatedSessionRequestScope {
+  return Object.freeze({
+    principal: Object.freeze({
+      actorId: '00000000-0000-0000-0000-000000000101',
+      role: 'specialist' as const,
+      permissionRevision: 7,
+      authSessionId: '00000000-0000-0000-0000-000000000102',
+      connectionId: 'connection-1',
+    }),
+    userToken: 'user-token',
+    connectionId: 'connection-1',
+    requestSignal: new AbortController().signal,
+    connectionSignal: new AbortController().signal,
+    sessionId,
+    visibility: 'project' as const,
+    projectId: '00000000-0000-0000-0000-000000000301',
+  })
 }
 
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
@@ -374,6 +410,64 @@ describe('cited-answer request runtime', () => {
     owner.close()
     await owner.settlement
     expect(agent.ctx.tools.get(CITED_ANSWER_TOOL, agent)).toBeUndefined()
+  })
+
+  test('keeps cited-answer enforcement active after a successful evidence-backed Fact proposal', async () => {
+    const { ctx } = await setup()
+    const sessionId = '00000000-0000-0000-0000-000000000201'
+    const agent = ctx.agentLoop.create(SessionId(`session-${sessionId}`), { provider: 'mock', model: 'mock' })
+    const fact = new CitedFact(ctx)
+    await ctx.plugin(factTool)
+    const message = createUserMessage({ content: [{ type: 'text', text: 'cite and propose' }], source: { kind: 'user' } })
+    runWithXAgentAuthenticatedRequestScope(projectScope(sessionId), () => {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+    })
+    agentEvents(ctx, agent).emit('agent/inbox/claimed', { message, turn: 1 })
+    await agentEvents(ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
+    )
+    const owner = openCitedAnswerRequest({
+      agent,
+      identity: Object.freeze({}),
+      allowed: new Map([[CITATION.id, CITATION]]),
+      signal: new AbortController().signal,
+      authorize: () => Promise.resolve(),
+    })
+
+    const proposal = await ctx.tools.execute({
+      callId: CallId('fact-before-answer'),
+      name: 'propose_fact',
+      agent,
+      arguments: {
+        field_key: 'customer.name',
+        label: 'Customer name',
+        value: { type: 'text', value: 'Alpha' },
+        evidence_ids: [CITATION.id],
+      },
+      signal: new AbortController().signal,
+    })
+    expect(proposal).toMatchObject({
+      isError: false,
+      meta: {
+        kind: 'xagent-fact', status: 'pending', proposalId: '00000000-0000-0000-0000-000000000401',
+      },
+    })
+    expect(proposal).not.toHaveProperty('concludesTurn')
+    expect(fact.proposeFact).toHaveBeenCalledOnce()
+    expect(owner.attempts).toBe(0)
+    expect(agent.ctx.tools.get(CITED_ANSWER_TOOL, agent)).toBeDefined()
+
+    const answer = await ctx.tools.execute({
+      callId: CallId('cited-answer-after-fact'),
+      name: CITED_ANSWER_TOOL,
+      agent,
+      arguments: { blocks: [{ type: 'markdown', text: '正文' }, { type: 'citation', id: CITATION.id }] },
+      signal: new AbortController().signal,
+    })
+    expect(answer).toMatchObject({ isError: false, concludesTurn: true })
+    await owner.settlement
   })
 
   test('reauthorizes canonical citation identities and commits only the exact successful result', async () => {

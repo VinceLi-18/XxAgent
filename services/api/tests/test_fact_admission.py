@@ -749,10 +749,20 @@ async def test_session_append_admits_fact_once_and_exact_replay_recovers_lost_re
         headers=_headers(token),
         json=append_body,
     )
+    opened = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/open",
+        headers=_headers(token),
+        json={"schema_version": 1},
+    )
 
     assert first.status_code == replay.status_code == 200
     assert replay.json() == first.json()
     assert first.json()["last_event_sequence"] == 1
+    assert opened.json()["events"][1]["payload"]["data"]["meta"] == {
+        "kind": "xagent-fact",
+        "status": "pending",
+        "proposalId": proposal_id,
+    }
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         proposal = await session.get(FactProposal, UUID(proposal_id))
         receipt = await session.get(
@@ -980,6 +990,56 @@ async def test_malformed_fact_result_rolls_back_event_admission_and_receipt_cons
     assert receipt is not None and receipt.consumed_at is None
     assert session_head == 0
     assert denial_count == 1
+
+
+@pytest.mark.anyio
+async def test_fact_result_client_meta_is_not_trusted_or_persisted(
+    client,
+    seeded_database,
+    alice,
+    fact_project_session,
+) -> None:
+    token, _, tool_call_id, prepared = await _prepare_for_admission(
+        client,
+        seeded_database,
+        alice,
+        fact_project_session,
+        suffix="client-meta",
+    )
+    proposal_id = prepared["result"]["proposalId"]
+    result = _fact_result_event(
+        sequence=1,
+        tool_call_id=tool_call_id,
+        proposal_id=proposal_id,
+    )
+    result["payload"]["data"]["meta"] = {
+        "kind": "xagent-fact",
+        "status": "pending",
+        "proposalId": proposal_id,
+    }
+
+    response = await client.post(
+        f"/internal/xagent/sessions/{fact_project_session.id}/append",
+        headers=_headers(token),
+        json={
+            "schema_version": 1,
+            "expected_sequence": 0,
+            "idempotency_key": "append-fact-client-meta",
+            "events": [result],
+            "fact_proposal_receipts": [
+                _fact_attachment(prepared, sequence=1, tool_call_id=tool_call_id)
+            ],
+            "fact_outbox_events": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"code": "fact-receipt-invalid"}}
+    await _assert_fact_append_left_prepared(
+        seeded_database,
+        fact_project_session,
+        prepared,
+    )
 
 
 @pytest.mark.anyio

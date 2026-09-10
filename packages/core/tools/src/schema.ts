@@ -20,9 +20,11 @@ export interface ValueSchemaAnnotations {
   examples?: JsonValue
 }
 
-/** String value schema with type-correct literal constraints. */
+/** String value schema with pattern and type-correct literal constraints. */
 export interface StringValueSchemaSpec extends ValueSchemaAnnotations {
   type: 'string'
+  /** Regular-expression source that every value must match. */
+  pattern?: string
   enum?: readonly string[]
   const?: string
 }
@@ -59,6 +61,10 @@ export interface NullValueSchemaSpec extends ValueSchemaAnnotations {
 export interface ArrayValueSchemaSpec extends ValueSchemaAnnotations {
   type: 'array'
   items?: ValueSchemaSpec
+  /** Maximum number of accepted items. */
+  maxItems?: number
+  /** Whether items must be distinct by JSON structural equality. */
+  uniqueItems?: boolean
 }
 
 /**
@@ -187,6 +193,15 @@ function copyAnnotations(source: Record<string, unknown>, target: JsonSchemaNode
   if (Object.hasOwn(source, 'title')) target.title = source.title as string
   if (Object.hasOwn(source, 'default')) target.default = source.default as JsonValue
   if (Object.hasOwn(source, 'examples')) target.examples = source.examples as JsonValue
+}
+
+/** Copy scalar literal constraints for validation by the raw-schema boundary. */
+function copyLiteralConstraints(source: Record<string, unknown>, target: JsonSchemaNode, path: string): void {
+  if (Object.hasOwn(source, 'enum')) {
+    if (!isPlainJsonArray(source.enum)) authorError(`${path}.enum must be a non-empty array of scalar values`)
+    target.enum = Array.from(source.enum, entry => entry as JsonSchemaScalar)
+  }
+  if (Object.hasOwn(source, 'const')) target.const = source.const as JsonSchemaScalar
 }
 
 /** Reject author-only keys outside one node's declared vocabulary. */
@@ -380,9 +395,11 @@ function runSchemaCompiler(initial: CompileTask): void {
         }
         break
       case 'array':
-        assertAuthorKeys(input, path, [...authorKeys, 'type', 'items'])
+        assertAuthorKeys(input, path, [...authorKeys, 'type', 'items', 'maxItems', 'uniqueItems'])
         node.type = 'array'
         copyAnnotations(input, node)
+        if (Object.hasOwn(input, 'maxItems')) node.maxItems = input.maxItems as number
+        if (Object.hasOwn(input, 'uniqueItems')) node.uniqueItems = input.uniqueItems as boolean
         if (Object.hasOwn(input, 'items')) {
           tasks.push({
             kind: 'value',
@@ -394,6 +411,12 @@ function runSchemaCompiler(initial: CompileTask): void {
         }
         break
       case 'string':
+        assertAuthorKeys(input, path, [...authorKeys, 'type', 'pattern', 'enum', 'const'])
+        node.type = inputType
+        copyAnnotations(input, node)
+        if (Object.hasOwn(input, 'pattern')) node.pattern = input.pattern as string
+        copyLiteralConstraints(input, node, path)
+        break
       case 'number':
       case 'integer':
       case 'boolean':
@@ -401,11 +424,7 @@ function runSchemaCompiler(initial: CompileTask): void {
         assertAuthorKeys(input, path, [...authorKeys, 'type', 'enum', 'const'])
         node.type = inputType
         copyAnnotations(input, node)
-        if (Object.hasOwn(input, 'enum')) {
-          if (!isPlainJsonArray(input.enum)) authorError(`${path}.enum must be a non-empty array of scalar values`)
-          node.enum = Array.from(input.enum, entry => entry as JsonSchemaScalar)
-        }
-        if (Object.hasOwn(input, 'const')) node.const = input.const as JsonSchemaScalar
+        copyLiteralConstraints(input, node, path)
         break
       default:
         authorError(`${path}.type must be string/number/integer/boolean/null/array/object/json, or use oneOf`)

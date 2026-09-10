@@ -17,6 +17,7 @@
 
 | 工具包 | 模型可见名称 | 依赖 | 写入／影响 | 随产品发布的别名 | 部署说明 |
 | --- | --- | --- | --- | --- | --- |
+| `@xagent/dsh-tool-fact` | `propose_fact` | `ctx.tools`、`ctx.xagentFact`、`an authenticated Project Session Agent` | `tool/call`、`tool/result with private receipt admission sidecar` | - | 仅限 Native，并且只为确切的已认证 Project Session Agent 注册。Fact 提供方私下保存准备 receipt；成功只公开提案 UUID 与 pending 状态，且该工具不会结束 Turn。 |
 | `@xagent/dsh-tool-retrieval` | `list_accessible_projects`, `search_artifacts` | `ctx.tools`, `ctx.xagentRetrieval and an owning Agent at execution time` | `tool/call`, `tool/result` | - | 仅限 Native 的 XAgent Business 项目发现和只读资料证据检索；Code SDK 和嵌套 Code dispatch 都排除这两个工具。Private Session 要求显式项目和／或私人资料选择器，Project Session 只使用其固定项目。 |
 | `@deepseek-ai/dsh-tool-ask-user` | `ask_user_question` | `ctx.tools`、`ctx.userQuestions` | `tool/call`、`tool/result after a UI/provider answers the question` | - | ask_user_question 会暂停工具调用，直到当前 UI 提供方返回人类答案。 |
 | `@deepseek-ai/dsh-tools` | `run_code` | `ctx.tools`、`ctx.codeRuntime (execution time)`、`ctx.systemPrompt` | `tool/call`、`one tool/code-dispatch-start + tool/code-dispatch pair per bridged sub-call`、`tool/result` | - | 在 `mode: code`／`mode: both` 下，它由工具注册表所有，作为可过滤能力层之外的保留传输机制（参见 Code Mode Agent Note）。在 `code` 下，它是注册表对协议格式（wire format）的唯一贡献；其他可见能力在使用已加载运行时语言生成的 SDK 章节中声明。程序通过 binding 调用这些能力，调用按照原生并发约定调度：启动顺序和策略遵循提交顺序，并发安全的函数体最多重叠执行 `maxParallelSubCalls` 个。调用会重新进入完整且受守卫保护的工具流水线，并将每个嵌套执行关联到此外层结果。 |
@@ -42,6 +43,140 @@
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
+
+<a id="xagentdsh-tool-fact"></a>
+
+## `@xagent/dsh-tool-fact`
+
+### `propose_fact`
+
+提议一个项目 Fact，交由 manager 审核。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "field_key": {
+      "type": "string",
+      "description": "Stable lowercase field key using letters, digits, dots, underscores, or hyphens; at most 128 UTF-8 bytes."
+    },
+    "label": {
+      "type": "string",
+      "description": "Non-empty human-readable Fact label, at most 255 UTF-8 bytes."
+    },
+    "value": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "A text Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use text for a text value.",
+              "const": "text"
+            },
+            "value": {
+              "type": "string",
+              "description": "Text value, at most 16 KiB in UTF-8."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "description": "A finite numeric Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use number for a numeric value.",
+              "const": "number"
+            },
+            "value": {
+              "type": "number",
+              "description": "Finite number; integral values must be safe integers."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "description": "A boolean Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use boolean for a true or false value.",
+              "const": "boolean"
+            },
+            "value": {
+              "type": "boolean",
+              "description": "Boolean value."
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "description": "A calendar-date Fact value.",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Use date for a calendar date.",
+              "const": "date"
+            },
+            "value": {
+              "type": "string",
+              "description": "Valid Gregorian calendar date in YYYY-MM-DD form.",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ]
+        }
+      ],
+      "description": "Typed value proposed for the project Fact."
+    },
+    "evidence_ids": {
+      "type": "array",
+      "description": "Up to 64 distinct citation IDs already admitted to this Session.",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "description": "Admitted citation ID in [资料N] form."
+      }
+    },
+    "assertion_reason": {
+      "type": "string",
+      "description": "Non-blank assertion basis, at most 4 KiB in UTF-8; required when evidence_ids is empty or omitted."
+    }
+  },
+  "required": [
+    "field_key",
+    "label",
+    "value"
+  ],
+  "additionalProperties": false
+}
+```
+
+来源：[`packages/xagent/tool-fact/src/index.ts`](../packages/xagent/tool-fact/src/index.ts)
+
+仅限 Native，并且只为确切的已认证 Project Session Agent 注册。Fact 提供方私下保存准备 receipt；成功只公开提案 UUID 与 pending 状态，且该工具不会结束 Turn。
 
 <a id="xagentdsh-tool-retrieval"></a>
 
@@ -1804,7 +1939,7 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 
 脚本函数体提供以下钩子：
 
-- `agent(prompt, opts?): Promise<any>`：运行一个 subagent 直至完成。不提供 `opts.schema` 时，解析为子级最终文本；提供 `opts.schema` 时，它必须是以对象为根、且**只能**使用 type/properties/required/additionalProperties/items/enum/const/oneOf 的 JSON Schema，不支持 pattern/format/数值边界，此时解析为通过校验的对象。子级失败时解析为 `null`，可使用 `.filter(Boolean)` 过滤。其他选项包括 `label`（显示名称）、`phase`（进度组），以及相互独立的 `provider`／`model` LLM（大语言模型）目标覆盖项，两者可单独提供。其他任何选项（`effort`／`isolation`／`agentType`）都会明确报错。
+- `agent(prompt, opts?): Promise<any>`：运行一个 subagent 直至完成。不提供 `opts.schema` 时，解析为子级最终文本；提供 `opts.schema` 时，它必须是以对象为根、且**只能**使用 type/properties/required/additionalProperties/items/pattern/maxItems/uniqueItems/enum/const/oneOf 的 JSON Schema，不支持 format 或数值边界，此时解析为通过校验的对象。子级失败时解析为 `null`，可使用 `.filter(Boolean)` 过滤。其他选项包括 `label`（显示名称）、`phase`（进度组），以及相互独立的 `provider`／`model` LLM（大语言模型）目标覆盖项，两者可单独提供。其他任何选项（`effort`／`isolation`／`agentType`）都会明确报错。
 - `pipeline(items, ...stages): Promise<any[]>`：让每个条目分别经过各阶段，阶段之间**没有**屏障；多阶段工作优先使用它。每个阶段接收 `(prev, item, index)`。普通的阶段异常会将该**条目**变为 `null`，并跳过它的剩余阶段。
 - `parallel(thunks): Promise<any[]>`：并发运行零参数函数并等待**全部**完成。它会形成屏障，仅当某个阶段确实需要汇总全部先前结果时使用。抛出异常的 thunk 解析为 `null`。
 - `phase(title)`：开始一个进度阶段；`log(message)`：说明进度；`args`：工具调用的 `args` 输入，原样提供。

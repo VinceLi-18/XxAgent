@@ -1059,7 +1059,7 @@ def _fact_outbox_payload(
     sequence: int,
     expected_event: dict[str, object],
 ) -> dict[str, Any]:
-    """Validate and canonicalize one closed Outbox decision Session event."""
+    """Validate and canonicalize one closed log-only Outbox decision event."""
     try:
         payload = event["payload"]
         if (
@@ -1067,11 +1067,10 @@ def _fact_outbox_payload(
             or type(event["schema_version"]) is not int
             or event["schema_version"] != 1
             or event.get("tool_call_id") is not None
-            or set(payload) != {"seq", "time", "type", "surfaceOp", "data"}
+            or set(payload) != {"seq", "time", "type", "data"}
             or type(payload["seq"]) is not int
             or payload["seq"] != sequence
             or payload["type"] != "fact/proposal-decided"
-            or payload["surfaceOp"] != "append"
             or type(payload["time"]) is not int
             or payload["time"] < 0
         ):
@@ -1086,7 +1085,6 @@ def _fact_outbox_payload(
             "seq": sequence,
             "time": payload["time"],
             "type": "fact/proposal-decided",
-            "surfaceOp": "append",
             "data": expected_event["data"],
         }
     except (KeyError, TypeError, ValueError, ValidationError):
@@ -1458,6 +1456,11 @@ async def _admit_fact_receipts(
             if admission.claims.expires_at <= datetime.now(UTC):
                 raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_EXPIRED)
             raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+        admission.canonical_payload["data"]["meta"] = {
+            "kind": "xagent-fact",
+            "status": "pending",
+            "proposalId": str(admission.proposal_id),
+        }
         audit = await write_audit_event(
             session,
             principal.actor_id,

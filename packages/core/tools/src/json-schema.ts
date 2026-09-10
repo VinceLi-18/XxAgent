@@ -3,7 +3,8 @@
  * types, subagents, and workflows. The subset accepts any JSON root, an
  * annotation-only schema for unconstrained JSON, one scalar `type`, object
  * `properties`/`required`/boolean `additionalProperties`, array `items`,
- * type-correct scalar `enum`/`const`, and exact-one `oneOf`.
+ * `maxItems`/`uniqueItems`, string `pattern`, type-correct scalar
+ * `enum`/`const`, and exact-one `oneOf`.
  *
  * Unsupported or misplaced keywords reject rather than being accepted without
  * enforcement. Consumers that require an object root apply
@@ -41,6 +42,12 @@ export interface JsonSchemaNode {
   additionalProperties?: boolean
   /** Item schema (`type: 'array'` only); absent accepts any JSON item. */
   items?: JsonSchemaNode
+  /** Regular-expression source that every string value must match. */
+  pattern?: string
+  /** Maximum array length as a non-negative safe integer. */
+  maxItems?: number
+  /** Whether array items must be distinct by JSON structural equality. */
+  uniqueItems?: boolean
   /** Allowed values for a scalar node. */
   enum?: JsonSchemaScalar[]
   /** The single allowed value for a scalar node. */
@@ -80,6 +87,9 @@ const CONSTRAINT_KEYWORDS = new Set([
   'required',
   'additionalProperties',
   'items',
+  'pattern',
+  'maxItems',
+  'uniqueItems',
   'enum',
   'const',
 ])
@@ -189,6 +199,32 @@ function scalarMatches(type: JsonSchemaScalarType, value: unknown): value is Jso
   }
 }
 
+/** Validate the scalar literal keywords shared by every scalar schema type. */
+function checkScalarKeywords(
+  node: Record<string, unknown>,
+  schemaType: JsonSchemaScalarType,
+  path: string,
+  violations: string[],
+): void {
+  const hasEnum = Object.hasOwn(node, 'enum')
+  const allowed = hasEnum ? node.enum : undefined
+  const enumValid = isPlainJsonArray(allowed)
+    && allowed.length > 0
+    && allowed.every(entry => scalarMatches(schemaType, entry))
+  if (hasEnum && !enumValid) {
+    violations.push(`${path}.enum must be a non-empty array of ${schemaType} values`)
+  }
+  const hasConst = Object.hasOwn(node, 'const')
+  const declaredConst = hasConst ? node.const : undefined
+  const constValid = scalarMatches(schemaType, declaredConst)
+  if (!hasConst) return
+  if (!constValid) {
+    violations.push(`${path}.const must be a ${schemaType} value`)
+  } else if (enumValid && !allowed.includes(declaredConst)) {
+    violations.push(`${path}.const must be one of ${path}.enum when both are declared`)
+  }
+}
+
 /** Deferred work for the stack-safe raw-schema walk. */
 type SchemaWalkTask =
   | { kind: 'enter'; node: unknown; path: string }
@@ -197,7 +233,17 @@ type SchemaWalkTask =
   | { kind: 'object-tail'; node: Record<string, unknown>; path: string; properties: unknown }
 
 /** Keywords that are invalid beside `oneOf`. */
-const ONE_OF_SIBLING_KEYWORDS = ['properties', 'required', 'additionalProperties', 'items', 'enum', 'const'] as const
+const ONE_OF_SIBLING_KEYWORDS = [
+  'properties',
+  'required',
+  'additionalProperties',
+  'items',
+  'pattern',
+  'maxItems',
+  'uniqueItems',
+  'enum',
+  'const',
+] as const
 
 /** Validate object-only fields after its property schemas have been visited. */
 function checkObjectSchemaTail(
@@ -264,7 +310,7 @@ function checkSchemaNode(root: unknown, rootPath: string, violations: string[], 
         }
         continue
       }
-      violations.push(`${path}.${key} is not a supported keyword (subset: type/oneOf/properties/required/additionalProperties/items/enum/const + annotations)`)
+      violations.push(`${path}.${key} is not a supported keyword (subset: type/oneOf/properties/required/additionalProperties/items/pattern/maxItems/uniqueItems/enum/const + annotations)`)
     }
     if (Object.hasOwn(node, 'description') && typeof node.description !== 'string') {
       violations.push(`${path}.description must be a string`)
@@ -312,6 +358,9 @@ function checkSchemaNode(root: unknown, rootPath: string, violations: string[], 
       required: ['object'],
       additionalProperties: ['object'],
       items: ['array'],
+      pattern: ['string'],
+      maxItems: ['array'],
+      uniqueItems: ['array'],
       enum: ['string', 'number', 'integer', 'boolean', 'null'],
       const: ['string', 'number', 'integer', 'boolean', 'null'],
     }
@@ -342,31 +391,35 @@ function checkSchemaNode(root: unknown, rootPath: string, violations: string[], 
       }
       case 'array': {
         if (Object.hasOwn(node, 'items')) tasks.push({ kind: 'enter', node: node.items, path: `${path}.items` })
+        if (Object.hasOwn(node, 'maxItems')
+          && (!Number.isSafeInteger(node.maxItems) || (node.maxItems as number) < 0)) {
+          violations.push(`${path}.maxItems must be a non-negative safe integer`)
+        }
+        if (Object.hasOwn(node, 'uniqueItems') && typeof node.uniqueItems !== 'boolean') {
+          violations.push(`${path}.uniqueItems must be a boolean`)
+        }
         break
       }
-      case 'string':
+      case 'string': {
+        if (Object.hasOwn(node, 'pattern')) {
+          if (typeof node.pattern !== 'string') {
+            violations.push(`${path}.pattern must be a string`)
+          } else {
+            try {
+              new RegExp(node.pattern)
+            } catch {
+              violations.push(`${path}.pattern must be a valid regular expression source`)
+            }
+          }
+        }
+        checkScalarKeywords(node, schemaType, path, violations)
+        break
+      }
       case 'number':
       case 'integer':
       case 'boolean':
       case 'null': {
-        const hasEnum = Object.hasOwn(node, 'enum')
-        const allowed = hasEnum ? node.enum : undefined
-        const enumValid = isPlainJsonArray(allowed)
-          && allowed.length > 0
-          && allowed.every(entry => scalarMatches(schemaType, entry))
-        if (hasEnum && !enumValid) {
-          violations.push(`${path}.enum must be a non-empty array of ${schemaType} values`)
-        }
-        const hasConst = Object.hasOwn(node, 'const')
-        const declaredConst = hasConst ? node.const : undefined
-        const constValid = scalarMatches(schemaType, declaredConst)
-        if (hasConst) {
-          if (!constValid) {
-            violations.push(`${path}.const must be a ${schemaType} value`)
-          } else if (enumValid && !allowed.includes(declaredConst)) {
-            violations.push(`${path}.const must be one of ${path}.enum when both are declared`)
-          }
-        }
+        checkScalarKeywords(node, schemaType, path, violations)
         break
       }
       /* v8 ignore next -- schemaType was narrowed from the closed SCHEMA_TYPES table above. */
@@ -483,6 +536,41 @@ function checkScalarValue(node: JsonSchemaNode, value: unknown, path: string): s
   return []
 }
 
+/** Compare two lossless JSON values without depending on object key order. */
+function jsonValuesEqual(left: JsonValue, right: JsonValue): boolean {
+  const pairs: Array<readonly [JsonValue, JsonValue]> = [[left, right]]
+  for (let pair = pairs.pop(); pair !== undefined; pair = pairs.pop()) {
+    const [candidate, expected] = pair
+    if (candidate === expected) continue
+    if (Array.isArray(candidate) || Array.isArray(expected)) {
+      if (!Array.isArray(candidate) || !Array.isArray(expected) || candidate.length !== expected.length) return false
+      for (let index = 0; index < candidate.length; index++) {
+        pairs.push([candidate[index] as JsonValue, expected[index] as JsonValue])
+      }
+      continue
+    }
+    if (!isPlainJsonRecord(candidate) || !isPlainJsonRecord(expected)) return false
+    const candidateKeys = Object.keys(candidate)
+    const expectedKeys = Object.keys(expected)
+    if (candidateKeys.length !== expectedKeys.length) return false
+    for (const key of candidateKeys) {
+      if (!Object.hasOwn(expected, key)) return false
+      pairs.push([candidate[key] as JsonValue, expected[key] as JsonValue])
+    }
+  }
+  return true
+}
+
+/** Return the first JSON-structurally equal item pair, if one exists. */
+function duplicateItemIndexes(value: JsonValue[]): readonly [number, number] | undefined {
+  for (let right = 1; right < value.length; right++) {
+    for (let left = 0; left < right; left++) {
+      if (jsonValuesEqual(value[left] as JsonValue, value[right] as JsonValue)) return [left, right]
+    }
+  }
+  return undefined
+}
+
 /** Validate one trusted schema/value pair with explicit frames rather than recursive calls. */
 function checkValue(schema: JsonSchemaNode, value: unknown, path: string): string[] {
   const frames: ValueFrame[] = [valueFrame(schema, value, path)]
@@ -594,18 +682,35 @@ function checkValue(schema: JsonSchemaNode, value: unknown, path: string): strin
           const children = items === undefined
             ? []
             : frame.value.flatMap((entry, index): ValueChild[] => [{ node: items, value: entry, path: `${frame.path}[${index}]` }])
+          const violations: string[] = []
+          if (frame.node.maxItems !== undefined && frame.value.length > frame.node.maxItems) {
+            violations.push(`"${diagnosticPath(frame.path)}" must contain at most ${frame.node.maxItems} items`)
+          }
+          if (frame.node.uniqueItems === true && safelyIsJsonValue(frame.value)) {
+            const duplicate = duplicateItemIndexes(frame.value as JsonValue[])
+            if (duplicate !== undefined) {
+              violations.push(`"${diagnosticPath(frame.path)}" must contain unique items (duplicate indexes ${duplicate[0]} and ${duplicate[1]})`)
+            }
+          }
           frame.kind = 'array'
           frame.children = children
           frame.childIndex = 0
-          frame.violations = []
+          frame.violations = violations
           frame.phase = 'children'
           break
         }
-        case 'string':
-          finish(typeof frame.value === 'string'
-            ? checkScalarValue(frame.node, frame.value, frame.path)
-            : [`"${diagnosticPath(frame.path)}" must be a string`])
+        case 'string': {
+          if (typeof frame.value !== 'string') {
+            finish([`"${diagnosticPath(frame.path)}" must be a string`])
+            break
+          }
+          const violations = checkScalarValue(frame.node, frame.value, frame.path)
+          if (frame.node.pattern !== undefined && !new RegExp(frame.node.pattern).test(frame.value)) {
+            violations.push(`"${diagnosticPath(frame.path)}" must match pattern ${JSON.stringify(frame.node.pattern)}`)
+          }
+          finish(violations)
           break
+        }
         case 'number':
           finish(typeof frame.value !== 'number'
             ? [`"${diagnosticPath(frame.path)}" must be a number`]

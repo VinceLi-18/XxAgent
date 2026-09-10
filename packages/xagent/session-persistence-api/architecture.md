@@ -6,6 +6,8 @@ provider 把 DSH `SessionHeader` 存入 FastAPI 的 `runtime_header`，把每个
 
 provider 仅在后端 append 返回关闭的 schema、精确末事件 sequence 和有效 Session version 后确认 receipt 注册表。失败批次与其 sidecar 保持独立重试状态，不与失败后新到达的事件合并；`session/flush` 和 provider dispose 都必须等待该批次成功或显式失败。空队列 flush 在建立 owner 前直接返回，避免一个同步结算的空 owner 覆盖同时入队事件所建立的写任务。公开 Session 投影只保留查询、范围与 payload 摘要、检索工具、引用 ID，以及受限的 Artifact、Version、Chunk、Index 和 generation 身份，不保存 sidecar。运行时 `tool/result` 的 `surfaceOp: append` 与可选 `sourceEventSeqs` provenance 经过关闭验证后保留在规范事件中；`sourceEventSeqs` 只能引用同一 Session 中 sequence 更小且不重复的事件，检查点可以先持久化 `tool/call`，再由后续 append 持久化对应的 `tool/result`。
 
+`xagentFact.receipts` 和 `xagentFact.outbox` 是两个独立私有注册表。append 用同一 Session 与 sequence 窗口向 retrieval receipt、Fact proposal receipt 和 Fact Outbox 注册表取得 owned copy，并显式转为 FastAPI 的三组 snake_case 附件。`fact/proposal-decided` codec 在写入时把关闭的 camelCase data 转为 snake_case，在读取时重建关闭的 camelCase DSH 事件；未知字段、bool 整数和无效终态条件在两个方向都失败关闭。pending Fact 工具结果的 Host 展示元数据不进入请求正文；FastAPI 仅在 receipt、公开结果与数据库 admission 全部验证成功后从规范 proposal ID 重建严格的公开元数据。远端请求完成且关闭 acknowledgement 与本批末 sequence 一致后，provider 以该 sequence 分别 commit 三个注册表；任何早期失败都保留三类附件。Fact 服务不存在时，正文构造路径不产生 `fact_proposal_receipts` 或 `fact_outbox_events` 键，因此未装配 Business Fact 的 profile 保持原 append 字节。Proposal receipt 和 Outbox 身份只存在注册表与 append sidecar，不进入公开 Session payload、模型投影或日志。
+
 Agent Loop 在新 Agent 注册之前调用 provider 的发布准备边界。provider 在该边界把 Header 和 seed 原子写入 FastAPI；失败直接回滚尚未发布的 Agent 与 Session。恢复冷 Session 时，完整的中断尾部保留，并把缺失的工具、step 和 turn 关闭事件追加到远端；检查操作只生成内存视图，不改写持久数据。
 
 `withUserToken()` 串行化一次已认证 RPC 的完整异步调用链，不使用 `AsyncLocalStorage`，避免并发用户共享可变 actor。成功创建、list、load 或 inspect 后按 Session 记录 Host 内部令牌租约；后台 append 只读取目标 Session 的租约，远端拒绝会直接中止写入。

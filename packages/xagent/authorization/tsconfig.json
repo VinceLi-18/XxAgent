@@ -11,6 +11,7 @@
     { "path": "../../session/session-persistence" },
     { "path": "../artifact" },
     { "path": "../backend-client" },
+    { "path": "../fact" },
     { "path": "../principal" },
     { "path": "../project" }
     ,{ "path": "../retrieval" }

@@ -50,6 +50,9 @@
         "headless-agent/tests/fixtures/xagent/retrieval/backend.ts",
         "headless-agent/tests/fixtures/xagent/retrieval/driver.ts",
         "headless-agent/tests/fixtures/xagent/retrieval/mock-llm.ts",
+        "headless-agent/tests/fixtures/xagent/fact/backend.ts",
+        "headless-agent/tests/fixtures/xagent/fact/driver.ts",
+        "headless-agent/tests/fixtures/xagent/fact/mock-llm.ts",
         "acp-agent/tests/snapshots/lsp-definition/workspace/subject.ts",
         "acp-agent/tests/fixtures/child-question-tripwire.ts",
         "acp-agent/tests/fixtures/parent-sandbox-override.ts",
@@ -75,6 +78,9 @@
       ],
       "ignoreDependencies": [
         "@deepseek-ai/.+",
+        "@xagent/dsh-fact",
+        "@xagent/dsh-session-persistence-api",
+        "@xagent/dsh-tool-fact",
         "@xagent/dsh-tool-retrieval"
       ]
     },
@@ -245,6 +251,11 @@
       ]
     },
     "packages/xagent/artifact": {
+      "ignoreDependencies": [
+        "zod"
+      ]
+    },
+    "packages/xagent/fact": {
       "ignoreDependencies": [
         "zod"
       ]
@@ -758,7 +769,8 @@
       "entry": [
         "tests/**/*.spec.ts",
         "tests/**/*.e2e.ts",
-        "tests/**/*.snapshot.ts"
+        "tests/**/*.snapshot.ts",
+        "tests/fixtures/xagent-fact-scope.ts"
       ],
       "project": [
         "src/**/*.ts",
@@ -770,11 +782,14 @@
         "@xagent/dsh-developer",
         "@xagent/dsh-artifact",
         "@xagent/dsh-delegation-token",
+        "@xagent/dsh-fact",
         "@xagent/dsh-retrieval",
+        "@xagent/dsh-tool-fact",
         "@xagent/dsh-tool-retrieval",
         "@xagent/dsh-ui-account",
         "@xagent/dsh-ui-artifact",
         "@xagent/dsh-ui-citation",
+        "@xagent/dsh-ui-fact",
         "@xagent/dsh-ui-project"
       ]
     },
@@ -830,14 +845,17 @@
         "@xagent/dsh-backend-client",
         "@xagent/dsh-connection-auth",
         "@xagent/dsh-delegation-token",
+        "@xagent/dsh-fact",
         "@xagent/dsh-principal",
         "@xagent/dsh-project",
         "@xagent/dsh-retrieval",
         "@xagent/dsh-session-persistence-api",
+        "@xagent/dsh-tool-fact",
         "@xagent/dsh-tool-retrieval",
         "@xagent/dsh-ui-account",
         "@xagent/dsh-ui-artifact",
         "@xagent/dsh-ui-citation",
+        "@xagent/dsh-ui-fact",
         "@xagent/dsh-ui-project"
       ]
     }

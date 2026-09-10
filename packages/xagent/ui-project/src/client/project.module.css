@@ -176,6 +176,10 @@
   background: var(--dsw-alias-bg-layer-1);
 }
 
+.tabs[data-with-facts='true'] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .tabs button {
   min-width: 0;
   min-height: 32px;

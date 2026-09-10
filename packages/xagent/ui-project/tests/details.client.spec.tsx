@@ -59,6 +59,7 @@ const standard = {
   useWorkspaces: vi.fn() as never,
   useDetailsTab: ((selector: (value: 'overview') => unknown) => selector('overview')) as never,
   selectDetailsTab: vi.fn(),
+  useFactsAvailable: ((selector: (value: false) => unknown) => selector(false)) as never,
   renderSlot: vi.fn((name: string) => name === 'xagent.workbench.artifacts' ? renderArtifacts() : null) as never,
 }
 
@@ -147,6 +148,52 @@ describe('XAgent 工作台上下文与详情', () => {
     expect(overview).toBe(document.activeElement)
     fireEvent.keyDown(overview, { key: 'ArrowLeft' })
     expect(inbox).toBe(document.activeElement)
+  })
+
+  it('仅在 Fact occupant 存在时增加等宽事实页签并加入键盘顺序', () => {
+    const store = new XAgentWorkbenchStore()
+    store.replace(ready({ kind: 'project', projectId: PROJECT_ID }))
+    const renderSlot = vi.fn((name: string) => name === 'xagent.workbench.facts' ? <p>Fact occupant</p> : null)
+    render(<WorkbenchDetails
+      {...standard}
+      renderSlot={renderSlot as never}
+      useFactsAvailable={((selector: (value: true) => unknown) => selector(true)) as never}
+      useWorkbench={hook(store)}
+      loadProject={vi.fn(async () => {})}
+    />)
+
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map(tab => tab.textContent)).toEqual(['概览', '资料', '事实', '协作收件箱'])
+    expect(screen.queryByText('Fact occupant')).toBeNull()
+    const artifacts = screen.getByRole('tab', { name: '资料' })
+    artifacts.focus()
+    fireEvent.keyDown(artifacts, { key: 'ArrowRight' })
+    const facts = screen.getByRole('tab', { name: '事实' })
+    expect(facts).toBe(document.activeElement)
+    expect(facts.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText('Fact occupant')).toBeTruthy()
+    expect(renderSlot).toHaveBeenCalledWith('xagent.workbench.facts', {})
+    fireEvent.keyDown(facts, { key: 'End' })
+    expect(screen.getByRole('tab', { name: '协作收件箱' })).toBe(document.activeElement)
+  })
+
+  it('没有 Fact occupant 时保留原有三页签、默认选择和键盘顺序', () => {
+    const store = new XAgentWorkbenchStore()
+    store.replace(ready({ kind: 'workbench' }))
+    const renderSlot = vi.fn((name: string) => name === 'xagent.workbench.artifacts' ? renderArtifacts() : null)
+    render(<WorkbenchDetails
+      {...standard}
+      renderSlot={renderSlot as never}
+      useWorkbench={hook(store)}
+      loadProject={vi.fn(async () => {})}
+    />)
+
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map(tab => tab.textContent)).toEqual(['概览', '资料', '协作收件箱'])
+    expect(screen.getByRole('tab', { name: '概览' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(screen.getByRole('tab', { name: '资料' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: '协作收件箱' })).toBe(document.activeElement)
+    expect(renderSlot).not.toHaveBeenCalledWith('xagent.workbench.facts', {})
   })
 
   it('没有资料 occupant 时显示稳定中文空态，协作收件箱保持独立页签', () => {

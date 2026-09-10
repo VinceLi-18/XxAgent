@@ -53,7 +53,9 @@ describe('the enforced raw JSON Schema subset', () => {
       { type: 'integer' },
       { type: 'boolean' },
       { type: 'null' },
+      { type: 'string', pattern: '^[a-z]+$' },
       { type: 'array', items: { type: 'string' } },
+      { type: 'array', maxItems: 2, uniqueItems: true },
       {
         type: 'object',
         properties: {
@@ -116,7 +118,7 @@ describe('the enforced raw JSON Schema subset', () => {
   })
 
   it('rejects unknown and misplaced keywords without accepted-then-ignored behavior', () => {
-    for (const keyword of ['anyOf', 'allOf', 'not', 'pattern', 'minimum', 'maxLength', '$ref']) {
+    for (const keyword of ['anyOf', 'allOf', 'not', 'minimum', 'maxLength', '$ref']) {
       expect(violationsOf({ type: 'object', [keyword]: [] })[0]).toContain(`schema.${keyword} is not a supported keyword`)
     }
     expect(violationsOf({ type: 'object', items: {} }))
@@ -127,15 +129,43 @@ describe('the enforced raw JSON Schema subset', () => {
       .toEqual(['schema.enum is not supported on type "object"'])
     expect(violationsOf({ type: 'array', const: null }))
       .toEqual(['schema.const is not supported on type "array"'])
-    expect(violationsOf({ properties: {}, required: [], additionalProperties: true, items: {}, enum: [], const: null }))
+    expect(violationsOf({
+      properties: {}, required: [], additionalProperties: true, items: {},
+      pattern: 'x', maxItems: 1, uniqueItems: true, enum: [], const: null,
+    }))
       .toEqual([
         'schema.properties requires type or oneOf',
         'schema.required requires type or oneOf',
         'schema.additionalProperties requires type or oneOf',
         'schema.items requires type or oneOf',
+        'schema.pattern requires type or oneOf',
+        'schema.maxItems requires type or oneOf',
+        'schema.uniqueItems requires type or oneOf',
         'schema.enum requires type or oneOf',
         'schema.const requires type or oneOf',
       ])
+  })
+
+  it('strictly validates string and array keyword declarations and placement', () => {
+    expect(violationsOf({ type: 'string', pattern: '[' }))
+      .toEqual(['schema.pattern must be a valid regular expression source'])
+    expect(violationsOf({ type: 'string', pattern: 1 }))
+      .toEqual(['schema.pattern must be a string'])
+    for (const maxItems of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(violationsOf({ type: 'array', maxItems }))
+        .toEqual(['schema.maxItems must be a non-negative safe integer'])
+    }
+    expect(violationsOf({ type: 'array', uniqueItems: 'true' }))
+      .toEqual(['schema.uniqueItems must be a boolean'])
+    expect(violationsOf({ type: 'array', pattern: 'x' }))
+      .toEqual(['schema.pattern is not supported on type "array"'])
+    expect(violationsOf({ type: 'string', maxItems: 1, uniqueItems: true }))
+      .toEqual([
+        'schema.maxItems is not supported on type "string"',
+        'schema.uniqueItems is not supported on type "string"',
+      ])
+    expect(violationsOf({ oneOf: [{ type: 'string' }, { type: 'null' }], pattern: 'x' }))
+      .toEqual(['schema.pattern is not supported beside oneOf'])
   })
 
   it('reports every independent schema violation', () => {
@@ -194,9 +224,13 @@ describe('the enforced raw JSON Schema subset', () => {
       .toEqual(['schema.const must be a number value'])
     expect(violationsOf({ type: 'boolean', const: 1 }))
       .toEqual(['schema.const must be a boolean value'])
+    expect(violationsOf({ type: 'string', const: 1 }))
+      .toEqual(['schema.const must be a string value'])
     expect(violationsOf({ type: 'string', enum: undefined }))
       .toEqual(['schema.enum must be a non-empty array of string values'])
     expect(violationsOf({ type: 'string', enum: ['a'], const: 'b' }))
+      .toEqual(['schema.const must be one of schema.enum when both are declared'])
+    expect(violationsOf({ type: 'number', enum: [1], const: 2 }))
       .toEqual(['schema.const must be one of schema.enum when both are declared'])
     const sparseEnum = new Array<string>(1)
     expect(violationsOf({ type: 'string', enum: sparseEnum }))
@@ -379,6 +413,36 @@ describe('validateJsonSchemaValue', () => {
     sparse.length = 2
     sparse[0] = 1
     expect(validateJsonSchemaValue(schema, sparse)).toEqual(['"value" must be a dense lossless JSON array'])
+  })
+
+  it('enforces string patterns and array size and uniqueness constraints', () => {
+    const pattern = asserted({ type: 'string', pattern: '^[a-z]+$' })
+    expect(validateJsonSchemaValue(pattern, 'facts')).toEqual([])
+    expect(validateJsonSchemaValue(pattern, 'Facts'))
+      .toEqual(['"value" must match pattern "^[a-z]+$"'])
+
+    const array = asserted({ type: 'array', maxItems: 2, uniqueItems: true })
+    expect(validateJsonSchemaValue(array, [{ a: 1, b: [true] }, 'other'])).toEqual([])
+    expect(validateJsonSchemaValue(array, [1, 2, 3]))
+      .toEqual(['"value" must contain at most 2 items'])
+    expect(validateJsonSchemaValue(array, [
+      { a: 1, nested: { first: true, second: null } },
+      { nested: { second: null, first: true }, a: 1 },
+    ])).toEqual(['"value" must contain unique items (duplicate indexes 0 and 1)'])
+    expect(validateJsonSchemaValue(array, [[1, { nested: true }], [1, { nested: true }]]))
+      .toEqual(['"value" must contain unique items (duplicate indexes 0 and 1)'])
+    for (const distinct of [
+      [[1], 1],
+      [1, [1]],
+      [[1], [1, 2]],
+      [{ a: 1 }, { a: 1, b: 2 }],
+    ]) {
+      expect(validateJsonSchemaValue(array, distinct)).toEqual([])
+    }
+    expect(validateJsonSchemaValue(
+      asserted({ type: 'array', uniqueItems: false }),
+      [[1, { x: 'same' }], [1, { x: 'same' }]],
+    )).toEqual([])
   })
 
   it('validates exact-one oneOf semantics, including overlap', () => {

@@ -39,6 +39,42 @@ describe('dynamic tool declaration boundary', () => {
     })
     expect(() => definition.output.render({}, 'ok')).toThrow(/output\.render returned \["x+…/)
   })
+
+  it('preserves enforced string and array constraints across the sandbox realm', async () => {
+    const harness = await setup()
+    await mount(harness, `
+      return {
+        name: 'constrained-input',
+        inject: ['tools'],
+        apply(ctx) {
+          harness.registerTool(ctx, harness.defineTool({
+            name: 'constrained_input',
+            description: 'Accept constrained input.',
+            parameters: {
+              key: { type: 'string', required: true, pattern: '^[a-z]+$' },
+              values: {
+                type: 'array', required: true, maxItems: 2, uniqueItems: true,
+                items: { type: 'json' },
+              },
+            },
+            ${CONTENT_OUTPUT_CODE}
+            async execute() { return [] },
+          }))
+        },
+      }
+    `)
+
+    await expect(call(harness.ctx, 'constrained_input', { key: 'ok', values: [{ a: 1 }, { b: 2 }] }))
+      .resolves.toMatchObject({ isError: false })
+    for (const arguments_ of [
+      { key: 'NO', values: [] },
+      { key: 'ok', values: [1, 2, 3] },
+      { key: 'ok', values: [{ a: 1, b: 2 }, { b: 2, a: 1 }] },
+    ]) {
+      await expect(call(harness.ctx, 'constrained_input', arguments_))
+        .resolves.toMatchObject({ isError: true, error: { info: { code: 'INVALID_ARGS' } } })
+    }
+  })
 })
 
 describe('sandbox isolation and Node-API traps', () => {

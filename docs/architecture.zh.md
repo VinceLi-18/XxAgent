@@ -44,13 +44,15 @@ XAgent 授权服务依据封闭的方法表校验每个 Session 方法。它把�
 
 FastAPI 拥有密码、可撤销登录记录、权限版本、账号状态、会话 Header 和仅追加的会话事件。PostgreSQL 行级安全策略与应用事务会在每次读写前重新校验 actor。私有会话只对 owner 可见，Manager 也不能例外；不可见与不存在统一返回 not-found。FastAPI 不可用时，Host 不会回退到 Profile 本地会话文件。
 
-新会话跨运行时边界保持发布原子性：远端 Header 与 seed event 必须提交成功，Agent 才能对外可见。恢复会话时保留被中断的持久事件尾，并把所需的关闭事件追加到远端。启动期 Workspace 发现使用独立的 bootstrap 方法；XAgent provider 会刻意返回空会话，因为此时还不存在已认证 Principal。
+新会话跨运行时边界保持发布原子性：远端 Header 与 seed event 必须提交成功，Agent 才能对外可见。恢复会话时保留被中断的持久事件尾；其 provider 自有 preparation 在 Session 创建、Agent 创建与 session start 全部成功前保持可回滚，随后才把构造器生成的后缀及发布期间产生的事件追加到远端。启动期 Workspace 发现使用独立的 bootstrap 方法；XAgent provider 会刻意返回空会话，因为此时还不存在已认证 Principal。
 
 `xagent-developer`、`web`、`headless` 和其他上游 Profile 继续使用原有本地持久化，也不会装载 XAgent 服务凭据、认证、授权或委托密钥。Profile 目录仍只是组织边界，不是多用户安全边界。
 
 Business 项目工作台把账号能力、可见项目、所选工作台或项目上下文，以及 Session 作用域保存在 FastAPI/PostgreSQL 中。`@xagent/dsh-project` 公开四个请求作用域 Remote 方法，其用户令牌只来自已认证连接。`@xagent/dsh-ui-project` 通过可逆 Slot 消费 Bootstrap，分别提供项目浏览器、中央上下文标识、操作遮罩和第三栏详情。它不在浏览器存储中保留项目缓存，并会在账号变化后丢弃迟到响应。
 
 Business 资料管理复用同一认证作用域，且不增加模型工具。FastAPI 与 PostgreSQL 拥有私人和项目资料权限、不可变版本、五种扫描状态、审计与持久 PostgreSQL 处理队列；使用独立凭据的 worker 通过 ClamAV 扫描暂存正文，并把干净对象晋级到启用版本化的私有 MinIO bucket。`@xagent/dsh-artifact` 只公开固定的人工界面 Remote 与同源正文代理，`@xagent/dsh-ui-artifact` 则占用项目详情 Slot，提供上传、历史、重试、预览与下载。浏览器只在内存中保留资料状态，账号或项目变化时会清空该状态，并且绝不把资料正文或 signed 读取写入 Session 事件或模型请求。
+
+受治理的 Fact 访问使用同一物理授权路径。`@xagent/dsh-authorization` 从经过认证的连接与后端权威会话列表中解析唯一项目会话，再通过 `@xagent/dsh-fact` 的请求上下文运行封闭表中的每个 `xagentFact/*` 远程调用。会话恢复使用相同的派生上下文，使提供方能在会话打开时拉取一页有界 Outbox。交付会追加只进入日志且不进入表面的 `fact/proposal-decided` 事件，且绝不启动轮次。该页尚未投影或其通知仍在表面时，提供方不会拉取下一页。Fact 插件只从未消费日志事件派生有序通知，把它加入下一次由用户发起轮次的第一个模型步骤，并在下游迭代器产生第一个结果后持久替换临时通知；同一轮次的后续步骤、再后续轮次和重启重放都不会重复它。`propose_fact` 与 Fact 浏览器工作台只由 `xagent-business` 装配。
 
 Business 检索只在 `xagent-business` 中组装。`@xagent/dsh-retrieval` 把每次 Native 工具调用绑定到认证物理请求与 Session 范围，签发新的委托签名，并向 FastAPI 发送一次有界请求。Project Session 使用固定项目；Private Session 必须显式选择项目和／或私人资料。FastAPI 验证委托和一次性 nonce，在 serializable 检索事务中重新校验登录与权限 revision，应用 PostgreSQL RLS，并在当前 clean 索引 head 上执行混合检索。不透明 receipt 在匹配的公开 `tool/result` 完成持久 append 且后端原子接纳证据身份前，只存在于私有持久化 sidecar。
 

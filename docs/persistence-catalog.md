@@ -389,6 +389,30 @@ Types: [ContentBlock](subsystems/core.md) · [TokenUsage](subsystems/llm-streami
 
 Source: [`packages/compaction/compaction/src/types.ts:33`](../packages/compaction/compaction/src/types.ts)
 
+### `fact/*`
+
+<a id="factproposal-decided--log-only"></a>
+
+#### `fact/proposal-decided` — log-only
+
+```ts persistence-catalog
+/**
+ * One terminal human review outcome delivered from the durable business Outbox.
+ * The Fact plugin presents ordered outcomes once in the next user-initiated model request.
+ * @param data.proposalId - Reviewed proposal identity.
+ * @param data.projectId - Authoritative project identity.
+ * @param data.fieldKey - Governed Fact field key.
+ * @param data.label - Bounded public field label.
+ * @param data.status - Irreversible confirmed, rejected, withdrawn, or conflicted outcome.
+ * @param data.factRevisionId - Confirmed immutable revision identity, absent for other outcomes.
+ * @param data.contentRevision - Confirmed positive field revision, absent for other outcomes.
+ * @param data.decisionReason - Optional bounded public review reason.
+ */
+'fact/proposal-decided': FactProposalDecidedEvent['data']
+```
+
+Source: [`packages/xagent/fact/src/types.ts:45`](../packages/xagent/fact/src/types.ts)
+
 ### `feedback/*`
 
 <a id="feedbackrecord--log-only"></a>

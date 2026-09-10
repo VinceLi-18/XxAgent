@@ -9,6 +9,7 @@ export interface WorkbenchDetailsInjected {
   hooks: {
     workbench: HostObservable<XAgentWorkbenchState>
     detailsTab: HostObservable<XAgentWorkbenchDetailsTab>
+    factsAvailable: HostObservable<boolean>
   }
   loadProject(projectId: string): Promise<void>
   selectDetailsTab(tab: XAgentWorkbenchDetailsTab): void
@@ -16,20 +17,23 @@ export interface WorkbenchDetailsInjected {
 
 export type WorkbenchDetailsProps =
   & PropsRuntime<'shell.details'>
-  & PropsRenderSlots<'xagent.workbench.artifacts'>
+  & PropsRenderSlots<'xagent.workbench.artifacts' | 'xagent.workbench.facts'>
   & InjectFace<WorkbenchDetailsInjected>
 
-const DETAILS_TABS: readonly (readonly [XAgentWorkbenchDetailsTab, string])[] = [
-  ['overview', text.overview],
-  ['artifacts', text.artifacts],
-  ['inbox', text.inbox],
-]
+const OVERVIEW_TAB = ['overview', text.overview] as const
+const ARTIFACTS_TAB = ['artifacts', text.artifacts] as const
+const INBOX_TAB = ['inbox', text.inbox] as const
+const BASE_DETAILS_TABS: readonly (readonly [XAgentWorkbenchDetailsTab, string])[] = [OVERVIEW_TAB, ARTIFACTS_TAB, INBOX_TAB]
 
 export function WorkbenchDetails({
-  useWorkbench, useDetailsTab, loadProject, selectDetailsTab, renderSlot,
+  useWorkbench, useDetailsTab, useFactsAvailable, loadProject, selectDetailsTab, renderSlot,
 }: WorkbenchDetailsProps) {
   const state = useWorkbench(value => value)
   const requestedTab = useDetailsTab(value => value)
+  const factsAvailable = useFactsAvailable(value => value)
+  const detailsTabs = factsAvailable
+    ? [OVERVIEW_TAB, ARTIFACTS_TAB, ['facts', text.facts] as const, INBOX_TAB]
+    : BASE_DETAILS_TABS
   const [tab, setTab] = useState<XAgentWorkbenchDetailsTab>(requestedTab)
   const tabRefs = useRef(new Map<XAgentWorkbenchDetailsTab, HTMLButtonElement>())
   const projectId = state.phase === 'ready' && state.context.kind === 'project' ? state.context.projectId : undefined
@@ -38,6 +42,11 @@ export function WorkbenchDetails({
     if (projectId !== undefined && loadedProjectId !== projectId) void loadProject(projectId)
   }, [loadProject, loadedProjectId, projectId])
   useEffect(() => { setTab(requestedTab) }, [requestedTab])
+  useEffect(() => {
+    if (factsAvailable || tab !== 'facts') return
+    setTab('overview')
+    selectDetailsTab('overview')
+  }, [factsAvailable, selectDetailsTab, tab])
   if (state.phase !== 'ready') return <p className={css.status}>正在加载详情…</p>
 
   const heading = state.context.kind === 'workbench'
@@ -62,14 +71,14 @@ export function WorkbenchDetails({
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let nextIndex: number
     switch (event.key) {
-      case 'ArrowRight': nextIndex = (index + 1) % DETAILS_TABS.length; break
-      case 'ArrowLeft': nextIndex = (index - 1 + DETAILS_TABS.length) % DETAILS_TABS.length; break
+      case 'ArrowRight': nextIndex = (index + 1) % detailsTabs.length; break
+      case 'ArrowLeft': nextIndex = (index - 1 + detailsTabs.length) % detailsTabs.length; break
       case 'Home': nextIndex = 0; break
-      case 'End': nextIndex = DETAILS_TABS.length - 1; break
+      case 'End': nextIndex = detailsTabs.length - 1; break
       default: return
     }
     event.preventDefault()
-    const nextEntry = DETAILS_TABS[nextIndex]
+    const nextEntry = detailsTabs[nextIndex]
     if (nextEntry === undefined) return
     const next = nextEntry[0]
     setTab(next)
@@ -79,8 +88,8 @@ export function WorkbenchDetails({
 
   return <aside className={css.details}>
     <h2>{heading}</h2>
-    <div className={css.tabs} role="tablist" aria-label="工作台详情">
-      {DETAILS_TABS.map(([id, label], index) => <button
+    <div className={css.tabs} data-with-facts={factsAvailable} role="tablist" aria-label="工作台详情">
+      {detailsTabs.map(([id, label], index) => <button
         ref={(node) => {
           if (node === null) tabRefs.current.delete(id)
           else tabRefs.current.set(id, node)
@@ -100,6 +109,9 @@ export function WorkbenchDetails({
     </section>}
     {tab === 'artifacts' && <section id="xagent-workbench-artifacts" role="tabpanel" aria-label={text.artifacts}>
       {renderSlot('xagent.workbench.artifacts', {}) ?? <p className={css.empty}>{text.emptyArtifacts}</p>}
+    </section>}
+    {tab === 'facts' && factsAvailable && <section id="xagent-workbench-facts" role="tabpanel" aria-label={text.facts}>
+      {renderSlot('xagent.workbench.facts', {})}
     </section>}
     {tab === 'inbox' && <section id="xagent-workbench-inbox" role="tabpanel" aria-label={text.inbox}>
       <p>{text.emptyInbox}</p>

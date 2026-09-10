@@ -12,14 +12,14 @@ import {
 
 describe('the unified author schema DSL', () => {
   it('compiles every value root and the author-only json node', () => {
-    expect(valueSchemaSpecToJsonSchema({ type: 'string', enum: ['a', 'b'], const: 'a' }))
-      .toEqual({ type: 'string', enum: ['a', 'b'], const: 'a' })
+    expect(valueSchemaSpecToJsonSchema({ type: 'string', pattern: '^[a-z]+$', enum: ['a', 'b'], const: 'a' }))
+      .toEqual({ type: 'string', pattern: '^[a-z]+$', enum: ['a', 'b'], const: 'a' })
     expect(valueSchemaSpecToJsonSchema({ type: 'number' })).toEqual({ type: 'number' })
     expect(valueSchemaSpecToJsonSchema({ type: 'integer' })).toEqual({ type: 'integer' })
     expect(valueSchemaSpecToJsonSchema({ type: 'boolean' })).toEqual({ type: 'boolean' })
     expect(valueSchemaSpecToJsonSchema({ type: 'null' })).toEqual({ type: 'null' })
-    expect(valueSchemaSpecToJsonSchema({ type: 'array', items: { type: 'json' } }))
-      .toEqual({ type: 'array', items: {} })
+    expect(valueSchemaSpecToJsonSchema({ type: 'array', items: { type: 'json' }, maxItems: 2, uniqueItems: true }))
+      .toEqual({ type: 'array', items: {}, maxItems: 2, uniqueItems: true })
     expect(valueSchemaSpecToJsonSchema({ type: 'object', additionalProperties: false, properties: {} }))
       .toEqual({ type: 'object', additionalProperties: false, properties: {} })
     expect(valueSchemaSpecToJsonSchema({
@@ -67,10 +67,14 @@ describe('the unified author schema DSL', () => {
       { type: 'json', default: undefined },
       { type: 'array', items: { type: 'string', required: true } },
       { type: 'array', items: 42 },
+      { type: 'string', pattern: '[' },
+      { type: 'array', maxItems: -1 },
+      { type: 'array', uniqueItems: 'yes' },
       { type: 'string', extra: true },
       { type: 'string', oneOf: [{ type: 'string' }, { type: 'null' }] },
       { oneOf: 'not-an-array' },
       { type: 'string', enum: 'a' },
+      { type: 'number', enum: 'a' },
       {},
       null,
     ]) {

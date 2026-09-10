@@ -7,10 +7,12 @@ describe('jsonSchemaToPy', () => {
   it('maps the defineTool DSL subset', () => {
     const cases: [unknown, string][] = [
       [{ type: 'string' }, 'str'],
+      [{ type: 'string', pattern: '^[a-z]+$' }, 'str'],
       [{ type: 'number' }, 'float'],
       [{ type: 'boolean' }, 'bool'],
       [{ type: 'string', enum: ['a', 'b'] }, 'Literal["a", "b"]'],
       [{ type: 'array', items: { type: 'number' } }, 'list[float]'],
+      [{ type: 'array', items: { type: 'number' }, maxItems: 2, uniqueItems: true }, 'list[float]'],
       [{ type: 'array', items: { type: 'string', enum: ['x', 'y'] } }, 'list[Literal["x", "y"]]'],
       [{ type: 'array' }, 'list[Any]'],
       [{ type: 'object' }, 'dict[str, Any]'],

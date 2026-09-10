@@ -9,9 +9,10 @@
 import { globSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import type { ToolSchema } from '@deepseek-ai/dsh-llm'
-import AgentRegistry from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import LlmRuntime, { createUserMessage, type ToolSchema } from '@deepseek-ai/dsh-llm'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -63,6 +64,9 @@ import * as ToolWeb from '@deepseek-ai/dsh-tool-web'
 import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
 import * as ToolWorkflow from '@deepseek-ai/dsh-tool-workflow'
+import type { XAgentFactServiceContract } from '@xagent/dsh-fact'
+import { runWithXAgentAuthenticatedRequestScope, type XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
+import * as XAgentToolFact from '@xagent/dsh-tool-fact'
 import * as XAgentToolRetrieval from '@xagent/dsh-tool-retrieval'
 import { githubSlug } from './verify-md-links.ts'
 
@@ -112,6 +116,26 @@ function registerCatalogSubagentProvider(ctx: Context, name: string): void {
 
 /** Minted child-scope keys for packages whose tools are never global. */
 const catalogChildScopes = new WeakMap<Context, Agent>()
+
+/** Fixed authenticated Project scope used only to harvest the scoped Fact tool schema. */
+function catalogFactScope(sessionId: string): XAgentAuthenticatedSessionRequestScope {
+  return Object.freeze({
+    principal: Object.freeze({
+      actorId: '00000000-0000-0000-0000-000000000101',
+      role: 'specialist' as const,
+      permissionRevision: 1,
+      authSessionId: '00000000-0000-0000-0000-000000000102',
+      connectionId: 'tool-catalog',
+    }),
+    userToken: 'tool-catalog',
+    connectionId: 'tool-catalog',
+    requestSignal: new AbortController().signal,
+    connectionSignal: new AbortController().signal,
+    sessionId,
+    visibility: 'project' as const,
+    projectId: '00000000-0000-0000-0000-000000000201',
+  })
+}
 
 /**
  * Install one scope-local tool package into an agent-like child scope for
@@ -183,6 +207,41 @@ export interface ToolPackage {
  * guard proves it is exhaustive against the on-disk glob.
  */
 const TOOL_PACKAGES: ToolPackage[] = [
+  {
+    pkg: '@xagent/dsh-tool-fact',
+    dir: 'tool-fact',
+    source: 'packages/xagent/tool-fact/src/index.ts',
+    requires: ['ctx.tools', 'ctx.xagentFact', 'an authenticated Project Session Agent'],
+    writes: ['tool/call', 'tool/result with private receipt admission sidecar'],
+    async mount(ctx) {
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(SessionStore)
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(AgentLoop, { agents: [] })
+      await ctx.plugin((child) => {
+        child.provide('xagentFact', {
+          proposeFact: () => Promise.reject(new Error('tool-catalog Fact execution is unreachable')),
+        } as XAgentFactServiceContract as never)
+      })
+      await ctx.plugin(XAgentToolFact)
+      const sessionId = '00000000-0000-0000-0000-000000000301'
+      const agent = ctx.agentLoop.create(SessionId(`session-${sessionId}`), { provider: 'catalog', model: 'catalog' })
+      const message = createUserMessage({ content: [{ type: 'text', text: 'catalog' }], source: { kind: 'user' } })
+      runWithXAgentAuthenticatedRequestScope(catalogFactScope(sessionId), () => {
+        agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+      })
+      agentEvents(ctx, agent).emit('agent/inbox/claimed', { message, turn: 1 })
+      await agentEvents(ctx, agent).waterfall(
+        'agent/pre-step',
+        { messages: [message], turn: 1, step: 1, signal: new AbortController().signal },
+        () => Promise.resolve({ kind: 'enter' as const, messages: [message] }),
+      )
+      catalogChildScopes.set(ctx, agent)
+    },
+    scope: ctx => catalogChildScopes.get(ctx) as Agent,
+    note:
+      'Native-only and registered only for the exact authenticated Project Session Agent. The Fact provider keeps preparation receipts private; success exposes only the proposal UUID and pending status, and the tool does not conclude the Turn.',
+  },
   {
     pkg: '@xagent/dsh-tool-retrieval',
     dir: 'tool-retrieval',

@@ -142,7 +142,7 @@ interface SessionRawArtifact {
 
 ## Preparation and restoration ownership
 
-`SessionStore.prepare()` accepts ordinary creation options or fresh persistence graphs transferred through `RestoredSessionOptions`. The restoration branch validates and freezes the transferred header and events in place, so callers must retain no mutable aliases. `SessionPreparation` then owns the exact unpublished Session until publication or rollback; disposal is synchronous and idempotent. Persistence inspection exposes only `SessionInspection`, an immutable logical view borrowed from the same prepared Session.
+`SessionStore.prepare()` accepts ordinary creation options or fresh persistence graphs transferred through `RestoredSessionOptions`. The restoration branch validates and freezes the transferred header and events in place, so callers must retain no mutable aliases. `SessionPreparation` then owns the exact unpublished Session until the Agent owner commits complete publication or rolls it back; disposal is synchronous and idempotent. Persistence inspection exposes only `SessionInspection`, an immutable logical view borrowed from the same prepared Session.
 
 ```ts type-equiv
 /**
@@ -167,8 +167,10 @@ type PrepareSessionOptions =
 ```
 
 ```ts type-equiv
-/** Options for a preparation whose provider retains unpublished state. */
+/** Options for a preparation whose provider retains state through Agent publication. */
 interface SessionPreparationOptions {
+  /** Commit provider-owned state after the complete Agent publication succeeds. */
+  readonly commitPublication?: () => void
   /** Release provider-owned state when the Session was not published. */
   readonly release?: () => void
 }
@@ -177,9 +179,9 @@ interface SessionPreparationOptions {
 ```ts public-api
 /**
  * One exact unpublished Session and the provider state that keeps it usable.
- * Disposal is synchronous and idempotent. Providers decide whether release
- * returns the Session to a cache or discards it; publication may consume that
- * state before disposal, making the callback a no-op.
+ * The Agent publication owner commits retained state only after Session and
+ * Agent announcements plus session start succeed. Disposal is synchronous and
+ * idempotent; every earlier failure releases the retained state instead.
  */
 declare class SessionPreparation implements Disposable {
   /** The exact Session to use for setup and publication. */
@@ -191,6 +193,8 @@ declare class SessionPreparation implements Disposable {
    * @returns a preparation disposed after publication or rollback.
    */
   static create(session: Session, options?: SessionPreparationOptions): SessionPreparation;
+  /** Commit provider-owned state after the complete Agent publication succeeds. */
+  commitPublication(): void;
   /** Release provider state once when this preparation leaves its caller. */
   [Symbol.dispose](): void;
 }
@@ -330,8 +334,10 @@ abstract append(id: SessionId, events: readonly SessionEvent[]): Promise<void>
 /**
  * Prepare the exact unpublished Session used by resume. Implementations may
  * reuse object graphs retained by an earlier {@link inspect} after confirming
- * their durable revision is still current; disposal releases an unpublished
- * reservation. Revision retries require the durable log to remain unchanged
+ * their durable revision is still current. The Agent publication owner calls
+ * {@link SessionPreparation.commitPublication} only after the complete
+ * Session and Agent publication succeeds; earlier rollback disposal releases
+ * the reservation without committing its unpublished suffix. Revision retries require the durable log to remain unchanged
  * for one read/check round trip; continuous external writers may delay completion.
  * @param id - persisted session to prepare.
  * @param signal - optional cancellation for preparation work.

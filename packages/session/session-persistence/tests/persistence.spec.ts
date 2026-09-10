@@ -637,7 +637,8 @@ describe('PersistenceCoordinator session preparations', () => {
     const detach = ctx.sessions.enter(preparation.session)
 
     try {
-      expect(() => { ctx.sessions.announce(preparation.session) }).toThrow(/no longer matches/)
+      ctx.sessions.announce(preparation.session)
+      expect(() => { preparation.commitPublication() }).toThrow(/no longer matches/)
     } finally {
       detach()
       preparation[Symbol.dispose]()
@@ -698,6 +699,7 @@ describe('PersistenceCoordinator session preparations', () => {
       ctx.sessions.announce(preparation.session)
       preparation.session.append('turn/start', { turn: 2 })
       preparation.session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+      preparation.commitPublication()
 
       await expect(ctx.sessions.flush(preparation.session)).resolves.toBe(true)
       expect(backend.store.get(id)?.events.map(event => event.seq))
@@ -829,6 +831,7 @@ describe('PersistenceCoordinator session preparations', () => {
 
       detach = ctx.sessions.enter(preparation.session)
       expect(() => { ctx.sessions.announce(preparation!.session) }).not.toThrow()
+      preparation.commitPublication()
       expect(preparations.reservationFor(preparation.session)).toBeUndefined()
     } finally {
       detach?.()

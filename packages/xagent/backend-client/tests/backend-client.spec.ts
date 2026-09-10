@@ -227,7 +227,1022 @@ function retrievalClient(body: unknown, status = 200): XAgentBackendClient {
   })
 }
 
+const factIds = {
+  session: '00000000-0000-0000-0000-000000000601',
+  project: '00000000-0000-0000-0000-000000000602',
+  proposal: '00000000-0000-0000-0000-000000000603',
+  revision: '00000000-0000-0000-0000-000000000604',
+  proposer: '00000000-0000-0000-0000-000000000605',
+  reviewer: '00000000-0000-0000-0000-000000000606',
+  index: '00000000-0000-0000-0000-000000000607',
+  outbox: '00000000-0000-0000-0000-000000000608',
+}
+
+const factEvidenceResponse = {
+  citation_id: '[资料1]',
+  artifact_id: retrievalIds.artifact,
+  version_id: retrievalIds.version,
+  index_id: factIds.index,
+  index_generation: 2,
+  chunk_id: retrievalIds.chunk,
+  line_start: 3,
+  line_end: 8,
+}
+
+const pendingFactProposalResponse = {
+  id: factIds.proposal,
+  project_id: factIds.project,
+  field_key: 'delivery.date',
+  label: '交付日期',
+  value: { type: 'date', value: '2026-09-30' },
+  proposer_id: factIds.proposer,
+  base_revision: 0,
+  assertion_reason: null,
+  status: 'pending',
+  decision_actor_id: null,
+  decision_reason: null,
+  evidence: [factEvidenceResponse],
+  created_at: '2026-09-08T08:00:00+00:00',
+  admitted_at: '2026-09-08T08:00:01+00:00',
+  decided_at: null,
+}
+
+const confirmedFactRevisionResponse = {
+  id: factIds.revision,
+  project_id: factIds.project,
+  field_key: 'delivery.date',
+  label: '交付日期',
+  value: { type: 'date', value: '2026-09-30' },
+  content_revision: 1,
+  proposal_id: factIds.proposal,
+  proposer_id: factIds.proposer,
+  confirmed_by_id: factIds.reviewer,
+  assertion_reason: null,
+  evidence: [factEvidenceResponse],
+  created_at: '2026-09-08T08:01:00+00:00',
+}
+
+const factPrepareHash = retrievalPayloadHash({ proposalId: factIds.proposal, status: 'pending' })
+const factOutboxEventResponse = {
+  type: 'fact/proposal-decided',
+  data: {
+    proposal_id: factIds.proposal,
+    project_id: factIds.project,
+    field_key: 'delivery.date',
+    label: '交付日期',
+    status: 'conflicted',
+    decision_reason: '已有新版本',
+  },
+}
+const factOutboxHash = retrievalPayloadHash(factOutboxEventResponse)
+
+function factCursor(
+  itemId = factIds.proposal,
+  createdAt = '2026-09-08T08:00:00+00:00',
+): string {
+  return Buffer.from(JSON.stringify({
+    created_at: createdAt,
+    id: itemId,
+    v: 1,
+  })).toString('base64url')
+}
+
+function factClient(body: unknown, status = 200): XAgentBackendClient {
+  return retrievalClient(body, status)
+}
+
 describe('XAgent 后端客户端', () => {
+  test('Fact 方法只发送闭合 snake_case 正文并解码所有公开值、状态、详情、决定和 Outbox 事件', async () => {
+    const calls: Array<{ path: string; headers: Headers; body: unknown }> = []
+    const proposalStatuses = ['pending', 'confirmed', 'rejected', 'withdrawn', 'conflicted'] as const
+    const proposalValues = [
+      { type: 'text', value: '已确认' },
+      { type: 'number', value: 12.5 },
+      { type: 'boolean', value: true },
+      { type: 'date', value: '2026-09-30' },
+      { type: 'number', value: 3 },
+    ] as const
+    const outboxEvents = [
+      {
+        type: 'fact/proposal-decided',
+        data: {
+          proposal_id: factIds.proposal,
+          project_id: factIds.project,
+          field_key: 'delivery.date',
+          label: '交付日期',
+          status: 'confirmed',
+          fact_revision_id: factIds.revision,
+          content_revision: 1,
+          decision_reason: '已核对',
+        },
+      },
+      {
+        type: 'fact/proposal-decided',
+        data: {
+          proposal_id: factIds.proposal,
+          project_id: factIds.project,
+          field_key: 'delivery.date',
+          label: '交付日期',
+          status: 'rejected',
+          decision_reason: '证据不足',
+        },
+      },
+      {
+        type: 'fact/proposal-decided',
+        data: {
+          proposal_id: factIds.proposal,
+          project_id: factIds.project,
+          field_key: 'delivery.date',
+          label: '交付日期',
+          status: 'withdrawn',
+        },
+      },
+      factOutboxEventResponse,
+    ] as const
+    const proposals = proposalStatuses.map((status, index) => ({
+      ...pendingFactProposalResponse,
+      id: `00000000-0000-0000-0000-${String(610 + index).padStart(12, '0')}`,
+      value: proposalValues[index],
+      status,
+      ...(status === 'pending' ? {} : {
+        decision_actor_id: factIds.reviewer,
+        decision_reason: status === 'rejected' ? '证据不足' : null,
+        decided_at: '2026-09-08T08:01:00+00:00',
+      }),
+    }))
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(requestUrl(input)).pathname
+      calls.push({
+        path,
+        headers: new Headers(init?.headers),
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined,
+      })
+      if (path.endsWith('/proposals/prepare')) return Response.json({
+        schema_version: 1,
+        result: { proposalId: factIds.proposal, status: 'pending' },
+        receipt: 'opaque-fact-receipt',
+        payload_sha256: factPrepareHash,
+      })
+      if (path.endsWith('/heads/list')) return Response.json({
+        schema_version: 1,
+        items: [
+          { ...confirmedFactRevisionResponse, value: proposalValues[0] },
+          {
+            ...confirmedFactRevisionResponse,
+            id: '00000000-0000-0000-0000-000000000621',
+            content_revision: 2,
+            value: proposalValues[1],
+          },
+          {
+            ...confirmedFactRevisionResponse,
+            id: '00000000-0000-0000-0000-000000000622',
+            content_revision: 3,
+            value: proposalValues[2],
+          },
+          {
+            ...confirmedFactRevisionResponse,
+            id: '00000000-0000-0000-0000-000000000623',
+            content_revision: 4,
+            value: proposalValues[3],
+          },
+        ],
+        next_cursor: factCursor(factIds.revision),
+      })
+      if (path.endsWith('/proposals/list')) return Response.json({
+        schema_version: 1,
+        items: proposals,
+        next_cursor: null,
+      })
+      if (path.endsWith(`/revisions/${factIds.revision}`)) return Response.json({
+        schema_version: 1,
+        revision: confirmedFactRevisionResponse,
+        history: [confirmedFactRevisionResponse],
+      })
+      if (path.endsWith(`/proposals/${factIds.proposal}`)) return Response.json({
+        schema_version: 1,
+        proposal: pendingFactProposalResponse,
+      })
+      if (path.endsWith('/approve')) return Response.json({
+        schema_version: 1,
+        proposal_id: factIds.proposal,
+        status: 'confirmed',
+        fact_revision_id: factIds.revision,
+        content_revision: 1,
+      })
+      if (path.endsWith('/reject')) return Response.json({
+        schema_version: 1,
+        proposal_id: factIds.proposal,
+        status: 'rejected',
+      })
+      if (path.endsWith('/withdraw')) return Response.json({
+        schema_version: 1,
+        proposal_id: factIds.proposal,
+        status: 'withdrawn',
+      })
+      if (path.endsWith('/outbox/pull')) return Response.json({
+        schema_version: 1,
+        items: outboxEvents.map((event, index) => ({
+          outbox_id: `00000000-0000-0000-0000-${String(630 + index).padStart(12, '0')}`,
+          payload_sha256: retrievalPayloadHash(event),
+          event,
+        })),
+        next_cursor: null,
+      })
+      return Response.json({ detail: { code: 'not-found' } }, { status: 404 })
+    })
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: fetcher,
+    })
+
+    await expect(client.facts.prepare('user-token', 'delegation-token', {
+      sessionId: factIds.session,
+      toolCallId: 'call-fact',
+      permissionRevision: 3,
+      idempotencyKey: 'prepare-fact',
+      fieldKey: 'delivery.date',
+      label: '交付日期',
+      value: { type: 'date', value: '2026-09-30' },
+      evidenceIds: ['[资料1]'],
+    })).resolves.toEqual({
+      result: { proposalId: factIds.proposal, status: 'pending' },
+      receipt: 'opaque-fact-receipt',
+      payloadHash: factPrepareHash,
+    })
+    await expect(client.facts.listHeads('user-token', factIds.project, {
+      limit: 100,
+    })).resolves.toMatchObject({
+      items: [
+        { value: { type: 'text', value: '已确认' } },
+        { value: { type: 'number', value: 12.5 } },
+        { value: { type: 'boolean', value: true } },
+        { value: { type: 'date', value: '2026-09-30' } },
+      ],
+      nextCursor: factCursor(factIds.revision),
+    })
+    const proposalPage = await client.facts.listProposals('user-token', factIds.project, {
+      limit: 100,
+      cursor: factCursor(),
+    })
+    expect(proposalPage).toMatchObject({
+      items: proposalStatuses.map(status => ({ status })),
+    })
+    expect(proposalPage).not.toHaveProperty('nextCursor')
+    await expect(client.facts.revision('user-token', factIds.revision)).resolves.toMatchObject({
+      revision: { id: factIds.revision, value: { type: 'date', value: '2026-09-30' } },
+      history: [{ id: factIds.revision }],
+    })
+    await expect(client.facts.proposal('user-token', factIds.proposal)).resolves.toMatchObject({
+      id: factIds.proposal,
+      status: 'pending',
+      evidence: [{ citationId: '[资料1]', indexGeneration: 2 }],
+    })
+    await expect(client.facts.approve('user-token', factIds.proposal, {
+      idempotencyKey: 'approve-fact',
+      decisionNote: '已核对',
+    })).resolves.toEqual({
+      proposalId: factIds.proposal,
+      status: 'confirmed',
+      factRevisionId: factIds.revision,
+      contentRevision: 1,
+    })
+    await expect(client.facts.reject('user-token', factIds.proposal, {
+      idempotencyKey: 'reject-fact',
+      reason: '证据不足',
+    })).resolves.toEqual({ proposalId: factIds.proposal, status: 'rejected' })
+    await expect(client.facts.withdraw('user-token', factIds.proposal, {
+      idempotencyKey: 'withdraw-fact',
+    })).resolves.toEqual({ proposalId: factIds.proposal, status: 'withdrawn' })
+    const outboxPage = await client.facts.pullOutbox('user-token', factIds.session, {
+      limit: 32,
+    })
+    expect(outboxPage).toMatchObject({
+      items: [
+        {
+          event: {
+            data: {
+              status: 'confirmed',
+              factRevisionId: factIds.revision,
+              contentRevision: 1,
+            },
+          },
+        },
+        { event: { data: { status: 'rejected', decisionReason: '证据不足' } } },
+        { event: { data: { status: 'withdrawn' } } },
+        { event: { data: { status: 'conflicted', decisionReason: '已有新版本' } } },
+      ],
+    })
+
+    expect(calls.map(call => call.path)).toEqual([
+      '/internal/xagent/facts/proposals/prepare',
+      `/internal/xagent/facts/projects/${factIds.project}/heads/list`,
+      `/internal/xagent/facts/projects/${factIds.project}/proposals/list`,
+      `/internal/xagent/facts/revisions/${factIds.revision}`,
+      `/internal/xagent/facts/proposals/${factIds.proposal}`,
+      `/internal/xagent/facts/proposals/${factIds.proposal}/approve`,
+      `/internal/xagent/facts/proposals/${factIds.proposal}/reject`,
+      `/internal/xagent/facts/proposals/${factIds.proposal}/withdraw`,
+      `/internal/xagent/facts/sessions/${factIds.session}/outbox/pull`,
+    ])
+    expect(calls[0]?.headers).toBeInstanceOf(Headers)
+    expect(calls[0]).toMatchObject({
+      body: {
+        schema_version: 1,
+        session_id: factIds.session,
+        tool_call_id: 'call-fact',
+        permission_revision: 3,
+        idempotency_key: 'prepare-fact',
+        field_key: 'delivery.date',
+        label: '交付日期',
+        value: { type: 'date', value: '2026-09-30' },
+        evidence_ids: ['[资料1]'],
+      },
+    })
+    expect(calls.slice(1).map(call => call.body)).toEqual([
+      { schema_version: 1, limit: 100 },
+      { schema_version: 1, limit: 100, cursor: factCursor() },
+      { schema_version: 1 },
+      { schema_version: 1 },
+      { schema_version: 1, idempotency_key: 'approve-fact', decision_note: '已核对' },
+      { schema_version: 1, idempotency_key: 'reject-fact', reason: '证据不足' },
+      { schema_version: 1, idempotency_key: 'withdraw-fact' },
+      { schema_version: 1, limit: 32 },
+    ])
+  })
+
+  test('Fact 详情拒绝未知字段、非法 tag、数值、日期、状态、条件字段和超限证据', async () => {
+    const invalidProposals: unknown[] = [
+      { ...pendingFactProposalResponse, private_receipt: 'must-not-escape' },
+      { ...pendingFactProposalResponse, value: { type: 'money', value: 1 } },
+      { ...pendingFactProposalResponse, value: { type: 'number', value: true } },
+      { ...pendingFactProposalResponse, value: { type: 'number', value: Number.MAX_SAFE_INTEGER + 1 } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-02-30' } },
+      { ...pendingFactProposalResponse, status: 'prepared' },
+      {
+        ...pendingFactProposalResponse,
+        status: 'confirmed',
+        decision_actor_id: null,
+        decided_at: '2026-09-08T08:01:00+00:00',
+      },
+      {
+        ...pendingFactProposalResponse,
+        status: 'rejected',
+        decision_actor_id: factIds.reviewer,
+        decision_reason: null,
+        decided_at: '2026-09-08T08:01:00+00:00',
+      },
+      {
+        ...pendingFactProposalResponse,
+        created_at: '0000-01-01T00:00:00+00:00',
+      },
+      {
+        ...pendingFactProposalResponse,
+        evidence: [{ ...factEvidenceResponse, line_end: 2 }],
+      },
+      {
+        ...pendingFactProposalResponse,
+        evidence: [{ ...factEvidenceResponse, receipt: 'must-not-escape' }],
+      },
+      {
+        ...pendingFactProposalResponse,
+        evidence: Array.from({ length: 65 }, (_, index) => ({
+          ...factEvidenceResponse,
+          citation_id: `[资料${index + 1}]`,
+        })),
+      },
+    ]
+
+    for (const proposal of invalidProposals) {
+      const pending = factClient({ schema_version: 1, proposal }).facts.proposal('user-token', factIds.proposal)
+      await expect(pending).rejects.toMatchObject({ code: 'service-unavailable' })
+      const error = await pending.catch((caught: unknown) => caught)
+      expect(String(error)).not.toContain('must-not-escape')
+    }
+  })
+
+  test.each([
+    {
+      family: 'prepare',
+      body: {
+        schema_version: 1,
+        result: { proposalId: factIds.proposal, status: 'pending' },
+        receipt: 'opaque-fact-receipt',
+        payload_sha256: factPrepareHash,
+        private: true,
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.prepare('user-token', 'delegation', {
+        sessionId: factIds.session,
+        toolCallId: 'call-fact',
+        permissionRevision: 3,
+        idempotencyKey: 'prepare',
+        fieldKey: 'delivery.date',
+        label: '交付日期',
+        value: { type: 'date', value: '2026-09-30' },
+        evidenceIds: ['[资料1]'],
+      }),
+    },
+    {
+      family: 'head page',
+      body: {
+        schema_version: true,
+        items: [confirmedFactRevisionResponse],
+        next_cursor: null,
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.listHeads(
+        'user-token', factIds.project, { limit: 1 },
+      ),
+    },
+    {
+      family: 'proposal page',
+      body: {
+        schema_version: 1,
+        items: [pendingFactProposalResponse],
+        next_cursor: factCursor(factIds.proposal, '2026-09-08T08:00:00-00:00'),
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.listProposals(
+        'user-token', factIds.project, { limit: 1 },
+      ),
+    },
+    {
+      family: 'proposal detail',
+      body: {
+        schema_version: 1,
+        proposal: { ...pendingFactProposalResponse, decided_at: 'not-an-instant' },
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.proposal('user-token', factIds.proposal),
+    },
+    {
+      family: 'revision detail',
+      body: {
+        schema_version: 1,
+        revision: confirmedFactRevisionResponse,
+        history: [{ ...confirmedFactRevisionResponse, evidence: [{
+          ...factEvidenceResponse,
+          index_generation: Number.MAX_SAFE_INTEGER + 1,
+        }] }],
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.revision('user-token', factIds.revision),
+    },
+    {
+      family: 'approve decision',
+      body: { schema_version: 1, proposal_id: factIds.proposal, status: 'rejected' },
+      invoke: (client: XAgentBackendClient) => client.facts.approve(
+        'user-token', factIds.proposal, { idempotencyKey: 'approve' },
+      ),
+    },
+    {
+      family: 'reject decision',
+      body: { schema_version: 1, proposal_id: factIds.proposal, status: 'withdrawn' },
+      invoke: (client: XAgentBackendClient) => client.facts.reject(
+        'user-token', factIds.proposal, { idempotencyKey: 'reject', reason: '证据不足' },
+      ),
+    },
+    {
+      family: 'withdraw decision',
+      body: { schema_version: 1, proposal_id: factIds.proposal, status: 'rejected' },
+      invoke: (client: XAgentBackendClient) => client.facts.withdraw(
+        'user-token', factIds.proposal, { idempotencyKey: 'withdraw' },
+      ),
+    },
+    {
+      family: 'Outbox pull',
+      body: { schema_version: 1, items: [], next_cursor: null, private: true },
+      invoke: (client: XAgentBackendClient) => client.facts.pullOutbox(
+        'user-token', factIds.session, { limit: 1 },
+      ),
+    },
+    {
+      family: 'Outbox event',
+      body: {
+        schema_version: 1,
+        items: [{
+          outbox_id: factIds.outbox,
+          payload_sha256: retrievalPayloadHash({ ...factOutboxEventResponse, private: true }),
+          event: { ...factOutboxEventResponse, private: true },
+        }],
+        next_cursor: null,
+      },
+      invoke: (client: XAgentBackendClient) => client.facts.pullOutbox(
+        'user-token', factIds.session, { limit: 1 },
+      ),
+    },
+  ])('Fact $family decoder rejects its malformed top-level response', async ({ body, invoke }) => {
+    await expect(invoke(factClient(body))).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('Fact decoders accept exact UTF-8 byte boundaries and reject one-byte or multibyte overflow', async () => {
+    const exact = {
+      ...pendingFactProposalResponse,
+      field_key: 'a'.repeat(128),
+      label: '界'.repeat(85),
+      value: { type: 'text', value: `${'界'.repeat(5_461)}a` },
+      assertion_reason: `${'界'.repeat(1_365)}a`,
+    }
+    await expect(factClient({ schema_version: 1, proposal: exact }).facts.proposal(
+      'user-token', factIds.proposal,
+    )).resolves.toMatchObject({
+      fieldKey: 'a'.repeat(128),
+      label: '界'.repeat(85),
+      value: { type: 'text', value: `${'界'.repeat(5_461)}a` },
+      assertionReason: `${'界'.repeat(1_365)}a`,
+    })
+
+    for (const proposal of [
+      { ...exact, field_key: `${'a'.repeat(128)}b` },
+      { ...exact, label: `${'界'.repeat(85)}a` },
+      { ...exact, value: { type: 'text', value: `${'界'.repeat(5_461)}ab` } },
+      { ...exact, assertion_reason: `${'界'.repeat(1_365)}ab` },
+    ]) {
+      await expect(factClient({ schema_version: 1, proposal }).facts.proposal(
+        'user-token', factIds.proposal,
+      )).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+  })
+
+  test('Fact wire parsers reject every non-canonical scalar and semantic combination', async () => {
+    const proposalBodies: unknown[] = [
+      { ...pendingFactProposalResponse, label: 1 },
+      { ...pendingFactProposalResponse, label: '' },
+      { ...pendingFactProposalResponse, field_key: 'Delivery.Date' },
+      { ...pendingFactProposalResponse, assertion_reason: '   ' },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: 1 } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-9-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '1900-02-29' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '0000-01-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-00-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-13-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-01-00' } },
+      { ...pendingFactProposalResponse, evidence: [factEvidenceResponse, factEvidenceResponse] },
+    ]
+    for (const proposal of proposalBodies) {
+      await expect(factClient({ schema_version: 1, proposal }).facts.proposal(
+        'user-token', factIds.proposal,
+      )).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    await expect(factClient({
+      schema_version: 1,
+      revision: { ...confirmedFactRevisionResponse, assertion_reason: 'source verified' },
+      history: [],
+    }).facts.revision('user-token', factIds.revision)).resolves.toMatchObject({
+      revision: { assertionReason: 'source verified' },
+    })
+
+    const cursorPayload = (value: unknown): string => Buffer.from(
+      typeof value === 'string' ? value : JSON.stringify(value),
+    ).toString('base64url')
+    const cursorRows: unknown[] = [
+      '*',
+      cursorPayload('{'),
+      Buffer.from([0xff]).toString('base64url'),
+      cursorPayload({ created_at: '2026-09-08T08:00:00+00:00', id: factIds.proposal, v: 2 }),
+      factCursor('AAAAAAAA-0000-0000-0000-000000000603'),
+      factCursor(factIds.proposal, '2026-09-08T08:00:00.123+00:00'),
+      factCursor(factIds.proposal, '2026-09-08T08:00:00.000000+00:00'),
+    ]
+    for (const cursor of cursorRows) {
+      await expect(factClient({ schema_version: 1, items: [], next_cursor: cursor }).facts.listProposals(
+        'user-token', factIds.project, { limit: 1 },
+      )).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    const prepareInput = {
+      sessionId: factIds.session,
+      toolCallId: 'call-fact',
+      permissionRevision: 3,
+      idempotencyKey: 'prepare',
+      fieldKey: 'delivery.date',
+      label: '交付日期',
+      value: { type: 'date' as const, value: '2026-09-30' },
+      evidenceIds: ['[资料1]'],
+      assertionReason: 'source verified',
+    }
+    for (const body of [
+      {
+        schema_version: 1,
+        result: { proposalId: factIds.proposal, status: 'rejected' },
+        receipt: 'receipt',
+        payload_sha256: factPrepareHash,
+      },
+      {
+        schema_version: 1,
+        result: { proposalId: factIds.proposal, status: 'pending' },
+        receipt: 'receipt',
+        payload_sha256: '0'.repeat(64),
+      },
+    ]) {
+      await expect(factClient(body).facts.prepare('user-token', 'delegation', prepareInput))
+        .rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    await expect(factClient({ schema_version: 2, proposal: pendingFactProposalResponse }).facts.proposal(
+      'user-token', factIds.proposal,
+    )).rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(factClient({
+      schema_version: 2,
+      revision: confirmedFactRevisionResponse,
+      history: [],
+    }).facts.revision('user-token', factIds.revision)).rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const outboxCases: unknown[] = [
+      { ...factOutboxEventResponse, type: 'fact/proposal-created' },
+      {
+        ...factOutboxEventResponse,
+        data: { ...factOutboxEventResponse.data, status: true },
+      },
+      {
+        ...factOutboxEventResponse,
+        data: {
+          ...factOutboxEventResponse.data,
+          status: 'confirmed',
+          fact_revision_id: factIds.revision,
+        },
+      },
+    ]
+    for (const event of outboxCases) {
+      await expect(factClient({
+        schema_version: 1,
+        items: [{ outbox_id: factIds.outbox, payload_sha256: retrievalPayloadHash(event), event }],
+        next_cursor: null,
+      }).facts.pullOutbox('user-token', factIds.session, { limit: 1 }))
+        .rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+    await expect(factClient({
+      schema_version: 1,
+      items: [{ outbox_id: factIds.outbox, payload_sha256: '0'.repeat(64), event: factOutboxEventResponse }],
+      next_cursor: null,
+    }).facts.pullOutbox('user-token', factIds.session, { limit: 1 }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const invalid = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: vi.fn(),
+    })
+    await expect(invalid.facts.prepare('user-token', '', prepareInput))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(invalid.facts.prepare('user-token', 'delegation', {
+      ...prepareInput,
+      evidenceIds: ['[资料1]', '[资料1]'],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(invalid.facts.prepare('user-token', 'delegation', {
+      sessionId: factIds.session,
+      toolCallId: 'call-fact',
+      permissionRevision: 3,
+      idempotencyKey: 'prepare',
+      fieldKey: 'delivery.date',
+      label: '交付日期',
+      value: { type: 'date', value: '2026-09-30' },
+      evidenceIds: [],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('Fact 分页、修订详情、决定和 Outbox 拒绝超限、畸形游标与不完整事件', async () => {
+    const overlongPage = factClient({
+      schema_version: 1,
+      items: Array.from({ length: 101 }, () => confirmedFactRevisionResponse),
+      next_cursor: null,
+    })
+    await expect(overlongPage.facts.listHeads('user-token', factIds.project, { limit: 100 }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const nonCanonicalCursor = Buffer.from(JSON.stringify({
+      created_at: '2026-09-08T08:00:00Z',
+      id: factIds.proposal,
+      v: 1,
+    })).toString('base64url')
+    await expect(factClient({
+      schema_version: 1,
+      items: [],
+      next_cursor: nonCanonicalCursor,
+    }).facts.listProposals('user-token', factIds.project, { limit: 1 }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    await expect(factClient({
+      schema_version: 1,
+      revision: confirmedFactRevisionResponse,
+      history: Array.from({ length: 101 }, () => confirmedFactRevisionResponse),
+    }).facts.revision('user-token', factIds.revision))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    await expect(factClient({
+      schema_version: 1,
+      proposal_id: factIds.proposal,
+      status: 'confirmed',
+    }).facts.approve('user-token', factIds.proposal, { idempotencyKey: 'approve' }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const rejectedWithoutReason = {
+      type: 'fact/proposal-decided',
+      data: {
+        proposal_id: factIds.proposal,
+        project_id: factIds.project,
+        field_key: 'delivery.date',
+        label: '交付日期',
+        status: 'rejected',
+      },
+    }
+    await expect(factClient({
+      schema_version: 1,
+      items: [{
+        outbox_id: factIds.outbox,
+        payload_sha256: retrievalPayloadHash(rejectedWithoutReason),
+        event: rejectedWithoutReason,
+      }],
+      next_cursor: null,
+    }).facts.pullOutbox('user-token', factIds.session, { limit: 32 }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    await expect(factClient({
+      schema_version: 1,
+      items: Array.from({ length: 33 }, () => ({
+        outbox_id: factIds.outbox,
+        payload_sha256: factOutboxHash,
+        event: factOutboxEventResponse,
+      })),
+      next_cursor: null,
+    }).facts.pullOutbox('user-token', factIds.session, { limit: 32 }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('Fact 请求边界拒绝畸形输入并不序列化 Browser 提供的权限字段', async () => {
+    const bodies: Record<string, unknown>[] = []
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async (input, init) => {
+        if (typeof init?.body !== 'string') throw new TypeError('expected a JSON request body')
+        bodies.push(JSON.parse(init.body) as Record<string, unknown>)
+        const path = new URL(requestUrl(input)).pathname
+        if (path.endsWith('/heads/list') || path.endsWith('/proposals/list') || path.endsWith('/outbox/pull')) {
+          return Response.json({ schema_version: 1, items: [], next_cursor: null })
+        }
+        if (path.endsWith('/approve')) return Response.json({
+          schema_version: 1,
+          proposal_id: factIds.proposal,
+          status: 'confirmed',
+          fact_revision_id: factIds.revision,
+          content_revision: 1,
+        })
+        if (path.endsWith('/reject')) return Response.json({
+          schema_version: 1,
+          proposal_id: factIds.proposal,
+          status: 'rejected',
+        })
+        if (path.endsWith('/withdraw')) return Response.json({
+          schema_version: 1,
+          proposal_id: factIds.proposal,
+          status: 'withdrawn',
+        })
+        return Response.json({ schema_version: 1, proposal: pendingFactProposalResponse })
+      },
+    })
+    const authority = {
+      actor_id: factIds.proposer,
+      role: 'manager',
+      membership: 'owner',
+      owner_id: factIds.proposer,
+      permission_revision: 999,
+      project_authority: true,
+      evidence_ids: ['[资料99]'],
+    }
+    await client.facts.listHeads('user-token', factIds.project, {
+      limit: 1,
+      ...authority,
+    })
+    await client.facts.listProposals('user-token', factIds.project, {
+      limit: 1,
+      ...authority,
+    })
+    await client.facts.proposal('user-token', factIds.proposal, undefined)
+    await client.facts.approve('user-token', factIds.proposal, {
+      idempotencyKey: 'approve',
+      ...authority,
+    })
+    await client.facts.reject('user-token', factIds.proposal, {
+      idempotencyKey: 'reject',
+      reason: '证据不足',
+      ...authority,
+    })
+    await client.facts.withdraw('user-token', factIds.proposal, {
+      idempotencyKey: 'withdraw',
+      ...authority,
+    })
+    await client.facts.pullOutbox('user-token', factIds.session, {
+      limit: 1,
+      ...authority,
+    })
+
+    for (const body of bodies) {
+      for (const key of Object.keys(authority)) expect(body).not.toHaveProperty(key)
+    }
+
+    const notCalled = vi.fn()
+    const invalid = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: notCalled,
+    })
+    await expect(invalid.facts.listHeads('user-token', factIds.project, { limit: 101 }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(invalid.facts.listProposals('user-token', factIds.project, {
+      limit: 1,
+      cursor: 'not-a-server-cursor',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(invalid.facts.prepare('user-token', 'delegation', {
+      sessionId: factIds.session,
+      toolCallId: 'call-fact',
+      permissionRevision: 3,
+      idempotencyKey: 'prepare',
+      fieldKey: 'delivery.date',
+      label: '交付日期',
+      value: { type: 'number', value: Number.POSITIVE_INFINITY },
+      evidenceIds: [],
+      assertionReason: '已核对',
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+    expect(notCalled).not.toHaveBeenCalled()
+  })
+
+  test('Fact endpoint 只接受稳定的 HTTP status/code 配对并隐藏未知正文', async () => {
+    const prepareInput = {
+      sessionId: factIds.session,
+      toolCallId: 'call-fact',
+      permissionRevision: 3,
+      idempotencyKey: 'prepare',
+      fieldKey: 'delivery.date',
+      label: '交付日期',
+      value: { type: 'date' as const, value: '2026-09-30' },
+      evidenceIds: ['[资料1]'],
+    }
+    const common = [
+      [401, 'unauthenticated'],
+      [404, 'not-found'],
+      [503, 'service-unavailable'],
+    ] as const
+    const families: ReadonlyArray<{
+      readonly invoke: (client: XAgentBackendClient) => Promise<unknown>
+      readonly specific: ReadonlyArray<readonly [number, string]>
+    }> = [
+      {
+        invoke: client => client.facts.prepare('user-token', 'delegation', prepareInput),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [422, 'fact-evidence-invalid'],
+          [409, 'fact-session-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+        ],
+      },
+      {
+        invoke: client => client.facts.listHeads('user-token', factIds.project, { limit: 1 }),
+        specific: [[422, 'fact-input-invalid']],
+      },
+      {
+        invoke: client => client.facts.listProposals('user-token', factIds.project, { limit: 1 }),
+        specific: [[422, 'fact-input-invalid']],
+      },
+      { invoke: client => client.facts.proposal('user-token', factIds.proposal), specific: [] },
+      { invoke: client => client.facts.revision('user-token', factIds.revision), specific: [] },
+      {
+        invoke: client => client.facts.approve('user-token', factIds.proposal, { idempotencyKey: 'approve' }),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+          [409, 'fact-revision-conflict'],
+          [409, 'fact-already-decided'],
+        ],
+      },
+      {
+        invoke: client => client.facts.reject('user-token', factIds.proposal, {
+          idempotencyKey: 'reject', reason: '证据不足',
+        }),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+          [409, 'fact-already-decided'],
+        ],
+      },
+      {
+        invoke: client => client.facts.withdraw('user-token', factIds.proposal, { idempotencyKey: 'withdraw' }),
+        specific: [
+          [422, 'fact-input-invalid'],
+          [409, 'stale-permission'],
+          [409, 'idempotency-conflict'],
+          [409, 'fact-already-decided'],
+        ],
+      },
+      {
+        invoke: client => client.facts.pullOutbox('user-token', factIds.session, { limit: 1 }),
+        specific: [[422, 'fact-input-invalid'], [409, 'fact-session-invalid']],
+      },
+    ]
+    for (const family of families) {
+      for (const [status, code] of [...common, ...family.specific]) {
+        await expect(family.invoke(factClient({ detail: { code } }, status)))
+          .rejects.toMatchObject({ code })
+      }
+    }
+    for (const [status, code] of [
+      [401, 'unauthenticated'],
+      [404, 'not-found'],
+      [404, 'session-not-found'],
+      [409, 'sequence-conflict'],
+      [409, 'idempotency-conflict'],
+      [409, 'evidence-conflict'],
+      [409, 'fact-receipt-invalid'],
+      [410, 'evidence-expired'],
+      [410, 'fact-receipt-expired'],
+      [503, 'service-unavailable'],
+    ] as const) {
+      const client = factClient({ detail: { code } }, status)
+      await expect(client.sessions.append('user-token', factIds.session, {
+        schema_version: 1,
+        expected_sequence: -1,
+        idempotency_key: 'append',
+        events: [{}],
+        retrieval_receipts: [],
+      })).rejects.toMatchObject({ code })
+    }
+    const mismatches: ReadonlyArray<{
+      readonly status: number
+      readonly code: string
+      readonly invoke: (client: XAgentBackendClient) => Promise<unknown>
+    }> = [
+      {
+        status: 422,
+        code: 'fact-input-invalid',
+        invoke: client => client.facts.proposal('user-token', factIds.proposal),
+      },
+      {
+        status: 409,
+        code: 'fact-revision-conflict',
+        invoke: client => client.facts.reject('user-token', factIds.proposal, {
+          idempotencyKey: 'reject', reason: '证据不足',
+        }),
+      },
+      {
+        status: 409,
+        code: 'fact-revision-conflict',
+        invoke: client => client.facts.withdraw('user-token', factIds.proposal, { idempotencyKey: 'withdraw' }),
+      },
+      {
+        status: 422,
+        code: 'fact-evidence-invalid',
+        invoke: client => client.facts.pullOutbox('user-token', factIds.session, { limit: 1 }),
+      },
+      {
+        status: 409,
+        code: 'fact-already-decided',
+        invoke: client => client.sessions.append('user-token', factIds.session, {
+          schema_version: 1,
+          expected_sequence: -1,
+          idempotency_key: 'append-mismatch',
+          events: [{}],
+          retrieval_receipts: [],
+        }),
+      },
+    ]
+    for (const mismatch of mismatches) {
+      await expect(mismatch.invoke(factClient(
+        { detail: { code: mismatch.code } }, mismatch.status,
+      ))).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    const secret = 'raw-receipt-and-token-must-not-escape'
+    const rejected = await factClient({
+      detail: { code: 'unknown-fact-error', receipt: secret },
+      token: secret,
+    }, 409).facts.approve(
+      'user-token', factIds.proposal, { idempotencyKey: 'approve' },
+    ).catch((error: unknown) => error)
+    expect(rejected).toMatchObject({ code: 'service-unavailable' })
+    expect(String(rejected)).not.toContain(secret)
+  })
+
+  test('Fact 请求传播调用方取消并由共享超时 owner 收敛', async () => {
+    const signals: AbortSignal[] = []
+    const fetcher = vi.fn((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_, reject) => {
+      if (init?.signal !== undefined && init.signal !== null) signals.push(init.signal)
+      init?.signal?.addEventListener('abort', () => {
+        reject(new Error('fact request stopped'))
+      }, { once: true })
+    }))
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: fetcher, timeoutMs: 5_000,
+    })
+    const controller = new AbortController()
+    const cancelled = client.facts.proposal('user-token', factIds.proposal, controller.signal)
+    controller.abort()
+    await expect(cancelled).rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const timedOut = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: fetcher, timeoutMs: 1,
+    })
+    await expect(timedOut.facts.proposal('user-token', factIds.proposal))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+    expect(signals).toHaveLength(2)
+    expect(signals.every(signal => signal.aborted)).toBe(true)
+  })
+
   test('检索方法发送三重身份、闭合 wire body 并严格转换四类响应', async () => {
     const calls: Array<{ path: string; headers: Headers; body: unknown }> = []
     const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {

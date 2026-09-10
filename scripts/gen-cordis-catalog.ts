@@ -111,6 +111,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   xagentProject: 'web-server.md',
   xagentArtifact: 'web-server.md',
   xagentCitation: 'web-server.md',
+  xagentFact: 'web-server.md',
   xagentPrincipal: 'web-server.md',
   xagentRetrieval: 'web-server.md',
 }
@@ -162,6 +163,7 @@ export const SERVICE_WALK_EXEMPTIONS: Record<string, string> = {
   theme: 'client-side interface-typed browser service — packages/client/ui-theme/README.md owns the API',
   workspaces: 'client-side interface-typed browser service — packages/client/runtime/README.md owns the API',
   xagentArtifactCitationOpener: 'client-side immutable Artifact navigation service — packages/xagent/ui-artifact/README.md owns the API',
+  xagentFactUiRelationships: 'client-side Fact Slot, ToolView, controller, and Remote relationship check — packages/xagent/ui-fact/README.md owns the API',
   xagentWorkbench: 'client-side account-scoped project workbench service — packages/xagent/ui-project/README.md owns the API',
 }
 
@@ -539,6 +541,16 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   XAgentArtifactUpload: 'XAgent Artifact upload response is owned by packages/xagent/artifact/architecture.md',
   XAgentArtifactUploadInput: 'XAgent Artifact Remote input is owned by packages/xagent/artifact/architecture.md',
   XAgentAuthenticatedRequestScope: 'XAgent authenticated request identity is owned by packages/xagent/principal/architecture.md',
+  XAgentFactApproveInput: 'XAgent Fact decision input is owned by packages/xagent/fact/architecture.md',
+  XAgentFactPage: 'XAgent Fact page response is owned by packages/xagent/fact/architecture.md',
+  XAgentFactPageInput: 'XAgent Fact page input is owned by packages/xagent/fact/architecture.md',
+  XAgentFactProposal: 'XAgent Fact proposal response is owned by packages/xagent/fact/architecture.md',
+  XAgentFactProposalDecision: 'XAgent Fact decision response is owned by packages/xagent/fact/architecture.md',
+  XAgentFactRejectInput: 'XAgent Fact decision input is owned by packages/xagent/fact/architecture.md',
+  XAgentFactRevision: 'XAgent Fact revision response is owned by packages/xagent/fact/architecture.md',
+  XAgentFactRevisionDetail: 'XAgent Fact revision response is owned by packages/xagent/fact/architecture.md',
+  XAgentFactWithdrawInput: 'XAgent Fact decision input is owned by packages/xagent/fact/architecture.md',
+  XAgentProposeFactInput: 'XAgent Fact proposal input is owned by packages/xagent/fact/architecture.md',
   XAgentProjectDetail: 'XAgent project response contract is owned by packages/xagent/project/architecture.md',
   XAgentWorkbenchBootstrap: 'XAgent workbench response contract is owned by packages/xagent/project/architecture.md',
   XAgentWorkbenchContext: 'XAgent workbench selection contract is owned by packages/xagent/project/architecture.md',

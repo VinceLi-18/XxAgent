@@ -197,6 +197,19 @@ function copyAnnotations(value: Record<string, unknown>, output: Record<string, 
   if (Object.hasOwn(value, 'examples')) output.examples = cloneJson(value.examples, `harness.defineTool ${path}.examples`)
 }
 
+/** Clone scalar literal constraints into the host realm. */
+function copyLiteralConstraints(value: Record<string, unknown>, output: Record<string, unknown>, path: string): void {
+  if (Object.hasOwn(value, 'enum')) {
+    if (!isDensePlainArray(value.enum) || value.enum.length === 0) {
+      throw new Error(`harness.defineTool ${path}.enum must be a non-empty array`)
+    }
+    output.enum = cloneJson(value.enum, `harness.defineTool ${path}.enum`)
+  }
+  if (Object.hasOwn(value, 'const')) {
+    output.const = cloneJson(value.const, `harness.defineTool ${path}.const`)
+  }
+}
+
 /** Reject sandbox schema keys that the unified DSL would otherwise ignore. */
 function assertSchemaKeys(value: Record<string, unknown>, path: string, allowed: readonly string[]): void {
   assertSchemaContainerKeys(value, path)
@@ -448,7 +461,9 @@ function normalizePropertyMap(
         break
       }
       case 'array':
-        assertSchemaKeys(value, path, ['type', 'items', ...requiredKey, ...ANNOTATION_KEYS])
+        assertSchemaKeys(value, path, ['type', 'items', 'maxItems', 'uniqueItems', ...requiredKey, ...ANNOTATION_KEYS])
+        if (Object.hasOwn(value, 'maxItems')) prop.maxItems = value.maxItems
+        if (Object.hasOwn(value, 'uniqueItems')) prop.uniqueItems = value.uniqueItems
         if (Object.hasOwn(value, 'items')) {
           tasks.push({
             kind: 'value',
@@ -462,18 +477,16 @@ function normalizePropertyMap(
         }
         break
       case 'string':
+        assertSchemaKeys(value, path, ['type', 'pattern', 'enum', 'const', ...requiredKey, ...ANNOTATION_KEYS])
+        if (Object.hasOwn(value, 'pattern')) prop.pattern = value.pattern
+        copyLiteralConstraints(value, prop, path)
+        break
       case 'number':
       case 'integer':
       case 'boolean':
       case 'null':
         assertSchemaKeys(value, path, ['type', 'enum', 'const', ...requiredKey, ...ANNOTATION_KEYS])
-        if (Object.hasOwn(value, 'enum')) {
-          if (!isDensePlainArray(value.enum) || value.enum.length === 0) {
-            throw new Error(`harness.defineTool ${path}.enum must be a non-empty array`)
-          }
-          prop.enum = cloneJson(value.enum, `harness.defineTool ${path}.enum`)
-        }
-        if (Object.hasOwn(value, 'const')) prop.const = cloneJson(value.const, `harness.defineTool ${path}.const`)
+        copyLiteralConstraints(value, prop, path)
         break
       case 'json':
         assertSchemaKeys(value, path, ['type', ...requiredKey, ...ANNOTATION_KEYS])

@@ -1095,7 +1095,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async prepare(id: SessionId, signal?: AbortSignal): Promise<SessionPreparation>',
-        description: 'Prepare the exact unpublished Session used by resume. Implementations may reuse object graphs retained by an earlier inspect after confirming their durable revision is still current; disposal releases an unpublished reservation. Revision retries require the durable log to remain unchanged for one read/check round trip; continuous external writers may delay completion.',
+        description: 'Prepare the exact unpublished Session used by resume. Implementations may reuse object graphs retained by an earlier inspect after confirming their durable revision is still current. The Agent publication owner calls SessionPreparation.commitPublication only after the complete Session and Agent publication succeeds; earlier rollback disposal releases the reservation without committing its unpublished suffix. Revision retries require the durable log to remain unchanged for one read/check round trip; continuous external writers may delay completion.',
         parameters: [{ name: 'id', description: 'persisted session to prepare.' }, { name: 'signal', description: 'optional cancellation for preparation work.' }],
         returns: 'one owned unpublished Session preparation.',
       },
@@ -2301,6 +2301,78 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'xagentFact',
+    summary: 'Request-scoped FastAPI Fact provider.',
+    description: 'Request-scoped FastAPI Fact provider.',
+    methods: [
+      {
+        signature: 'async proposeFact(input: XAgentProposeFactInput): Promise<{ readonly proposalId: string; readonly status: \'pending\' }>',
+        description: 'Prepare one proposal and register its private receipt before returning the public result.',
+        parameters: [{ name: 'input', description: 'business fields, evidence identities, and the authoritative tool-call identity.' }],
+        returns: 'the public pending proposal identity without its private receipt.',
+      },
+      {
+        signature: 'async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: 'Run one Remote operation under an authenticated Project Session scope.',
+        parameters: [{ name: 'scope', description: 'immutable identity derived from the physical authenticated connection.' }, { name: 'operation', description: 'one complete Remote operation to bind to that identity.' }],
+        returns: 'the operation result while the scope remains active.',
+      },
+      {
+        signature: '@Remote(\'list-heads\') listHeads(sessionId: string, input: XAgentFactPageInput, signal?: AbortSignal): Promise<XAgentFactPage<XAgentFactRevision>>',
+        description: 'List current Fact heads.',
+        parameters: [{ name: 'sessionId', description: 'caller-selected Session, which must equal the physical request Session.' }, { name: 'input', description: 'bounded page selection.' }, { name: 'signal', description: 'optional caller cancellation.' }],
+        returns: 'one page of current Fact revisions in the fixed project.',
+      },
+      {
+        signature: '@Remote(\'list-proposals\') listProposals(sessionId: string, input: XAgentFactPageInput, signal?: AbortSignal): Promise<XAgentFactPage<XAgentFactProposal>>',
+        description: 'List public proposals.',
+        parameters: [{ name: 'sessionId', description: 'caller-selected Session, which must equal the physical request Session.' }, { name: 'input', description: 'bounded page selection.' }, { name: 'signal', description: 'optional caller cancellation.' }],
+        returns: 'one page of public proposals in the fixed project.',
+      },
+      {
+        signature: '@Remote revision(sessionId: string, revisionId: string, signal?: AbortSignal): Promise<XAgentFactRevisionDetail>',
+        description: 'Read one revision.',
+        parameters: [{ name: 'sessionId', description: 'caller-selected Session, which must equal the physical request Session.' }, { name: 'revisionId', description: 'immutable revision identity.' }, { name: 'signal', description: 'optional caller cancellation.' }],
+        returns: 'the revision and its history under current authorization.',
+      },
+      {
+        signature: '@Remote proposal(sessionId: string, proposalId: string, signal?: AbortSignal): Promise<XAgentFactProposal>',
+        description: 'Read one proposal.',
+        parameters: [{ name: 'sessionId', description: 'caller-selected Session, which must equal the physical request Session.' }, { name: 'proposalId', description: 'proposal identity to reauthorize.' }, { name: 'signal', description: 'optional caller cancellation.' }],
+        returns: 'the current public proposal state.',
+      },
+      {
+        signature: '@Remote approve( sessionId: string, proposalId: string, input: XAgentFactApproveInput, signal?: AbortSignal, ): Promise<XAgentFactProposalDecision>',
+        description: 'Approve one proposal.',
+        parameters: [{ name: 'sessionId', description: 'caller-selected Session, which must equal the physical request Session.' }, { name: 'proposalId', description: 'pending proposal identity.' }, { name: 'input', description: 'decision note and fresh operation idempotency key.' }, { name: 'signal', description: 'optional caller cancellation.' }],
+        returns: 'the durable terminal decision.',
+      },
+      {
+        signature: '@Remote reject( sessionId: string, proposalId: string, input: XAgentFactRejectInput, signal?: AbortSignal, ): Promise<XAgentFactProposalDecision>',
+        description: 'Reject one proposal.',
+        parameters: [{ name: 'sessionId', description: 'caller-selected Session, which must equal the physical request Session.' }, { name: 'proposalId', description: 'pending proposal identity.' }, { name: 'input', description: 'rejection reason and fresh operation idempotency key.' }, { name: 'signal', description: 'optional caller cancellation.' }],
+        returns: 'the durable terminal decision.',
+      },
+      {
+        signature: '@Remote withdraw( sessionId: string, proposalId: string, input: XAgentFactWithdrawInput, signal?: AbortSignal, ): Promise<XAgentFactProposalDecision>',
+        description: 'Withdraw one proposal.',
+        parameters: [{ name: 'sessionId', description: 'caller-selected Session, which must equal the physical request Session.' }, { name: 'proposalId', description: 'pending proposal identity.' }, { name: 'input', description: 'fresh operation idempotency key.' }, { name: 'signal', description: 'optional caller cancellation.' }],
+        returns: 'the durable terminal decision.',
+      },
+      {
+        signature: 'async dispose(): Promise<void>',
+        description: 'Close new work synchronously, abort owned calls, and await their settlement.',
+        parameters: [],
+      },
+      {
+        signature: 'relationshipIssue(): string | undefined',
+        description: 'Return the first violated live owner relationship without inspecting fixed examples.',
+        parameters: [],
+        returns: 'a stable diagnostic when active scope or Outbox ownership is inconsistent.',
+      },
+    ],
+  },
+  {
     key: 'xagentPrincipal',
     summary: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
     description: 'XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspection。',
@@ -3251,6 +3323,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface EpochHeader {\n    config: LlmCallConfig;\n    adapterDefaults?: LlmCallConfigAdapterDefaults;\n    system?: string;\n    tools?: ToolSchema[];\n}',
   },
   {
+    name: 'FactProposalPublicStatus',
+    declaration: 'export type FactProposalPublicStatus = \'pending\' | \'confirmed\' | \'rejected\' | \'withdrawn\' | \'conflicted\';',
+  },
+  {
     name: 'FileDiff',
     declaration: 'export interface FileDiff {\n    path: string;\n    oldText: string | null;\n    newText: string;\n}',
   },
@@ -3448,7 +3524,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'JsonSchemaNode',
-    declaration: 'export interface JsonSchemaNode {\n    type?: JsonSchemaType;\n    oneOf?: JsonSchemaNode[];\n    properties?: Record<string, JsonSchemaNode>;\n    required?: string[];\n    additionalProperties?: boolean;\n    items?: JsonSchemaNode;\n    enum?: JsonSchemaScalar[];\n    const?: JsonSchemaScalar;\n    description?: string;\n    title?: string;\n    default?: JsonValue;\n    examples?: JsonValue;\n}',
+    declaration: 'export interface JsonSchemaNode {\n    type?: JsonSchemaType;\n    oneOf?: JsonSchemaNode[];\n    properties?: Record<string, JsonSchemaNode>;\n    required?: string[];\n    additionalProperties?: boolean;\n    items?: JsonSchemaNode;\n    pattern?: string;\n    maxItems?: number;\n    uniqueItems?: boolean;\n    enum?: JsonSchemaScalar[];\n    const?: JsonSchemaScalar;\n    description?: string;\n    title?: string;\n    default?: JsonValue;\n    examples?: JsonValue;\n}',
   },
   {
     name: 'JsonSchemaScalar',
@@ -3733,6 +3809,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PreToolDecision',
     declaration: 'export type PreToolDecision = {\n    kind: \'allow\';\n} | {\n    kind: \'deny\';\n    reason: string;\n} | {\n    kind: \'ask\';\n    reason?: string;\n};',
+  },
+  {
+    name: 'ProjectFactValue',
+    declaration: 'export type ProjectFactValue = {\n    readonly type: \'text\';\n    readonly value: string;\n} | {\n    readonly type: \'number\';\n    readonly value: number;\n} | {\n    readonly type: \'boolean\';\n    readonly value: boolean;\n} | {\n    readonly type: \'date\';\n    readonly value: string;\n};',
   },
   {
     name: 'ProjectionChangeListener',
@@ -4060,11 +4140,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionPreparation',
-    declaration: 'export class SessionPreparation implements Disposable {\n    readonly session: Session;\n    static create(session: Session, options?: SessionPreparationOptions): SessionPreparation;\n    [Symbol.dispose](): void;\n}',
+    declaration: 'export class SessionPreparation implements Disposable {\n    readonly session: Session;\n    static create(session: Session, options?: SessionPreparationOptions): SessionPreparation;\n    commitPublication(): void;\n    [Symbol.dispose](): void;\n}',
   },
   {
     name: 'SessionPreparationOptions',
-    declaration: 'export interface SessionPreparationOptions {\n    readonly release?: () => void;\n}',
+    declaration: 'export interface SessionPreparationOptions {\n    readonly commitPublication?: () => void;\n    readonly release?: () => void;\n}',
   },
   {
     name: 'SessionProjectionMap',
@@ -4899,12 +4979,56 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface XAgentCitationTarget {\n    readonly artifactId: string;\n    readonly versionId: string;\n    readonly chunkId: string;\n    readonly lineStart: number;\n    readonly lineEnd: number;\n}',
   },
   {
+    name: 'XAgentFactApproveInput',
+    declaration: 'export interface XAgentFactApproveInput {\n    readonly idempotencyKey: string;\n    readonly decisionNote?: string;\n}',
+  },
+  {
+    name: 'XAgentFactEvidence',
+    declaration: 'export interface XAgentFactEvidence {\n    readonly citationId: string;\n    readonly artifactId: string;\n    readonly versionId: string;\n    readonly indexId: string;\n    readonly indexGeneration: number;\n    readonly chunkId: string;\n    readonly lineStart: number;\n    readonly lineEnd: number;\n}',
+  },
+  {
+    name: 'XAgentFactPage',
+    declaration: 'export interface XAgentFactPage<T> {\n    readonly items: readonly T[];\n    readonly nextCursor?: string;\n}',
+  },
+  {
+    name: 'XAgentFactPageInput',
+    declaration: 'export interface XAgentFactPageInput {\n    readonly limit: number;\n    readonly cursor?: string;\n}',
+  },
+  {
+    name: 'XAgentFactProposal',
+    declaration: 'export interface XAgentFactProposal {\n    readonly id: string;\n    readonly projectId: string;\n    readonly fieldKey: string;\n    readonly label: string;\n    readonly value: ProjectFactValue;\n    readonly proposerId: string;\n    readonly baseRevision: number;\n    readonly assertionReason?: string;\n    readonly status: FactProposalPublicStatus;\n    readonly decisionActorId?: string;\n    readonly decisionReason?: string;\n    readonly evidence: readonly XAgentFactEvidence[];\n    readonly createdAt: string;\n    readonly admittedAt: string;\n    readonly decidedAt?: string;\n}',
+  },
+  {
+    name: 'XAgentFactProposalDecision',
+    declaration: 'export interface XAgentFactProposalDecision {\n    readonly proposalId: string;\n    readonly status: Exclude<FactProposalPublicStatus, \'pending\' | \'conflicted\'>;\n    readonly factRevisionId?: string;\n    readonly contentRevision?: number;\n}',
+  },
+  {
+    name: 'XAgentFactRejectInput',
+    declaration: 'export interface XAgentFactRejectInput {\n    readonly idempotencyKey: string;\n    readonly reason: string;\n}',
+  },
+  {
+    name: 'XAgentFactRevision',
+    declaration: 'export interface XAgentFactRevision {\n    readonly id: string;\n    readonly projectId: string;\n    readonly fieldKey: string;\n    readonly label: string;\n    readonly value: ProjectFactValue;\n    readonly contentRevision: number;\n    readonly proposalId: string;\n    readonly proposerId: string;\n    readonly confirmedById: string;\n    readonly assertionReason?: string;\n    readonly evidence: readonly XAgentFactEvidence[];\n    readonly createdAt: string;\n}',
+  },
+  {
+    name: 'XAgentFactRevisionDetail',
+    declaration: 'export interface XAgentFactRevisionDetail {\n    readonly revision: XAgentFactRevision;\n    readonly history: readonly XAgentFactRevision[];\n}',
+  },
+  {
+    name: 'XAgentFactWithdrawInput',
+    declaration: 'export interface XAgentFactWithdrawInput {\n    readonly idempotencyKey: string;\n}',
+  },
+  {
     name: 'XAgentListAccessibleProjectsInput',
     declaration: 'export interface XAgentListAccessibleProjectsInput extends XAgentRetrievalCall {\n    readonly query?: string;\n}',
   },
   {
     name: 'XAgentPrincipal',
     declaration: 'export interface XAgentPrincipal {\n    readonly actorId: string;\n    readonly role: XAgentRole;\n    readonly permissionRevision: number;\n    readonly authSessionId: string;\n    readonly connectionId: string;\n}',
+  },
+  {
+    name: 'XAgentProposeFactInput',
+    declaration: 'export interface XAgentProposeFactInput {\n    readonly sessionId: string;\n    readonly toolCallId: string;\n    readonly fieldKey: string;\n    readonly label: string;\n    readonly value: ProjectFactValue;\n    readonly evidenceIds: readonly string[];\n    readonly assertionReason?: string;\n    readonly signal?: AbortSignal;\n}',
   },
   {
     name: 'XAgentReceiptRegistry',

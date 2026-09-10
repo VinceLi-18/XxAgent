@@ -175,8 +175,8 @@ const SERVICE_ROLES: ServiceRole[] = [
     pkg: 'xagent-authorization',
     title: 'Connection-bound XAgent authorization',
     mode: 'core',
-    consumers: ['apiproxy'],
-    note: 'Validates a Host-created Principal against closed Session, project, and Artifact method tables, then runs admitted operations inside their explicit request scopes.',
+    consumers: ['apiproxy', 'api-gateway'],
+    note: 'Validates a Host-created Principal against closed Session, project, Artifact, and Fact method tables, then runs admitted operations inside their explicit request scopes.',
   },
   {
     key: 'connectionRequestContextResolver',
@@ -208,6 +208,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     mode: 'core',
     consumers: ['xagent-authorization', 'api-gateway'],
     note: 'Reads the user token only from the active connection request scope and forwards four fixed workbench operations to FastAPI.',
+  },
+  {
+    key: 'xagentFact',
+    pkg: 'xagent-fact',
+    title: 'Governed XAgent Fact seam',
+    mode: 'seam',
+    consumers: ['xagent-authorization', 'api-gateway', 'session-persistence-api'],
+    note: 'Derives proposal and review authority from the physical Project Session, while private receipt and Outbox registries carry append identities only to Session persistence.',
   },
   {
     key: 'xagentRetrieval',

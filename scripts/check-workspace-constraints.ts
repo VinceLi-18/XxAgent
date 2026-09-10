@@ -49,14 +49,17 @@ export const privateXagentPackages: Readonly<Record<string, string>> = {
   'packages/xagent/backend-client': '@xagent/dsh-backend-client',
   'packages/xagent/connection-auth': '@xagent/dsh-connection-auth',
   'packages/xagent/delegation-token': '@xagent/dsh-delegation-token',
+  'packages/xagent/fact': '@xagent/dsh-fact',
   'packages/xagent/principal': '@xagent/dsh-principal',
   'packages/xagent/project': '@xagent/dsh-project',
   'packages/xagent/retrieval': '@xagent/dsh-retrieval',
   'packages/xagent/session-persistence-api': '@xagent/dsh-session-persistence-api',
   'packages/xagent/tool-retrieval': '@xagent/dsh-tool-retrieval',
+  'packages/xagent/tool-fact': '@xagent/dsh-tool-fact',
   'packages/xagent/ui-account': '@xagent/dsh-ui-account',
   'packages/xagent/ui-artifact': '@xagent/dsh-ui-artifact',
   'packages/xagent/ui-citation': '@xagent/dsh-ui-citation',
+  'packages/xagent/ui-fact': '@xagent/dsh-ui-fact',
   'packages/xagent/ui-project': '@xagent/dsh-ui-project',
 }
 const xagentRepositoryUrl = 'git+https://github.com/VinceLi-18/XxAgent.git'
@@ -156,6 +159,7 @@ const packageFileExtras: Readonly<Record<string, readonly string[]>> = {
   '@deepseek-ai/dsh-sandbox-windows-acl': ['lib/runner.js', 'lib/types-*.js'],
   '@deepseek-ai/dsh-skill-badge': ['assets'],
   '@deepseek-ai/dsh-subprocess-local': ['scripts/ensure-spawn-helper.mjs'],
+  '@xagent/dsh-fact': ['lib/receipt-registry-*.js'],
 }
 
 function sameStringList(actual: readonly string[] | undefined, expected: readonly string[]): boolean {

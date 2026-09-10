@@ -3057,7 +3057,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/authorization/src/index.ts:52`](../packages/xagent/authorization/src/index.ts)
+来源：[`packages/xagent/authorization/src/index.ts:53`](../packages/xagent/authorization/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 
@@ -3082,6 +3082,30 @@ export interface Config {
 ```
 
 来源：[`packages/xagent/connection-auth/src/index.ts:23`](../packages/xagent/connection-auth/src/index.ts)
+
+<a id="xagentdsh-fact"></a>
+
+## `@xagent/dsh-fact`
+
+需要：`sessions`
+
+```ts config-catalog
+/** Host configuration for the governed Fact provider. */
+export interface Config {
+  /** FastAPI service origin. */
+  backendOrigin: string
+  /** Host service identity for internal calls. */
+  serviceToken: string
+  /** Ed25519 private key PEM used only for proposal delegation. */
+  delegationPrivateKey: string
+  /** Exact delegation issuer accepted by FastAPI. */
+  delegationIssuer: string
+  /** Exact delegation audience accepted by FastAPI. */
+  delegationAudience: string
+}
+```
+
+来源：[`packages/xagent/fact/src/index.ts:48`](../packages/xagent/fact/src/index.ts)
 
 <a id="xagentdsh-project"></a>
 
@@ -3139,7 +3163,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/session-persistence-api/src/index.ts:29`](../packages/xagent/session-persistence-api/src/index.ts)
+来源：[`packages/xagent/session-persistence-api/src/index.ts:31`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## 无配置的可加载插件
 
@@ -3210,10 +3234,12 @@ export interface Config {
 - `@deepseek-ai/dsh-tool-subagent-control` — 需要 `tools` · `subagents`（[`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)）
 - `@deepseek-ai/dsh-user-questions`（[`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts)）
 - `@deepseek-ai/dsh-workspace` — 需要 `storageDomain` · `sessionPersistence`（[`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts)）
+- `@xagent/dsh-tool-fact` — 需要 `agents` · `tools`（[`packages/xagent/tool-fact/src/index.ts`](../packages/xagent/tool-fact/src/index.ts)）
 - `@xagent/dsh-tool-retrieval` — 需要 `tools`（[`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts)）
 - `@xagent/dsh-ui-account`（[`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts)）
 - `@xagent/dsh-ui-artifact`（[`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts)）
 - `@xagent/dsh-ui-citation`（[`packages/xagent/ui-citation/src/index.ts`](../packages/xagent/ui-citation/src/index.ts)）
+- `@xagent/dsh-ui-fact`（[`packages/xagent/ui-fact/src/index.ts`](../packages/xagent/ui-fact/src/index.ts)）
 - `@xagent/dsh-ui-project`（[`packages/xagent/ui-project/src/index.ts`](../packages/xagent/ui-project/src/index.ts)）
 
 ## Seam 包（不可直接加载）

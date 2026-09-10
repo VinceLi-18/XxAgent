@@ -15,14 +15,15 @@ import {
   SESSION_FORMAT_VERSION,
   adoptSessionEvent,
   interruptedTurnClosers,
+  SessionPreparation,
   type Session,
   type SessionEvent,
   type SessionHeader,
   type SessionId as SessionIdType,
 } from '@deepseek-ai/dsh-session'
-import { XAgentBackendClient, XAgentBackendError, type XAgentBackend } from '@xagent/dsh-backend-client'
+import { XAgentBackendClient, XAgentBackendError, type XAgentBackend, type XAgentFactPersistenceSidecars } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
-
+import { decodeFactSessionEvent, encodeFactSessionEvent } from './fact-event-codec.ts'
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -79,8 +80,14 @@ function headerFrom(value: unknown): SessionHeader {
   return structuredClone(row) as unknown as SessionHeader
 }
 
-function eventFrom(value: unknown): SessionEvent {
+function eventFrom(value: unknown, envelopeType?: unknown): SessionEvent {
   const row = object(value)
+  if (row.type === 'fact/proposal-decided' || envelopeType === 'fact/proposal-decided') {
+    if (envelopeType !== row.type) {
+      throw new TypeError('invalid XAgent Fact session event')
+    }
+    return decodeFactSessionEvent(row)
+  }
   if (
     typeof row.type !== 'string'
     || row.type.length === 0
@@ -92,6 +99,57 @@ function eventFrom(value: unknown): SessionEvent {
     || (row.ignorable !== undefined && row.ignorable !== true)
   ) throw new TypeError('invalid XAgent session event')
   return structuredClone(row) as unknown as SessionEvent
+}
+
+function factToolResultPayload(event: SessionEvent): SessionEvent | undefined {
+  if (event.type !== 'tool/result') return undefined
+  const payload = structuredClone(event) as unknown as Record<string, unknown>
+  const row = payload.data as Record<string, unknown>
+  const metadata = row.meta as Record<string, unknown> | undefined
+  if (metadata?.kind !== 'xagent-fact') return undefined
+  const message = row.message as Record<string, unknown>
+  const source = message.source as Record<string, unknown>
+  const content = message.content as readonly Record<string, unknown>[]
+  const result = content[0]
+  if (
+    Object.keys(metadata).length !== 3
+    || metadata.status !== 'pending'
+    || typeof metadata.proposalId !== 'string'
+    || !UUID_PATTERN.test(metadata.proposalId)
+    || metadata.proposalId !== metadata.proposalId.toLowerCase()
+    || payload.surfaceOp !== 'append'
+    || source.kind !== 'tool'
+    || typeof source.callId !== 'string'
+    || content.length !== 1
+    || result?.type !== 'tool-result'
+    || result.isError !== false
+    || result.toolCallId !== source.callId
+  ) throw new TypeError('invalid XAgent Fact tool result metadata')
+  delete row.meta
+  return payload as unknown as SessionEvent
+}
+
+function eventPayload(event: SessionEvent): SessionEvent | Record<string, unknown> {
+  if ((event as { readonly type: string }).type === 'fact/proposal-decided') {
+    return encodeFactSessionEvent(event)
+  }
+  return factToolResultPayload(event) ?? structuredClone(event)
+}
+
+function eventEnvelope(event: SessionEvent): {
+  readonly event_type: string
+  readonly schema_version: 1
+  readonly payload: SessionEvent | Record<string, unknown>
+  readonly tool_call_id?: string
+} {
+  const envelope = {
+    event_type: event.type,
+    schema_version: 1 as const,
+    payload: eventPayload(event),
+  }
+  return event.type === 'tool/call'
+    ? { ...envelope, tool_call_id: event.data.callId }
+    : envelope
 }
 
 function responseSessions(value: unknown): Record<string, unknown>[] {
@@ -172,7 +230,7 @@ function responseInspection(value: unknown): SessionInspection {
   if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
   const parsed = events.map((entry, index) => {
     const envelope = object(entry)
-    const event = eventFrom(envelope.payload)
+    const event = eventFrom(envelope.payload, envelope.event_type)
     if (envelope.sequence !== index || event.seq !== index) throw new TypeError('non-contiguous XAgent session events')
     return adoptSessionEvent(event)
   })
@@ -184,7 +242,7 @@ function responseEvents(value: unknown, expectedSequence: number): SessionEvent[
   if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
   return events.map((entry, index) => {
     const envelope = object(entry)
-    const event = eventFrom(envelope.payload)
+    const event = eventFrom(envelope.payload, envelope.event_type)
     const sequence = expectedSequence + index
     if (envelope.sequence !== sequence || event.seq !== sequence) {
       throw new TypeError('non-contiguous XAgent session events')
@@ -205,6 +263,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     flushing: Promise<void> | undefined
     timer: ReturnType<typeof setTimeout> | undefined
   }>()
+  private readonly preparedSuffixes = new WeakMap<Session, SessionEvent[]>()
   private scopeTail: Promise<void> = Promise.resolve()
   private activeToken: string | undefined
 
@@ -258,11 +317,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
       runtime_header: structuredClone(session.header),
       title: session.id,
       idempotency_key: `publish:${session.id}`,
-      events: events.map(event => ({
-        event_type: event.type,
-        schema_version: 1,
-        payload: event,
-      })),
+      events: events.map(eventEnvelope),
     }, undefined)
     validateCreatedSession(response, expectedId)
     this.leases.set(session.id, token)
@@ -345,25 +400,40 @@ export class XAgentSessionPersistence extends SessionPersistence {
     }
     const receipts = this.receiptRegistry()
     const attachments = receipts?.attachments(String(id), first.seq, last.seq) ?? []
+    const fact = this.factSidecars()
+    const factReceiptAttachments = fact?.receipts.attachments(String(id), first.seq, last.seq) ?? []
+    const factOutboxAttachments = fact?.outbox.attachments(String(id), first.seq, last.seq) ?? []
     const body = {
       schema_version: 1 as const,
       expected_sequence: first.seq - 1,
       idempotency_key: `append:${id}:${String(first.seq)}:${String(last.seq)}`,
-      events: events.map(event => ({
-        event_type: event.type,
-        schema_version: 1 as const,
-        payload: structuredClone(event),
-      })),
+      events: events.map(eventEnvelope),
       retrieval_receipts: attachments.map(attachment => ({
         event_sequence: attachment.eventSequence,
         tool_call_id: attachment.toolCallId,
         receipt: attachment.receipt,
         payload_hash: attachment.payloadHash,
       })),
+      ...(fact === undefined ? {} : {
+        fact_proposal_receipts: factReceiptAttachments.map(attachment => ({
+          event_sequence: attachment.eventSequence,
+          tool_call_id: attachment.toolCallId,
+          proposal_id: attachment.proposalId,
+          receipt: attachment.receipt,
+          payload_hash: attachment.payloadHash,
+        })),
+        fact_outbox_events: factOutboxAttachments.map(attachment => ({
+          event_sequence: attachment.eventSequence,
+          outbox_id: attachment.outboxId,
+          payload_hash: attachment.payloadHash,
+        })),
+      }),
     }
     const response = await this.backend.sessions.append(token, backendSessionId(id), body, undefined)
     validateAppendResult(response, last.seq)
     receipts?.commit(String(id), last.seq)
+    fact?.receipts.commit(String(id), last.seq)
+    fact?.outbox.commit(String(id), last.seq)
     if (events.some(event => event.type === 'turn/end')) this.turnTokens.delete(id)
   }
 
@@ -382,6 +452,31 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return Object.freeze({
       meta: inspected.meta,
       events: Object.freeze([...inspected.events, ...closers]),
+    })
+  }
+
+  /**
+   * Prepare a resumed Session and retain its constructor-created suffix until publication.
+   * @param id - persisted Session identity.
+   * @param signal - optional cancellation for the remote read.
+   * @returns the unpublished Session preparation.
+   */
+  override async prepare(id: SessionIdType, signal?: AbortSignal): Promise<SessionPreparation> {
+    const prepared = await super.prepare(id, signal)
+    const session = prepared.session
+    const suffix = session.events.slice(session.firstLiveSeq).map(event => structuredClone(event))
+    if (suffix.length === 0) return prepared
+    this.preparedSuffixes.set(session, suffix)
+    return SessionPreparation.create(session, {
+      commitPublication: () => {
+        this.preparedSuffixes.delete(session)
+        this.enqueueWrites(session.id, suffix)
+        prepared[Symbol.dispose]()
+      },
+      release: () => {
+        this.preparedSuffixes.delete(session)
+        prepared[Symbol.dispose]()
+      },
     })
   }
 
@@ -471,6 +566,10 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return this.ctx.get('xagentRetrieval')?.receipts
   }
 
+  private factSidecars(): XAgentFactPersistenceSidecars | undefined {
+    return this.ctx.get('xagentFact') as XAgentFactPersistenceSidecars | undefined
+  }
+
   private async readInspection(id: SessionIdType, signal?: AbortSignal): Promise<SessionInspection> {
     signal?.throwIfAborted()
     const token = this.tokenFor(id)
@@ -504,21 +603,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
 
   private installWritePath(): void {
     this.ctx.on('session/event', (session, event) => {
-      let state = this.writes.get(session.id)
-      if (state === undefined) {
-        state = { pending: [], retry: undefined, flushing: undefined, timer: undefined }
-        this.writes.set(session.id, state)
+      const suffix = this.preparedSuffixes.get(session)
+      if (suffix !== undefined) {
+        suffix.push(structuredClone(event))
+        return
       }
-      state.pending.push(structuredClone(event))
-      if (state.timer === undefined) {
-        const writeState = state
-        state.timer = setTimeout(() => {
-          writeState.timer = undefined
-          void this.flushWrites(session.id).catch((error: unknown) => {
-            this.ctx.logger.warn(`xagent session persistence failed for "${session.id}": ${String(error)}`)
-          })
-        }, 200)
-      }
+      this.enqueueWrites(session.id, [event])
     })
     this.ctx.on('session/flush', session => this.flushWrites(session.id))
     this.ctx.on('session/disposed', (session) => {
@@ -532,6 +622,24 @@ export class XAgentSessionPersistence extends SessionPersistence {
     this.ctx.effect(() => async () => {
       await Promise.all([...this.writes.keys()].map(id => this.flushWrites(id)))
     }, 'xagent-session-persistence-api write path')
+  }
+
+  private enqueueWrites(id: SessionIdType, events: readonly SessionEvent[]): void {
+    let state = this.writes.get(id)
+    if (state === undefined) {
+      state = { pending: [], retry: undefined, flushing: undefined, timer: undefined }
+      this.writes.set(id, state)
+    }
+    state.pending.push(...events.map(event => structuredClone(event)))
+    if (state.timer === undefined) {
+      const writeState = state
+      state.timer = setTimeout(() => {
+        writeState.timer = undefined
+        void this.flushWrites(id).catch((error: unknown) => {
+          this.ctx.logger.warn(`xagent session persistence failed for "${id}": ${String(error)}`)
+        })
+      }, 200)
+    }
   }
 
   private flushWrites(id: SessionIdType): Promise<void> {

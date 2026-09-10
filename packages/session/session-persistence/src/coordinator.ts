@@ -735,6 +735,9 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         throw new Error(`cannot prepare session "${id}" while it is live`)
       }
       return SessionPreparation.create(reservation.source.session, {
+        commitPublication: () => {
+          this.initFor(reservation.source.session)
+        },
         release: () => {
           this.preparations.release(
             reservation,
@@ -1116,11 +1119,13 @@ export class PersistenceCoordinator<TornMarker = unknown> {
 
     // Capture the header on creation and persist a fork's seed once.
     ctx.on('session/created', (session) => {
+      if (this.preparations.reservationFor(session) !== undefined) return
       void this.initFor(session)
     })
 
     // Keep a persistence-owned copy of each frozen event and start its bounded window.
     ctx.on('session/event', (session, event) => {
+      if (this.preparations.reservationFor(session) !== undefined) return
       const live = this.initFor(session)
       live.writes.enqueue(event)
     })
@@ -1323,6 +1328,9 @@ export class PersistenceCoordinator<TornMarker = unknown> {
   }
 
   private async flush(session: Session): Promise<void> {
+    // Publication owns the reservation until commit; an earlier flush must not
+    // attach or persist state that a later publication failure still releases.
+    if (this.preparations.reservationFor(session) !== undefined) return
     const live = this.initFor(session)
     live.writes.cancelAutomaticWait()
     try {
