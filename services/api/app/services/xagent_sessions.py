@@ -1456,6 +1456,11 @@ async def _admit_fact_receipts(
             if admission.claims.expires_at <= datetime.now(UTC):
                 raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_EXPIRED)
             raise SessionServiceError(SessionErrorCode.FACT_RECEIPT_INVALID)
+        admission.canonical_payload["data"]["meta"] = {
+            "kind": "xagent-fact",
+            "status": "pending",
+            "proposalId": str(admission.proposal_id),
+        }
         audit = await write_audit_event(
             session,
             principal.actor_id,

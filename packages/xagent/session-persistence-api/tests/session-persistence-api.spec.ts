@@ -1140,6 +1140,51 @@ describe('XAgent FastAPI Session Persistence', () => {
     await expect(persistence.readRaw(id)).rejects.toThrow('does not expose raw artifacts')
   })
 
+  test('重开 Session 时保留 FastAPI 重建的严格 pending Fact 展示元数据', async () => {
+    const value = backend()
+    const proposalId = '00000000-0000-0000-0000-000000000721'
+    const result = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/result',
+      surfaceOp: 'append',
+      data: {
+        turn: 0,
+        step: 0,
+        message: {
+          id: 'fact-result',
+          role: 'user',
+          source: { kind: 'tool', callId: 'call-fact' },
+          content: [{
+            type: 'tool-result',
+            toolCallId: 'call-fact',
+            isError: false,
+            content: [{ type: 'text', text: JSON.stringify({ proposalId, status: 'pending' }) }],
+          }],
+        },
+        meta: { kind: 'xagent-fact', status: 'pending', proposalId },
+      },
+    } as unknown as SessionEvent
+    value.sessions.open = async (...args) => {
+      value.calls.push({ name: 'open', args })
+      return {
+        schema_version: 1,
+        session: { runtime_header: header, version: 2, last_event_sequence: 0 },
+        events: [{ sequence: 0, payload: result }],
+      }
+    }
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    const inspected = await persistence.withUserToken('alice-token', () => persistence.inspect(id))
+
+    expect(inspected.events).toEqual([result])
+    expect(inspected.events[0]?.data.meta).toEqual({
+      kind: 'xagent-fact',
+      status: 'pending',
+      proposalId,
+    })
+  })
+
   test('冷加载会把中断回合的关闭事件持久化后再返回平衡日志', async () => {
     const value = backend()
     const persistence = new XAgentSessionPersistence(new Context(), value)
