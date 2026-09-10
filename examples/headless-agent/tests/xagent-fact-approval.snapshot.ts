@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LOADER_SMOKE_TEST_TIMEOUT_MS, runLoaderSmoke } from '@deepseek-ai/dsh-loader-smoke'
@@ -30,6 +30,7 @@ describe('XAgent fact proposal approval Loader snapshot', () => {
     expect(summary).toHaveProperty('persistenceAdmissions')
     expect(summary).not.toHaveProperty('retrievalAdmissions')
     expect(summary).not.toHaveProperty('factAdmissions')
+    if (process.env.DSH_SNAPSHOT === 'refresh') await writeFile(expectedPath, result.stdout)
     expect(result.stdout).toBe(await readFile(expectedPath, 'utf8'))
   }, LOADER_SMOKE_TEST_TIMEOUT_MS)
 })

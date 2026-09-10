@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FactPanel } from '../src/client/FactPanel.tsx'
 import { FactToolCard } from '../src/client/FactToolCard.tsx'
 import { apply, inject } from '../src/client/index.ts'
+import { apply as applyHost } from '../src/index.ts'
 import { validateXAgentFactUiRelationships } from '../src/invariant.ts'
 
 function observable<T>(initial: T) {
@@ -34,6 +35,7 @@ interface WorkbenchState {
 
 describe('XAgent Fact browser assembly', () => {
   it('accepts an absent optional browser relationship service', () => {
+    applyHost()
     expect(() => {
       validateXAgentFactUiRelationships(new Context(), (message) => { throw new Error(message) })
     }).not.toThrow()

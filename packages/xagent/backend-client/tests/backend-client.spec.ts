@@ -760,6 +760,142 @@ describe('XAgent 后端客户端', () => {
     }
   })
 
+  test('Fact wire parsers reject every non-canonical scalar and semantic combination', async () => {
+    const proposalBodies: unknown[] = [
+      { ...pendingFactProposalResponse, label: 1 },
+      { ...pendingFactProposalResponse, label: '' },
+      { ...pendingFactProposalResponse, field_key: 'Delivery.Date' },
+      { ...pendingFactProposalResponse, assertion_reason: '   ' },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: 1 } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-9-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '1900-02-29' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '0000-01-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-00-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-13-01' } },
+      { ...pendingFactProposalResponse, value: { type: 'date', value: '2026-01-00' } },
+      { ...pendingFactProposalResponse, evidence: [factEvidenceResponse, factEvidenceResponse] },
+    ]
+    for (const proposal of proposalBodies) {
+      await expect(factClient({ schema_version: 1, proposal }).facts.proposal(
+        'user-token', factIds.proposal,
+      )).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    await expect(factClient({
+      schema_version: 1,
+      revision: { ...confirmedFactRevisionResponse, assertion_reason: 'source verified' },
+      history: [],
+    }).facts.revision('user-token', factIds.revision)).resolves.toMatchObject({
+      revision: { assertionReason: 'source verified' },
+    })
+
+    const cursorPayload = (value: unknown): string => Buffer.from(
+      typeof value === 'string' ? value : JSON.stringify(value),
+    ).toString('base64url')
+    const cursorRows: unknown[] = [
+      '*',
+      cursorPayload('{'),
+      Buffer.from([0xff]).toString('base64url'),
+      cursorPayload({ created_at: '2026-09-08T08:00:00+00:00', id: factIds.proposal, v: 2 }),
+      factCursor('AAAAAAAA-0000-0000-0000-000000000603'),
+      factCursor(factIds.proposal, '2026-09-08T08:00:00.123+00:00'),
+      factCursor(factIds.proposal, '2026-09-08T08:00:00.000000+00:00'),
+    ]
+    for (const cursor of cursorRows) {
+      await expect(factClient({ schema_version: 1, items: [], next_cursor: cursor }).facts.listProposals(
+        'user-token', factIds.project, { limit: 1 },
+      )).rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    const prepareInput = {
+      sessionId: factIds.session,
+      toolCallId: 'call-fact',
+      permissionRevision: 3,
+      idempotencyKey: 'prepare',
+      fieldKey: 'delivery.date',
+      label: '交付日期',
+      value: { type: 'date' as const, value: '2026-09-30' },
+      evidenceIds: ['[资料1]'],
+      assertionReason: 'source verified',
+    }
+    for (const body of [
+      {
+        schema_version: 1,
+        result: { proposalId: factIds.proposal, status: 'rejected' },
+        receipt: 'receipt',
+        payload_sha256: factPrepareHash,
+      },
+      {
+        schema_version: 1,
+        result: { proposalId: factIds.proposal, status: 'pending' },
+        receipt: 'receipt',
+        payload_sha256: '0'.repeat(64),
+      },
+    ]) {
+      await expect(factClient(body).facts.prepare('user-token', 'delegation', prepareInput))
+        .rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+
+    await expect(factClient({ schema_version: 2, proposal: pendingFactProposalResponse }).facts.proposal(
+      'user-token', factIds.proposal,
+    )).rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(factClient({
+      schema_version: 2,
+      revision: confirmedFactRevisionResponse,
+      history: [],
+    }).facts.revision('user-token', factIds.revision)).rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const outboxCases: unknown[] = [
+      { ...factOutboxEventResponse, type: 'fact/proposal-created' },
+      {
+        ...factOutboxEventResponse,
+        data: { ...factOutboxEventResponse.data, status: true },
+      },
+      {
+        ...factOutboxEventResponse,
+        data: {
+          ...factOutboxEventResponse.data,
+          status: 'confirmed',
+          fact_revision_id: factIds.revision,
+        },
+      },
+    ]
+    for (const event of outboxCases) {
+      await expect(factClient({
+        schema_version: 1,
+        items: [{ outbox_id: factIds.outbox, payload_sha256: retrievalPayloadHash(event), event }],
+        next_cursor: null,
+      }).facts.pullOutbox('user-token', factIds.session, { limit: 1 }))
+        .rejects.toMatchObject({ code: 'service-unavailable' })
+    }
+    await expect(factClient({
+      schema_version: 1,
+      items: [{ outbox_id: factIds.outbox, payload_sha256: '0'.repeat(64), event: factOutboxEventResponse }],
+      next_cursor: null,
+    }).facts.pullOutbox('user-token', factIds.session, { limit: 1 }))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+
+    const invalid = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: vi.fn(),
+    })
+    await expect(invalid.facts.prepare('user-token', '', prepareInput))
+      .rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(invalid.facts.prepare('user-token', 'delegation', {
+      ...prepareInput,
+      evidenceIds: ['[资料1]', '[资料1]'],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+    await expect(invalid.facts.prepare('user-token', 'delegation', {
+      sessionId: factIds.session,
+      toolCallId: 'call-fact',
+      permissionRevision: 3,
+      idempotencyKey: 'prepare',
+      fieldKey: 'delivery.date',
+      label: '交付日期',
+      value: { type: 'date', value: '2026-09-30' },
+      evidenceIds: [],
+    })).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
   test('Fact 分页、修订详情、决定和 Outbox 拒绝超限、畸形游标与不完整事件', async () => {
     const overlongPage = factClient({
       schema_version: 1,

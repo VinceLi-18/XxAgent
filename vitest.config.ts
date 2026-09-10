@@ -23,6 +23,7 @@ const pathsPlugin = (): ReturnType<typeof tsconfigPaths> => tsconfigPaths({ proj
 // and the built application smokes validate the generated descriptors themselves.
 const generatedRemoteTestAliases = {
   '@xagent/dsh-artifact/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-artifact-remote.ts', import.meta.url)),
+  '@xagent/dsh-fact/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-fact-remote.ts', import.meta.url)),
   '@xagent/dsh-project/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-project-remote.ts', import.meta.url)),
   '@xagent/dsh-retrieval/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-retrieval-remote.ts', import.meta.url)),
 }
