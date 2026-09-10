@@ -106,6 +106,22 @@ function eventPayload(event: SessionEvent): SessionEvent | Record<string, unknow
     : structuredClone(event)
 }
 
+function eventEnvelope(event: SessionEvent): {
+  readonly event_type: string
+  readonly schema_version: 1
+  readonly payload: SessionEvent | Record<string, unknown>
+  readonly tool_call_id?: string
+} {
+  const envelope = {
+    event_type: event.type,
+    schema_version: 1 as const,
+    payload: eventPayload(event),
+  }
+  return event.type === 'tool/call'
+    ? { ...envelope, tool_call_id: event.data.callId }
+    : envelope
+}
+
 function responseSessions(value: unknown): Record<string, unknown>[] {
   const sessions = object(value).sessions
   if (!Array.isArray(sessions)) throw new TypeError('invalid XAgent session response')
@@ -270,11 +286,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
       runtime_header: structuredClone(session.header),
       title: session.id,
       idempotency_key: `publish:${session.id}`,
-      events: events.map(event => ({
-        event_type: event.type,
-        schema_version: 1,
-        payload: eventPayload(event),
-      })),
+      events: events.map(eventEnvelope),
     }, undefined)
     validateCreatedSession(response, expectedId)
     this.leases.set(session.id, token)
@@ -364,11 +376,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
       schema_version: 1 as const,
       expected_sequence: first.seq - 1,
       idempotency_key: `append:${id}:${String(first.seq)}:${String(last.seq)}`,
-      events: events.map(event => ({
-        event_type: event.type,
-        schema_version: 1 as const,
-        payload: eventPayload(event),
-      })),
+      events: events.map(eventEnvelope),
       retrieval_receipts: attachments.map(attachment => ({
         event_sequence: attachment.eventSequence,
         tool_call_id: attachment.toolCallId,

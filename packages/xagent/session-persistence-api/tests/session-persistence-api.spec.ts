@@ -887,6 +887,54 @@ describe('XAgent FastAPI Session Persistence', () => {
     expect(call?.args[1]).not.toHaveProperty('project_id')
   })
 
+  test('创建与追加只把 tool/call 的权威 callId 写入远端事件列', async () => {
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    const toolCall: SessionEvent = {
+      seq: 0,
+      time: event.time,
+      type: 'tool/call',
+      data: {
+        turn: 1,
+        step: 1,
+        callId: 'call-persisted',
+        name: 'propose_fact',
+        arguments: '{}',
+      },
+    } as SessionEvent
+    const ordinary = { ...event, seq: 1, data: { ...event.data, callId: 'must-not-project' } } as SessionEvent
+    const publication = {
+      id,
+      header,
+      events: [toolCall, ordinary],
+    } as unknown as Session
+
+    await persistence.withUserToken('alice-token', () => persistence.preparePublication(publication))
+    persistence.authorizeRequest(id, undefined, 'alice-token')
+    await persistence.append(id, [toolCall, ordinary])
+
+    const createBody = value.calls.find(call => call.name === 'create')?.args[1] as {
+      events: Array<Record<string, unknown>>
+    }
+    const appendBody = value.calls.find(call => call.name === 'append')?.args[2] as {
+      events: Array<Record<string, unknown>>
+    }
+    expect(createBody).toMatchObject({
+      events: [
+        { event_type: 'tool/call', tool_call_id: 'call-persisted' },
+        { event_type: 'turn/start' },
+      ],
+    })
+    expect(createBody.events[1]).not.toHaveProperty('tool_call_id')
+    expect(appendBody).toMatchObject({
+      events: [
+        { event_type: 'tool/call', tool_call_id: 'call-persisted' },
+        { event_type: 'turn/start' },
+      ],
+    })
+    expect(appendBody.events[1]).not.toHaveProperty('tool_call_id')
+  })
+
   test('创建与追加使用当前请求令牌，后续写入使用按 Session 固定的租约', async () => {
     const value = backend()
     const persistence = new XAgentSessionPersistence(new Context(), value)
