@@ -20,11 +20,15 @@ Host 授权器使用已认证的 `conversation` Project Session 和存活的物�
 
 ## 轮次绑定与工具
 
-等待完成的 `skill/loaded` 事件在一个轮次内只接纳一个不可变业务技能。同技能重新加载时，针对已固定版本重新授权 `skill` 并复用其精确正文；第二个技能以 `business-skill-conflict` 失败，不改变首个固定版本，也不关闭其声明工具。发布和回滚只改变后续轮次。完整工具集或 SHA-256 策略摘要与版本 1 解析器不一致、任一工具不可用，或 `search_artifacts` / `submit_cited_answer` 配套关系不对称时，加载失败。封闭的生产工具集包含 `skill`、`list_accessible_projects`、`search_artifacts`、`submit_cited_answer` 和 `propose_fact`；后端选择精确子集。项目发现不扩大普通 Project 或 Private 对话的工具范围。
+等待完成的 `skill/loaded` 事件在一个轮次内只接纳一个不可变业务技能。同技能重新加载时，针对已固定版本重新授权 `skill` 并复用其精确正文；第二个技能以 `business-skill-conflict` 失败，不改变首个固定版本，也不关闭其声明工具。发布和回滚只改变后续轮次。完整工具集或 SHA-256 策略摘要与版本 1 解析器不一致、必需工具不可用，或 `search_artifacts` / `submit_cited_answer` 配套关系不对称时，加载失败。封闭的生产工具集包含 `skill`、`list_accessible_projects`、`search_artifacts`、`submit_cited_answer` 和 `propose_fact`；后端选择精确子集。项目发现不扩大普通 Project 或 Private 对话的工具范围。
+
+唯一允许延迟注册的工具是 `submit_cited_answer`：完整策略必须包含两个检索工具，且 Agent 必须解析到真实检索服务及其工具消费方拥有的存活 `search_artifacts` 定义。持久化检索证据触发注册后，配套工具才可见；每次执行仍需新的授权。同名或复制的 search 定义不能获得该例外。
 
 激活限制继承的工具，并按完整工具集过滤提示词组装中的所有 Agent 本地 schema。显式 `/slug` 激活还会在记录首个请求 header 前收窄该步骤已经组装的数组。每次已绑定执行都携带已固定版本及物理请求，等待新的后端授权；最终 guard 要求该精确调用已获授权。拒绝、取消、后端失败及无效响应均不执行工具正文，已绑定工具调用失败后，该轮次后续执行关闭。稳定拒绝消息为 `Business Skill tool execution is unavailable for this turn.`
 
-可忽略的 `business-skill/activated` 事件仅记录 slug、公开版本、调用形式、轮次及策略摘要。常规工具结果或 `skill-invocation` 消息保留精确原始正文。轮次停止时只将这些已接纳消息替换为 `Business Skill <slug> v<version> was used in turn <turn>.`。后续模型历史包含该标记；仅追加日志保留用于文本记录和请求重建的指令。完成、失败及清理都会清除固定版本及限制。
+可忽略的 `business-skill/activated` 事件仅记录 slug、公开版本、调用形式、轮次及策略摘要。常规工具结果或 `skill-invocation` 消息保留精确原始正文。只有持久化 `turn/end` 才允许将这些已接纳消息替换为 `Business Skill <slug> v<version> was used in turn <turn>.`；暂定 Stop 后继续执行会保留固定版本、正文及工具。空闲通知、下一次组装或领取、Session 启动会投影已结束的接纳，包括修复后的崩溃尾部。后续模型历史包含标记，原始追加记录仍保留指令。请求清理关闭固定版本及限制，但不会投影未结束轮次。进行中的授权和分发回调独立拥有结算，不依赖可能卸载的结果监听器。
+
+Agent 作用域审批监听器委托正常答复链，并将答复与物理请求取消进行竞争。取消无需等待无响应的答复方即可返回 `cancelled`；迟到答复或异常不能执行工具，也不能改变已记录的决定。
 
 ## 治理与测试
 

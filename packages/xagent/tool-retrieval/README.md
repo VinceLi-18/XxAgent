@@ -6,6 +6,8 @@ English | [中文](README.zh.md)
 
 The tools read the Session and tool call identity from the calling Agent, then forward cancellation to `ctx.xagentRetrieval`. They are Native-only: Code SDK generation and nested Code execution both exclude them, including the Code path of `both` mode. Tool content and replayable metadata never contain receipts. Public metadata is fixed to the retrieval kind, payload hash, and short citation IDs. A missing Agent, retrieval service, or backend capability returns a stable failure.
 
+Host policy can identify the exact live Artifact search registration through `SEARCH_ARTIFACTS_TOOL` and `isArtifactSearchTool`. The predicate rejects copied definitions and expires when the defining plugin unloads; the identity is private and never enters schemas or wire data. This supports [Business Skill deferred companion admission](../business-skill/README.md#turn-binding-and-tools) without accepting arbitrary same-name tools.
+
 ## Model Experience
 
 ### Explicit retrieval scope

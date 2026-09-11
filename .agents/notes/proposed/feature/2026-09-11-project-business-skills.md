@@ -30,6 +30,12 @@ Prompt assembly filters Agent-local tools as well as inherited registrations. Ex
 
 This proposal extends the [Business profile composition](../../implemented/feature/2026-08-22-xagent-profile-product-shell.md) with a governed provider while retaining its disabled filesystem provider and developer capabilities. The [authentication and Session isolation rules](../../implemented/architecture/2026-08-25-xagent-auth-session-runtime.md) remain authoritative. These records retain independent rationale; none is superseded by the storage foundation. The [approved design](../../../../docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md) defines the complete product flow.
 
+Only durable `turn/end` closes the instruction lifetime: `agent/turn-stopping` can steer into another step of the same turn. Activation and recorded Skill calls identify completed instruction entries on Session startup as well as during live cleanup, so crash repair does not revive an old body alongside a new pin. Runtime callback `finally` blocks own execution settlement; an unloadable `tools/result` listener cannot own the promise that its own scope disposal awaits.
+
+The declared retrieval pair remains complete even before evidence dynamically registers `submit_cited_answer`. This one exception requires the actual retrieval service and a live search definition recognized by its Consumer's private WeakSet. Definition copying and plugin unloading revoke that recognition. Name equality alone cannot establish ownership, and pre-registering a placeholder companion would falsely advertise executable evidence access.
+
+Approval waits occur between pre-execution policy and tool dispatch, outside either callback. A prepended Agent-scoped approval listener always delegates and races the result against the physical lifetime. Teardown waits only for this cancellable callback, not an unresponsive answerer; the race consumes late rejection and preserves the cancelled decision. This protects the approval interval without extending the generic execution API or changing readonly approval requests.
+
 ## Alternatives considered
 
 **Own governance in Session events.** Project-wide concurrent publication and authorization must survive individual Sessions and enforce PostgreSQL project access; the Session log owns execution evidence instead.

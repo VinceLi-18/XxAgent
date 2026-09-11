@@ -8,6 +8,9 @@
     "src"
   ],
   "references": [
+    { "path": "../../interaction/user-approval" },
+    { "path": "../retrieval" },
+    { "path": "../tool-retrieval" },
     { "path": "../../core/tools" },
     { "path": "../../core/system-prompt" },
     { "path": "../../llm/llm" },

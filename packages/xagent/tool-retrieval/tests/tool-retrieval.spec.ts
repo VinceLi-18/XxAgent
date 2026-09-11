@@ -40,6 +40,18 @@ async function setup(withService = true) {
 }
 
 describe('xagent retrieval tools', () => {
+  test('search registration identity expires on plugin disposal and rejects a copied definition', async () => {
+    const { ctx, fiber } = await setup()
+    const search = ctx.tools.get('search_artifacts')!
+    expect(tool.isArtifactSearchTool(search)).toBe(true)
+    expect(tool.isArtifactSearchTool({ ...search })).toBe(false)
+    await fiber.dispose()
+    expect(tool.isArtifactSearchTool(search)).toBe(false)
+    await ctx.plugin(tool)
+    expect(tool.isArtifactSearchTool(ctx.tools.get(tool.SEARCH_ARTIFACTS_TOOL)!)).toBe(true)
+    expect(tool.isArtifactSearchTool(search)).toBe(false)
+    await ctx.fiber.dispose()
+  })
   test('registers exactly two closed schemas with ambiguity guidance and optional bounded project query', async () => {
     const { ctx } = await setup()
     const schemas = ctx.tools.schemas().filter(value => ['list_accessible_projects', 'search_artifacts'].includes(value.name))

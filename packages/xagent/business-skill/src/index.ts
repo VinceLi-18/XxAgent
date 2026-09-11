@@ -23,6 +23,7 @@ import {
 } from '@xagent/dsh-principal'
 import type { BusinessSkillLocator, BusinessSkillRemoteTranscript, XAgentBusinessSkillRemote, XAgentBusinessSkillScopeRunner, XAgentBusinessSkillTestRunner } from './types.ts'
 import { BusinessSkillRuntimePolicy } from './runtime-policy.ts'
+import { replaceCompletedInstructions } from './turn-binding.ts'
 
 export type * from './types.ts'
 
@@ -253,6 +254,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
   constructor(ctx: Context, private readonly backend: XAgentBusinessSkillBackend, private readonly limits: Pick<Config, 'maxCatalogEntries'>) {
     super(ctx)
     if (!Number.isSafeInteger(limits.maxCatalogEntries) || limits.maxCatalogEntries < 1) throw new Error('maxCatalogEntries must be a positive safe integer')
+    ctx.on('agent/session-start', ({ agent }) => { replaceCompletedInstructions(agent.session) })
     ctx.on('agent/inbox/inserted', ({ agent, message }) => {
       const state = this.requests.getStore()
       if (state !== undefined && !state.lifetime.signal.aborted && String(agent.session.id) === `session-${state.scope.sessionId}`) {
@@ -279,14 +281,14 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
       this.registrations.get(agent)?.control.invalidate()
       return await next()
     })
-    ctx.on('skill/loaded', ({ agent, definition, invocation, callId }) => {
+    ctx.on('skill/loaded', ({ agent, definition, invocation }) => {
       if (definition.provider !== PROVIDER) return
       const owner = this.definitions.get(definition)
       const registration = this.registrations.get(agent)
       if (owner === undefined || owner.registration !== registration || this.claimed.get(agent)?.state !== registration.state) {
         throw failure('business-skill-not-authorized')
       }
-      registration.policy.activate(definition, owner.version, invocation, callId)
+      registration.policy.activate(definition, owner.version, invocation)
     })
     ctx.on('agent/disposed', ({ agent }) => {
       this.disposedAgents.add(agent)

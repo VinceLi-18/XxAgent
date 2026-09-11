@@ -352,7 +352,7 @@ abstract retire(slug: string, idempotencyKey: string, signal?: AbortSignal): Pro
 
 Types: [Agent](core.md) · [SkillDefinition](skills.md) · [SkillProvider](skills.md)
 
-Source: [`packages/xagent/business-skill/src/index.ts:90`](../../packages/xagent/business-skill/src/index.ts)
+Source: [`packages/xagent/business-skill/src/index.ts:91`](../../packages/xagent/business-skill/src/index.ts)
 
 <a id="ctxxagentcitation--xagentcitationremoteservice"></a>
 

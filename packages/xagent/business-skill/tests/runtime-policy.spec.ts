@@ -1,6 +1,7 @@
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { CallId, createUserMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import ApprovalService, { type ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { describe, expect, test, vi } from 'vitest'
 import { setup, request, entry, loaded, signal, version2, versionKey } from './fixtures.ts'
 
@@ -32,12 +33,114 @@ function claim(ctx: Awaited<ReturnType<typeof fixture>>['ctx'], agent: Agent, tu
   return message
 }
 
-async function load(h: Awaited<ReturnType<typeof fixture>>, name = 'review', id = 'load') {
+async function load(h: Awaited<ReturnType<typeof setup>>, name = 'review', id = 'load') {
   h.service.attach(h.agent)
   return h.ctx.tools.execute({ name: 'skill', arguments: { name }, agent: h.agent, signal, callId: CallId(id) })
 }
 
 describe('Business Skill turn policy', () => {
+  test.each(['allow', 'reject', 'never'] as const)('request cancellation settles before a %s late approval without running the body', async (late) => {
+    const h = await fixture()
+    await h.ctx.plugin(ApprovalService)
+    const physical = new AbortController()
+    const entered = Promise.withResolvers<undefined>()
+    const answer = Promise.withResolvers<ApprovalOutcome>()
+    const closeAnswerer = h.ctx.on('approval/request', async () => { entered.resolve(undefined); return await answer.promise })
+    try {
+      await expect(h.service.withRequest(request({ requestSignal: physical.signal }), async () => {
+        claim(h.ctx, h.agent, 1)
+        await load(h)
+        h.agent.ctx.on('tools/pre-execute', async () => ({ kind: 'ask' }))
+        let settled = false
+        const pending = h.ctx.tools.execute({ name: 'search_artifacts', arguments: {}, agent: h.agent, signal, callId: CallId('approval') })
+          .then((result) => { settled = true; return result })
+        await entered.promise
+        physical.abort()
+        await vi.waitFor(() => { expect(settled).toBe(true) }, { timeout: 500 })
+        if (late === 'allow') answer.resolve('allowed-once')
+        if (late === 'reject') answer.reject(new Error('Late answerer failure'))
+        expect((await pending).isError).toBe(true)
+      })).rejects.toThrow()
+      expect(h.effects).toEqual([])
+      await new Promise<undefined>(resolve => setImmediate(() => { resolve(undefined) }))
+      expect(h.agent.session.events.filter(event => event.type === 'approval/decided').map(event => event.data.outcome)).toEqual(['cancelled'])
+      closeAnswerer()
+      h.ctx.on('approval/request', async () => 'allowed-once')
+      expect(await h.ctx.approval.request({ agent: h.agent, toolName: 'outside-request', signal })).toBe('allowed-once')
+    } finally { await h.ctx.fiber.dispose() }
+  })
+  test('approval delegation observes cancellation that precedes its callback without changing readonly input', async () => {
+    const h = await fixture()
+    await h.ctx.plugin(ApprovalService)
+    const physical = new AbortController()
+    const answerer = vi.fn(async (): Promise<ApprovalOutcome> => 'allowed-once')
+    h.ctx.on('approval/request', answerer)
+    try {
+      await expect(h.service.withRequest(request({ requestSignal: physical.signal }), async () => {
+        claim(h.ctx, h.agent, 1)
+        await load(h)
+        h.agent.ctx.on('approval/request', async (_req, next) => { physical.abort(); return await next() }, { prepend: true })
+        const input = Object.freeze({ agent: h.agent, toolName: 'search_artifacts', signal })
+        expect(await h.ctx.approval.request(input)).toBe('cancelled')
+        expect(input.signal).toBe(signal)
+        expect(answerer).toHaveBeenCalledOnce()
+      })).rejects.toThrow()
+    } finally { await h.ctx.fiber.dispose() }
+  })
+  test.each(['allowed-once', 'rejected', 'cancelled'] as const)('delegates normal approval outcome %s without changing it', async (outcome) => {
+    const h = await fixture()
+    await h.ctx.plugin(ApprovalService)
+    const answerer = vi.fn(async (): Promise<ApprovalOutcome> => outcome)
+    h.ctx.on('approval/request', answerer)
+    try {
+      await h.service.withRequest(request(), async () => {
+        claim(h.ctx, h.agent, 1)
+        expect(await h.ctx.approval.request({ agent: h.agent, toolName: 'skill', signal })).toBe(outcome)
+        await load(h)
+        h.agent.ctx.on('tools/pre-execute', async () => ({ kind: 'ask' }))
+        const result = await h.ctx.tools.execute({ name: 'search_artifacts', arguments: {}, agent: h.agent, signal, callId: CallId('approval') })
+        expect(result.isError).toBe(outcome !== 'allowed-once')
+        expect(h.effects).toEqual(outcome === 'allowed-once' ? ['search_artifacts'] : [])
+        expect(answerer).toHaveBeenCalledTimes(2)
+      })
+    } finally { await h.ctx.fiber.dispose() }
+  })
+  test.each(['scope', 'root'] as const)('%s disposal settles a running tool without its result listener', async (owner) => {
+    const h = await setup()
+    h.state.catalog = [entry()]
+    const entered = Promise.withResolvers<AbortSignal>()
+    const release = Promise.withResolvers<undefined>()
+    let bodySettled = false
+    h.agent.ctx.get('tools')!.register(defineTool({ name: 'propose_fact', description: 'Deferred proposal', parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, text) => [{ type: 'text', text }] },
+      execute: async (_args, exec) => {
+        entered.resolve(exec.signal)
+        try { await release.promise; return 'done' } finally { bodySettled = true }
+      },
+    }))
+    h.state.load = { ...loaded(), complete_tools: ['propose_fact', 'skill'],
+      tool_policy_digest: 'c586fd2330e52b02fbf91ffc847afbc2404f43c1a87685afbc59efa77834ef51' }
+    let toolSettled = false
+    let requestSettled = false
+    const pending = h.service.withRequest(request(), async () => {
+      claim(h.ctx, h.agent, 1)
+      expect((await load(h)).isError).toBe(false)
+      await h.ctx.tools.execute({ name: 'propose_fact', arguments: {}, agent: h.agent, signal, callId: CallId('deferred') })
+      toolSettled = true
+    }).catch((error: unknown) => { expect(error).toMatchObject({ failure: { code: 'unauthenticated' } }) })
+      .finally(() => { requestSettled = true })
+    const executionSignal = await entered.promise
+    let disposed = false
+    const closing = (owner === 'scope' ? h.scope.dispose() : Promise.resolve(h.ctx.fiber.dispose())).then(() => { disposed = true })
+    await vi.waitFor(() => { expect(executionSignal.aborted).toBe(true) })
+    release.resolve(undefined)
+    await vi.waitFor(() => {
+      expect({ bodySettled, toolSettled, requestSettled, disposed })
+        .toEqual({ bodySettled: true, toolSettled: true, requestSettled: true, disposed: true })
+    }, { timeout: 500 })
+    await Promise.all([pending, closing])
+    await h.ctx.fiber.dispose()
+  })
   test('an in-flight assembly cannot mutate its tool array after physical request disposal begins', async () => {
     const h = await fixture()
     const physical = new AbortController()
@@ -70,16 +173,20 @@ describe('Business Skill turn policy', () => {
     } finally { assemblyRelease.resolve(undefined); authRelease.resolve(undefined); await h.ctx.fiber.dispose() }
   })
 
-  test('same-turn owned steering preserves the pin; unrelated stop does not clear it and Agent failure does', async () => {
+  test('same-turn steering and error notification preserve the pin until a durable turn end', async () => {
     const h = await fixture()
     try {
       await h.service.withRequest(request(), async () => {
         claim(h.ctx, h.agent, 1)
         await load(h)
+        agentEvents(h.ctx, h.agent).emit('agent/status', { status: 'running' })
         claim(h.ctx, h.agent, 1)
         await agentEvents(h.ctx, h.agent).serial('agent/turn-stopping', { turn: 0, signal })
         expect((await h.ctx.systemPrompt.assemble({ scope: h.agent })).tools.map(tool => tool.name)).not.toContain('unrelated')
         agentEvents(h.ctx, h.agent).emit('agent/error', { turn: 1, step: 1, error: new Error('Model failed') })
+        expect((await h.ctx.systemPrompt.assemble({ scope: h.agent })).tools.map(tool => tool.name)).not.toContain('unrelated')
+        h.agent.session.append('turn/end', { turn: 1, reason: { kind: 'interrupted' } })
+        agentEvents(h.ctx, h.agent).emit('agent/status', { status: 'idle' })
         expect((await h.ctx.systemPrompt.assemble({ scope: h.agent })).tools.map(tool => tool.name)).toContain('unrelated')
         const definition = (await h.ctx.skills.get('review', { scope: h.agent }))!
         await expect(agentEvents(h.ctx, h.agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).rejects.toThrow()
@@ -150,7 +257,7 @@ describe('Business Skill turn policy', () => {
       })
     } finally { await h.ctx.fiber.dispose() }
   })
-  test.each(['tools/pre-execute', 'tools/execute'] as const)('request cancellation during %s cannot remove execution protection', async (event) => {
+  test.each(['tools/pre-execute', 'tools/execute', 'guard'] as const)('request cancellation during %s cannot remove execution protection', async (event) => {
     const h = await fixture()
     const physical = new AbortController()
     try {
@@ -161,10 +268,11 @@ describe('Business Skill turn policy', () => {
           physical.abort()
           return await next()
         })
-        else h.agent.ctx.on('tools/execute', async (_exec, next) => {
+        else if (event === 'tools/execute') h.agent.ctx.on('tools/execute', async (_exec, next) => {
           physical.abort()
           return await next()
         })
+        else h.agent.ctx.get('tools')!.guard(() => { physical.abort(); return undefined })
         const result = await h.ctx.tools.execute({ name: 'search_artifacts', arguments: {}, agent: h.agent, signal, callId: CallId('race') })
         expect(result.isError).toBe(true)
       })).rejects.toThrow()
@@ -243,6 +351,7 @@ describe('Business Skill turn policy', () => {
         const message = claim(h.ctx, h.agent, 1, invocation === 'user-explicit' ? '/review' : 'Review')
         const assembly = await h.ctx.systemPrompt.assemble({ scope: h.agent, signal })
         if (invocation === 'model-tool') {
+          h.agent.session.append('tool/call', { turn: 1, step: 1, callId: CallId('load'), name: 'skill', arguments: JSON.stringify({ name: 'review' }) })
           const result = await load(h)
           expect(result.isError).toBe(false)
           h.agent.session.append('tool/result', { turn: 1, step: 1,
@@ -264,6 +373,9 @@ describe('Business Skill turn policy', () => {
           source: { kind: 'plugin', plugin: 'other' }, content: [{ type: 'text', text: 'Keep other instructions.' }],
         }), { surfaceOp: 'append' })
         await agentEvents(h.ctx, h.agent).serial('agent/turn-stopping', { turn: 1, signal })
+        expect(JSON.stringify(h.agent.session.deriveMessages())).toContain('Read **exactly**')
+        h.agent.session.append('turn/end', { turn: 1, reason: { kind: 'interrupted' } })
+        agentEvents(h.ctx, h.agent).emit('agent/status', { status: 'idle' })
         const history = JSON.stringify(h.agent.session.deriveMessages())
         expect(history).not.toContain('Read **exactly**')
         expect(history).toContain('Business Skill review v1 was used in turn 1.')

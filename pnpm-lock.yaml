@@ -8614,12 +8614,21 @@ importers:
       '@deepseek-ai/dsh-typert-registry':
         specifier: workspace:^
         version: link:../../typert/registry
+      '@deepseek-ai/dsh-user-approval':
+        specifier: workspace:^
+        version: link:../../interaction/user-approval
       '@xagent/dsh-backend-client':
         specifier: workspace:^
         version: link:../backend-client
       '@xagent/dsh-principal':
         specifier: workspace:^
         version: link:../principal
+      '@xagent/dsh-retrieval':
+        specifier: workspace:^
+        version: link:../retrieval
+      '@xagent/dsh-tool-retrieval':
+        specifier: workspace:^
+        version: link:../tool-retrieval
 
   packages/xagent/connection-auth:
     dependencies:

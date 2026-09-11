@@ -30,6 +30,12 @@ Host 提供方拥有精确 Agent/请求注册和私有定义到版本的关系�
 
 本提案在 [Business Profile 组合](../../implemented/feature/2026-08-22-xagent-profile-product-shell.md)中增加受治理的 provider，继续禁用文件系统技能来源和开发能力。[认证与 Session 隔离规则](../../implemented/architecture/2026-08-25-xagent-auth-session-runtime.md)仍是权威。这些记录各自保留独立理由，存储基础不取代其中任何一项。[已批准设计](../../../../docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md)定义完整产品流程。
 
+只有持久化 `turn/end` 才结束指令生命周期：`agent/turn-stopping` 可通过 steering 继续同一轮次的下一步。Session 启动和在线清理都使用激活记录与技能调用记录识别已结束的指令条目，因此崩溃修复不会让旧正文与新固定版本同时生效。运行时回调的 `finally` 拥有执行结算；可能卸载的 `tools/result` 监听器不能负责它自身作用域释放所等待的 promise。
+
+在证据动态注册 `submit_cited_answer` 之前，声明中的检索工具对仍保持完整。这一唯一例外要求真实检索服务，以及由工具消费方私有 WeakSet 识别的存活 search 定义。复制定义和插件卸载都会撤销该识别。名称相等不能证明归属，预注册占位配套工具则会错误宣称可执行的证据访问。
+
+审批等待发生在执行前策略与工具分发之间，不属于任一回调。前置的 Agent 作用域审批监听器始终委托，并将结果与物理生命周期进行竞争。清理只等待这一可取消回调，不等待无响应答复方；竞争会吸收迟到异常并保留已取消决定。这保护审批间隙，而不扩展通用执行 API，也不修改只读审批请求。
+
 ## Alternatives considered
 
 **由 Session 事件拥有治理状态。** 项目内并发发布与授权必须独立于单个 Session 存续，并落实 PostgreSQL 项目访问控制；Session 日志负责执行证据。

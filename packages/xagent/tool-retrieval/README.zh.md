@@ -6,6 +6,8 @@
 
 工具从调用 Agent 取得 Session 和 tool call 标识，把取消信号交给 `ctx.xagentRetrieval`。它们仅可通过 Native 调用：Code SDK 生成和嵌套 Code 执行都排除它们，包括 `both` mode 的 Code 路径。工具内容和可重放 metadata 不包含 receipt；公开 metadata 固定为检索 kind、payload hash 和短引用标识。缺少 Agent、检索服务或后端能力时返回稳定失败。
 
+Host 策略可通过 `SEARCH_ARTIFACTS_TOOL` 和 `isArtifactSearchTool` 识别精确存活的资料检索注册。判定拒绝复制的定义，并在定义插件卸载时失效；该标识是私有的，不会进入 schema 或线协议数据。这支持[业务技能延迟配套工具接纳](../business-skill/README.md#turn-binding-and-tools)，而不接受任意同名工具。
+
 ## Model Experience
 
 ### Explicit retrieval scope（显式检索范围）

@@ -51,6 +51,9 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-user-approval": "workspace:^",
+    "@xagent/dsh-retrieval": "workspace:^",
+    "@xagent/dsh-tool-retrieval": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-typert-protocol": "workspace:^",
@@ -67,6 +70,9 @@
     "@deepseek-ai/dsh-llm": "workspace:^"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-user-approval": "workspace:^",
+    "@xagent/dsh-retrieval": "workspace:^",
+    "@xagent/dsh-tool-retrieval": "workspace:^",
     "@deepseek-ai/dsh-api-gateway": "workspace:^",
     "@deepseek-ai/dsh-typert-registry": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^",
