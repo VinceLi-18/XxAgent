@@ -327,7 +327,7 @@ A resolved skill is about to become model-visible. Dispatch is awaited before th
  * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
  * @mode serial
  */
-'skill/loaded'(this: Scoped<Agent>, payload: { agent: Agent definition: SkillDefinition invocation: 'model-tool' | 'user-explicit' callId?: CallId }): Promise<void> | void
+'skill/loaded'(this: Scoped<Agent>, payload: { agent: Agent; definition: SkillDefinition; invocation: 'model-tool' | 'user-explicit'; callId?: CallId }): Promise<void> | void
 ```
 
 Types: [Agent](core.md) · [CallId](llm-streaming.md) · [Scoped](scope.md)

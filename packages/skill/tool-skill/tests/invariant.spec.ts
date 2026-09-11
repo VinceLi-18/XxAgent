@@ -1,10 +1,12 @@
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents, Inbox, type Agent, type PreStepDecision } from '@deepseek-ai/dsh-agent'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
-import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime, { type ToolExecution, type ToolExecutionResult, type ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { describe, expect, it } from 'vitest'
 import * as ToolSkillInvariant from '../src/invariant.ts'
 
@@ -39,6 +41,19 @@ const definition: SkillDefinition = {
   content: 'Resolved instructions.',
 }
 
+const renderedDefinition = [
+  '<skill_content name="invariant-skill">',
+  '<skill_resources>',
+  'Resources for this skill are managed by provider "test".',
+  'Load referenced resources only as needed.',
+  '</skill_resources>',
+  '',
+  '<skill_instructions>',
+  'Resolved instructions.',
+  '</skill_instructions>',
+  '</skill_content>',
+].join('\n')
+
 function execution(agent: Agent, callId = 'invariant-call'): ToolExecution {
   return {
     token: Symbol('skill') as ToolExecutionToken,
@@ -52,6 +67,21 @@ function execution(agent: Agent, callId = 'invariant-call'): ToolExecution {
 }
 
 const outcome = (): ToolExecutionResult => ({ content: [], isError: false, value: null })
+
+const admittedOutcome = (): ToolExecutionResult => ({
+  content: [{ type: 'text', text: renderedDefinition }],
+  isError: false,
+  value: {
+    name: 'invariant-skill',
+    provider: 'test',
+    content: 'Resolved instructions.',
+  },
+})
+
+const admittedInjection = () => createUserMessage({
+  content: [{ type: 'text', text: renderedDefinition }],
+  source: { kind: 'skill-invocation', name: 'invariant-skill', form: 'instructions' },
+})
 
 function preStep(
   ctx: Context,
@@ -71,12 +101,14 @@ async function duringModelAdmission(
   next: () => Promise<ToolExecutionResult>,
 ): Promise<ToolExecutionResult> {
   if (exec.agent === undefined) throw new Error('model admission fixture requires an agent')
-  return await agentEvents(ctx, exec.agent).waterfall('tools/execute', exec, next)
+  return await ctx.waterfall(scopeTarget(ctx.tools, exec.agent), 'tools/execute', exec, next)
 }
 
 async function setup(): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(AgentRegistry)
+  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(ToolRuntime)
   await ctx.plugin(InvariantRegistry)
   await ctx.plugin(ToolSkillInvariant)
   return ctx
@@ -97,8 +129,8 @@ describe('tool-skill load invariant', () => {
     await expect(preStep(
       ctx,
       agent,
-      () => Promise.resolve({ kind: 'enter' as const, messages: [] }),
-    )).resolves.toEqual({ kind: 'enter', messages: [] })
+      () => Promise.resolve({ kind: 'enter' as const, messages: [admittedInjection()] }),
+    )).resolves.toMatchObject({ kind: 'enter', messages: [{ source: { name: 'invariant-skill' } }] })
   })
 
   it.each([
@@ -155,8 +187,53 @@ describe('tool-skill load invariant', () => {
         invocation: 'model-tool',
         callId: exec.callId,
       })
+      return admittedOutcome()
+    })).resolves.toEqual(admittedOutcome())
+  })
+
+  it('rejects a model-tool observation whose definition names another request', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-model-request')
+    const exec = execution(agent)
+
+    await expect(duringModelAdmission(ctx, exec, async () => {
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition: { ...definition, name: 'different-skill' },
+        invocation: 'model-tool',
+        callId: exec.callId,
+      })
+      return admittedOutcome()
+    })).rejects.toThrow(/requested skill/)
+  })
+
+  it('rejects a model-tool observation without a named skill request', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-model-unnamed')
+    const exec = { ...execution(agent), arguments: {} }
+
+    await expect(duringModelAdmission(ctx, exec, async () => {
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition,
+        invocation: 'model-tool',
+        callId: exec.callId,
+      })
+      return admittedOutcome()
+    })).rejects.toThrow(/requested skill/)
+  })
+
+  it('rejects a model-tool observation before a matching body is admitted', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-model-early')
+    const exec = execution(agent)
+
+    await expect(duringModelAdmission(ctx, exec, async () => {
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition,
+        invocation: 'model-tool',
+        callId: exec.callId,
+      })
       return outcome()
-    })).resolves.toEqual(outcome())
+    })).rejects.toThrow(/admitted body/)
   })
 
   it('requires a model-tool observation to identify its active admission', async () => {
@@ -218,6 +295,99 @@ describe('tool-skill load invariant', () => {
       definition,
       invocation: 'user-explicit',
     })).rejects.toThrow(/follow resolution/)
+  })
+
+  it('rejects a user-explicit observation whose definition differs from the admitted body', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-user-body')
+    ctx.on('agent/pre-step', async (_payload, next) => {
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition: { ...definition, content: 'Different instructions.' },
+        invocation: 'user-explicit',
+      })
+      return await next()
+    })
+
+    await expect(preStep(
+      ctx,
+      agent,
+      () => Promise.resolve({ kind: 'enter' as const, messages: [admittedInjection()] }),
+    )).rejects.toThrow(/admitted body/)
+  })
+
+  it('rejects a user-explicit observation before an injection is admitted', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-user-early')
+    ctx.on('agent/pre-step', async (_payload, next) => {
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition,
+        invocation: 'user-explicit',
+      })
+      return await next()
+    })
+
+    await expect(preStep(
+      ctx,
+      agent,
+      () => Promise.resolve({ kind: 'enter' as const, messages: [] }),
+    )).rejects.toThrow(/admitted body/)
+  })
+
+  it('rejects an admitted skill injection without a load observation', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-user-missing')
+
+    await expect(preStep(
+      ctx,
+      agent,
+      () => Promise.resolve({ kind: 'enter' as const, messages: [admittedInjection()] }),
+    )).rejects.toThrow(/without a skill\/loaded observation/)
+  })
+
+  it('rejects a skill injection that does not admit one text body', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-user-non-text')
+    ctx.on('agent/pre-step', async (_payload, next) => {
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition,
+        invocation: 'user-explicit',
+      })
+      return await next()
+    })
+    const malformed = createUserMessage({
+      content: [
+        { type: 'text', text: renderedDefinition },
+        { type: 'text', text: 'Unexpected second body.' },
+      ],
+      source: { kind: 'skill-invocation', name: definition.name, form: 'instructions' },
+    })
+
+    await expect(preStep(
+      ctx,
+      agent,
+      () => Promise.resolve({ kind: 'enter' as const, messages: [malformed] }),
+    )).rejects.toThrow(/without one text body/)
+  })
+
+  it('rejects duplicate admitted injections for one resolved skill', async () => {
+    const ctx = await setup()
+    const agent = agentFixture('skill-invariant-user-admitted-twice')
+    ctx.on('agent/pre-step', async (_payload, next) => {
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition,
+        invocation: 'user-explicit',
+      })
+      return await next()
+    })
+
+    await expect(preStep(
+      ctx,
+      agent,
+      () => Promise.resolve({
+        kind: 'enter' as const,
+        messages: [admittedInjection(), admittedInjection()],
+      }),
+    )).rejects.toThrow(/admitted more than once/)
   })
 
   it('tracks concurrent model admissions independently and rejects a repeated call ID', async () => {

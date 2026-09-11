@@ -9,9 +9,11 @@ import { Session, SessionId, type SessionEvent, type UserMessage } from '@deepse
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { agentEvents, Inbox, type Agent, type PreStepDecision } from '@deepseek-ai/dsh-agent'
+import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import SkillRegistry, { renderSkillContent, type SkillDefinition } from '@deepseek-ai/dsh-skill'
 import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import * as toolSkill from '@deepseek-ai/dsh-tool-skill'
+import * as ToolSkillInvariant from '@deepseek-ai/dsh-tool-skill/invariant'
 
 const testToolSignal = new AbortController().signal
 
@@ -43,9 +45,11 @@ async function setup(home: string, config: toolSkill.Config = {}): Promise<Conte
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
+  await ctx.plugin(InvariantRegistry)
   await ctx.plugin(SkillRegistry)
   await ctx.plugin(SkillFileSystem, { dshHome: join(home, '.dsh'), agentsHome: join(home, '.agents'), watch: false })
   await ctx.plugin(toolSkill, config)
+  await ctx.plugin(ToolSkillInvariant)
   return ctx
 }
 
