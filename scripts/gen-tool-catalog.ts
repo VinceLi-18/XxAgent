@@ -134,6 +134,7 @@ function catalogFactScope(sessionId: string): XAgentAuthenticatedSessionRequestS
     sessionId,
     visibility: 'project' as const,
     projectId: '00000000-0000-0000-0000-000000000201',
+    purpose: 'conversation' as const,
   })
 }
 

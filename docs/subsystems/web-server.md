@@ -360,7 +360,7 @@ XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspectio
 abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 ```
 
-Source: [`packages/xagent/principal/src/index.ts:115`](../../packages/xagent/principal/src/index.ts)
+Source: [`packages/xagent/principal/src/index.ts:136`](../../packages/xagent/principal/src/index.ts)
 
 <a id="ctxxagentproject--xagentprojectservice"></a>
 

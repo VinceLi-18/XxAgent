@@ -155,13 +155,23 @@ function eventEnvelope(event: SessionEvent): {
 function responseSessions(value: unknown): Record<string, unknown>[] {
   const sessions = object(value).sessions
   if (!Array.isArray(sessions)) throw new TypeError('invalid XAgent session response')
-  return sessions.map(object)
+  return sessions.map((value) => {
+    const row = object(value)
+    if (row.purpose !== 'conversation' && row.purpose !== 'business_skill_test') {
+      throw new TypeError('invalid XAgent session purpose')
+    }
+    return row
+  })
+}
+
+function conversationSessions(value: unknown): Record<string, unknown>[] {
+  return responseSessions(value).filter(row => row.purpose === 'conversation')
 }
 
 function validateCreatedSession(value: unknown, expectedId: string): void {
   const row = object(value)
   const session = object(row.session)
-  if (row.schema_version !== 1 || session.id !== expectedId) {
+  if (row.schema_version !== 1 || session.id !== expectedId || session.purpose !== 'conversation') {
     throw new TypeError('invalid XAgent session create response')
   }
   if (session.visibility === 'private' && session.project_id === null) return
@@ -180,7 +190,7 @@ function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: 
   const id = session.id
   const sessionKeys = new Set([
     'id', 'owner_id', 'project_id', 'visibility', 'permission_revision_created',
-    'title', 'runtime_header', 'archived', 'last_event_sequence', 'version',
+    'purpose', 'title', 'runtime_header', 'archived', 'last_event_sequence', 'version',
     'created_at', 'updated_at',
   ])
   const runtimeHeaderKeys = new Set([
@@ -191,7 +201,8 @@ function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: 
     || !Object.hasOwn(row, 'session')
     || Object.keys(session).some(key => !sessionKeys.has(key))
     || Object.keys(runtimeHeader).some(key => !runtimeHeaderKeys.has(key))
-    || row.schema_version !== 1 || typeof id !== 'string' || !UUID_PATTERN.test(id)
+    || row.schema_version !== 1 || session.purpose !== 'conversation'
+    || typeof id !== 'string' || !UUID_PATTERN.test(id)
     || session.last_event_sequence !== throughSequence) {
     throw new TypeError('invalid XAgent session fork response')
   }
@@ -226,6 +237,7 @@ function validateAppendResult(value: unknown, expectedLastSequence: number): voi
 function responseInspection(value: unknown): SessionInspection {
   const row = object(value)
   const session = object(row.session)
+  if (session.purpose !== 'conversation') throw new TypeError('invalid XAgent session purpose')
   const events = row.events
   if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
   const parsed = events.map((entry, index) => {
@@ -505,7 +517,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     if (!Number.isSafeInteger(fromSeq) || fromSeq < 0) throw new TypeError('fromSeq must be a non-negative safe integer')
     signal?.throwIfAborted()
     const token = this.tokenFor(id)
-    const rows = responseSessions(await this.backend.sessions.list(token, signal))
+    const rows = conversationSessions(await this.backend.sessions.list(token, signal))
     const meta = rows.map(row => headerFrom(row.runtime_header)).find(header => header.id === id)
     if (meta === undefined) throw new Error('session not found')
     const events: SessionEvent[] = []
@@ -528,7 +540,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
   async list(signal?: AbortSignal): Promise<SessionHeader[]> {
     signal?.throwIfAborted()
     const token = this.requireActiveToken()
-    const rows = responseSessions(await this.backend.sessions.list(token, signal))
+    const rows = conversationSessions(await this.backend.sessions.list(token, signal))
     const headers = rows.map(row => headerFrom(row.runtime_header))
     for (const header of headers) this.leases.set(header.id, token)
     return headers
@@ -540,10 +552,24 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return Promise.resolve([])
   }
 
+  /**
+   * Create the one empty Host Session allocated by an authorized Business Skill test start.
+   * @param meta - Host runtime header whose ID matches the FastAPI-created test Session.
+   * @returns the live Session with writes leased to the current authenticated token scope.
+   * @throws when called outside the authorizing request token scope or with an invalid header.
+   */
+  loadBusinessSkillTest(meta: SessionHeader): Session {
+    const token = this.requireActiveToken()
+    const header = headerFrom(meta)
+    const session = this.ctx.sessions.create(header.id, { meta: header })
+    this.leases.set(header.id, token)
+    return session
+  }
+
   async listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]> {
     signal?.throwIfAborted()
     const token = this.requireActiveToken()
-    const rows = responseSessions(await this.backend.sessions.list(token, signal))
+    const rows = conversationSessions(await this.backend.sessions.list(token, signal))
     return rows.map((row) => {
       const header = headerFrom(row.runtime_header)
       if (!Number.isSafeInteger(row.version) || !Number.isSafeInteger(row.last_event_sequence)) {

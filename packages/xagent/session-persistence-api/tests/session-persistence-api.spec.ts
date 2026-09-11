@@ -79,7 +79,7 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
     sessions: {
       list: async (...args) => {
         calls.push({ name: 'list', args })
-        return { schema_version: 1, sessions: [{ runtime_header: header, version: 2, last_event_sequence: 0 }] }
+        return { schema_version: 1, sessions: [{ purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: 0 }] }
       },
       create: async (...args) => {
         calls.push({ name: 'create', args })
@@ -89,6 +89,7 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
             id: '00000000-0000-0000-0000-000000000701',
             visibility: 'private',
             project_id: null,
+            purpose: 'conversation',
             runtime_header: header,
             version: 1,
             last_event_sequence: -1,
@@ -99,7 +100,7 @@ function backend(): XAgentBackend & { calls: { name: string; args: unknown[] }[]
         calls.push({ name: 'open', args })
         return {
           schema_version: 1,
-          session: { runtime_header: header, version: 2, last_event_sequence: 0 },
+          session: { purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: 0 },
           events: [{ sequence: 0, payload: event }],
         }
       },
@@ -146,7 +147,7 @@ async function expectResumedPublicationRollback(
   ]
   value.sessions.open = vi.fn(async () => ({
     schema_version: 1,
-    session: { runtime_header: header, version: 2, last_event_sequence: 1 },
+    session: { purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: 1 },
     events: stored.map(item => ({ sequence: item.seq, payload: item })),
   }))
   const append = vi.fn(async () => ({ schema_version: 1 as const, version: 3, last_event_sequence: 2 }))
@@ -193,6 +194,7 @@ describe('XAgent FastAPI Session Persistence', () => {
           id: '00000000-0000-0000-0000-000000000702',
           visibility: 'project',
           project_id: '00000000-0000-0000-0000-000000000401',
+          purpose: 'conversation',
           runtime_header: childHeader,
           last_event_sequence: 0,
         },
@@ -225,7 +227,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       value.calls.push({ name: 'open-child', args })
       return {
         schema_version: 1,
-        session: { runtime_header: childHeader, version: 1, last_event_sequence: 0 },
+        session: { purpose: 'conversation', runtime_header: childHeader, version: 1, last_event_sequence: 0 },
         events: [{ sequence: 0, payload: event }],
       }
     }
@@ -265,6 +267,7 @@ describe('XAgent FastAPI Session Persistence', () => {
         id: '00000000-0000-0000-0000-000000000702',
         visibility: 'project',
         project_id: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
         runtime_header: childHeader,
         last_event_sequence: 0,
         ...('target_scope' in extra ? extra : {}),
@@ -293,6 +296,7 @@ describe('XAgent FastAPI Session Persistence', () => {
         id: '00000000-0000-0000-0000-000000000702',
         visibility,
         project_id: projectId,
+        purpose: 'conversation',
         runtime_header: runtimeHeader,
         last_event_sequence: 0,
       },
@@ -495,7 +499,7 @@ describe('XAgent FastAPI Session Persistence', () => {
         if (path.endsWith('/list')) {
           return Response.json({
             schema_version: 1,
-            sessions: [{ runtime_header: header, version: 2, last_event_sequence: 0 }],
+            sessions: [{ purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: 0 }],
           })
         }
         if (path.endsWith('/events')) {
@@ -1217,7 +1221,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       value.calls.push({ name: 'open', args })
       return {
         schema_version: 1,
-        session: { runtime_header: header, version: 2, last_event_sequence: 0 },
+        session: { purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: 0 },
         events: [{ sequence: 0, payload: result }],
       }
     }
@@ -1307,6 +1311,7 @@ describe('XAgent FastAPI Session Persistence', () => {
         id: '00000000-0000-0000-0000-000000000701',
         visibility: 'project',
         project_id: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
       },
     }))
     const persistence = new XAgentSessionPersistence(new Context(), value)
@@ -1377,7 +1382,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       value.calls.push({ name: 'open', args })
       return {
         schema_version: 1,
-        session: { runtime_header: header, version: 2, last_event_sequence: stored.length - 1 },
+        session: { purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: stored.length - 1 },
         events: stored.map(item => ({ sequence: item.seq, payload: item })),
       }
     })
@@ -1449,7 +1454,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     }
     value.sessions.open = vi.fn(async () => ({
       schema_version: 1,
-      session: { runtime_header: header, version: 2, last_event_sequence: 0 },
+      session: { purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: 0 },
       events: [{ sequence: 0, payload: marker }],
     }))
     const append = vi.spyOn(value.sessions, 'append')
@@ -1519,6 +1524,64 @@ describe('XAgent FastAPI Session Persistence', () => {
     await expect(persistence.withUserToken('token', () => persistence.list())).rejects.toThrow('invalid XAgent session response')
   })
 
+  test.each([undefined, null, '', 'test', 1])('Session 行拒绝缺失或未知 purpose %#', async (purpose) => {
+    const value = backend()
+    value.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        ...(purpose === undefined ? {} : { purpose }),
+        runtime_header: header,
+        version: 2,
+        last_event_sequence: 0,
+      }],
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+    await expect(persistence.withUserToken('token', () => persistence.list()))
+      .rejects.toThrow('invalid XAgent session purpose')
+  })
+
+  test('普通列表与 revision 列表防御性排除 Business Skill 测试 Session', async () => {
+    const value = backend()
+    value.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [
+        { purpose: 'conversation', runtime_header: header, version: 2, last_event_sequence: 0 },
+        {
+          purpose: 'business_skill_test',
+          runtime_header: { ...header, id: SessionId('session-00000000-0000-0000-0000-000000000702') },
+          version: 1,
+          last_event_sequence: -1,
+        },
+      ],
+    }))
+    const persistence = new XAgentSessionPersistence(new Context(), value)
+
+    await expect(persistence.withUserToken('token', () => persistence.list())).resolves.toEqual([header])
+    await expect(persistence.withUserToken('token', () => persistence.listSnapshots())).resolves.toEqual([{
+      header,
+      revision: 'xagent-api:2:0',
+    }])
+  })
+
+  test('专用入口建立一个已授权测试 Session 并为其持久化写入租约', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    const testHeader = {
+      ...header,
+      id: SessionId('session-00000000-0000-0000-0000-000000000702'),
+    }
+
+    const session = await persistence.withUserToken('test-token', async () =>
+      persistence.loadBusinessSkillTest(testHeader))
+    expect(session.header).toEqual(testHeader)
+    session.append('turn/start', { turn: 0 })
+    await ctx.sessions.flush(session)
+    expect(value.calls.filter(call => call.name === 'append').at(-1)?.args[0]).toBe('test-token')
+    await ctx.fiber.dispose()
+  })
+
   test.each([
     [{ id: 1 }],
     [{ id: 'bad' }],
@@ -1536,7 +1599,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     [{ origin: 'user' }],
   ])('列表拒绝畸形 Header %#', async (override) => {
     const value = backend()
-    value.sessions.list = vi.fn(async () => ({ sessions: [{ runtime_header: { ...header, ...override } }] }))
+    value.sessions.list = vi.fn(async () => ({ sessions: [{ purpose: 'conversation', runtime_header: { ...header, ...override } }] }))
     const persistence = new XAgentSessionPersistence(new Context(), value)
     await expect(persistence.withUserToken('token', () => persistence.list())).rejects.toThrow('invalid XAgent runtime header')
   })
@@ -1570,10 +1633,10 @@ describe('XAgent FastAPI Session Persistence', () => {
       null,
       {},
       { session: null, events: [] },
-      { session: { runtime_header: header }, events: null },
-      { session: { runtime_header: header }, events: [{ sequence: 1, payload: event }] },
-      { session: { runtime_header: header }, events: [{ sequence: 0, payload: { ...event, seq: 1 } }] },
-      { session: { runtime_header: { ...header, id: SessionId('session-00000000-0000-0000-0000-000000000702') } }, events: [] },
+      { session: { purpose: 'conversation', runtime_header: header }, events: null },
+      { session: { purpose: 'conversation', runtime_header: header }, events: [{ sequence: 1, payload: event }] },
+      { session: { purpose: 'conversation', runtime_header: header }, events: [{ sequence: 0, payload: { ...event, seq: 1 } }] },
+      { session: { purpose: 'conversation', runtime_header: { ...header, id: SessionId('session-00000000-0000-0000-0000-000000000702') } }, events: [] },
     ]) {
       const value = backend()
       value.sessions.open = vi.fn(async () => response as never)
@@ -1600,8 +1663,8 @@ describe('XAgent FastAPI Session Persistence', () => {
     }
 
     for (const row of [
-      { runtime_header: header, version: 1.5, last_event_sequence: 0 },
-      { runtime_header: header, version: 1, last_event_sequence: 1.5 },
+      { purpose: 'conversation', runtime_header: header, version: 1.5, last_event_sequence: 0 },
+      { purpose: 'conversation', runtime_header: header, version: 1, last_event_sequence: 1.5 },
     ]) {
       const value = backend()
       value.sessions.list = vi.fn(async () => ({ sessions: [row] }))
@@ -1685,12 +1748,12 @@ describe('XAgent FastAPI Session Persistence', () => {
   test('完整冷会话不追加 crash-repair 事件，列表可跳过其他 Header', async () => {
     const value = backend()
     value.sessions.open = vi.fn(async () => ({
-      session: { runtime_header: header },
+      session: { purpose: 'conversation', runtime_header: header },
       events: [{ sequence: 0, payload: { ...event, type: 'event' } }],
     }))
     value.sessions.list = vi.fn(async () => ({ sessions: [
-      { runtime_header: { ...header, id: SessionId('session-00000000-0000-0000-0000-000000000702') } },
-      { runtime_header: header },
+      { purpose: 'conversation', runtime_header: { ...header, id: SessionId('session-00000000-0000-0000-0000-000000000702') } },
+      { purpose: 'conversation', runtime_header: header },
     ] }))
     const persistence = new XAgentSessionPersistence(new Context(), value)
     const loaded = await persistence.withUserToken('token', () => persistence.load(id))

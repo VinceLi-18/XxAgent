@@ -312,6 +312,279 @@ function factClient(body: unknown, status = 200): XAgentBackendClient {
 }
 
 describe('XAgent 后端客户端', () => {
+  test('Business Skill 客户端覆盖闭合治理、测试与运行时接口并传递取消', async () => {
+    const digest = 'a'.repeat(64)
+    const versionKey = '00000000-0000-0000-0000-000000000801'
+    const testRow = {
+      run_number: 4,
+      draft_revision: 2,
+      content_digest: digest,
+      tool_policy_digest: digest,
+      status: 'completed',
+      termination_reason: 'completed',
+      verdict: 'pass',
+      started_at: '2026-09-11T08:00:00Z',
+      settled_at: '2026-09-11T08:01:00Z',
+      verdict_at: '2026-09-11T08:02:00Z',
+    }
+    const summary = {
+      slug: 'quarterly-review',
+      display_name: 'Quarterly review',
+      status: 'active',
+      authorized: true,
+      current_version: 3,
+      draft_revision: 2,
+      latest_test: testRow,
+      updated_at: '2026-09-11T08:03:00Z',
+    }
+    const draft = {
+      revision: 2,
+      description: 'Review project evidence.',
+      instructions: '# Review\nUse the available evidence.',
+      primary_tools: ['search_artifacts'],
+      content_digest: digest,
+      tool_policy_digest: digest,
+    }
+    const detail = {
+      schema_version: 1,
+      ...summary,
+      draft,
+      versions: [{
+        version_number: 3,
+        description: draft.description,
+        instructions: draft.instructions,
+        primary_tools: ['search_artifacts'],
+        complete_tools: ['search_artifacts', 'skill', 'submit_cited_answer'],
+        content_digest: digest,
+        tool_policy_digest: digest,
+        source_draft_revision: 2,
+        published_at: '2026-09-11T08:03:00Z',
+      }],
+      tests: [testRow],
+      next_version_cursor: null,
+      next_run_cursor: null,
+      audit_summary: [{ action: 'publish', result: 'published', version_number: 3, created_at: '2026-09-11T08:03:00Z' }],
+    }
+    const calls: Array<{ path: string; body: unknown; signal?: AbortSignal }> = []
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(requestUrl(input)).pathname
+      calls.push({
+        path,
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined,
+        ...(init?.signal == null ? {} : { signal: init.signal }),
+      })
+      if (path.endsWith('/list')) return Response.json({ schema_version: 1, items: [summary], next_cursor: null })
+      if (path.endsWith('/tests/start')) return Response.json({
+        schema_version: 1,
+        test: testRow,
+        session_id: retrievalIds.session,
+        purpose: 'business_skill_test',
+        draft,
+        scenario: 'Review the quarter.',
+        test_tools: ['search_artifacts', 'skill', 'submit_cited_answer'],
+        unexecuted_write_tools: [],
+      })
+      if (path.endsWith('/settle')) return Response.json({ schema_version: 1, test: testRow })
+      if (path.endsWith('/transcript')) return Response.json({
+        schema_version: 1,
+        test: testRow,
+        events: [{
+          schema_version: 1,
+          sequence: 0,
+          event_type: 'turn/start',
+          payload: { type: 'turn/start' },
+          created_at: '2026-09-11T08:00:01Z',
+        }],
+        next_sequence: 1,
+      })
+      if (path.endsWith('/runtime/catalog')) return Response.json({
+        schema_version: 1,
+        items: [{ schema_version: 1, slug: summary.slug, description: draft.description, version_number: 3, version_key: versionKey }],
+      })
+      if (path.endsWith('/runtime/load')) return Response.json({
+        schema_version: 1,
+        slug: summary.slug,
+        description: draft.description,
+        version_number: 3,
+        version_key: versionKey,
+        instructions: draft.instructions,
+        content_digest: digest,
+        tool_policy_digest: digest,
+        complete_tools: ['search_artifacts', 'skill', 'submit_cited_answer'],
+      })
+      if (path.endsWith('/runtime/authorize-tool')) return Response.json({ schema_version: 1, allowed: true })
+      return Response.json(detail)
+    })
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: fetcher,
+    })
+    const signal = new AbortController()
+    const skills = client.businessSkills
+
+    await expect(skills.list('user-token', projectResponse.project.id, { limit: 20, cursor: 'quarterly-review' }, signal.signal))
+      .resolves.toMatchObject({ items: [{ slug: 'quarterly-review', latestTest: { runNumber: 4 } }] })
+    await skills.create('user-token', projectResponse.project.id, {
+      slug: summary.slug, displayName: summary.display_name, description: draft.description,
+      instructions: draft.instructions, primaryTools: ['search_artifacts'], idempotencyKey: 'create-1',
+    }, signal.signal)
+    await skills.detail('user-token', projectResponse.project.id, summary.slug, { limit: 25, versionCursor: 3, runCursor: 4 }, signal.signal)
+    await skills.draft('user-token', projectResponse.project.id, summary.slug, {
+      expectedDraftRevision: 2, sourceVersionNumber: 3, description: 'Updated.', idempotencyKey: 'draft-1',
+    }, signal.signal)
+    await skills.publish('user-token', projectResponse.project.id, summary.slug, 2, 'publish-1', signal.signal)
+    await skills.authorization('user-token', projectResponse.project.id, summary.slug, true, 'authorization-1', signal.signal)
+    await skills.version('user-token', projectResponse.project.id, summary.slug, 3, 'version-1', signal.signal)
+    await skills.retire('user-token', projectResponse.project.id, summary.slug, 'retire-1', signal.signal)
+    await skills.verdict('user-token', projectResponse.project.id, summary.slug, 4, 'pass', 'verdict-1', signal.signal)
+    await expect(skills.startTest('user-token', projectResponse.project.id, summary.slug, {
+      expectedDraftRevision: 2, toolPolicyDigest: digest, scenario: 'Review the quarter.', idempotencyKey: 'test-1',
+    }, signal.signal)).resolves.toMatchObject({ sessionId: retrievalIds.session, purpose: 'business_skill_test' })
+    await expect(skills.settleTest(
+      'user-token', projectResponse.project.id, summary.slug, 4, retrievalIds.session,
+      'completed', 'settle-1', signal.signal,
+    )).resolves.toMatchObject({ runNumber: 4, status: 'completed' })
+    await expect(skills.transcript(
+      'user-token', projectResponse.project.id, summary.slug, 4, { afterSequence: -1, limit: 50 }, signal.signal,
+    )).resolves.toMatchObject({ events: [{ sequence: 0, eventType: 'turn/start' }], nextSequence: 1 })
+    await expect(skills.catalog('user-token', projectResponse.project.id, retrievalIds.session, signal.signal))
+      .resolves.toEqual([{ slug: summary.slug, description: draft.description, versionNumber: 3, versionKey }])
+    await expect(skills.load(
+      'user-token', projectResponse.project.id, retrievalIds.session, summary.slug, versionKey, signal.signal,
+    )).resolves.toMatchObject({ slug: summary.slug, completeTools: ['search_artifacts', 'skill', 'submit_cited_answer'] })
+    await expect(skills.authorizeTool(
+      'user-token', projectResponse.project.id, retrievalIds.session, summary.slug, versionKey,
+      digest, 'search_artifacts', false, signal.signal,
+    )).resolves.toBeUndefined()
+
+    expect(calls.map(call => call.path)).toEqual([
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/list`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/create`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/detail`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/draft`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/publish`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/authorization`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/current-version`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/retire`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/tests/4/verdict`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/tests/start`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/tests/4/settle`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/quarterly-review/tests/4/transcript`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/runtime/catalog`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/runtime/load`,
+      `/internal/xagent/business-skills/projects/${projectResponse.project.id}/runtime/authorize-tool`,
+    ])
+    expect(calls[3]?.body).toEqual({
+      schema_version: 1, expected_draft_revision: 2, source_version_number: 3,
+      description: 'Updated.', idempotency_key: 'draft-1',
+    })
+    expect(calls[9]?.body).toEqual({
+      schema_version: 1, expected_draft_revision: 2, tool_policy_digest: digest,
+      scenario: 'Review the quarter.', idempotency_key: 'test-1',
+    })
+    expect(calls[14]?.body).toEqual({
+      schema_version: 1, session_id: retrievalIds.session, slug: summary.slug, version_key: versionKey,
+      tool_policy_digest: digest, tool_name: 'search_artifacts', cancelled: false,
+    })
+    signal.abort()
+    expect(calls.every(call => call.signal?.aborted)).toBe(true)
+  })
+
+  test.each([
+    [{ schema_version: 1, items: [], next_cursor: null, internal_id: 'secret' }],
+    [{ schema_version: 1, items: [{ schema_version: 1, slug: 'Bad Slug', description: 'x', version_number: 1, version_key: crypto.randomUUID() }] }],
+    [{ schema_version: 1, allowed: false }],
+  ])('Business Skill 客户端拒绝畸形或未知字段且诊断不回显响应 %#', async (response) => {
+    const client = retrievalClient(response)
+    let operation: Promise<unknown>
+    if ('allowed' in (response as Record<string, unknown>)) {
+      operation = client.businessSkills.authorizeTool(
+        'user-secret', projectResponse.project.id, retrievalIds.session, 'quarterly-review', crypto.randomUUID(),
+        'a'.repeat(64), 'skill', false,
+      )
+    } else if (Array.isArray((response as Record<string, unknown>).items)
+      && ((response as Record<string, unknown>).items as unknown[]).length > 0) {
+      operation = client.businessSkills.catalog('user-secret', projectResponse.project.id, retrievalIds.session)
+    } else {
+      operation = client.businessSkills.list('user-secret', projectResponse.project.id, {})
+    }
+    const error = await operation.catch((value: unknown) => value as Error)
+    expect(error).toEqual(new XAgentBackendError('service-unavailable'))
+    expect(String(error)).not.toContain('secret')
+  })
+
+  test('Business Skill 客户端在发送前拒绝空草稿编辑和非规范工具顺序', async () => {
+    const fetcher = vi.fn(async () => Response.json({}))
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test', serviceToken: 'service-secret', fetch: fetcher,
+    })
+
+    await expect(client.businessSkills.create('user-token', projectResponse.project.id, {
+      slug: 'quarterly-review', displayName: 'Quarterly review', description: 'Review evidence.',
+      instructions: 'Use project evidence.', primaryTools: ['search_artifacts', 'list_accessible_projects'],
+      idempotencyKey: 'create-1',
+    })).rejects.toEqual(new XAgentBackendError('service-unavailable'))
+    await expect(client.businessSkills.draft('user-token', projectResponse.project.id, 'quarterly-review', {
+      expectedDraftRevision: 1, idempotencyKey: 'draft-1',
+    })).rejects.toEqual(new XAgentBackendError('service-unavailable'))
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    [{
+      schema_version: 1,
+      items: [{
+        slug: 'quarterly-review', display_name: 'Quarterly review', status: 'active', authorized: false,
+        current_version: null, draft_revision: 1,
+        latest_test: {
+          run_number: 1, draft_revision: 1, content_digest: 'a'.repeat(64),
+          tool_policy_digest: 'b'.repeat(64), status: 'running', termination_reason: 'completed',
+          verdict: null, started_at: '2026-09-11T08:00:00Z', settled_at: null, verdict_at: null,
+        },
+        updated_at: '2026-09-11T08:00:00Z',
+      }],
+      next_cursor: null,
+    }, 'list'],
+    [{
+      schema_version: 1,
+      test: {
+        run_number: 1, draft_revision: 1, content_digest: 'a'.repeat(64),
+        tool_policy_digest: 'b'.repeat(64), status: 'running', termination_reason: null,
+        verdict: null, started_at: '2026-09-11T08:00:00Z', settled_at: null, verdict_at: null,
+      },
+      session_id: retrievalIds.session,
+      purpose: 'business_skill_test',
+      draft: {
+        revision: 1, description: 'Review evidence.', instructions: 'Use project evidence.',
+        primary_tools: ['propose_fact'], content_digest: 'a'.repeat(64), tool_policy_digest: 'b'.repeat(64),
+      },
+      scenario: 'Review the quarter.',
+      test_tools: ['skill'],
+      unexecuted_write_tools: [],
+    }, 'start'],
+  ])('Business Skill 客户端拒绝不一致的测试终态或工具策略 %#', async (response, operation) => {
+    const client = retrievalClient(response)
+    const request = operation === 'list'
+      ? client.businessSkills.list('user-token', projectResponse.project.id, {})
+      : client.businessSkills.startTest('user-token', projectResponse.project.id, 'quarterly-review', {
+        expectedDraftRevision: 1, toolPolicyDigest: 'b'.repeat(64), scenario: 'Review the quarter.',
+        idempotencyKey: 'test-1',
+      })
+    await expect(request).rejects.toEqual(new XAgentBackendError('service-unavailable'))
+  })
+
+  test.each([
+    [422, 'business-skill-input-invalid'],
+    [403, 'business-skill-tool-denied'],
+    [404, 'not-found'],
+    [409, 'business-skill-version-changed'],
+    [503, 'service-unavailable'],
+    [418, 'business-skill-conflict'],
+  ])('Business Skill 客户端仅接受状态匹配的稳定错误 %i/%s', async (status, code) => {
+    const client = retrievalClient({ detail: { code } }, status)
+    await expect(client.businessSkills.catalog('user-secret', projectResponse.project.id, retrievalIds.session))
+      .rejects.toEqual(new XAgentBackendError(status === 418 ? 'service-unavailable' : code as never))
+  })
+
   test('Fact 方法只发送闭合 snake_case 正文并解码所有公开值、状态、详情、决定和 Outbox 事件', async () => {
     const calls: Array<{ path: string; headers: Headers; body: unknown }> = []
     const proposalStatuses = ['pending', 'confirmed', 'rejected', 'withdrawn', 'conflicted'] as const

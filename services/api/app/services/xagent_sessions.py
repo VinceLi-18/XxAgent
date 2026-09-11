@@ -91,6 +91,7 @@ def session_payload(item: XAgentSession) -> dict[str, Any]:
         "owner_id": str(item.owner_id),
         "project_id": str(item.project_id) if item.project_id is not None else None,
         "visibility": item.visibility,
+        "purpose": item.purpose,
         "permission_revision_created": item.permission_revision_created,
         "title": item.title,
         "runtime_header": item.runtime_header,

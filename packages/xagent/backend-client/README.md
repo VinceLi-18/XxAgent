@@ -12,6 +12,8 @@ Fact 接口覆盖 proposal 准备、项目当前 Fact 与 proposal 分页、prop
 
 Fact 值只接受 text、number、boolean 和 `YYYY-MM-DD` date；文本、标签、field key 和 reason 按 UTF-8 字节限制，数字必须有限且整数必须安全。Fact 与 proposal 页最多 100 项，Outbox 页最多 32 项，evidence 最多 64 条。响应解码器拒绝未知字段、未知状态、非规范游标、畸形 UUID/时间/整数、不完整终态身份和超限数组。准备 receipt 和 Outbox ID/hash 只返回给 Host 私有持久化路径；错误、公开 Fact 对象和 Session 事件不包含 receipt、JWT 或服务身份。
 
+Business Skill 接口覆盖列表、创建、详情、草稿、发布、授权、当前版本选择、退役、人工测试结论、测试启动与结算、测试 transcript，以及运行时目录、加载和工具授权。公开对象只使用 slug、版本号和运行编号；版本键、测试 Session ID 与测试 transcript 仅返回给 Host 私有执行路径。客户端严格校验关闭的状态、结论、终止原因、工具集合、响应字段和稳定 status/code 配对，未知字段或畸形值统一失败关闭且不附带服务端正文。
+
 Fact 路径共同接受 401 `unauthenticated`、404 `not-found` 和 503 `service-unavailable`。其余稳定 HTTP status/code 配对如下；未列出的配对、未知字段、未知 code、畸形 detail 和不可解析响应都返回 `service-unavailable`，且不附带原始正文。
 
 | 操作 | endpoint 特有的稳定 status/code |
@@ -55,3 +57,4 @@ Fact 路径共同接受 401 `unauthenticated`、404 `not-found` 和 503 `service
 - 所有网络、解析和未知错误均失败关闭为 `service-unavailable`，不会回退本地持久化。
 - 检索 receipt 由 FastAPI 签发并由 Session 持久化流程消费；客户端不验证、缓存或记录 receipt。
 - Fact 准备 receipt 和 Outbox 附件由 Fact provider 的私有注册表管理；客户端只传输关闭 v1 响应。
+- Business Skill 版本键和测试 Session ID 由后续 Host 执行服务消费；Browser Remote 不直接调用这些内部路径。

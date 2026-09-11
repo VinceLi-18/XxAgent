@@ -80,8 +80,8 @@ function scope(visibility: 'private' | 'project' = 'private'): XAgentAuthenticat
     requestSignal: LIVE_REQUEST_SIGNAL, connectionSignal: LIVE_CONNECTION_SIGNAL,
   }
   return visibility === 'project'
-    ? Object.freeze({ ...base, visibility, projectId: PROJECT })
-    : Object.freeze({ ...base, visibility, projectId: null })
+    ? Object.freeze({ ...base, visibility, projectId: PROJECT, purpose: 'conversation' as const })
+    : Object.freeze({ ...base, visibility, projectId: null, purpose: 'conversation' as const })
 }
 
 function backend() {

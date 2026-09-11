@@ -4968,7 +4968,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'XAgentAuthenticatedSessionRequestScope',
-    declaration: 'export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestScope & ({\n    readonly sessionId: string;\n    readonly visibility: \'private\';\n    readonly projectId: null;\n} | {\n    readonly sessionId: string;\n    readonly visibility: \'project\';\n    readonly projectId: string;\n});',
+    declaration: 'export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestScope & ({\n    readonly sessionId: string;\n    readonly visibility: \'private\';\n    readonly projectId: null;\n    readonly purpose: XAgentSessionPurpose;\n} | {\n    readonly sessionId: string;\n    readonly visibility: \'project\';\n    readonly projectId: string;\n    readonly purpose: XAgentSessionPurpose;\n});',
   },
   {
     name: 'XAgentCitationIdentity',
@@ -5061,6 +5061,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'XAgentSearchArtifactsInput',
     declaration: 'export interface XAgentSearchArtifactsInput extends XAgentRetrievalCall {\n    readonly query: string;\n    readonly projectIds?: readonly string[];\n    readonly includePrivate: boolean;\n}',
+  },
+  {
+    name: 'XAgentSessionPurpose',
+    declaration: 'export type XAgentSessionPurpose = \'conversation\' | \'business_skill_test\';',
   },
 ]
 

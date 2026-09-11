@@ -64,6 +64,15 @@ export type XAgentBackendErrorCode =
   | 'fact-receipt-expired'
   | 'fact-revision-conflict'
   | 'fact-already-decided'
+  | 'business-skill-input-invalid'
+  | 'business-skill-revision-conflict'
+  | 'business-skill-test-required'
+  | 'business-skill-policy-changed'
+  | 'business-skill-retired'
+  | 'business-skill-conflict'
+  | 'business-skill-version-changed'
+  | 'business-skill-tool-denied'
+  | 'business-skill-cancelled'
   | 'stale-permission'
   | 'unsupported-version'
   | 'service-unavailable'
@@ -617,7 +626,239 @@ export interface XAgentFactBackend {
   ): Promise<XAgentFactPage<XAgentFactOutboxItem>>
 }
 
-/** Authentication, Session, workbench, and Artifact operations implemented by the XAgent FastAPI client. */
+/** Published lifecycle state of a stable Business Skill. */
+export type XAgentBusinessSkillStatus = 'active' | 'retired'
+
+/** Durable execution state of one isolated draft test. */
+export type XAgentBusinessSkillTestStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+
+/** Closed terminal reason reported by the Host test runner. */
+export type XAgentBusinessSkillTerminationReason =
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'tool-denied'
+  | 'authorization-denied'
+  | 'skill-not-loaded'
+  | 'service-unavailable'
+
+/** Human verdict recorded separately from test execution state. */
+export type XAgentBusinessSkillVerdict = 'pass' | 'reject'
+
+/** Public test history row identified by its project-wide run number. */
+export interface XAgentBusinessSkillTest {
+  readonly runNumber: number
+  readonly draftRevision: number
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+  readonly status: XAgentBusinessSkillTestStatus
+  readonly terminationReason?: XAgentBusinessSkillTerminationReason
+  readonly verdict?: XAgentBusinessSkillVerdict
+  readonly startedAt: string
+  readonly settledAt?: string
+  readonly verdictAt?: string
+}
+
+/** Public Business Skill row for project governance lists. */
+export interface XAgentBusinessSkillSummary {
+  readonly slug: string
+  readonly displayName: string
+  readonly status: XAgentBusinessSkillStatus
+  readonly authorized: boolean
+  readonly currentVersion?: number
+  readonly draftRevision?: number
+  readonly latestTest?: XAgentBusinessSkillTest
+  readonly updatedAt: string
+}
+
+/** Mutable draft fields returned only to the authenticated governance UI and test runner. */
+export interface XAgentBusinessSkillDraft {
+  readonly revision: number
+  readonly description: string
+  readonly instructions: string
+  readonly primaryTools: readonly string[]
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+}
+
+/** Immutable published version identified by its project-visible version number. */
+export interface XAgentBusinessSkillVersion {
+  readonly versionNumber: number
+  readonly description: string
+  readonly instructions: string
+  readonly primaryTools: readonly string[]
+  readonly completeTools: readonly string[]
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+  readonly sourceDraftRevision: number
+  readonly publishedAt: string
+}
+
+/** Content-free audit row returned by Business Skill detail reads. */
+export interface XAgentBusinessSkillAuditSummary {
+  readonly action: string
+  readonly result: string
+  readonly versionNumber?: number
+  readonly createdAt: string
+}
+
+/** Complete public governance detail for one stable slug. */
+export interface XAgentBusinessSkillDetail extends XAgentBusinessSkillSummary {
+  readonly draft?: XAgentBusinessSkillDraft
+  readonly versions: readonly XAgentBusinessSkillVersion[]
+  readonly tests: readonly XAgentBusinessSkillTest[]
+  readonly nextVersionCursor?: number
+  readonly nextRunCursor?: number
+  readonly auditSummary: readonly XAgentBusinessSkillAuditSummary[]
+}
+
+/** Bounded Business Skill governance page. */
+export interface XAgentBusinessSkillPage {
+  readonly items: readonly XAgentBusinessSkillSummary[]
+  readonly nextCursor?: string
+}
+
+/** Shared exact content fields for Business Skill creation and draft updates. */
+export interface XAgentBusinessSkillContentInput {
+  readonly displayName: string
+  readonly description: string
+  readonly instructions: string
+  readonly primaryTools: readonly string[]
+}
+
+/** Input for creating one stable Business Skill and its first draft. */
+export interface XAgentBusinessSkillCreateInput extends XAgentBusinessSkillContentInput {
+  readonly slug: string
+  readonly idempotencyKey: string
+}
+
+/** Optimistic draft edit; every supplied field is serialized explicitly. */
+export interface XAgentBusinessSkillDraftInput {
+  readonly expectedDraftRevision: number
+  readonly idempotencyKey: string
+  readonly sourceVersionNumber?: number
+  readonly displayName?: string
+  readonly description?: string
+  readonly instructions?: string
+  readonly primaryTools?: readonly string[]
+}
+
+/** Exact draft test input and current Host policy digest. */
+export interface XAgentBusinessSkillTestInput {
+  readonly expectedDraftRevision: number
+  readonly toolPolicyDigest: string
+  readonly scenario: string
+  readonly idempotencyKey: string
+}
+
+/** Host-only test start response used to create one isolated test Agent. */
+export interface XAgentBusinessSkillTestStart {
+  readonly test: XAgentBusinessSkillTest
+  readonly sessionId: string
+  readonly purpose: 'business_skill_test'
+  readonly draft: XAgentBusinessSkillDraft
+  readonly scenario: string
+  readonly testTools: readonly string[]
+  readonly unexecutedWriteTools: readonly string[]
+}
+
+/** Public transcript event from one isolated Business Skill test Session. */
+export interface XAgentBusinessSkillTranscriptEvent {
+  readonly sequence: number
+  readonly eventType: string
+  readonly payload: Readonly<Record<string, unknown>>
+  readonly createdAt: string
+}
+
+/** Bounded transcript page plus current public test state. */
+export interface XAgentBusinessSkillTranscript {
+  readonly test: XAgentBusinessSkillTest
+  readonly events: readonly XAgentBusinessSkillTranscriptEvent[]
+  readonly nextSequence: number
+}
+
+/** Host-private catalog entry; versionKey must not enter Browser or model payloads. */
+export interface XAgentBusinessSkillCatalogEntry {
+  readonly slug: string
+  readonly description: string
+  readonly versionNumber: number
+  readonly versionKey: string
+}
+
+/** Exact immutable Skill definition returned after runtime reauthorization. */
+export interface XAgentBusinessSkillLoad extends XAgentBusinessSkillCatalogEntry {
+  readonly instructions: string
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+  readonly completeTools: readonly string[]
+}
+
+/** Closed FastAPI operations for Business Skill governance, testing, and runtime policy. */
+export interface XAgentBusinessSkillBackend {
+  list(
+    userToken: string, projectId: string,
+    input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillPage>
+  create(
+    userToken: string, projectId: string, input: XAgentBusinessSkillCreateInput, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  detail(
+    userToken: string, projectId: string, slug: string,
+    input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number },
+    signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  draft(
+    userToken: string, projectId: string, slug: string,
+    input: XAgentBusinessSkillDraftInput, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  publish(
+    userToken: string, projectId: string, slug: string, expectedDraftRevision: number,
+    idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  authorization(
+    userToken: string, projectId: string, slug: string, authorized: boolean,
+    idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  version(
+    userToken: string, projectId: string, slug: string, versionNumber: number,
+    idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  retire(
+    userToken: string, projectId: string, slug: string, idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  verdict(
+    userToken: string, projectId: string, slug: string, runNumber: number,
+    verdict: XAgentBusinessSkillVerdict, idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  startTest(
+    userToken: string, projectId: string, slug: string,
+    input: XAgentBusinessSkillTestInput, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillTestStart>
+  settleTest(
+    userToken: string, projectId: string, slug: string, runNumber: number, sessionId: string,
+    terminationReason: XAgentBusinessSkillTerminationReason, idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillTest>
+  transcript(
+    userToken: string, projectId: string, slug: string, runNumber: number,
+    input: { readonly afterSequence?: number; readonly limit?: number }, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillTranscript>
+  catalog(
+    userToken: string, projectId: string, sessionId: string, signal?: AbortSignal,
+  ): Promise<readonly XAgentBusinessSkillCatalogEntry[]>
+  load(
+    userToken: string, projectId: string, sessionId: string, slug: string,
+    versionKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillLoad>
+  authorizeTool(
+    userToken: string, projectId: string, sessionId: string, slug: string,
+    versionKey: string, toolPolicyDigest: string, toolName: string, cancelled: boolean,
+    signal?: AbortSignal,
+  ): Promise<void>
+}
+
+/** Authentication and product capabilities implemented by the XAgent FastAPI client. */
 export interface XAgentBackend {
   login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin>
   introspect(userToken: string, signal?: AbortSignal): Promise<XAgentPrincipal>
@@ -627,4 +868,5 @@ export interface XAgentBackend {
   readonly artifacts?: XAgentArtifactBackend
   readonly retrieval?: XAgentRetrievalBackend
   readonly facts?: XAgentFactBackend
+  readonly businessSkills?: XAgentBusinessSkillBackend
 }

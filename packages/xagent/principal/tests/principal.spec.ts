@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import XAgentPrincipalService, {
   currentXAgentAuthenticatedRequestScope,
   isXAgentAuthenticatedRequestScope,
+  isXAgentAuthenticatedSessionRequestScope,
   parseXAgentPrincipal,
   runWithoutXAgentAuthenticatedRequestScope,
   runWithXAgentAuthenticatedRequestScope,
@@ -64,6 +65,32 @@ describe('XAgent Principal', () => {
       .toBe(false)
     expect(isXAgentAuthenticatedRequestScope({ principal, userToken: 'token', connectionId: 'connection-2' }))
       .toBe(false)
+  })
+
+  test.each(['conversation', 'business_skill_test'] as const)('认证 Session 范围接受后端 purpose %s', (purpose) => {
+    const principal = parseXAgentPrincipal(valid, 'connection-1')
+    expect(isXAgentAuthenticatedSessionRequestScope({
+      principal,
+      userToken: 'token',
+      connectionId: 'connection-1',
+      sessionId: '00000000-0000-0000-0000-000000000701',
+      visibility: 'project',
+      projectId: '00000000-0000-0000-0000-000000000201',
+      purpose,
+    })).toBe(true)
+  })
+
+  test.each([undefined, 'test', '', 1])('认证 Session 范围拒绝缺失或未知 purpose %#', (purpose) => {
+    const principal = parseXAgentPrincipal(valid, 'connection-1')
+    expect(isXAgentAuthenticatedSessionRequestScope({
+      principal,
+      userToken: 'token',
+      connectionId: 'connection-1',
+      sessionId: '00000000-0000-0000-0000-000000000701',
+      visibility: 'private',
+      projectId: null,
+      ...(purpose === undefined ? {} : { purpose }),
+    } as never)).toBe(false)
   })
 
   test('认证请求范围沿异步调用传播并可显式抑制', async () => {
