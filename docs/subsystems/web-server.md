@@ -220,7 +220,7 @@ Service Definition for authenticated discovery and exact-version runtime Consume
  * Bind all provider and Remote work to one physical request.
  * @param scope - backend-derived conversation Project Session authority.
  * @param operation - operation whose settlement expires the request.
- * @returns result or stable failure without retaining request authority.
+ * @returns result or stable failure after owned backend work settles, without retaining request authority.
  */
 abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
 
@@ -352,7 +352,7 @@ abstract retire(slug: string, idempotencyKey: string, signal?: AbortSignal): Pro
 
 Types: [Agent](core.md) · [SkillDefinition](skills.md) · [SkillProvider](skills.md)
 
-Source: [`packages/xagent/business-skill/src/index.ts:87`](../../packages/xagent/business-skill/src/index.ts)
+Source: [`packages/xagent/business-skill/src/index.ts:88`](../../packages/xagent/business-skill/src/index.ts)
 
 <a id="ctxxagentcitation--xagentcitationremoteservice"></a>
 

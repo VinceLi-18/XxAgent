@@ -2284,7 +2284,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>',
         description: 'Bind all provider and Remote work to one physical request.',
         parameters: [{ name: 'scope', description: 'backend-derived conversation Project Session authority.' }, { name: 'operation', description: 'operation whose settlement expires the request.' }],
-        returns: 'result or stable failure without retaining request authority.',
+        returns: 'result or stable failure after owned backend work settles, without retaining request authority.',
       },
       {
         signature: 'abstract attach(agent: Agent): SkillProvider | undefined',

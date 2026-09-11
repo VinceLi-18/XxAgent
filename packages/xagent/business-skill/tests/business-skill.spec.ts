@@ -9,6 +9,96 @@ import { describe, expect, test } from 'vitest'
 import { setup, request, entry, loaded, projectId, sessionId, versionKey, version2, signal, testRecord } from './fixtures.ts'
 
 describe('governed Business Skill provider', () => {
+  test('concurrent registry loads retain their own authoritative observation', async () => {
+    const { ctx, service, agent, state, calls } = await setup()
+    state.catalog = [entry()]
+    await service.withRequest(request(), async () => {
+      service.attach(agent)
+      const results = await Promise.allSettled([ctx.skills.get('review', { scope: agent }), ctx.skills.get('review', { scope: agent })])
+      expect(results).toMatchObject([
+        { status: 'fulfilled', value: { name: 'review', content: 'Read the project evidence before answering.' } },
+        { status: 'fulfilled', value: { name: 'review', content: 'Read the project evidence before answering.' } },
+      ])
+      expect(calls.filter(call => call.path.endsWith('/runtime/load'))).toHaveLength(2)
+    })
+    await ctx.fiber.dispose()
+  })
+
+  test('concurrent skill tools both load through independently authorized observations', async () => {
+    const { ctx, service, agent, state } = await setup()
+    state.catalog = [entry()]
+    await service.withRequest(request(), async () => {
+      service.attach(agent)
+      const results = await Promise.all(['one', 'two'].map(id => ctx.tools.execute({
+        name: 'skill', arguments: { name: 'review' }, agent, signal, callId: CallId(id),
+      })))
+      expect(results.map(result => result.isError)).toEqual([false, false])
+      expect(results[0]?.content).toEqual(results[1]?.content)
+    })
+    await ctx.fiber.dispose()
+  })
+
+  test('refresh leaves an in-flight exact-version load owned by its original observation', async () => {
+    const { ctx, service, agent, state } = await setup()
+    state.catalog = [entry()]
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    state.beforeResponse = async (path) => {
+      if (path.endsWith('/runtime/load')) { entered.resolve(undefined); await release.promise }
+    }
+    await service.withRequest(request(), async () => {
+      const provider = service.attach(agent)!
+      const pending = ctx.skills.get('review', { scope: agent })
+      const result = expect(pending).resolves.toMatchObject({ content: 'Read the project evidence before answering.' })
+      await entered.promise
+      state.catalog = [entry('review', 2, version2)]
+      try { expect((await provider.list({}) as SkillProviderObservation).candidates).toHaveLength(1) }
+      finally { release.resolve(undefined) }
+      await result
+    })
+    await ctx.fiber.dispose()
+  })
+
+  test.each(['catalog', 'load'])('Agent disposal aborts and waits for its in-flight %s transport', async (endpoint) => {
+    const { ctx, service, agent, state, scope } = await setup()
+    state.catalog = [entry()]
+    const entered = Promise.withResolvers<AbortSignal>()
+    const release = Promise.withResolvers<undefined>()
+    state.beforeResponse = async (path, transportSignal) => {
+      if (!path.endsWith(`/runtime/${endpoint}`)) return
+      entered.resolve(transportSignal!)
+      await release.promise
+    }
+    await service.withRequest(request(), async () => {
+      service.attach(agent)
+      const pending = ctx.skills.get('review', { scope: agent }).then(value => ({ value }), (error: unknown) => ({ error }))
+      const transportSignal = await entered.promise
+      let disposed = false
+      const closing = Promise.resolve(scope.dispose()).then(() => { disposed = true })
+      try {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(transportSignal.aborted).toBe(true)
+        expect(disposed).toBe(false)
+      } finally { release.resolve(undefined); await closing }
+      expect(await pending).not.toHaveProperty('value.name')
+      if (endpoint === 'load') expect(await pending).toHaveProperty('error')
+      expect(service.attach(agent)).toBeUndefined()
+    })
+    await ctx.fiber.dispose()
+  })
+
+  test('strict backend version-change conflicts retain their stable public error code', async () => {
+    const { ctx, service, agent, state } = await setup()
+    state.catalog = [entry()]
+    await service.withRequest(request(), async () => {
+      const provider = service.attach(agent)!
+      const [candidate] = (await provider.list({}) as SkillProviderObservation).candidates
+      state.failure = 'business-skill-version-changed'
+      await expect(provider.get(candidate!, {})).rejects.toMatchObject({ failure: { code: 'business-skill-version-changed' } })
+    })
+    await ctx.fiber.dispose()
+  })
+
   test('the Gateway discovers the explicit binding and invokes only request-authorized Remotes', async () => {
     const { ctx, service, calls } = await setup()
     await ctx.plugin(TypertRegistry)
@@ -158,7 +248,7 @@ describe('governed Business Skill provider', () => {
         name: 'review', description: 'Review project evidence.', provider: 'xagent-project', source: 'xagent-project',
         invocation: { modelInvocable: true, userInvocable: true },
       }])
-      expect(await provider.get(candidate, {})).toBeUndefined()
+      expect(await provider.get(candidate, {})).toMatchObject({ content: 'Read the project evidence before answering.' })
     })
     state.catalog = [entry('a'), entry('b'), entry('c')]
     await service.withRequest(request(), async () => {
@@ -190,7 +280,7 @@ describe('governed Business Skill provider', () => {
       await expect(provider.get(first!, {})).rejects.toThrow()
       state.catalog = [entry('review', 2, version2)]
       const [second] = (await provider.list({}) as SkillProviderObservation).candidates
-      expect(await provider.get(first!, {})).toBeUndefined()
+      await expect(provider.get(first!, {})).rejects.toThrow()
       expect(await provider.get(second!, {})).toMatchObject({ name: 'review' })
       expect(calls.at(-1)?.body).toMatchObject({ session_id: sessionId, slug: 'review', version_key: version2 })
       state.failure = 'business-skill-not-authorized'

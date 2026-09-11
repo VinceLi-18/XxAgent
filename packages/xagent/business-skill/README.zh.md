@@ -12,9 +12,9 @@ Host 插件依赖 `agents` 和 `skills`。`backendOrigin` 指定 FastAPI origin�
 
 Host 授权器使用已认证的 `conversation` Project Session 和存活的物理请求、连接信号调用 `withRequest`。Private、测试用途、畸形、取消、嵌套或已释放的请求均被拒绝。Browser 方法仅接收公开技能名、版本或测试序号、变更字段及分页参数；用户令牌、项目及 Session 均来自已认证请求。
 
-消费方在 `agent/pre-step` 时仅向 Session 与请求匹配的精确 Agent 安装提供方。Host 也可显式调用 `attach`。同一 Agent 和请求重复安装是幂等的；其他请求或重名提供方不能替换归属。请求结算、取消、Agent 释放和服务释放都会移除注册。服务释放会等待进行中的后端操作结算，并丢弃延迟响应。
+消费方在 `agent/pre-step` 时仅向 Session 与请求匹配的精确 Agent 安装提供方。Host 也可显式调用 `attach`。同一 Agent 和请求重复安装是幂等的；其他请求或重名提供方不能替换归属。请求结算、取消、Agent 释放和服务释放都会移除注册。提供方和调用方的取消信号共同传递给后端 transport。请求、Agent 和服务的清理等待各自进行中的后端操作结算，即使 transport 忽略取消也会丢弃延迟响应。
 
-每次注册表查询都获取权威且不缓存的目录，按公开 slug 排序。重复 slug 和畸形响应均拒绝。slug 是模型可见技能名；显示名称仅用于治理。提供方自有 locator 只标识最新目录中的精确候选项，不能复制或转移给其他 Agent。每次加载都通过 FastAPI 重新授权精确 Session、项目、slug 和不可变版本。加载的标识与描述必须匹配目录，同一保留版本重复加载时内容不得改变。
+每次注册表查询都获取独立、权威且不缓存的目录，按公开 slug 排序。重复 slug 和畸形响应均拒绝。slug 是模型可见技能名；显示名称仅用于治理。提供方自有 locator 标识各自观测中的精确候选项，不能复制或转移给其他 Agent 或物理请求。并发发现和刷新不会使进行中的观测失效。每次加载都通过 FastAPI 重新授权精确 Session、项目、slug 和不可变版本；后端版本变化冲突保留公开的 `business-skill-version-changed` 错误码。加载的标识与描述必须匹配其观测，同一保留版本重复加载时内容不得改变。
 
 模型 `skill` 工具与显式 `/slug` 手势使用现有加载器和渲染器。定义只包含公开元数据及指令。注册及请求存活时，`loadedVersion` 根据精确定义和 Agent 标识读取 Host 私有版本数据；复制的定义、过期请求或其他 Agent 均不具有归属。不变量伴随插件将实际 `skill/loaded` 接纳与这一关系核对。
 

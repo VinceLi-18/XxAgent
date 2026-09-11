@@ -34,7 +34,7 @@ export interface XAgentBusinessSkillScopeRunner {
    * Run one physical request and dispose its providers on settlement.
    * @param scope - authenticated conversation Project Session with live cancellation signals.
    * @param operation - complete downstream operation; detached descendants lose authority on settlement.
-   * @returns downstream result, rejecting invalid, nested, cancelled and disposed requests.
+   * @returns downstream result after owned backend work settles, rejecting invalid, nested, cancelled and disposed requests.
    */
   withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
 }

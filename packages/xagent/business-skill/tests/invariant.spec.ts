@@ -27,6 +27,7 @@ describe('Business Skill loaded-definition relationship', () => {
     await service.withRequest(request(), async () => {
       service.attach(agent)
       const definition = (await ctx.skills.get('review', { scope: agent }))!
+      await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition: { ...definition, provider: 'other-provider' }, invocation: 'user-explicit' })).resolves.toBeUndefined()
       await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition, invocation: 'model-tool', callId: CallId('valid') })).resolves.toBeUndefined()
       await expect(agentEvents(ctx, agent).serial('skill/loaded', {
         definition: { ...definition, content: 'Unapproved instructions' }, invocation: 'user-explicit',

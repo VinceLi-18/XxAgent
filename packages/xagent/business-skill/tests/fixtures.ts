@@ -52,12 +52,18 @@ const wireTest = {
   started_at: '2026-09-12T00:00:00Z', settled_at: '2026-09-12T00:01:00Z', verdict_at: null,
 }
 
+export function transcriptResponse(payload: string): Response {
+  return new Response(`{"schema_version":1,"test":${JSON.stringify(wireTest)},"events":[{"schema_version":1,"sequence":0,"event_type":"message","payload":${payload},"created_at":"2026-09-12T00:00:00Z"}],"next_sequence":1}`)
+}
+
 export async function setup(maxCatalogEntries = 10) {
   const calls: { path: string; body: Record<string, unknown>; token: string | null; signal: AbortSignal | null | undefined }[] = []
   const state = {
     catalog: [entry('z-review'), entry('a-review')] as unknown[], load: loaded() as unknown,
     failure: undefined as string | undefined,
     wait: undefined as Promise<void> | undefined,
+    beforeResponse: undefined as ((path: string, signal: AbortSignal | null | undefined) => Promise<void>) | undefined,
+    response: undefined as Response | undefined,
   }
   const client = new XAgentBackendClient({
     origin: 'https://backend.example', serviceToken: 'host-service',
@@ -67,7 +73,9 @@ export async function setup(maxCatalogEntries = 10) {
       calls.push({ path, body: JSON.parse(init.body) as Record<string, unknown>,
         token: new Headers(init?.headers).get('authorization')?.replace('Bearer ', '') ?? null, signal: init?.signal })
       await state.wait
-      if (state.failure) return Response.json({ detail: { code: state.failure } }, { status: state.failure === 'business-skill-retired' ? 409 : 403 })
+      await state.beforeResponse?.(path, init?.signal)
+      if (state.response !== undefined) return state.response
+      if (state.failure) return Response.json({ detail: { code: state.failure } }, { status: ['business-skill-retired', 'business-skill-version-changed'].includes(state.failure) ? 409 : 403 })
       if (path.endsWith('/runtime/catalog')) return Response.json({ schema_version: 1, items: state.catalog })
       if (path.endsWith('/runtime/load')) return Response.json(state.load)
       if (path.endsWith('/list')) return Response.json({ schema_version: 1, items: [], next_cursor: null })

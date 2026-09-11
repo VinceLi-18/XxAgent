@@ -48,7 +48,7 @@ const REMOTE_ERRORS = new Set([
   'unauthenticated', 'forbidden', 'not-found', 'stale-permission', 'idempotency-conflict', 'service-unavailable',
   'business-skill-input-invalid', 'business-skill-revision-conflict', 'business-skill-test-required',
   'business-skill-policy-changed', 'business-skill-not-authorized', 'business-skill-retired',
-  'business-skill-conflict', 'business-skill-tool-denied', 'business-skill-test-read-only',
+  'business-skill-conflict', 'business-skill-tool-denied', 'business-skill-test-read-only', 'business-skill-version-changed',
 ])
 type ProjectScope = XAgentAuthenticatedSessionRequestScope & {
   readonly visibility: 'project'
@@ -60,13 +60,14 @@ interface RequestState {
   readonly scope: ProjectScope
   readonly lifetime: AbortController
   readonly registrations: Set<Registration>
+  readonly pending: Set<Promise<unknown>>
 }
 interface Registration {
   readonly agent: Agent
   readonly state: RequestState
   readonly provider: SkillProvider
   readonly control: SkillProviderControl
-  readonly close: () => void
+  readonly close: () => Promise<void>
 }
 interface LoadedOwner { readonly registration: Registration; readonly version: XAgentBusinessSkillLoad }
 
@@ -91,7 +92,7 @@ export abstract class XAgentBusinessSkillService extends Service
    * Bind all provider and Remote work to one physical request.
    * @param scope - backend-derived conversation Project Session authority.
    * @param operation - operation whose settlement expires the request.
-   * @returns result or stable failure without retaining request authority.
+   * @returns result or stable failure after owned backend work settles, without retaining request authority.
    */
   abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
   /**
@@ -254,11 +255,10 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     })
     ctx.on('agent/disposed', ({ agent }) => {
       this.disposedAgents.add(agent)
-      this.registrations.get(agent)?.close()
+      void this.registrations.get(agent)?.close()
     })
     ctx.effect(() => async () => {
       this.lifetime.abort(failure('unauthenticated'))
-      for (const registration of this.registrations.values()) registration.close()
       await Promise.allSettled(this.pending)
     }, 'business skill service lifetime')
   }
@@ -266,10 +266,10 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
   async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> {
     if (this.lifetime.signal.aborted || !eligible(scope)) throw failure('unauthenticated')
     if (this.requests.getStore() !== undefined) throw failure('business-skill-conflict')
-    const state: RequestState = { scope, lifetime: new AbortController(), registrations: new Set() }
+    const state: RequestState = { scope, lifetime: new AbortController(), registrations: new Set(), pending: new Set() }
     const end = (): void => {
       state.lifetime.abort(failure('unauthenticated'))
-      for (const registration of state.registrations) registration.close()
+      for (const registration of state.registrations) void registration.close()
     }
     const signals = [scope.requestSignal, scope.connectionSignal, this.lifetime.signal]
     for (const signal of signals) signal.addEventListener('abort', end, { once: true })
@@ -282,6 +282,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     } finally {
       end()
       for (const signal of signals) signal.removeEventListener('abort', end)
+      await Promise.allSettled(state.pending)
     }
   }
 
@@ -295,42 +296,42 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
       if (existing.state !== state) throw failure('business-skill-conflict')
       return existing.provider
     }
-    let candidates = new Map<BusinessSkillLocator, { candidate: SkillCandidate; entry: XAgentBusinessSkillCatalogEntry }>()
+    let candidates = new WeakMap<SkillCandidate, XAgentBusinessSkillCatalogEntry>()
     const versions = new Map<string, XAgentBusinessSkillLoad>()
-    let generation = 0
+    const pending = new Set<Promise<unknown>>()
     let control!: SkillProviderControl
+    const invoke = async <T>(operation: (scope: ProjectScope, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> => {
+      const result = this.call(operation, AbortSignal.any(signal === undefined ? [control.signal] : [control.signal, signal]))
+      pending.add(result)
+      try { return await result } finally { pending.delete(result) }
+    }
     const valid = (): boolean => !state.lifetime.signal.aborted && !control.signal.aborted
       && this.requests.getStore() === state && this.registrations.get(agent) === registration
     const provider: SkillProvider = {
       name: PROVIDER,
       list: async (options) => {
         if (!valid()) return { candidates: [], complete: true, cacheable: false }
-        candidates.clear()
-        const revision = ++generation
-        const rows = await this.call((scope, signal) =>
+        const rows = await invoke((scope, signal) =>
           this.backend.catalog(scope.userToken, scope.projectId, scope.sessionId, signal), options.signal)
-        if (!valid() || revision !== generation) throw failure('business-skill-not-authorized')
         if (rows.length > this.limits.maxCatalogEntries || new Set(rows.map(row => row.slug)).size !== rows.length) throw failure()
-        const next = new Map<BusinessSkillLocator, { candidate: SkillCandidate; entry: XAgentBusinessSkillCatalogEntry }>()
-        for (const entry of [...rows].sort((a, b) => a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0)) {
+        const observation: SkillCandidate[] = []
+        for (const entry of [...rows].sort((a, b) => a.slug < b.slug ? -1 : 1)) {
           const locator: BusinessSkillLocator = Object.freeze({ kind: 'xagent-business-skill', slug: entry.slug,
             version: entry.versionNumber, opaqueLoadKey: randomUUID() as Branded<'BusinessSkillLoadKey'> })
           const candidate: SkillCandidate = Object.freeze({ name: entry.slug, description: entry.description,
             provider: PROVIDER, source: PROVIDER, invocation: Object.freeze({ modelInvocable: true, userInvocable: true }),
             rank: 0, locator })
-          next.set(locator, { candidate, entry })
+          candidates.set(candidate, entry)
+          observation.push(candidate)
         }
-        candidates = next
-        return { candidates: [...next.values()].map(row => row.candidate), complete: true, cacheable: false }
+        return { candidates: observation, complete: true, cacheable: false }
       },
       get: async (candidate, options) => {
         if (!valid()) return undefined
-        const owned = candidates.get(candidate.locator as BusinessSkillLocator)
-        if (owned === undefined || owned.candidate !== candidate) return undefined
-        const entry = owned.entry
-        const version = await this.call((scope, signal) => this.backend.load(scope.userToken, scope.projectId,
+        const entry = candidates.get(candidate)
+        if (entry === undefined) return undefined
+        const version = await invoke((scope, signal) => this.backend.load(scope.userToken, scope.projectId,
           scope.sessionId, entry.slug, entry.versionKey, signal), options.signal)
-        if (!valid() || candidates.get(candidate.locator as BusinessSkillLocator) !== owned) throw failure('business-skill-not-authorized')
         if (version.slug !== entry.slug || version.versionNumber !== entry.versionNumber
           || version.versionKey !== entry.versionKey || version.description !== entry.description) throw failure()
         const previous = versions.get(version.versionKey)
@@ -346,12 +347,15 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     const registry: SkillRegistry | undefined = agent.ctx.get('skills')
     if (registry === undefined) throw new Error('Business Skill provider requires the Skill registry')
     const dispose = registry.registerProvider((value) => { control = value; return provider })
-    const close = (): void => { dispose() }
+    const close = agent.ctx.effect(() => async () => {
+      dispose()
+      await Promise.allSettled(pending)
+    }, 'business skill provider lifetime')
     const registration: Registration = { agent, state, provider, control, close }
     this.registrations.set(agent, registration)
     state.registrations.add(registration)
     const removed = (): void => {
-      candidates.clear()
+      candidates = new WeakMap()
       versions.clear()
       this.registrations.delete(agent)
       state.registrations.delete(registration)
@@ -464,6 +468,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     signal.throwIfAborted()
     const pending = Promise.resolve().then(() => { signal.throwIfAborted(); return operation(state.scope, signal) })
     this.pending.add(pending)
+    state.pending.add(pending)
     try {
       const result = await pending
       signal.throwIfAborted()
@@ -474,6 +479,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
       throw failure(error instanceof XAgentBackendError && REMOTE_ERRORS.has(error.code) ? error.code : 'service-unavailable')
     } finally {
       this.pending.delete(pending)
+      state.pending.delete(pending)
     }
   }
 }
