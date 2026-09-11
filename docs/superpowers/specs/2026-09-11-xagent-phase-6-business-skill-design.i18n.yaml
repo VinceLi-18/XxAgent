@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md
-2026-09-11-xagent-phase-6-business-skill-design.md: c245a786db978fe9320b9ee036d9408d23a01375
-2026-09-11-xagent-phase-6-business-skill-design.zh.md: 0e6e6c6b09748ad83fe4fe1c2c53507e49ff3649
+2026-09-11-xagent-phase-6-business-skill-design.md: 986a4c2e1c63c46ebc6194f061b8c8f70ed92ef9
+2026-09-11-xagent-phase-6-business-skill-design.zh.md: 1c45e7a76cdc92c45de7db9eabf19d58ded90914

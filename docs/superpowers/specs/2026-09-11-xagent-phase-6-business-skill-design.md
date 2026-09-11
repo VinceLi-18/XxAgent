@@ -2,7 +2,7 @@
 
 English | [中文](2026-09-11-xagent-phase-6-business-skill-design.zh.md)
 
-**Status: chat design approved; written specification awaiting review**
+**Status: approved for implementation planning**
 
 **Date: 2026-09-11**
 
