@@ -8,6 +8,9 @@
     "src"
   ],
   "references": [
+    { "path": "../../core/tools" },
+    { "path": "../../core/system-prompt" },
+    { "path": "../../llm/llm" },
     {
       "path": "../../../vendor/cordis"
     },

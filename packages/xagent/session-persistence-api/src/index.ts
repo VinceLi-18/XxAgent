@@ -24,6 +24,7 @@ import {
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend, type XAgentFactPersistenceSidecars } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { decodeFactSessionEvent, encodeFactSessionEvent } from './fact-event-codec.ts'
+import { decodeBusinessSkillEvent, encodeBusinessSkillEvent } from './business-skill-event-codec.ts'
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -82,6 +83,10 @@ function headerFrom(value: unknown): SessionHeader {
 
 function eventFrom(value: unknown, envelopeType?: unknown): SessionEvent {
   const row = object(value)
+  if (row.type === 'business-skill/activated' || envelopeType === 'business-skill/activated') {
+    if (envelopeType !== row.type) throw new TypeError('invalid XAgent Business Skill session event')
+    return decodeBusinessSkillEvent(row)
+  }
   if (row.type === 'fact/proposal-decided' || envelopeType === 'fact/proposal-decided') {
     if (envelopeType !== row.type) {
       throw new TypeError('invalid XAgent Fact session event')
@@ -130,6 +135,7 @@ function factToolResultPayload(event: SessionEvent): SessionEvent | undefined {
 }
 
 function eventPayload(event: SessionEvent): SessionEvent | Record<string, unknown> {
+  if ((event as { readonly type: string }).type === 'business-skill/activated') return encodeBusinessSkillEvent(event)
   if ((event as { readonly type: string }).type === 'fact/proposal-decided') {
     return encodeFactSessionEvent(event)
   }

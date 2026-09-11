@@ -22,6 +22,7 @@ import {
   type XAgentAuthenticatedSessionRequestScope,
 } from '@xagent/dsh-principal'
 import type { BusinessSkillLocator, BusinessSkillRemoteTranscript, XAgentBusinessSkillRemote, XAgentBusinessSkillScopeRunner, XAgentBusinessSkillTestRunner } from './types.ts'
+import { BusinessSkillRuntimePolicy } from './runtime-policy.ts'
 
 export type * from './types.ts'
 
@@ -41,7 +42,7 @@ export const Config: z<Config> = z.object({
 /** Cordis function plugin name. */
 export const name = 'xagent-business-skill'
 /** Registry and Agent lifecycle consumed by the provider. */
-export const inject = ['agents', 'skills']
+export const inject = ['agents', 'skills', 'tools', 'systemPrompt']
 
 const PROVIDER = 'xagent-project'
 const REMOTE_ERRORS = new Set([
@@ -68,6 +69,7 @@ interface Registration {
   readonly provider: SkillProvider
   readonly control: SkillProviderControl
   readonly close: () => Promise<void>
+  readonly policy: BusinessSkillRuntimePolicy
 }
 interface LoadedOwner { readonly registration: Registration; readonly version: XAgentBusinessSkillLoad }
 
@@ -244,17 +246,52 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
   private readonly disposedAgents = new WeakSet<Agent>()
   private readonly pending = new Set<Promise<unknown>>()
   private testRunner: XAgentBusinessSkillTestRunner | undefined
+  private readonly messages = new Map<string, { readonly agent: Agent; readonly state: RequestState }>()
+  private readonly claimed = new Map<Agent, { readonly state: RequestState; readonly turn: number }>()
+  private readonly invalidTurns = new WeakMap<Agent, number>()
 
   constructor(ctx: Context, private readonly backend: XAgentBusinessSkillBackend, private readonly limits: Pick<Config, 'maxCatalogEntries'>) {
     super(ctx)
     if (!Number.isSafeInteger(limits.maxCatalogEntries) || limits.maxCatalogEntries < 1) throw new Error('maxCatalogEntries must be a positive safe integer')
+    ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+      const state = this.requests.getStore()
+      if (state !== undefined && !state.lifetime.signal.aborted && String(agent.session.id) === `session-${state.scope.sessionId}`) {
+        this.messages.set(String(message.id), { agent, state })
+      }
+    })
+    ctx.on('agent/inbox/discarded', ({ message }) => { this.messages.delete(String(message.id)) })
+    ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
+      const owner = this.messages.get(String(message.id))
+      this.messages.delete(String(message.id))
+      const previous = this.claimed.get(agent)
+      if (this.invalidTurns.get(agent) === turn || owner?.agent !== agent || owner.state.lifetime.signal.aborted
+        || (previous?.turn === turn && previous.state !== owner.state)) {
+        this.invalidTurns.set(agent, turn)
+        this.claimed.delete(agent)
+        this.registrations.get(agent)?.policy.invalidate()
+        return
+      }
+      this.claimed.set(agent, { state: owner.state, turn })
+      this.requests.run(owner.state, () => this.attach(agent))
+      this.registrations.get(agent)?.policy.claim(turn)
+    })
     ctx.on('agent/pre-step', async ({ agent }, next) => {
-      this.attach(agent)
       this.registrations.get(agent)?.control.invalidate()
       return await next()
     })
+    ctx.on('skill/loaded', ({ agent, definition, invocation, callId }) => {
+      if (definition.provider !== PROVIDER) return
+      const owner = this.definitions.get(definition)
+      const registration = this.registrations.get(agent)
+      if (owner === undefined || owner.registration !== registration || this.claimed.get(agent)?.state !== registration.state) {
+        throw failure('business-skill-not-authorized')
+      }
+      registration.policy.activate(definition, owner.version, invocation, callId)
+    })
     ctx.on('agent/disposed', ({ agent }) => {
       this.disposedAgents.add(agent)
+      this.claimed.delete(agent)
+      for (const [id, owner] of this.messages) if (owner.agent === agent) this.messages.delete(id)
       void this.registrations.get(agent)?.close()
     })
     ctx.effect(() => async () => {
@@ -269,7 +306,9 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     const state: RequestState = { scope, lifetime: new AbortController(), registrations: new Set(), pending: new Set() }
     const end = (): void => {
       state.lifetime.abort(failure('unauthenticated'))
-      for (const registration of state.registrations) void registration.close()
+      for (const [id, owner] of this.messages) if (owner.state === state) this.messages.delete(id)
+      for (const [agent, owner] of this.claimed) if (owner.state === state) this.claimed.delete(agent)
+      for (const registration of state.registrations) state.pending.add(registration.close())
     }
     const signals = [scope.requestSignal, scope.connectionSignal, this.lifetime.signal]
     for (const signal of signals) signal.addEventListener('abort', end, { once: true })
@@ -301,12 +340,13 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     const pending = new Set<Promise<unknown>>()
     let control!: SkillProviderControl
     const invoke = async <T>(operation: (scope: ProjectScope, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> => {
-      const result = this.call(operation, AbortSignal.any(signal === undefined ? [control.signal] : [control.signal, signal]))
+      const combined = AbortSignal.any(signal === undefined ? [control.signal] : [control.signal, signal])
+      const result = this.requests.run(state, () => this.call(operation, combined))
       pending.add(result)
       try { return await result } finally { pending.delete(result) }
     }
     const valid = (): boolean => !state.lifetime.signal.aborted && !control.signal.aborted
-      && this.requests.getStore() === state && this.registrations.get(agent) === registration
+      && (this.requests.getStore() === state || this.claimed.get(agent)?.state === state) && this.registrations.get(agent) === registration
     // invoke() settles before the provider continuation; cancellation can occur between them.
     const assertPublishable = (signal?: AbortSignal): void => {
       signal?.throwIfAborted()
@@ -336,6 +376,9 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
         if (!valid()) return undefined
         const entry = candidates.get(candidate)
         if (entry === undefined) return undefined
+        const pinned = await registration.policy.reload(entry.slug, options.signal)
+        assertPublishable(options.signal)
+        if (pinned !== undefined) return pinned
         const version = await invoke((scope, signal) => this.backend.load(scope.userToken, scope.projectId,
           scope.sessionId, entry.slug, entry.versionKey, signal), options.signal)
         assertPublishable(options.signal)
@@ -353,12 +396,20 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     }
     const registry: SkillRegistry | undefined = agent.ctx.get('skills')
     if (registry === undefined) throw new Error('Business Skill provider requires the Skill registry')
+    const runtime = agent.ctx.get('tools')
+    if (runtime === undefined) throw new Error('Business Skill provider requires the Tool runtime')
     const dispose = registry.registerProvider((value) => { control = value; return provider })
+    const policy = new BusinessSkillRuntimePolicy(agent, runtime, (version, tool, signal) => invoke((scope, signal) =>
+      this.backend.authorizeTool(scope.userToken, scope.projectId, scope.sessionId, version.slug,
+        version.versionKey, version.toolPolicyDigest, tool, signal.aborted, signal), signal),
+    AbortSignal.any([state.lifetime.signal, control.signal]))
     const close = agent.ctx.effect(() => async () => {
+      const closing = policy.dispose()
       dispose()
+      await closing
       await Promise.allSettled(pending)
     }, 'business skill provider lifetime')
-    const registration: Registration = { agent, state, provider, control, close }
+    const registration: Registration = { agent, state, provider, control, close, policy }
     this.registrations.set(agent, registration)
     state.registrations.add(registration)
     const removed = (): void => {
@@ -375,7 +426,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     const owner = this.definitions.get(definition)
     return owner?.registration.agent === agent
       && this.registrations.get(agent) === owner.registration
-      && this.requests.getStore() === owner.registration.state
+      && (this.requests.getStore() === owner.registration.state || this.claimed.get(agent)?.state === owner.registration.state)
       ? owner.version : undefined
   }
 

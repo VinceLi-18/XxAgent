@@ -3063,7 +3063,7 @@ export interface Config {
 
 ## `@xagent/dsh-business-skill`
 
-依赖： `agents` · `skills`
+依赖： `agents` · `skills` · `tools` · `systemPrompt`
 
 ```ts config-catalog
 /** FastAPI transport and catalog resource limits for the Host plugin. */
@@ -3077,7 +3077,7 @@ export interface Config {
 }
 ```
 
-源码： [`packages/xagent/business-skill/src/index.ts:29`](../packages/xagent/business-skill/src/index.ts)
+源码： [`packages/xagent/business-skill/src/index.ts:30`](../packages/xagent/business-skill/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 
@@ -3183,7 +3183,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/session-persistence-api/src/index.ts:31`](../packages/xagent/session-persistence-api/src/index.ts)
+来源：[`packages/xagent/session-persistence-api/src/index.ts:32`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## 无配置的可加载插件
 

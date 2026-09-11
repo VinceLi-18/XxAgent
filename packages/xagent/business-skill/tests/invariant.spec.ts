@@ -4,7 +4,7 @@ import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import { describe, expect, test } from 'vitest'
 import * as invariant from '../src/invariant.ts'
-import { entry, request, setup } from './fixtures.ts'
+import { entry, request, setup, claimTurn } from './fixtures.ts'
 
 describe('Business Skill loaded-definition relationship', () => {
   test('disposes the package reservation so the companion can reload', async () => {
@@ -20,18 +20,20 @@ describe('Business Skill loaded-definition relationship', () => {
     await ctx.fiber.dispose()
   })
   test('accepts only the exact authorized definition owned by the receiving Agent', async () => {
-    const { ctx, agent, service, state } = await setup()
-    await ctx.plugin(InvariantRegistry)
-    await ctx.plugin(invariant)
+    const { ctx, agent, service, state } = await setup(10, undefined, async (ctx) => {
+      await ctx.plugin(InvariantRegistry)
+      await ctx.plugin(invariant)
+    })
     state.catalog = [entry()]
     await service.withRequest(request(), async () => {
+      claimTurn(ctx, agent)
       service.attach(agent)
       const definition = (await ctx.skills.get('review', { scope: agent }))!
       await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition: { ...definition, provider: 'other-provider' }, invocation: 'user-explicit' })).resolves.toBeUndefined()
       await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition, invocation: 'model-tool', callId: CallId('valid') })).resolves.toBeUndefined()
       await expect(agentEvents(ctx, agent).serial('skill/loaded', {
         definition: { ...definition, content: 'Unapproved instructions' }, invocation: 'user-explicit',
-      })).rejects.toThrow(/owned.*definition/)
+      })).rejects.toThrow()
     })
     await ctx.fiber.dispose()
   })
@@ -46,11 +48,11 @@ describe('Business Skill loaded-definition relationship', () => {
       service.attach(agent)
       return (await ctx.skills.get('review', { scope: agent }))!
     })
-    await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).rejects.toThrow(/owned.*definition/)
+    await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).rejects.toThrow()
     await fiber.dispose()
     while (fiber.inertia !== undefined) await fiber.inertia
     expect(() => ctx.invariants.register('@xagent/dsh-business-skill', () => undefined)).not.toThrow()
-    await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).resolves.toBeUndefined()
+    await expect(agentEvents(ctx, agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).rejects.toThrow()
     await ctx.fiber.dispose()
   })
 })

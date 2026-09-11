@@ -3061,7 +3061,7 @@ Source: [`packages/xagent/authorization/src/index.ts:53`](../packages/xagent/aut
 
 ## `@xagent/dsh-business-skill`
 
-Requires: `agents` · `skills`
+Requires: `agents` · `skills` · `tools` · `systemPrompt`
 
 ```ts config-catalog
 /** FastAPI transport and catalog resource limits for the Host plugin. */
@@ -3075,7 +3075,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/business-skill/src/index.ts:29`](../packages/xagent/business-skill/src/index.ts)
+Source: [`packages/xagent/business-skill/src/index.ts:30`](../packages/xagent/business-skill/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 
@@ -3181,7 +3181,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/session-persistence-api/src/index.ts:31`](../packages/xagent/session-persistence-api/src/index.ts)
+Source: [`packages/xagent/session-persistence-api/src/index.ts:32`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## Loadable plugins with no config
 

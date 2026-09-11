@@ -14,7 +14,7 @@ FastAPI Session 行必须携带不可变 `purpose`。普通读取、列表和快
 
 可选 `xagentFact` 服务通过独立 `receipts` 和 `outbox` 注册表提供 Fact proposal receipt 与 Outbox 事件附件。provider 按同一首尾 sequence 窗口同时收集 retrieval、Fact receipt 和 Fact Outbox sidecar，将它们放入一次 append，只在关闭响应确认精确末 sequence 后才以该 sequence 分别 commit 三个注册表。成功的 pending Fact `tool/result` 在写入 FastAPI 时删除仅供 Host 展示和私有 receipt 绑定使用的 `data.meta`；该元数据必须包含且只能包含合法 proposal ID、`xagent-fact` kind 和 pending 状态，错误结果或无效元数据会在远端请求前失败。FastAPI 不接收客户端展示元数据，而是在 receipt、结果正文与数据库 admission 全部成功后，用规范 proposal ID 重建完全相同的公开 `data.meta`，使 reload 后的 ToolView 保留 pending 身份和状态。其他事件的 meta 保持原样。部分确认、取消、超时、请求失败或响应校验失败都不 commit 任何注册表。`xagentFact` 缺失时，provider 不访问这两个注册表，也不添加空 Fact 数组，普通 append 正文字节保持不变。
 
-`fact/proposal-decided` 使用持久化层的单一严格 codec。写入把关闭的 camelCase DSH data 转成 FastAPI v1 snake_case，读取执行反向转换；两端都拒绝未知事件或 data 字段、bool 整数、非 `append` placement，以及与终态不一致的 revision 或 reason。其他 Session 事件原样复制，receipt 与 Outbox 身份只存在于 append sidecar。
+`fact/proposal-decided` 使用持久化层的单一严格 codec。写入把关闭的 camelCase DSH data 转成 FastAPI v1 snake_case，读取执行反向转换；两端都拒绝未知事件或 data 字段、bool 整数、非 `append` placement，以及与终态不一致的 revision 或 reason。`business-skill/activated` 使用独立严格 codec 转换摘要字段，要求 `ignorable: true`，仅接受公开 slug、版本、调用形式、轮次及策略摘要；正文、内部版本标识和额外信封字段均拒绝。其他 Session 事件原样复制，receipt 与 Outbox 身份只存在于 append sidecar。
 
 每个 Session 的后台写入只在确有 pending 或 retry 批次时建立 flush owner。空队列 flush 立即返回，不会留下已结算 owner 覆盖同步到达的新事件；并发入队因此仍会安排下一次远端 append。
 

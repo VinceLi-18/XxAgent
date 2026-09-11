@@ -24,6 +24,10 @@ The Host provider owns exact Agent/request registrations and private definition-
 
 Each discovery owns its candidate observation independently: a registration-wide current-candidate slot would let concurrent reads or refresh invalidate an authorized in-flight load. Exact candidate ownership is weakly retained for the physical request, while every load still checks backend authorization. Provider disposal aborts the transport with its registration signal and awaits owned operations; post-response cancellation checks discard late results from transports that ignore abort. Transport-completion and provider-publication checks protect distinct Promise continuations: cancellation can occur between them, so the provider must recheck its scope and caller signal after its final await. This check is required even when optional invariant diagnostics are disabled.
 
+Inbox insertion captures physical-request ownership, and claiming binds that owner to the exact turn. Ambient async context cannot authorize a later queued turn. An awaited execution listener delegates only after fresh backend authorization, and a final guard requires admission for that exact execution object; an earlier listener's allow cannot substitute for it. Request cancellation closes authorization immediately, but teardown retains that guard until admitted tool calls settle. Combining the physical lifetime with the execution signal also covers cancellation after the guard and before the body.
+
+Prompt assembly filters Agent-local tools as well as inherited registrations. Explicit invocation occurs after assembly, so activation narrows the pending array before the request header snapshots it. Model-tool invocation occurs after that request is logged and leaves its frozen array unchanged; the next assembly applies the pin. The activation record uses the existing ignorable envelope, which lets readers without the event declaration retain the log safely without changing its structural format version. Raw instructions remain in append records; only their current-turn model-history entries become use markers.
+
 This proposal extends the [Business profile composition](../../implemented/feature/2026-08-22-xagent-profile-product-shell.md) with a governed provider while retaining its disabled filesystem provider and developer capabilities. The [authentication and Session isolation rules](../../implemented/architecture/2026-08-25-xagent-auth-session-runtime.md) remain authoritative. These records retain independent rationale; none is superseded by the storage foundation. The [approved design](../../../../docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md) defines the complete product flow.
 
 ## Alternatives considered
@@ -33,6 +37,8 @@ This proposal extends the [Business profile composition](../../implemented/featu
 **Store Skills as workspace files.** File permissions cannot express project membership, exact tested publication, current-version selection, and formal audit without granting business users server access.
 
 **Generate a plugin for every version.** Business instructions must not become arbitrary code deployment with restart and supply-chain consequences. A provider can reuse the registry without executing user code.
+
+**Filter only the inherited tool registry.** Agent-owned registrations are not inherited entries and would remain model-visible. Assembly filtering plus exact-call execution authorization covers both registration origins without adding Business policy to the generic loop.
 
 ## Acceptance criteria
 

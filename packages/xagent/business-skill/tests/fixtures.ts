@@ -1,5 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { Inbox, type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { Inbox, agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
@@ -32,7 +33,7 @@ export const entry = (slug = 'review', version = 1, key = versionKey) => ({
 })
 export const loaded = () => ({
   ...entry(), instructions: 'Read the project evidence before answering.', content_digest: 'a'.repeat(64),
-  tool_policy_digest: 'b'.repeat(64), complete_tools: ['skill'],
+  tool_policy_digest: '11fb0b9dcff879bc2509a84349c757a604597bef7ba81a0fd10449dc0c1156cf', complete_tools: ['skill'],
 })
 const detail = () => ({
   schema_version: 1, slug: 'review', display_name: 'Review', status: 'active',
@@ -56,7 +57,8 @@ export function transcriptResponse(payload: string): Response {
   return new Response(`{"schema_version":1,"test":${JSON.stringify(wireTest)},"events":[{"schema_version":1,"sequence":0,"event_type":"message","payload":${payload},"created_at":"2026-09-12T00:00:00Z"}],"next_sequence":1}`)
 }
 
-export async function setup(maxCatalogEntries = 10, decorateBackend?: (backend: XAgentBusinessSkillBackend) => XAgentBusinessSkillBackend) {
+export async function setup(maxCatalogEntries = 10, decorateBackend?: (backend: XAgentBusinessSkillBackend) => XAgentBusinessSkillBackend,
+  beforeService?: (ctx: Context) => Promise<void>) {
   const calls: { path: string; body: Record<string, unknown>; token: string | null; signal: AbortSignal | null | undefined }[] = []
   const state = {
     catalog: [entry('z-review'), entry('a-review')] as unknown[], load: loaded() as unknown,
@@ -78,6 +80,7 @@ export async function setup(maxCatalogEntries = 10, decorateBackend?: (backend: 
       if (state.failure) return Response.json({ detail: { code: state.failure } }, { status: ['business-skill-retired', 'business-skill-version-changed'].includes(state.failure) ? 409 : 403 })
       if (path.endsWith('/runtime/catalog')) return Response.json({ schema_version: 1, items: state.catalog })
       if (path.endsWith('/runtime/load')) return Response.json(state.load)
+      if (path.endsWith('/runtime/authorize-tool')) return Response.json({ schema_version: 1, allowed: true })
       if (path.endsWith('/list')) return Response.json({ schema_version: 1, items: [], next_cursor: null })
       if (path.endsWith('/transcript')) return Response.json({ schema_version: 1, test: wireTest, events: [], next_sequence: 0 })
       return Response.json(detail())
@@ -89,6 +92,7 @@ export async function setup(maxCatalogEntries = 10, decorateBackend?: (backend: 
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(ToolSkill)
+  await beforeService?.(ctx)
   const service = new FastApiBusinessSkillService(ctx,
     decorateBackend?.(client.businessSkills) ?? client.businessSkills, { maxCatalogEntries })
   const id = SessionId(`session-${sessionId}`)
@@ -102,4 +106,11 @@ export async function setup(maxCatalogEntries = 10, decorateBackend?: (backend: 
   }
   await ctx.plugin({ inject: ['skills'], apply: (inner: Context) => { scope = createScope(inner, agent) } })
   return { ctx, service, agent, scope, calls, state }
+}
+
+export function claimTurn(ctx: Context, agent: Agent, turn = 1): void {
+  const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Review' }] })
+  agent.session.append('turn/start', { turn })
+  agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+  agentEvents(ctx, agent).emit('agent/inbox/claimed', { message, turn })
 }

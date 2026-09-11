@@ -8,6 +8,35 @@ import type {
   XAgentBusinessSkillVerdict,
 } from '@xagent/dsh-backend-client'
 
+/** Public, informational activation record; body reconstruction uses ordinary Session messages. */
+export interface BusinessSkillActivatedEvent {
+  readonly type: 'business-skill/activated'
+  readonly data: {
+    readonly slug: string
+    readonly version: number
+    readonly invocation: 'model-tool' | 'user-explicit'
+    readonly turn: number
+    readonly toolPolicyDigest: string
+  }
+}
+
+/** Host-private immutable Skill choice for one Agent turn. */
+export interface BusinessSkillTurnBinding {
+  readonly slug: string
+  readonly version: number
+  readonly opaqueVersionKey: Branded<'BusinessSkillVersionKey'>
+  readonly toolPolicyDigest: string
+  readonly completeTools: ReadonlySet<string>
+  readonly turn: number
+}
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /** Informational activation; writers mark the envelope ignorable for older readers. */
+    'business-skill/activated': BusinessSkillActivatedEvent['data']
+  }
+}
+
 /** Browser transcript page with JSON-only event payloads and public run identity. */
 export interface BusinessSkillRemoteTranscript {
   readonly test: XAgentBusinessSkillTest

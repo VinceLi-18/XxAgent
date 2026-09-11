@@ -17,6 +17,7 @@ import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
 import { describe, expect, test, vi } from 'vitest'
 import * as persistenceModule from '../src/index.ts'
 import { decodeFactSessionEvent, encodeFactSessionEvent } from '../src/fact-event-codec.ts'
+import { decodeBusinessSkillEvent, encodeBusinessSkillEvent } from '../src/business-skill-event-codec.ts'
 import {
   XAgentSessionPersistence,
 } from '../src/index.ts'
@@ -53,6 +54,55 @@ function factDecisionEvent(seq: number, time: number): SessionEvent {
 }
 
 const forkOperationId = SessionForkOperationId('fork-request-000000000701')
+
+describe('Business Skill activation codec', () => {
+  const activation = { type: 'business-skill/activated', seq: 0, time: 1, ignorable: true,
+    data: { slug: 'review', version: 2, invocation: 'model-tool', turn: 1, toolPolicyDigest: 'a'.repeat(64) } }
+  test('round-trips exactly the public metadata with its ignorable envelope', () => {
+    const wire = encodeBusinessSkillEvent(activation)
+    expect(wire).toEqual({ type: 'business-skill/activated', seq: 0, time: 1, ignorable: true,
+      data: { slug: 'review', version: 2, invocation: 'model-tool', turn: 1, tool_policy_digest: 'a'.repeat(64) } })
+    expect(decodeBusinessSkillEvent(wire)).toEqual(activation)
+  })
+  test('persistence writes and reads the strict activation codec', async () => {
+    const ctx = new Context()
+    const value = backend()
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    try {
+      await persistence.withUserToken('alice-token', async () => {
+        await persistence.create(header)
+        await persistence.append(id, [activation as SessionEvent])
+        const wire = encodeBusinessSkillEvent(activation)
+        expect(value.calls.find(call => call.name === 'append')?.args[2]).toMatchObject({
+          events: [{ event_type: 'business-skill/activated', payload: wire }],
+        })
+        value.sessions.events = async () => ({ schema_version: 1,
+          events: [{ sequence: 0, event_type: 'business-skill/activated', payload: wire }] })
+        expect(await persistence.readFrom(id, 0)).toEqual({ meta: header, events: [activation] })
+      })
+    } finally { await ctx.fiber.dispose() }
+  })
+  test.each([undefined, 'turn/start'])('rejects an activation whose row type is %s', async (eventType) => {
+    const ctx = new Context()
+    const value = backend()
+    value.sessions.events = async () => ({ schema_version: 1,
+      events: [{ sequence: 0, event_type: eventType, payload: encodeBusinessSkillEvent(activation) }] })
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    try {
+      await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
+        .rejects.toThrow('invalid XAgent Business Skill session event')
+    } finally { await ctx.fiber.dispose() }
+  })
+  test.each([
+    { ignorable: false }, { ignorable: undefined }, { surfaceOp: 'append' }, { seq: -1 }, { time: 0.5 },
+    { type: 'other' }, { data: null }, { data: [] }, { data: { ...activation.data, version: 0 } },
+    { data: { ...activation.data, slug: '../private' } }, { data: { ...activation.data, invocation: 'forged' } },
+    { data: { ...activation.data, turn: -1 } }, { data: { ...activation.data, toolPolicyDigest: 'not-a-digest' } },
+    { data: { ...activation.data, instructions: 'private body' } },
+  ])('rejects malformed or private fields %j', (patch) => {
+    expect(() => encodeBusinessSkillEvent({ ...activation, ...patch })).toThrow('invalid XAgent Business Skill session event')
+  })
+})
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
@@ -1295,7 +1345,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     [{ session: { id: '00000000-0000-0000-0000-000000000701', visibility: 'project', project_id: 'not-a-uuid' } }],
   ])('创建响应身份或服务端范围畸形时不建立写入租约 %#', async (response) => {
     const value = backend()
-    value.sessions.create = vi.fn(async () => ({ schema_version: 1, ...response }))
+    value.sessions.create = vi.fn(async () => ({ schema_version: 1, session: { purpose: 'conversation', ...response.session } }))
     const persistence = new XAgentSessionPersistence(new Context(), value)
 
     await expect(persistence.withUserToken('alice-token', () => persistence.create(header)))
@@ -1320,6 +1370,18 @@ describe('XAgent FastAPI Session Persistence', () => {
     await persistence.append(id, [event])
 
     expect(value.calls.find(call => call.name === 'append')?.args[0]).toBe('alice-token')
+  })
+
+  test('ordinary inspection refuses a Business Skill test Session purpose', async () => {
+    const ctx = new Context()
+    const value = backend()
+    value.sessions.open = async () => ({ schema_version: 1,
+      session: { purpose: 'business_skill_test', runtime_header: header }, events: [] })
+    const persistence = new XAgentSessionPersistence(ctx, value)
+    try {
+      await expect(persistence.withUserToken('alice-token', () => persistence.inspect(id)))
+        .rejects.toThrow('invalid XAgent session purpose')
+    } finally { await ctx.fiber.dispose() }
   })
 
   test('事件追加使用消息 rpcId 绑定的发起者，而不是最后一次访问者', async () => {

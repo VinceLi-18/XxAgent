@@ -1,12 +1,116 @@
 import { Context } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
-import type { SkillProviderObservation } from '@deepseek-ai/dsh-skill'
+import SkillRegistry, { type SkillProviderObservation } from '@deepseek-ai/dsh-skill'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, test, vi } from 'vitest'
 import { apply } from '../src/index.ts'
-import { entry, request, setup, transcriptResponse } from './fixtures.ts'
+import { entry, request, setup, transcriptResponse, claimTurn } from './fixtures.ts'
 
 describe('Business Skill admission and transport lifetime', () => {
+  test('an unrelated physical request ending leaves the current message and turn owners intact', async () => {
+    const h = await setup()
+    h.state.catalog = [entry()]
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const owner = h.service.withRequest(request(), async () => {
+      claimTurn(h.ctx, h.agent)
+      const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'steering' }] })
+      agentEvents(h.ctx, h.agent).emit('agent/inbox/inserted', { message })
+      entered.resolve(undefined)
+      await release.promise
+      agentEvents(h.ctx, h.agent).emit('agent/inbox/claimed', { message, turn: 1 })
+      const definition = (await h.ctx.skills.get('review', { scope: h.agent }))!
+      await expect(agentEvents(h.ctx, h.agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).resolves.toBeUndefined()
+    })
+    await entered.promise
+    try { await h.service.withRequest(request(), () => h.service.list({})) }
+    finally { release.resolve(undefined); await owner; await h.ctx.fiber.dispose() }
+  })
+
+  test('discarded and unowned messages cannot later authorize a claimed turn', async () => {
+    const { ctx, service, agent } = await setup()
+    const message = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'queued' }] })
+    try {
+      agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+      await service.withRequest(request(), async () => {
+        agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+        agentEvents(ctx, agent).emit('agent/inbox/discarded', { message })
+        agentEvents(ctx, agent).emit('agent/inbox/claimed', { message, turn: 1 })
+        expect(await ctx.skills.list({ scope: agent })).toEqual([])
+      })
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  test('queued ownership is removed on Agent disposal and physical request settlement', async () => {
+    const h = await setup()
+    const other = await setup()
+    const message = () => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'queued' }] })
+    const own = message()
+    const foreign = message()
+    const later = message()
+    try {
+      await h.service.withRequest(request(), async () => {
+        agentEvents(h.ctx, h.agent).emit('agent/inbox/inserted', { message: own })
+        agentEvents(h.ctx, other.agent).emit('agent/inbox/inserted', { message: foreign })
+        agentEvents(h.ctx, h.agent).emit('agent/disposed', {})
+        agentEvents(h.ctx, other.agent).emit('agent/inbox/inserted', { message: later })
+      })
+      await h.service.withRequest(request(), async () => {
+        agentEvents(h.ctx, other.agent).emit('agent/inbox/claimed', { message: later, turn: 1 })
+        expect(await other.ctx.skills.list({ scope: other.agent })).toEqual([])
+      })
+    } finally { await other.ctx.fiber.dispose(); await h.ctx.fiber.dispose() }
+  })
+
+  test('a different live physical request cannot authorize steering into an existing turn', async () => {
+    const h = await setup()
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    h.state.catalog = [entry()]
+    const owner = h.service.withRequest(request(), async () => {
+      claimTurn(h.ctx, h.agent)
+      const definition = (await h.ctx.skills.get('review', { scope: h.agent }))!
+      entered.resolve(undefined)
+      await release.promise
+      await expect(agentEvents(h.ctx, h.agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).rejects.toThrow()
+    })
+    await entered.promise
+    try {
+      await h.service.withRequest(request(), async () => { claimTurn(h.ctx, h.agent) })
+    } finally { release.resolve(undefined); await owner; await h.ctx.fiber.dispose() }
+  })
+
+  test('a request without this Agent claim cannot recover a private loaded version', async () => {
+    const h = await setup()
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    h.state.catalog = [entry()]
+    let definition: Awaited<ReturnType<typeof h.ctx.skills.get>>
+    const owner = h.service.withRequest(request(), async () => {
+      h.service.attach(h.agent)
+      definition = await h.ctx.skills.get('review', { scope: h.agent })
+      entered.resolve(undefined)
+      await release.promise
+    })
+    await entered.promise
+    try { expect(h.service.loadedVersion(h.agent, definition!)).toBeUndefined() }
+    finally { release.resolve(undefined); await owner; await h.ctx.fiber.dispose() }
+  })
+
+  test('missing Tool runtime rejects before provider registration', async () => {
+    const h = await setup()
+    const isolated = new Context()
+    await isolated.plugin(SkillRegistry)
+    let scope!: Scope
+    const agent: Agent = { ...h.agent, get ctx() { return scope.ctx } }
+    await isolated.plugin({ inject: ['skills'], apply: (inner: Context) => { scope = createScope(inner, agent) } })
+    try {
+      await expect(h.service.withRequest(request(), async () => h.service.attach(agent))).rejects.toThrow('requires the Tool runtime')
+      expect(await isolated.skills.list({ scope: agent })).toEqual([])
+    } finally { await isolated.fiber.dispose(); await h.ctx.fiber.dispose() }
+  })
+
   test.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid catalog bound %s at installation', async (maxCatalogEntries) => {
     const ctx = new Context()
     try {

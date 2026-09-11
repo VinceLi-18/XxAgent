@@ -139,6 +139,10 @@ function runTurn(sessionId: string): void {
     })
   }
   const reasonKind = env.FAKE_REASON_KIND ?? 'completed'
+  if (env.FAKE_BUSINESS_SKILL !== undefined) {
+    notify('session.event', { sessionId, event: { type: 'business-skill/activated', seq: seq++, time: 0, ignorable: true,
+      data: { slug: 'review', version: 2, invocation: 'model-tool', turn: 0, toolPolicyDigest: 'a'.repeat(64) } } })
+  }
   event(sessionId, 'turn/end', { turn: 0, reason: { kind: reasonKind } })
   if (env.FAKE_SUBAGENT !== undefined) {
     const childId = `${sessionId}-child`

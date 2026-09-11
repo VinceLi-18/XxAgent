@@ -6,7 +6,7 @@ import { renderSkillContent, type SkillProviderObservation } from '@deepseek-ai/
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import type { XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
 import { describe, expect, test } from 'vitest'
-import { setup, request, entry, loaded, projectId, sessionId, versionKey, version2, signal, testRecord } from './fixtures.ts'
+import { setup, request, entry, loaded, projectId, sessionId, versionKey, version2, signal, testRecord, claimTurn } from './fixtures.ts'
 
 describe('governed Business Skill provider', () => {
   test('concurrent registry loads retain their own authoritative observation', async () => {
@@ -28,6 +28,7 @@ describe('governed Business Skill provider', () => {
     const { ctx, service, agent, state } = await setup()
     state.catalog = [entry()]
     await service.withRequest(request(), async () => {
+      claimTurn(ctx, agent)
       service.attach(agent)
       const results = await Promise.all(['one', 'two'].map(id => ctx.tools.execute({
         name: 'skill', arguments: { name: 'review' }, agent, signal, callId: CallId(id),
@@ -294,6 +295,7 @@ describe('governed Business Skill provider', () => {
     const { ctx, service, agent, state } = await setup()
     state.catalog = [entry()]
     await service.withRequest(request(), async () => {
+      claimTurn(ctx, agent)
       service.attach(agent)
       const result = await ctx.tools.execute({ name: 'skill', arguments: { name: 'review' }, agent, signal, callId: CallId('load') })
       const message = createUserMessage({ content: [{ type: 'text', text: '/review' }], source: { kind: 'user' } })
