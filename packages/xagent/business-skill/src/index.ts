@@ -309,7 +309,10 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     const end = (): void => {
       state.lifetime.abort(failure('unauthenticated'))
       for (const [id, owner] of this.messages) if (owner.state === state) this.messages.delete(id)
-      for (const [agent, owner] of this.claimed) if (owner.state === state) this.claimed.delete(agent)
+      for (const [agent, owner] of this.claimed) if (owner.state === state) {
+        this.invalidTurns.set(agent, owner.turn)
+        this.claimed.delete(agent)
+      }
       for (const registration of state.registrations) state.pending.add(registration.close())
     }
     const signals = [scope.requestSignal, scope.connectionSignal, this.lifetime.signal]
@@ -406,7 +409,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
         version.versionKey, version.toolPolicyDigest, tool, signal.aborted, signal), signal),
     AbortSignal.any([state.lifetime.signal, control.signal]))
     const close = agent.ctx.effect(() => async () => {
-      const closing = policy.dispose()
+      const closing = policy.closeRequest()
       dispose()
       await closing
       await Promise.allSettled(pending)

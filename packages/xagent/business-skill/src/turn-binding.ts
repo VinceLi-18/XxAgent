@@ -1,10 +1,11 @@
 /** Agent-owned version pins and durable completed-turn instruction projection. @module @xagent/dsh-business-skill/turn-binding */
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { isAppendSurfaceEvent, isReplacementSurfaceEvent, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import type { XAgentBusinessSkillLoad } from '@xagent/dsh-backend-client'
 import type { BusinessSkillTurnBinding } from './types.ts'
 
-/** One immutable admission retained until its turn ends or request owner closes. */
+/** One immutable admission retained until final turn end or Agent disposal. */
 export class TurnBinding {
   /** Immutable public policy with the private retained version identity. */
   readonly binding: BusinessSkillTurnBinding
@@ -38,22 +39,45 @@ export function replaceCompletedInstructions(session: Session): void {
     if (event.type === 'turn/end') completed.add(event.data.turn)
     if (event.type === 'tool/call' && event.data.name === 'skill') calls.set(`${event.data.turn}:${event.data.callId}`, skillName(event.data.arguments))
   }
-  const visible = new Set(session.surface.nodes)
+  const admissions = new Map<number, SessionEvent<'business-skill/activated'>>()
   let turn: number | undefined
-  for (const event of [...session.events]) {
+  for (const event of session.events) {
     if (event.type === 'turn/start') turn = event.data.turn
     if (event.type === 'turn/end') turn = undefined
+    if (isReplacementSurfaceEvent(event) && event.surfaceOp.start === event.surfaceOp.end) {
+      const admission = admissions.get(event.surfaceOp.start)
+      const original = session.events[event.surfaceOp.start] as SessionEvent
+      if (admission !== undefined && (event.type === 'tool/result'
+        || (event.type === 'user/message' && original.type === 'user/message' && event.data.id === original.data.id
+          && event.data.source.kind === 'skill-invocation' && event.data.source.name === admission.data.slug))) {
+        admissions.set(event.seq, admission)
+      }
+    }
     if (turn === undefined || !completed.has(turn)) continue
     const activation = activations.get(turn)
-    if (activation === undefined || event.seq < activation.seq || !('surfaceOp' in event) || event.surfaceOp !== 'append' || !visible.has(event.seq)) continue
-    const { slug, version } = activation.data
-    const marker = [{ type: 'text' as const, text: `Business Skill ${slug} v${version} was used in turn ${turn}.` }]
-    const opts = { surfaceOp: { op: 'replace' as const, start: event.seq, end: event.seq }, sourceEventSeqs: [event.seq] }
+    if (activation === undefined || event.seq < activation.seq || !isAppendSurfaceEvent(event)) continue
+    const { slug } = activation.data
     if (event.type === 'user/message' && event.data.source.kind === 'skill-invocation' && event.data.source.name === slug) {
-      session.append('user/message', { ...event.data, content: marker }, opts)
-    } else if (event.type === 'tool/result') {
+      admissions.set(event.seq, activation)
+    } else if (event.type === 'tool/result' && event.data.turn === turn) {
       const name = calls.get(`${event.data.turn}:${event.data.message.source.callId}`)
       if (name !== slug || event.data.message.content[0].isError) continue
+      admissions.set(event.seq, activation)
+    }
+  }
+  for (const seq of [...session.surface.nodes]) {
+    const activation = admissions.get(seq)
+    const event = session.events[seq] as SessionEvent
+    if (activation === undefined || (event.type !== 'user/message' && event.type !== 'tool/result')) continue
+    const { slug, version, turn } = activation.data
+    const text = `Business Skill ${slug} v${version} was used in turn ${turn}.`
+    const content = event.type === 'user/message' ? event.data.content : event.data.message.content[0].content
+    const first = content[0] as ContentBlock
+    if (content.length === 1 && first.type === 'text' && first.text === text) continue
+    const marker = [{ type: 'text' as const, text }]
+    const opts = { surfaceOp: { op: 'replace' as const, start: seq, end: seq }, sourceEventSeqs: [seq] }
+    if (event.type === 'user/message') session.append('user/message', { ...event.data, content: marker }, opts)
+    else {
       session.append('tool/result', { ...event.data, message: { ...event.data.message,
         content: [{ ...event.data.message.content[0], content: marker }] } }, opts)
     }

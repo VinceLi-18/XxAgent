@@ -33,6 +33,7 @@ export class BusinessSkillRuntimePolicy {
   private permitted = new WeakSet<object>()
   private readonly executing = new Set<Promise<void>>()
   private closing: Promise<void> | undefined
+  private readonly closeOwner: () => Promise<void>
 
   constructor(
     private readonly agent: Agent,
@@ -43,13 +44,17 @@ export class BusinessSkillRuntimePolicy {
     this.closeListeners = [
       agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
         const result = await next()
-        if (this.closing !== undefined) return result
         this.finishTurn()
+        if (this.closing !== undefined) {
+          const pin = this.pin
+          return pin === undefined ? result : { ...result, tools: result.tools.filter(tool => pin.binding.completeTools.has(tool.name)) }
+        }
         this.schemas = result.tools
-        this.filterSchemas()
+        this.filterSchemas(result.tools)
         return result
       }),
       agent.ctx.on('tools/pre-execute', async (exec, next) => {
+        this.finishTurn()
         if (this.pin === undefined) return await next()
         return await this.runOwned(async () => {
           if (!await this.allowed(exec.name, exec.signal)) return { kind: 'deny', reason: DENIED } as const
@@ -59,6 +64,7 @@ export class BusinessSkillRuntimePolicy {
         })
       }),
       agent.ctx.on('approval/request', async (_request, next) => {
+        this.finishTurn()
         if (this.pin === undefined) return await next()
         return await this.runOwned(async () => {
           const cancelled = Promise.withResolvers<ApprovalOutcome>()
@@ -73,8 +79,9 @@ export class BusinessSkillRuntimePolicy {
         })
       }, { prepend: true }),
       runtime.guard((exec) => {
+        this.finishTurn()
         if (this.pin === undefined) return undefined
-        if (!this.denied && this.permitted.has(exec)) return undefined
+        if (!lifetime.aborted && !this.denied && this.permitted.has(exec)) return undefined
         this.denied = true
         return DENIED
       }),
@@ -82,6 +89,11 @@ export class BusinessSkillRuntimePolicy {
         if (this.pin !== undefined && (exec.signal.aborted || (exec.name !== 'skill' && result.isError))) this.denied = true
       }),
       agent.ctx.on('tools/execute', async (exec, next) => this.runOwned(async () => {
+        this.finishTurn()
+        if (this.pin !== undefined && (this.denied || lifetime.aborted || exec.signal.aborted)) {
+          this.denied = true
+          throw failure('business-skill-tool-denied')
+        }
         const original = exec.signal
         exec.signal = AbortSignal.any([original, lifetime])
         try { return await next() } finally {
@@ -92,6 +104,13 @@ export class BusinessSkillRuntimePolicy {
         if (status === 'idle') this.finishTurn()
       }),
     ]
+    this.closeOwner = agent.ctx.effect(() => async () => {
+      this.denied = true
+      this.schemas = undefined
+      await Promise.allSettled(this.executing)
+      for (const close of this.closeListeners) close()
+      this.clear()
+    }, 'business skill turn security')
   }
 
   /**
@@ -153,20 +172,20 @@ export class BusinessSkillRuntimePolicy {
     } catch (error) { lift(); throw error }
     this.pin = pin
     this.lift = lift
-    if (invocation === 'user-explicit') this.filterSchemas()
+    if (invocation === 'user-explicit') this.filterSchemas(this.schemas)
     else this.schemas = undefined
   }
 
   /**
-   * Close execution immediately and retain its guard until admitted calls settle.
-   * @returns quiescence after active dispatch callbacks settle, followed by listener cleanup.
+   * Expire request authority while retaining bound-turn dispatch protection until final turn end.
+   * @returns settlement of callbacks already active; future approval and dispatch are not awaited.
    */
-  dispose(): Promise<void> {
+  closeRequest(): Promise<void> {
     this.denied = true
     this.schemas = undefined
-    this.closing ??= Promise.allSettled(this.executing).then(() => {
-      for (const close of this.closeListeners) close()
-      this.clear()
+    this.closing ??= Promise.allSettled(this.executing).then(async () => {
+      this.finishTurn()
+      if (this.pin === undefined) await this.closeOwner()
     })
     return this.closing
   }
@@ -197,10 +216,10 @@ export class BusinessSkillRuntimePolicy {
 
   private isLivePin(pin: TurnBinding): boolean { return this.pin === pin && !this.denied }
 
-  private filterSchemas(): void {
-    if (this.pin === undefined || this.schemas === undefined) return
-    const allowed = this.schemas.filter(tool => this.pin?.binding.completeTools.has(tool.name))
-    this.schemas.splice(0, this.schemas.length, ...allowed)
+  private filterSchemas(schemas: ToolSchema[] | undefined): void {
+    if (this.pin === undefined || schemas === undefined) return
+    const allowed = schemas.filter(tool => this.pin?.binding.completeTools.has(tool.name))
+    schemas.splice(0, schemas.length, ...allowed)
   }
 
   private clear(): void {
@@ -215,6 +234,9 @@ export class BusinessSkillRuntimePolicy {
   }
 
   private finishTurn(): void {
-    if (this.turn !== undefined && this.agent.session.events.some(event => event.type === 'turn/end' && event.data.turn === this.turn)) this.clear()
+    if (this.turn !== undefined && this.agent.session.events.some(event => event.type === 'turn/end' && event.data.turn === this.turn)) {
+      this.clear()
+      if (this.closing !== undefined) void this.closeOwner()
+    }
   }
 }

@@ -39,6 +39,40 @@ async function load(h: Awaited<ReturnType<typeof setup>>, name = 'review', id = 
 }
 
 describe('Business Skill turn policy', () => {
+  test('request settlement retains dispatch security until final turn end without awaiting future dispatch', async () => {
+    const h = await fixture()
+    const physical = new AbortController()
+    const entered = Promise.withResolvers<undefined>()
+    const release = Promise.withResolvers<undefined>()
+    const before = h.agent.ctx.on('tools/execute', async (exec, next) => {
+      if (exec.name === 'search_artifacts') { entered.resolve(undefined); await release.promise }
+      return await next()
+    })
+    let pending: Promise<unknown> | undefined
+    try {
+      await expect(h.service.withRequest(request({ requestSignal: physical.signal }), async () => {
+        claim(h.ctx, h.agent, 1)
+        await load(h)
+        pending = h.ctx.tools.execute({ name: 'search_artifacts', arguments: {}, agent: h.agent, signal, callId: CallId('delayed') })
+          .then((result) => { expect(result.isError).toBe(true) })
+        await entered.promise
+        physical.abort()
+      })).rejects.toThrow()
+      release.resolve(undefined)
+      await pending
+      before()
+      expect((await h.ctx.tools.execute({ name: 'search_artifacts', arguments: {}, agent: h.agent, signal, callId: CallId('after-request') })).isError).toBe(true)
+      expect(h.effects).toEqual([])
+      h.agent.session.append('turn/end', { turn: 1, reason: { kind: 'interrupted' } })
+      expect((await h.ctx.tools.execute({ name: 'unrelated', arguments: {}, agent: h.agent, signal, callId: CallId('after-end') })).isError).toBe(false)
+      expect(h.effects).toEqual(['unrelated'])
+      await h.service.withRequest(request(), async () => {
+        claim(h.ctx, h.agent, 2)
+        expect((await load(h)).isError).toBe(false)
+        expect((await h.ctx.tools.execute({ name: 'search_artifacts', arguments: {}, agent: h.agent, signal, callId: CallId('next-turn') })).isError).toBe(false)
+      })
+    } finally { release.resolve(undefined); await pending; await h.ctx.fiber.dispose() }
+  })
   test.each(['allow', 'reject', 'never'] as const)('request cancellation settles before a %s late approval without running the body', async (late) => {
     const h = await fixture()
     await h.ctx.plugin(ApprovalService)
@@ -66,6 +100,8 @@ describe('Business Skill turn policy', () => {
       expect(h.agent.session.events.filter(event => event.type === 'approval/decided').map(event => event.data.outcome)).toEqual(['cancelled'])
       closeAnswerer()
       h.ctx.on('approval/request', async () => 'allowed-once')
+      h.agent.session.append('turn/end', { turn: 1, reason: { kind: 'interrupted' } })
+      h.agent.session.append('turn/start', { turn: 2 })
       expect(await h.ctx.approval.request({ agent: h.agent, toolName: 'outside-request', signal })).toBe('allowed-once')
     } finally { await h.ctx.fiber.dispose() }
   })
@@ -87,7 +123,7 @@ describe('Business Skill turn policy', () => {
       })).rejects.toThrow()
     } finally { await h.ctx.fiber.dispose() }
   })
-  test.each(['allowed-once', 'rejected', 'cancelled'] as const)('delegates normal approval outcome %s without changing it', async (outcome) => {
+  test.each(['allowed-once', 'rejected', 'cancelled', 'unavailable'] as const)('delegates normal approval outcome %s without changing it', async (outcome) => {
     const h = await fixture()
     await h.ctx.plugin(ApprovalService)
     const answerer = vi.fn(async (): Promise<ApprovalOutcome> => outcome)
@@ -141,6 +177,21 @@ describe('Business Skill turn policy', () => {
     await Promise.all([pending, closing])
     await h.ctx.fiber.dispose()
   })
+  test('request closure during an unbound assembly leaves ordinary tools intact', async () => {
+    const h = await fixture()
+    const physical = new AbortController()
+    try {
+      await expect(h.service.withRequest(request({ requestSignal: physical.signal }), async () => {
+        claim(h.ctx, h.agent, 1)
+        h.agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+          const result = await next()
+          physical.abort()
+          return result
+        })
+        expect((await h.ctx.systemPrompt.assemble({ scope: h.agent })).tools.map(tool => tool.name)).toContain('unrelated')
+      })).rejects.toMatchObject({ failure: { code: 'unauthenticated' } })
+    } finally { await h.ctx.fiber.dispose() }
+  })
   test('an in-flight assembly cannot mutate its tool array after physical request disposal begins', async () => {
     const h = await fixture()
     const physical = new AbortController()
@@ -148,6 +199,7 @@ describe('Business Skill turn policy', () => {
     const authRelease = Promise.withResolvers<undefined>()
     const assemblyEntered = Promise.withResolvers<undefined>()
     const assemblyRelease = Promise.withResolvers<undefined>()
+    let originalTools: readonly { readonly name: string }[] | undefined
     try {
       await expect(h.service.withRequest(request({ requestSignal: physical.signal }), async () => {
         claim(h.ctx, h.agent, 1)
@@ -159,6 +211,7 @@ describe('Business Skill turn policy', () => {
         await authEntered.promise
         h.agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
           const result = await next()
+          originalTools = result.tools
           assemblyEntered.resolve(undefined)
           await assemblyRelease.promise
           return result
@@ -167,7 +220,12 @@ describe('Business Skill turn policy', () => {
         await assemblyEntered.promise
         physical.abort()
         assemblyRelease.resolve(undefined)
-        try { expect((await assembling).tools.map(tool => tool.name)).toContain('unrelated') }
+        try {
+          const result = await assembling
+          expect(originalTools?.map(tool => tool.name)).toContain('unrelated')
+          expect(result.tools).not.toBe(originalTools)
+          expect(result.tools.map(tool => tool.name)).not.toContain('unrelated')
+        }
         finally { authRelease.resolve(undefined); await executing }
       })).rejects.toMatchObject({ failure: { code: 'unauthenticated' } })
     } finally { assemblyRelease.resolve(undefined); authRelease.resolve(undefined); await h.ctx.fiber.dispose() }
