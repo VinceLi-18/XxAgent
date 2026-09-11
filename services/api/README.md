@@ -84,6 +84,8 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 ## 工作台与 Session 内部接口
 
+Business Skill 的 PostgreSQL 存储以项目内唯一且不可变的 slug 标识稳定技能，分别保存一个可变草稿、不可变发布版本、独立测试记录和稳定技能授权。版本号与运行编号跨整个项目递增，调用方必须先锁项目行再锁技能行；复合外键禁止跨技能选择当前版本或跨项目关联测试 Session。`xagent_sessions.purpose` 创建时可选 `conversation` 或 `business_skill_test`，此后不可变；测试用途只允许 Project Session。API 数据库角色仅获得必要列的写权限，worker 无权访问技能关系。存在技能记录、测试 Session 或技能审计时，revision `018_xagent_business_skills` 在执行 DDL 前拒绝降级。[治理提案](../../.agents/notes/proposed/feature/2026-09-11-project-business-skills.md)定义完整发布、授权和执行流程。
+
 `/internal/xagent/*` 业务路由同时要求 `X-XAgent-Service-Token` 服务身份和当前账号的 Bearer token。服务端 introspection 生成 Principal，并在同一数据库事务设置 actor context；浏览器不得提交 actor、role、owner 或权限版本。固定的 `/internal/xagent/retrieval/token-count` 是纯内部 tokenizer relay，只接受服务令牌，不接收用户 JWT 或委托令牌；它在解析前把最坏 JSON 转义正文限制为 49,163 bytes，把合法原始查询限制为 8 KiB UTF-8，只向 `EMBEDDING_URL` 的 `/token-count` 转发，并把 embedding 响应限制为 512 bytes。relay 手动处理重定向，并对重定向、超时、请求取消、超限或畸形响应失败关闭。该路径不写检索审计，API 与 embedding 日志均不得记录原始查询。
 
 检索入口在同一 serializable 事务中完成登录、权限 revision、项目授权、RLS 搜索、ordinal 预留和 receipt 签发。该路径的 introspection 仍完整验证 token、账号状态、登录撤销、角色与 revision，但不锁定认证记录，也不更新 `last_verified_at`；普通登录校验路径继续锁定并更新时间。这样检索事务不会因无关的认证审计写入产生 serializable 写冲突。

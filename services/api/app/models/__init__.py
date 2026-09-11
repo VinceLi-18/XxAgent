@@ -2,6 +2,10 @@
 
 from app.models.artifact import Artifact, ArtifactProcessingJob, ArtifactVersion, StagingUpload
 from app.models.auth import XAgentAccountCredential, XAgentAuthSession, XAgentPermissionRevision
+from app.models.business_skills import (
+    BusinessSkill, BusinessSkillDraft, BusinessSkillVersion,
+    BusinessSkillTestRun, BusinessSkillAuthorization,
+)
 from app.models.facts import (
     BusinessOutbox,
     FactOperationIdempotency,
@@ -30,6 +34,11 @@ from app.models.workbench import (
 )
 
 __all__ = (
+    "BusinessSkill",
+    "BusinessSkillDraft",
+    "BusinessSkillVersion",
+    "BusinessSkillTestRun",
+    "BusinessSkillAuthorization",
     "Artifact",
     "ArtifactProcessingJob",
     "ArtifactVersion",

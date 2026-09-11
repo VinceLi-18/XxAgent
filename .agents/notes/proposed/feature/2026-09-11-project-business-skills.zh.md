@@ -1,0 +1,40 @@
+# Agent Note: 项目业务技能治理
+
+Status: proposed
+
+[English](2026-09-11-project-business-skills.md) | 中文
+
+## Problem
+
+项目成员需要复用业务指令，但不应因此获得服务器文件系统权限或部署可执行插件。可复用流程还需要证明其确切内容经过测试，保存持久化发布身份，并允许执行期间撤销权限。
+
+## Proposal
+
+FastAPI 与 PostgreSQL 拥有项目内稳定的技能身份、每个技能至多一个可变草稿、不可变发布版本、隔离测试记录、授权和正式审计。项目内唯一的 kebab-case slug 不可变。版本号与测试运行编号在项目行锁下跨整个项目递增。复合外键确保当前版本与测试 Session 属于对应技能和项目。数据库触发器保护发布内容、工具集合、摘要、源草稿修订号、发布者与发布时间。
+
+Specialist 与 Manager 可编辑和测试草稿；Manager 只能发布正常完成且获得人工通过判定的测试所对应的确切修订号与摘要。授权属于稳定技能，因此发布和回滚会改变后续轮次使用的版本，无需再次授权。退役会移除授权，永久禁止编辑草稿、发布和恢复，同时保留历史。
+
+每次草稿测试拥有一个持久化 Project Session，其用途固定为 `business_skill_test`，只执行一个场景和一个轮次。专用记录入口使其不进入普通对话列表和恢复路径。只读 Agent 不注册 `propose_fact`，并在执行前拒绝禁止的工具；测试成功不会模拟写入或创建审批。生产环境的 `propose_fact` 继续遵守[项目 Fact 审批](../../implemented/architecture/2026-09-06-xagent-fact-approval.md)。
+
+Business provider 复用[通用技能注册表](../../implemented/feature/2026-07-05-skill-system.md)和[目录替换机制](../../implemented/feature/2026-07-27-skill-catalog-hot-refresh.md)。每个轮次固定一个已发布技能版本及其完整工具集合。每次工具调用均通过 FastAPI 重新校验当前成员关系、账号启用状态、技能授权及退役状态。发布或回滚不会替换轮次固定的版本；撤权则拒绝下一次调用。Session 日志保留已加载正文，轮次结束时替换模型可见内容，为后续请求留下不含指令的历史标记。
+
+本提案在 [Business Profile 组合](../../implemented/feature/2026-08-22-xagent-profile-product-shell.md)中增加受治理的 provider，继续禁用文件系统技能来源和开发能力。[认证与 Session 隔离规则](../../implemented/architecture/2026-08-25-xagent-auth-session-runtime.md)仍是权威。这些记录各自保留独立理由，存储基础不取代其中任何一项。[已批准设计](../../../../docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md)定义完整产品流程。
+
+## Alternatives considered
+
+**由 Session 事件拥有治理状态。** 项目内并发发布与授权必须独立于单个 Session 存续，并落实 PostgreSQL 项目访问控制；Session 日志负责执行证据。
+
+**将技能存为工作区文件。** 文件权限无法在不授予业务用户服务器访问权的前提下表达项目成员关系、确切内容测试、当前版本选择与正式审计。
+
+**每个版本生成一个插件。** 业务指令不能变成任意代码部署并引入重启和供应链影响。Provider 可复用注册表而不执行用户代码。
+
+## Acceptance criteria
+
+- 真实 PostgreSQL 测试证明项目 RLS、worker 拒绝访问、API 最小权限、身份与版本不可变、精确引用、终止退役，以及存在技能数据、测试 Session 或技能审计时在 DDL 前拒绝降级。
+- 治理测试证明精确修订发布、并发编辑冲突、幂等、稳定技能授权、回滚和立即撤权。
+- 运行时及完整组合快照证明两种调用形式、单版本轮次固定、逐工具授权、正文日志、历史标记与测试只读隔离。两个 SDK 投影均包含激活事件。
+- 在提案移至 implemented 前，真实服务 Browser 录屏验证草稿测试、发布、授权与 Project Session 调用。
+
+## Risks
+
+只读测试不能执行生产 Fact 写入，因此发布必须展示这些权限，并保留独立 Fact 审批校验。每次工具调用会增加后端延迟，授权不可用时必须拒绝执行。不可变发布与终止退役限制了修复方式；降级要求技能存储、测试 Session 与技能审计记录全部为空。每轮单技能明确不支持合并工具许可集合。
