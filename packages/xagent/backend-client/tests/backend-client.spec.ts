@@ -395,7 +395,7 @@ describe('XAgent 后端客户端', () => {
           payload: { type: 'turn/start' },
           created_at: '2026-09-11T08:00:01Z',
         }],
-        next_sequence: 1,
+        next_sequence: 0,
       })
       if (path.endsWith('/runtime/catalog')) return Response.json({
         schema_version: 1,
@@ -445,7 +445,7 @@ describe('XAgent 后端客户端', () => {
     )).resolves.toMatchObject({ runNumber: 4, status: 'completed' })
     await expect(skills.transcript(
       'user-token', projectResponse.project.id, summary.slug, 4, { afterSequence: -1, limit: 50 }, signal.signal,
-    )).resolves.toMatchObject({ events: [{ sequence: 0, eventType: 'turn/start' }], nextSequence: 1 })
+    )).resolves.toMatchObject({ events: [{ sequence: 0, eventType: 'turn/start' }], nextSequence: 0 })
     await expect(skills.catalog('user-token', projectResponse.project.id, retrievalIds.session, signal.signal))
       .resolves.toEqual([{ slug: summary.slug, description: draft.description, versionNumber: 3, versionKey }])
     await expect(skills.load(
@@ -570,6 +570,73 @@ describe('XAgent 后端客户端', () => {
         idempotencyKey: 'test-1',
       })
     await expect(request).rejects.toEqual(new XAgentBackendError('service-unavailable'))
+  })
+
+  test('Business Skill transcript 接受 FastAPI 空页的 -1 next_sequence', async () => {
+    const digest = 'a'.repeat(64)
+    const client = retrievalClient({
+      schema_version: 1,
+      test: {
+        run_number: 1, draft_revision: 1, content_digest: digest, tool_policy_digest: digest,
+        status: 'running', termination_reason: null, verdict: null,
+        started_at: '2026-09-11T08:00:00Z', settled_at: null, verdict_at: null,
+      },
+      events: [],
+      next_sequence: -1,
+    })
+
+    await expect(client.businessSkills.transcript(
+      'user-token', projectResponse.project.id, 'quarterly-review', 1, {},
+    )).resolves.toMatchObject({ events: [], nextSequence: -1 })
+  })
+
+  test.each([
+    ['completed without settlement time', {
+      status: 'completed', termination_reason: 'completed', verdict: null,
+      settled_at: null, verdict_at: null,
+    }],
+    ['failed without termination reason', {
+      status: 'failed', termination_reason: null, verdict: null,
+      settled_at: '2026-09-11T08:01:00Z', verdict_at: null,
+    }],
+    ['running with a verdict', {
+      status: 'running', termination_reason: null, verdict: 'reject',
+      settled_at: null, verdict_at: '2026-09-11T08:02:00Z',
+    }],
+  ])('Business Skill 客户端拒绝不可能的测试状态：%s', async (_name, terminal) => {
+    const digest = 'a'.repeat(64)
+    const client = retrievalClient({
+      schema_version: 1,
+      items: [{
+        slug: 'quarterly-review', display_name: 'Quarterly review', status: 'active', authorized: false,
+        current_version: null, draft_revision: 1,
+        latest_test: {
+          run_number: 1, draft_revision: 1, content_digest: digest, tool_policy_digest: digest,
+          started_at: '2026-09-11T08:00:00Z',
+          ...terminal,
+        },
+        updated_at: '2026-09-11T08:00:00Z',
+      }],
+      next_cursor: null,
+    })
+
+    await expect(client.businessSkills.list('user-token', projectResponse.project.id, {}))
+      .rejects.toEqual(new XAgentBackendError('service-unavailable'))
+  })
+
+  test('Business Skill runtime catalog 接受传输字节上限内的 101 个条目', async () => {
+    const items = Array.from({ length: 101 }, (_, index) => ({
+      schema_version: 1,
+      slug: `skill-${String(index).padStart(3, '0')}`,
+      description: `Skill ${index}`,
+      version_number: index + 1,
+      version_key: `00000000-0000-0000-0000-${String(index + 1).padStart(12, '0')}`,
+    }))
+    const client = retrievalClient({ schema_version: 1, items })
+
+    await expect(client.businessSkills.catalog(
+      'user-token', projectResponse.project.id, retrievalIds.session,
+    )).resolves.toHaveLength(101)
   })
 
   test.each([

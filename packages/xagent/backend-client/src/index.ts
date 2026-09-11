@@ -1416,7 +1416,8 @@ function parseBusinessSkillTest(value: unknown): XAgentBusinessSkillTest {
   const verdictAt = row.verdict_at === null ? undefined : instant(row.verdict_at)
   const running = row.status === 'running'
   if (
-    running !== (row.termination_reason === null && settledAt === undefined)
+    (running && (row.termination_reason !== null || settledAt !== undefined || row.verdict !== null))
+    || (!running && (row.termination_reason === null || settledAt === undefined))
     || (row.status === 'completed' && row.termination_reason !== 'completed')
     || (row.status === 'cancelled' && row.termination_reason !== 'cancelled')
     || (row.status === 'failed' && (row.termination_reason === 'completed' || row.termination_reason === 'cancelled'))
@@ -1596,7 +1597,7 @@ function parseBusinessSkillStart(value: unknown): XAgentBusinessSkillTestStart {
 
 function parseBusinessSkillTranscript(value: unknown): XAgentBusinessSkillTranscript {
   const row = exactRecord(value, ['schema_version', 'test', 'events', 'next_sequence'])
-  if (row.schema_version !== 1) failSchema()
+  if (row.schema_version !== 1 || !Number.isSafeInteger(row.next_sequence) || (row.next_sequence as number) < -1) failSchema()
   const events = boundedArray(row.events, 500).map((value) => {
     const event = exactRecord(value, ['schema_version', 'sequence', 'event_type', 'payload', 'created_at'])
     if (event.schema_version !== 1) failSchema()
@@ -1610,7 +1611,7 @@ function parseBusinessSkillTranscript(value: unknown): XAgentBusinessSkillTransc
   return {
     test: parseBusinessSkillTest(row.test),
     events,
-    nextSequence: count(row.next_sequence),
+    nextSequence: row.next_sequence as number,
   }
 }
 
@@ -2147,8 +2148,8 @@ export class XAgentBackendClient implements XAgentBackend {
         const value = exactRecord(await this.businessSkillRequest(token, `${projectPath(projectId)}/runtime/catalog`, {
           schema_version: 1, session_id: requiredUuid(sessionId),
         }, signal), ['schema_version', 'items'])
-        if (value.schema_version !== 1) failSchema()
-        return boundedArray(value.items, 100).map(parseBusinessSkillCatalogEntry)
+        if (value.schema_version !== 1 || !Array.isArray(value.items)) failSchema()
+        return value.items.map(parseBusinessSkillCatalogEntry)
       },
       load: async (token, projectId, sessionId, slug, versionKey, signal) => parseBusinessSkillLoad(
         await this.businessSkillRequest(token, `${projectPath(projectId)}/runtime/load`, {
