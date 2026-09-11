@@ -6,6 +6,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit import AuditEvent
 
 
+def business_skill_audit_details(
+    *, project_id: UUID, skill_id: UUID, result: str,
+    request_sha256: str | None = None, draft_revision: int | None = None,
+    content_digest: str | None = None, tool_policy_digest: str | None = None,
+    version_number: int | None = None, run_number: int | None = None,
+    verdict: str | None = None, session_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Only correlation identities, digests, and closed outcomes enter Skill audits."""
+    details = {"project_id": str(project_id), "skill_id": str(skill_id), "result": result}
+    optional = {"request_sha256": request_sha256, "draft_revision": draft_revision,
+                "content_digest": content_digest, "tool_policy_digest": tool_policy_digest,
+                "version_number": version_number, "run_number": run_number, "verdict": verdict,
+                "session_id": str(session_id) if session_id else None}
+    details.update({key: value for key, value in optional.items() if value is not None})
+    return details
+
+
 async def write_audit_event(
     session: AsyncSession,
     actor_id: UUID,

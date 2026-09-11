@@ -86,6 +86,10 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 Business Skill 的 PostgreSQL 存储以项目内唯一且不可变的 slug 标识稳定技能，分别保存一个可变草稿、不可变发布版本、独立测试记录和稳定技能授权。版本号与运行编号跨整个项目递增，调用方必须先锁项目行再锁技能行；复合外键禁止跨技能选择当前版本或跨项目关联测试 Session。`xagent_sessions.purpose` 创建时可选 `conversation` 或 `business_skill_test`，此后不可变；测试用途只允许 Project Session。API 数据库角色仅获得必要列的写权限，worker 无权访问技能关系。存在技能记录、测试 Session 或技能审计时，revision `018_xagent_business_skills` 在执行 DDL 前拒绝降级。[治理提案](../../.agents/notes/proposed/feature/2026-09-11-project-business-skills.md)定义完整发布、授权和执行流程。
 
+Business Skill 治理入口位于 `/internal/xagent/business-skills/projects/{project_id}`：`list`、`create` 和 `/{slug}/detail|draft|publish|authorization|current-version|retire`，人工测试结论使用 `/{slug}/tests/{run_number}/verdict`。请求只接受声明字段及 `schema_version: 1`，写入还要求 `idempotency_key`；草稿和发布要求正整数 `expected_draft_revision`。当前 Specialist、Manager 项目成员均可编辑和记录结论，发布、授权、选择历史版本与退役仅限 Manager；失效登录、权限版本、成员关系和未知资源统一返回 `not-found`。服务在 serializable 事务中锁定当前权限与项目，再切换到应用角色执行 RLS 写入；成功重放先重验当前权限，并返回原始响应，键与请求不匹配则返回 `idempotency-conflict`。
+
+草稿正文最多 64 KiB、描述最多 2 KiB UTF-8；主要工具必须是排序且无重复的封闭集合。显示名称不计入内容摘要，因此仅重命名不会推进草稿修订。`source_version_number` 可把同一技能的历史发布内容复制到草稿，复制和编辑都受预期修订保护。发布必须匹配正常完成且人工通过的测试所记录的修订、内容摘要和当前工具策略摘要；发布不会自动授权，既有授权则跟随稳定技能的当前版本。退役在同一事务清除授权且不可恢复。列表与版本、测试历史每页默认 50 条，最多 100 条；详情中的审计摘要同样有界，并保留现有 AuditEvent 的当前账号读取限制。浏览器响应仅使用公开 slug、版本号与运行编号，不含数据库 UUID、权限版本或审计详情；审计写入仅保留内部关联 ID、摘要与封闭结果。
+
 `/internal/xagent/*` 业务路由同时要求 `X-XAgent-Service-Token` 服务身份和当前账号的 Bearer token。服务端 introspection 生成 Principal，并在同一数据库事务设置 actor context；浏览器不得提交 actor、role、owner 或权限版本。固定的 `/internal/xagent/retrieval/token-count` 是纯内部 tokenizer relay，只接受服务令牌，不接收用户 JWT 或委托令牌；它在解析前把最坏 JSON 转义正文限制为 49,163 bytes，把合法原始查询限制为 8 KiB UTF-8，只向 `EMBEDDING_URL` 的 `/token-count` 转发，并把 embedding 响应限制为 512 bytes。relay 手动处理重定向，并对重定向、超时、请求取消、超限或畸形响应失败关闭。该路径不写检索审计，API 与 embedding 日志均不得记录原始查询。
 
 检索入口在同一 serializable 事务中完成登录、权限 revision、项目授权、RLS 搜索、ordinal 预留和 receipt 签发。该路径的 introspection 仍完整验证 token、账号状态、登录撤销、角色与 revision，但不锁定认证记录，也不更新 `last_verified_at`；普通登录校验路径继续锁定并更新时间。这样检索事务不会因无关的认证审计写入产生 serializable 写冲突。
