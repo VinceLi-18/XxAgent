@@ -16,6 +16,8 @@ Specialist 与 Manager 可编辑和测试草稿；Manager 只能发布正常完�
 
 每次草稿测试拥有一个持久化 Project Session，其用途固定为 `business_skill_test`，只执行一个场景和一个轮次。专用记录入口使其不进入普通对话列表和恢复路径。只读 Agent 不注册 `propose_fact`，并在执行前拒绝禁止的工具；测试成功不会模拟写入或创建审批。生产环境的 `propose_fact` 继续遵守[项目 Fact 审批](../../implemented/architecture/2026-09-06-xagent-fact-approval.md)。
 
+启动事务创建空 Session，并将确切草稿与场景保存在持久化幂等响应中。Host 通过正常的技能与轮次操作接纳输入，在事件日志中仅记录一次真实接纳。运行期间仅起始账号可追加，且只有该账号可以结算确切 Session；终态拒绝冲突与迟到响应。结算或退役后，当前项目成员仍可读取测试记录。运行时判定先锁 Session 再锁技能；技能锁串行化授权变更，不可变版本正文无需写权限。
+
 Business provider 复用[通用技能注册表](../../implemented/feature/2026-07-05-skill-system.md)和[目录替换机制](../../implemented/feature/2026-07-27-skill-catalog-hot-refresh.md)。每个轮次固定一个已发布技能版本及其完整工具集合。每次工具调用均通过 FastAPI 重新校验当前成员关系、账号启用状态、技能授权及退役状态。发布或回滚不会替换轮次固定的版本；撤权则拒绝下一次调用。Session 日志保留已加载正文，轮次结束时替换模型可见内容，为后续请求留下不含指令的历史标记。
 
 本提案在 [Business Profile 组合](../../implemented/feature/2026-08-22-xagent-profile-product-shell.md)中增加受治理的 provider，继续禁用文件系统技能来源和开发能力。[认证与 Session 隔离规则](../../implemented/architecture/2026-08-25-xagent-auth-session-runtime.md)仍是权威。这些记录各自保留独立理由，存储基础不取代其中任何一项。[已批准设计](../../../../docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md)定义完整产品流程。

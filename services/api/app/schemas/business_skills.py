@@ -1,6 +1,7 @@
 """Closed Business Skill wire inputs; database identities remain private."""
 
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -172,3 +173,103 @@ class BusinessSkillDetailResponse(BusinessSkillSummaryResponse):
 class BusinessSkillPageResponse(BusinessSkillRequest):
     items: list[BusinessSkillSummaryResponse] = Field(max_length=100)
     next_cursor: Slug | None
+
+
+Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+HostKey = Annotated[UUID, Field(strict=False)]
+TerminationReason = Literal["completed", "failed", "cancelled", "tool-denied", "authorization-denied", "skill-not-loaded", "service-unavailable"]
+
+
+class BusinessSkillTestStartRequest(BusinessSkillMutationRequest):
+    """One scenario for the exact draft and current resolver policy."""
+
+    expected_draft_revision: PositiveNumber
+    tool_policy_digest: Digest
+    scenario: str = Field(min_length=1, max_length=65536)
+
+    @field_validator("scenario")
+    @classmethod
+    def bounded_scenario(cls, value: str) -> str:
+        if not value.strip() or len(value.encode("utf-8")) > 65536:
+            raise ValueError("scenario must be nonempty and at most 65536 UTF-8 bytes")
+        return value
+
+
+class BusinessSkillTestSettleRequest(BusinessSkillMutationRequest):
+    """The Host settles its exact Session after the execution has stopped."""
+
+    session_id: HostKey
+    termination_reason: TerminationReason
+
+
+class BusinessSkillTranscriptRequest(BusinessSkillRequest):
+    after_sequence: int = Field(default=-1, ge=-1)
+    limit: int = Field(default=500, ge=1, le=500)
+
+
+class BusinessSkillTestResult(BusinessSkillRequest):
+    test: BusinessSkillTestResponse
+
+
+class BusinessSkillTestStartResponse(BusinessSkillTestResult):
+    """Host-only execution input; session_id must not reach Browser or model."""
+
+    session_id: str
+    purpose: Literal["business_skill_test"]
+    draft: BusinessSkillDraftResponse
+    scenario: str
+    test_tools: list[str]
+    unexecuted_write_tools: list[str]
+
+
+class BusinessSkillTranscriptEvent(BusinessSkillRequest):
+    sequence: int
+    event_type: str
+    payload: dict[str, object]
+    created_at: str
+
+
+class BusinessSkillTranscriptResponse(BusinessSkillTestResult):
+    events: list[BusinessSkillTranscriptEvent]
+    next_sequence: int
+
+
+class BusinessSkillRuntimeRequest(BusinessSkillRequest):
+    """Authenticated Host Session identity, never supplied by a Browser Remote body."""
+
+    session_id: HostKey
+
+
+class BusinessSkillLoadRequest(BusinessSkillRuntimeRequest):
+    slug: Slug
+    version_key: HostKey
+
+
+class BusinessSkillToolRequest(BusinessSkillLoadRequest):
+    tool_policy_digest: Digest
+    tool_name: str = Field(min_length=1, max_length=255)
+    cancelled: bool
+
+
+class BusinessSkillCatalogEntry(BusinessSkillRequest):
+    """Version keys are private Host handles; catalogs expose only slug and description."""
+
+    slug: Slug
+    description: str
+    version_number: PositiveNumber
+    version_key: str
+
+
+class BusinessSkillCatalogResponse(BusinessSkillRequest):
+    items: list[BusinessSkillCatalogEntry]
+
+
+class BusinessSkillLoadResponse(BusinessSkillCatalogEntry):
+    instructions: str
+    content_digest: Digest
+    tool_policy_digest: Digest
+    complete_tools: list[str]
+
+
+class BusinessSkillToolResponse(BusinessSkillRequest):
+    allowed: Literal[True]

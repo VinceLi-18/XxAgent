@@ -5,8 +5,25 @@ from argon2 import PasswordHasher
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from test_business_skill_governance import skill_api
+from test_business_skill_test_runs import started_test, existing_actor_headers
+
 PASSWORD = "correct horse battery staple"
 SERVICE_TOKEN = "xagent-test-service-token-00000001"
+
+
+@pytest.mark.anyio
+async def test_ordinary_session_paths_exclude_business_skill_tests(client, started_test, existing_actor_headers):
+    session_id = started_test[0]["session_id"]
+    listed = await client.post("/internal/xagent/sessions/list", headers=existing_actor_headers, json={"schema_version": 1})
+    assert session_id not in [item["id"] for item in listed.json()["sessions"]]
+    for operation, values in [("open", {}), ("events", {}),
+        ("authorize", {"operation": "read"}), ("authorize", {"operation": "edit"}),
+        ("authorize", {"operation": "owner"}), ("fork", {"idempotency_key": "fork-test", "through_sequence": 0}),
+        ("archive", {"expected_version": 1})]:
+        response = await client.post(f"/internal/xagent/sessions/{session_id}/{operation}", headers=existing_actor_headers,
+                                     json={"schema_version": 1, **values})
+        assert response.status_code == 404, (operation, response.text)
 
 
 async def _login(client, engine, account, email: str) -> str:

@@ -12,11 +12,13 @@ from app.models.business_skills import (
 )
 from app.models.identity import Role
 from app.models.audit import AuditEvent
-from app.models.xagent_session import XAgentIdempotencyKey
+from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
 from app.schemas.business_skills import (
     BusinessSkillAuthorizationRequest, BusinessSkillCreateRequest, BusinessSkillDetailRequest,
     BusinessSkillDraftRequest, BusinessSkillMutationRequest, BusinessSkillPageRequest,
     BusinessSkillPublishRequest, BusinessSkillVerdictRequest, BusinessSkillVersionRequest,
+    BusinessSkillTestStartRequest, BusinessSkillTestSettleRequest, BusinessSkillTranscriptRequest,
+    BusinessSkillRuntimeRequest, BusinessSkillLoadRequest, BusinessSkillToolRequest,
 )
 from app.services.audit import business_skill_audit_details, write_audit_event
 from app.services.auth import Principal
@@ -254,3 +256,182 @@ async def publish_skill(session: AsyncSession, principal: Principal, skill: Busi
     await audit_skill(session, principal, skill, "publish", "published", version_number=number,
                       draft_revision=draft.revision, content_digest=draft.content_digest, tool_policy_digest=policy.digest,
                       request_sha256=digest)
+
+
+async def test_replay(session: AsyncSession, principal: Principal, project_id: UUID,
+                      slug: str, operation: str, request: BusinessSkillMutationRequest,
+                      run_number: int | None = None) -> tuple[dict[str, object] | None, str]:
+    """Replay only after the caller locks and reauthorizes its project and test identity."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                          {"key": f"{principal.actor_id}:{operation}:{request.idempotency_key}"})
+    digest = canonical_sha256({"project_id": str(project_id), "slug": slug, "run_number": run_number,
+                               "request": request.model_dump(mode="json", exclude={"idempotency_key"})})
+    stored = await session.get(XAgentIdempotencyKey, (principal.actor_id, operation, request.idempotency_key))
+    if stored is not None and stored.request_hash != digest:
+        raise BusinessSkillServiceError("idempotency-conflict")
+    return (stored.result if stored is not None else None), digest
+
+
+async def store_test_replay(session: AsyncSession, principal: Principal, operation: str,
+                            request: BusinessSkillMutationRequest, digest: str, result: dict[str, object]) -> None:
+    session.add(XAgentIdempotencyKey(actor_id=principal.actor_id, operation=operation,
+        idempotency_key=request.idempotency_key, request_hash=digest, result=result,
+        expires_at=datetime.max.replace(tzinfo=UTC)))
+    await session.flush()
+
+
+async def start_business_skill_test(session: AsyncSession, principal: Principal, project_id: UUID,
+                                     slug: str, request: BusinessSkillTestStartRequest) -> dict[str, object]:
+    """Create an empty isolated Session and run atomically; the Host admits the actual turn.
+
+    The durable idempotent response retains the exact draft and scenario across edits.
+    The caller holds project authority and the project allocation lock until commit.
+    """
+    skill = await visible_skill(session, project_id, slug)
+    if skill.status != "active":
+        raise BusinessSkillServiceError("business-skill-retired")
+    replay, digest = await test_replay(session, principal, project_id, slug, "business_skill.test_start", request)
+    if replay is not None:
+        return replay
+    draft = await session.get(BusinessSkillDraft, skill.id, with_for_update=True)
+    if draft is None or draft.revision != request.expected_draft_revision:
+        raise BusinessSkillServiceError("business-skill-revision-conflict")
+    policy = resolve_business_skill_policy(draft.primary_tools)
+    if policy.digest != request.tool_policy_digest:
+        raise BusinessSkillServiceError("business-skill-policy-changed")
+    number = (await session.scalar(select(func.coalesce(func.max(BusinessSkillTestRun.run_number), 0)).where(
+        BusinessSkillTestRun.project_id == project_id))) + 1
+    test_session = XAgentSession(id=uuid4(), owner_id=principal.actor_id, project_id=project_id,
+        visibility="project", purpose="business_skill_test", permission_revision_created=principal.permission_revision,
+        title=f"{slug} test {number}")
+    session.add(test_session)
+    await session.flush()
+    run = BusinessSkillTestRun(id=uuid4(), skill_id=skill.id, project_id=project_id, run_number=number,
+        draft_revision=draft.revision, content_digest=draft.content_digest, tool_policy_digest=policy.digest,
+        session_id=test_session.id, started_by_id=principal.actor_id)
+    session.add(run)
+    await session.flush()
+    result = {"schema_version": 1, "test": test_payload(run), "session_id": str(test_session.id),
+        "purpose": "business_skill_test", "scenario": request.scenario,
+        "draft": {"revision": draft.revision, "description": draft.description, "instructions": draft.instructions,
+                  "primary_tools": draft.primary_tools, "content_digest": draft.content_digest, "tool_policy_digest": policy.digest},
+        "test_tools": list(policy.test_tools), "unexecuted_write_tools": list(policy.unexecuted_write_tools)}
+    await audit_skill(session, principal, skill, "test_start", "running", run_number=number,
+        session_id=test_session.id, draft_revision=draft.revision, content_digest=draft.content_digest,
+        tool_policy_digest=policy.digest, request_sha256=digest)
+    await store_test_replay(session, principal, "business_skill.test_start", request, digest, result)
+    return result
+
+
+async def locked_test(session: AsyncSession, project_id: UUID, slug: str,
+                       run_number: int) -> tuple[BusinessSkill, BusinessSkillTestRun]:
+    """Discover the immutable Session identity, then lock Session, Skill, and run in order."""
+    identity = await session.scalar(select(BusinessSkillTestRun.session_id).join(
+        BusinessSkill, BusinessSkill.id == BusinessSkillTestRun.skill_id).where(
+        BusinessSkill.project_id == project_id, BusinessSkill.slug == slug,
+        BusinessSkillTestRun.run_number == run_number))
+    if identity is None:
+        raise BusinessSkillServiceError("not-found")
+    test_session = await session.scalar(select(XAgentSession).where(XAgentSession.id == identity,
+        XAgentSession.project_id == project_id, XAgentSession.purpose == "business_skill_test").with_for_update())
+    if test_session is None:
+        raise BusinessSkillServiceError("not-found")
+    skill = await visible_skill(session, project_id, slug)
+    run = await session.scalar(select(BusinessSkillTestRun).where(
+        BusinessSkillTestRun.skill_id == skill.id, BusinessSkillTestRun.run_number == run_number).with_for_update())
+    assert run is not None
+    return skill, run
+
+
+async def settle_business_skill_test(session: AsyncSession, principal: Principal, project_id: UUID,
+                                      slug: str, run_number: int, request: BusinessSkillTestSettleRequest) -> dict[str, object]:
+    """Only the starting actor can settle; terminal outcomes never change, including late replies."""
+    skill, run = await locked_test(session, project_id, slug, run_number)
+    if run.session_id != request.session_id or run.started_by_id != principal.actor_id:
+        raise BusinessSkillServiceError("not-found")
+    replay, digest = await test_replay(session, principal, project_id, slug, "business_skill.test_settle", request, run_number)
+    if replay is not None:
+        return replay
+    if run.status != "running":
+        raise BusinessSkillServiceError("business-skill-conflict")
+    run.termination_reason = request.termination_reason
+    run.status = request.termination_reason if request.termination_reason in {"completed", "cancelled"} else "failed"
+    run.settled_at = datetime.now(UTC)
+    await session.flush()
+    result = {"schema_version": 1, "test": test_payload(run)}
+    await audit_skill(session, principal, skill, "test_settle", run.status,
+                      run_number=run.run_number, session_id=run.session_id, request_sha256=digest)
+    await store_test_replay(session, principal, "business_skill.test_settle", request, digest, result)
+    return result
+
+
+async def business_skill_transcript(session: AsyncSession, project_id: UUID, slug: str,
+                                     run_number: int, request: BusinessSkillTranscriptRequest) -> dict[str, object]:
+    """Return durable test events without persistence actor, audit, or Session keys."""
+    _, run = await locked_test(session, project_id, slug, run_number)
+    events = list(await session.scalars(select(XAgentSessionEvent).where(
+        XAgentSessionEvent.session_id == run.session_id, XAgentSessionEvent.sequence > request.after_sequence
+    ).order_by(XAgentSessionEvent.sequence).limit(request.limit)))
+    return {"schema_version": 1, "test": test_payload(run), "events": [
+        {"schema_version": event.schema_version, "sequence": event.sequence, "event_type": event.event_type,
+         "payload": event.payload, "created_at": event.created_at.isoformat()} for event in events],
+        "next_sequence": events[-1].sequence if events else request.after_sequence}
+
+
+async def runtime_session(session: AsyncSession, project_id: UUID, session_id: UUID) -> XAgentSession:
+    item = await session.scalar(select(XAgentSession).where(XAgentSession.id == session_id,
+        XAgentSession.project_id == project_id, XAgentSession.visibility == "project",
+        XAgentSession.purpose == "conversation", XAgentSession.archived.is_(False)).with_for_update())
+    if item is None:
+        raise BusinessSkillServiceError("not-found")
+    return item
+
+
+def catalog_entry(skill: BusinessSkill, version: BusinessSkillVersion) -> dict[str, object]:
+    return {"schema_version": 1, "slug": skill.slug, "description": version.description,
+            "version_number": version.version_number, "version_key": str(version.id)}
+
+
+async def business_skill_catalog(session: AsyncSession, project_id: UUID,
+                                  request: BusinessSkillRuntimeRequest) -> dict[str, object]:
+    await runtime_session(session, project_id, request.session_id)
+    rows = await session.execute(select(BusinessSkill, BusinessSkillVersion).join(
+        BusinessSkillVersion, BusinessSkill.current_version_id == BusinessSkillVersion.id).join(
+        BusinessSkillAuthorization, BusinessSkillAuthorization.skill_id == BusinessSkill.id).where(
+        BusinessSkill.project_id == project_id, BusinessSkill.status == "active").order_by(BusinessSkill.slug))
+    return {"schema_version": 1, "items": [catalog_entry(skill, version) for skill, version in rows]}
+
+
+async def business_skill_runtime_decision(session: AsyncSession, principal: Principal, project_id: UUID,
+                                           request: BusinessSkillLoadRequest) -> dict[str, object]:
+    """Recheck current authorization on every load or tool call; tool calls may pin history."""
+    await runtime_session(session, project_id, request.session_id)
+    skill = await visible_skill(session, project_id, request.slug)
+    tool_request = isinstance(request, BusinessSkillToolRequest)
+    try:
+        version = await session.scalar(select(BusinessSkillVersion).where(
+            BusinessSkillVersion.id == request.version_key, BusinessSkillVersion.skill_id == skill.id,
+            BusinessSkillVersion.project_id == project_id))
+        authorization = await session.scalar(select(BusinessSkillAuthorization).where(
+            BusinessSkillAuthorization.skill_id == skill.id))
+        if skill.status != "active" or authorization is None or version is None:
+            raise BusinessSkillServiceError("not-found")
+        if tool_request:
+            if request.cancelled:
+                raise BusinessSkillServiceError("business-skill-cancelled")
+            if request.tool_policy_digest != version.tool_policy_digest:
+                raise BusinessSkillServiceError("business-skill-policy-changed")
+            if request.tool_name not in version.complete_tools:
+                raise BusinessSkillServiceError("business-skill-tool-denied")
+            return {"schema_version": 1, "allowed": True}
+        if skill.current_version_id != version.id:
+            raise BusinessSkillServiceError("business-skill-version-changed")
+        return {**catalog_entry(skill, version), "instructions": version.instructions,
+                "content_digest": version.content_digest, "tool_policy_digest": version.tool_policy_digest,
+                "complete_tools": version.complete_tools}
+    except BusinessSkillServiceError as error:
+        outcome = {"business-skill-cancelled": "cancelled", "business-skill-policy-changed": "forbidden",
+                   "business-skill-version-changed": "forbidden"}.get(error.code, error.code)
+        await audit_skill(session, principal, skill, "tool_authorization_denied" if tool_request else "load_denied",
+                          outcome, session_id=request.session_id)
+        raise

@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import select, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.internal_auth import require_service_identity, require_user_token
@@ -23,11 +23,17 @@ from app.schemas.business_skills import (
     BusinessSkillDraftRequest, BusinessSkillMutationRequest, BusinessSkillPageRequest,
     BusinessSkillPublishRequest, BusinessSkillVerdictRequest, BusinessSkillVersionRequest,
     BusinessSkillDetailResponse, BusinessSkillPageResponse,
+    BusinessSkillTestStartRequest, BusinessSkillTestStartResponse, BusinessSkillTestSettleRequest,
+    BusinessSkillTestResult, BusinessSkillTranscriptRequest, BusinessSkillTranscriptResponse,
+    BusinessSkillRuntimeRequest, BusinessSkillCatalogResponse, BusinessSkillLoadRequest,
+    BusinessSkillLoadResponse, BusinessSkillToolRequest, BusinessSkillToolResponse,
 )
 from app.services.auth import AuthenticationRejected, Principal, introspect
 from app.services.business_skills import (
     BusinessSkillServiceError, audit_skill, list_business_skills, mutate_business_skill,
     skill_detail, visible_skill,
+    start_business_skill_test, settle_business_skill_test, business_skill_transcript,
+    business_skill_catalog, business_skill_runtime_decision,
 )
 
 MAX_BODY_BYTES = 512 * 1024
@@ -37,7 +43,9 @@ def error_response(code: str) -> JSONResponse:
     statuses = {"business-skill-input-invalid": 422, "not-found": 404, "forbidden": 403,
                 "business-skill-revision-conflict": 409, "business-skill-test-required": 409,
                 "business-skill-policy-changed": 409, "business-skill-retired": 409,
-                "business-skill-conflict": 409, "idempotency-conflict": 409}
+                "business-skill-conflict": 409, "idempotency-conflict": 409,
+                "business-skill-version-changed": 409, "business-skill-tool-denied": 403,
+                "business-skill-cancelled": 409}
     return JSONResponse(status_code=statuses.get(code, 503), content={"detail": {
         "code": code if code in statuses else "service-unavailable"}})
 
@@ -114,6 +122,8 @@ async def governance_transaction(
             if getattr(error.orig, "sqlstate", None) in {"40001", "40P01"} and attempt < 2:
                 continue
             return error_response("service-unavailable")
+        except (SQLAlchemyError, OSError):
+            return error_response("service-unavailable")
     return error_response("service-unavailable")
 
 
@@ -183,3 +193,51 @@ async def retire_route(project_id: UUID, slug: SlugPath, request: BusinessSkillM
 async def verdict_route(project_id: UUID, slug: SlugPath, run_number: RunPath,
                         request: BusinessSkillVerdictRequest, token: Token, database: Database):
     return await mutation(database, token, project_id, slug, "verdict", request, run_number=run_number)
+
+
+@router.post("/projects/{project_id}/{slug}/tests/start", response_model=BusinessSkillTestStartResponse)
+async def test_start_route(project_id: UUID, slug: SlugPath, request: BusinessSkillTestStartRequest,
+                           token: Token, database: Database):
+    return await governance_transaction(database, token, project_id,
+        lambda session, principal: start_business_skill_test(session, principal, project_id, slug, request))
+
+
+@router.post("/projects/{project_id}/{slug}/tests/{run_number}/settle", response_model=BusinessSkillTestResult)
+async def test_settle_route(project_id: UUID, slug: SlugPath, run_number: RunPath,
+                            request: BusinessSkillTestSettleRequest, token: Token, database: Database):
+    return await governance_transaction(database, token, project_id,
+        lambda session, principal: settle_business_skill_test(session, principal, project_id, slug, run_number, request))
+
+
+@router.post("/projects/{project_id}/{slug}/tests/{run_number}/transcript", response_model=BusinessSkillTranscriptResponse)
+async def test_transcript_route(project_id: UUID, slug: SlugPath, run_number: RunPath,
+                                request: BusinessSkillTranscriptRequest, token: Token, database: Database):
+    return await governance_transaction(database, token, project_id,
+        lambda session, principal: business_skill_transcript(session, project_id, slug, run_number, request))
+
+
+@router.post("/projects/{project_id}/runtime/catalog", response_model=BusinessSkillCatalogResponse)
+async def runtime_catalog_route(project_id: UUID, request: BusinessSkillRuntimeRequest, token: Token, database: Database):
+    return await governance_transaction(database, token, project_id,
+        lambda session, principal: business_skill_catalog(session, project_id, request))
+
+
+async def runtime_decision(database: AsyncSession, token: str, project_id: UUID,
+                            request: BusinessSkillLoadRequest) -> GovernanceResult:
+    """Commit content-free denial audit with the rejected runtime response."""
+    async def execute(session: AsyncSession, principal: Principal) -> GovernanceResult:
+        try:
+            return await business_skill_runtime_decision(session, principal, project_id, request)
+        except BusinessSkillServiceError as error:
+            return error_response(error.code)
+    return await governance_transaction(database, token, project_id, execute)
+
+
+@router.post("/projects/{project_id}/runtime/load", response_model=BusinessSkillLoadResponse)
+async def runtime_load_route(project_id: UUID, request: BusinessSkillLoadRequest, token: Token, database: Database):
+    return await runtime_decision(database, token, project_id, request)
+
+
+@router.post("/projects/{project_id}/runtime/authorize-tool", response_model=BusinessSkillToolResponse)
+async def runtime_tool_route(project_id: UUID, request: BusinessSkillToolRequest, token: Token, database: Database):
+    return await runtime_decision(database, token, project_id, request)
