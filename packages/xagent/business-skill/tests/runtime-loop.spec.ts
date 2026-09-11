@@ -9,6 +9,50 @@ import { expect, test } from 'vitest'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import { setup, request, entry, sessionId, loaded, version2 } from './fixtures.ts'
 
+test('a queued next turn collects its new complete tool set after the cancelled prior turn ends', async () => {
+  const h = await setup()
+  h.state.catalog = [entry()]
+  const adapter = new MockAdapter([textResponse('first answer'), textResponse('second answer')])
+  await h.ctx.plugin(LlmRuntime)
+  await h.ctx.plugin(SessionStore)
+  await h.ctx.plugin(AgentLoop, { agents: [] })
+  h.ctx.llm.registerAdapter(['mock'], adapter)
+  h.ctx.tools.register(defineTool({ name: 'propose_fact', description: 'Propose a Fact', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, text) => [{ type: 'text', text }] }, execute: async () => 'proposed' }))
+  const { agent } = await h.ctx.agents.create({ sessionId: SessionId(`session-${sessionId}`), agentOptions: { provider: 'mock', model: 'mock' } })
+  const stopped = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  const statuses: string[] = []
+  agent.ctx.on('agent/status', ({ status }) => { statuses.push(status) })
+  agent.ctx.on('agent/turn-stopping', async ({ turn }) => {
+    if (turn === 1) { stopped.resolve(undefined); await release.promise }
+  })
+  const physical = new AbortController()
+  const first = expect(h.service.withRequest(request({ requestSignal: physical.signal }), async () => {
+    agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '/review' }] }))
+    await agent.whenIdle()
+  })).rejects.toMatchObject({ failure: { code: 'unauthenticated' } })
+  try {
+    await stopped.promise
+    physical.abort()
+    expect(agent.ctx.get('tools')!.schemas(agent).map(tool => tool.name)).toEqual(['skill'])
+    h.state.catalog = [entry('review', 2, version2)]
+    h.state.load = { ...loaded(), version_number: 2, version_key: version2, complete_tools: ['propose_fact', 'skill'],
+      tool_policy_digest: 'c586fd2330e52b02fbf91ffc847afbc2404f43c1a87685afbc59efa77834ef51' }
+    await h.service.withRequest(request(), async () => {
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '/review' }] }))
+      release.resolve(undefined)
+      await agent.whenIdle()
+    })
+    await first
+    expect(statuses).toEqual(['running', 'idle'])
+    expect(agent.session.events.filter(event => event.type === 'business-skill/activated').map(event => event.data.version)).toEqual([1, 2])
+    expect(adapter.requests.map(item => item.tools?.map(tool => tool.name))).toEqual([['skill'], ['propose_fact', 'skill']])
+    expect(agent.session.events.filter(event => event.type === 'request/header').map(event => event.data.header.tools?.map(tool => tool.name)))
+      .toEqual([['skill'], ['propose_fact', 'skill']])
+  } finally { release.resolve(undefined); await first; await h.ctx.fiber.dispose() }
+})
+
 test.each(['allowed-once', 'rejected', 'cancelled', 'unavailable', 'turn-end'] as const)('a durable %s observer cancels request authority without affecting the next turn', async (decision) => {
   const h = await setup()
   h.state.catalog = [entry()]

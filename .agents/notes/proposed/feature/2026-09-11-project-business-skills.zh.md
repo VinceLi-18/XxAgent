@@ -28,6 +28,8 @@ Host 提供方拥有精确 Agent/请求注册和私有定义到版本的关系�
 
 提示词组装同时过滤 Agent 本地工具和继承的注册。显式调用发生在组装之后，因此激活在请求 header 快照前收窄待用数组。模型工具调用发生在该请求记入日志之后，不改变其已冻结数组；下一次组装应用固定策略。激活记录使用现有的可忽略信封，让没有该事件声明的读取器无需改变结构格式版本就能安全保留日志。原始指令留在仅追加记录中；只有当前轮次的模型历史条目变为使用标记。
 
+工具 schema 提供方在组装 waterfall 之前运行，排队轮次可共享一个运行区间而没有空闲通知。因此，匹配的持久化 `turn/end` 必须在下一次 schema 收集前同步释放旧目录限制，且只释放目录状态。将释放延后到组装完成，即使后续版本成功激活，也可能从其请求中静默遗漏新声明的工具。目录释放既不在追加通知内投影 Session 消息，也不移除取消 guard 和分发包装层；后两者保持独立的操作结算归属。
+
 本提案在 [Business Profile 组合](../../implemented/feature/2026-08-22-xagent-profile-product-shell.md)中增加受治理的 provider，继续禁用文件系统技能来源和开发能力。[认证与 Session 隔离规则](../../implemented/architecture/2026-08-25-xagent-auth-session-runtime.md)仍是权威。这些记录各自保留独立理由，存储基础不取代其中任何一项。[已批准设计](../../../../docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md)定义完整产品流程。
 
 只有持久化 `turn/end` 才结束指令生命周期：`agent/turn-stopping` 可通过 steering 继续同一轮次的下一步。Session 启动和在线清理都使用激活记录与技能调用记录识别已结束的指令条目，因此崩溃修复不会让旧正文与新固定版本同时生效。保留身份的单节点替换继承原始接纳，即使其追加时间位于另一个轮次。清理替换当前可见条目（包括已裁剪结果），并根据内容识别已有标记。无关检查点不能仅因替换了历史位置就继承技能接纳。[Session surface 规则](../../implemented/architecture/2026-06-18-session-surface.md)独立强制工具结果替换只改变内容。运行时回调的 `finally` 拥有执行结算；可能卸载的 `tools/result` 监听器不能负责它自身作用域释放所等待的 promise。

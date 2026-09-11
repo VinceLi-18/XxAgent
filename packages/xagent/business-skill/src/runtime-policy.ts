@@ -42,6 +42,9 @@ export class BusinessSkillRuntimePolicy {
     lifetime: AbortSignal,
   ) {
     this.closeListeners = [
+      agent.ctx.on('session/event', (session, event) => {
+        if (session === agent.session && event.type === 'turn/end' && event.data.turn === this.turn) this.releaseCatalog()
+      }),
       agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
         const result = await next()
         this.finishTurn()
@@ -224,13 +227,18 @@ export class BusinessSkillRuntimePolicy {
 
   private clear(): void {
     replaceCompletedInstructions(this.agent.session)
-    this.lift?.()
+    this.releaseCatalog()
     this.pin = undefined
     this.turn = undefined
-    this.schemas = undefined
-    this.lift = undefined
     this.denied = false
     this.permitted = new WeakSet()
+  }
+
+  /** Catalog-only cleanup is synchronous and does not append Session events. */
+  private releaseCatalog(): void {
+    this.lift?.()
+    this.lift = undefined
+    this.schemas = undefined
   }
 
   private finishTurn(): void {
