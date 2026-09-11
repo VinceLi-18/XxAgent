@@ -307,12 +307,18 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     }
     const valid = (): boolean => !state.lifetime.signal.aborted && !control.signal.aborted
       && this.requests.getStore() === state && this.registrations.get(agent) === registration
+    // invoke() settles before the provider continuation; cancellation can occur between them.
+    const assertPublishable = (signal?: AbortSignal): void => {
+      signal?.throwIfAborted()
+      if (!valid()) throw failure('business-skill-not-authorized')
+    }
     const provider: SkillProvider = {
       name: PROVIDER,
       list: async (options) => {
         if (!valid()) return { candidates: [], complete: true, cacheable: false }
         const rows = await invoke((scope, signal) =>
           this.backend.catalog(scope.userToken, scope.projectId, scope.sessionId, signal), options.signal)
+        assertPublishable(options.signal)
         if (rows.length > this.limits.maxCatalogEntries || new Set(rows.map(row => row.slug)).size !== rows.length) throw failure()
         const observation: SkillCandidate[] = []
         for (const entry of [...rows].sort((a, b) => a.slug < b.slug ? -1 : 1)) {
@@ -332,6 +338,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
         if (entry === undefined) return undefined
         const version = await invoke((scope, signal) => this.backend.load(scope.userToken, scope.projectId,
           scope.sessionId, entry.slug, entry.versionKey, signal), options.signal)
+        assertPublishable(options.signal)
         if (version.slug !== entry.slug || version.versionNumber !== entry.versionNumber
           || version.versionKey !== entry.versionKey || version.description !== entry.description) throw failure()
         const previous = versions.get(version.versionKey)

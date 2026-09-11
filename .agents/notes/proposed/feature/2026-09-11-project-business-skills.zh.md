@@ -22,7 +22,7 @@ Business provider 复用[通用技能注册表](../../implemented/feature/2026-0
 
 Host 提供方拥有精确 Agent/请求注册和私有定义到版本的关系，公开定义不包含后端句柄。通用注册表将观测完整性与可选 `cacheable` 标记分离：权威 Business 目录可以发布，但不能在物理请求之间复用。返回不完整观测会抑制合法目录发布；将权威观测自动视为可缓存，则会把某个请求的目录泄漏给该请求之外的并发读取。每次加载仍必须获得精确后端重新授权。test Remote 只有在独立执行器注册后才能创建隔离运行，从而保留接纳与结算的明确归属。
 
-每次发现独立拥有候选项观测：注册级共享的当前候选项槽会让并发读取或刷新使合法的在途加载失效。精确候选项归属在物理请求内弱持有，每次加载仍检查后端授权。提供方释放时使用注册信号中止 transport 并等待自有操作结束；响应后的取消检查会丢弃忽略 abort 的 transport 的延迟结果。
+每次发现独立拥有候选项观测：注册级共享的当前候选项槽会让并发读取或刷新使合法的在途加载失效。精确候选项归属在物理请求内弱持有，每次加载仍检查后端授权。提供方释放时使用注册信号中止 transport 并等待自有操作结束；响应后的取消检查会丢弃忽略 abort 的 transport 的延迟结果。transport 完成检查和提供方发布检查保护不同的 Promise continuation：取消可能发生在两者之间，因此提供方必须在最终 await 之后重新检查 scope 和调用方信号。即使可选不变量诊断被禁用，也必须执行这一检查。
 
 本提案在 [Business Profile 组合](../../implemented/feature/2026-08-22-xagent-profile-product-shell.md)中增加受治理的 provider，继续禁用文件系统技能来源和开发能力。[认证与 Session 隔离规则](../../implemented/architecture/2026-08-25-xagent-auth-session-runtime.md)仍是权威。这些记录各自保留独立理由，存储基础不取代其中任何一项。[已批准设计](../../../../docs/superpowers/specs/2026-09-11-xagent-phase-6-business-skill-design.md)定义完整产品流程。
 

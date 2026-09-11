@@ -6,7 +6,7 @@ import SkillRegistry from '@deepseek-ai/dsh-skill'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
-import { XAgentBackendClient } from '@xagent/dsh-backend-client'
+import { XAgentBackendClient, type XAgentBusinessSkillBackend } from '@xagent/dsh-backend-client'
 import type { XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
 import { FastApiBusinessSkillService } from '../src/index.ts'
 
@@ -56,7 +56,7 @@ export function transcriptResponse(payload: string): Response {
   return new Response(`{"schema_version":1,"test":${JSON.stringify(wireTest)},"events":[{"schema_version":1,"sequence":0,"event_type":"message","payload":${payload},"created_at":"2026-09-12T00:00:00Z"}],"next_sequence":1}`)
 }
 
-export async function setup(maxCatalogEntries = 10) {
+export async function setup(maxCatalogEntries = 10, decorateBackend?: (backend: XAgentBusinessSkillBackend) => XAgentBusinessSkillBackend) {
   const calls: { path: string; body: Record<string, unknown>; token: string | null; signal: AbortSignal | null | undefined }[] = []
   const state = {
     catalog: [entry('z-review'), entry('a-review')] as unknown[], load: loaded() as unknown,
@@ -89,7 +89,8 @@ export async function setup(maxCatalogEntries = 10) {
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(ToolSkill)
-  const service = new FastApiBusinessSkillService(ctx, client.businessSkills, { maxCatalogEntries })
+  const service = new FastApiBusinessSkillService(ctx,
+    decorateBackend?.(client.businessSkills) ?? client.businessSkills, { maxCatalogEntries })
   const id = SessionId(`session-${sessionId}`)
   const session = Session.create(id)
   let scope!: Scope
