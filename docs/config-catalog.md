@@ -1859,7 +1859,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/skill/skill/src/index.ts:279`](../packages/skill/skill/src/index.ts)
+Source: [`packages/skill/skill/src/index.ts:281`](../packages/skill/skill/src/index.ts)
 
 <a id="deepseek-aidsh-skill-filesystem"></a>
 
@@ -3056,6 +3056,26 @@ export interface Config {
 ```
 
 Source: [`packages/xagent/authorization/src/index.ts:53`](../packages/xagent/authorization/src/index.ts)
+
+<a id="xagentdsh-business-skill"></a>
+
+## `@xagent/dsh-business-skill`
+
+Requires: `agents` · `skills`
+
+```ts config-catalog
+/** FastAPI transport and catalog resource limits for the Host plugin. */
+export interface Config {
+  /** Absolute FastAPI origin. */
+  backendOrigin: string
+  /** Host service credential; never sent to Browser or model. */
+  serviceToken: string
+  /** Maximum complete catalog entries; oversized responses fail closed. */
+  maxCatalogEntries: number
+}
+```
+
+Source: [`packages/xagent/business-skill/src/index.ts:29`](../packages/xagent/business-skill/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 

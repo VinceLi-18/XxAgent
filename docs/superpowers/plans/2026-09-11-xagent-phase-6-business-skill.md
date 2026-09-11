@@ -290,10 +290,10 @@ Browser operations identify a Skill by project plus public `slug`, a version by 
 **Files:**
 
 - Modify: `packages/xagent/business-skill/src/types.ts`
-- Create: `packages/xagent/business-skill/src/turn-binding.ts`
-- Create: `packages/xagent/business-skill/src/runtime-policy.ts`
+- Create: `packages/xagent/business-skill/src/{turn-binding.ts}`
+- Create: `packages/xagent/business-skill/src/{runtime-policy.ts}`
 - Modify: `packages/xagent/business-skill/src/index.ts`
-- Create: `packages/xagent/business-skill/tests/runtime-policy.spec.ts`
+- Create: `packages/xagent/business-skill/tests/{runtime-policy.spec.ts}`
 - Create: `packages/xagent/session-persistence-api/src/{business-skill-event-codec.ts}`
 - Modify: `packages/xagent/session-persistence-api/src/index.ts`
 - Modify: `packages/xagent/session-persistence-api/tests/session-persistence-api.spec.ts`
@@ -312,16 +312,16 @@ Browser operations identify a Skill by project plus public `slug`, a version by 
 - [ ] Add RED `tools/pre-execute` tests for `next()` on allow, no tool body on deny/error/cancel, every call reauthorization, pinned historical version, unauthorization/retirement/revocation denial, and no fallback to cached permission.
 - [ ] Implement Agent-owned binding lifetime, typed ignorable Session event, strict codec, surface replacement, scoped restriction, and awaited waterfall listener. On a denial, return one stable reason and disable further bound-tool execution for the turn.
 - [ ] Update TypeScript and Python SDK expected event sets and round-trip assertions in the same commit.
-- [ ] Run `pnpm exec vitest run packages/xagent/business-skill/tests/runtime-policy.spec.ts packages/xagent/session-persistence-api/tests/session-persistence-api.spec.ts packages/sdk/client/tests/sdk-client.spec.ts` and `uv run --project python/sdk pytest python/sdk/tests/test_client.py`; expect all selected tests to pass.
+- [ ] Run `pnpm exec vitest run packages/xagent/business-skill/tests/{runtime-policy.spec.ts} packages/xagent/session-persistence-api/tests/session-persistence-api.spec.ts packages/sdk/client/tests/sdk-client.spec.ts` and `uv run --project python/sdk pytest python/sdk/tests/test_client.py`; expect all selected tests to pass.
 - [ ] Commit: `feat(xagent): pin and enforce business skills per turn`
 
 ### Task 8: Implement the Read-Only Draft Test Runner
 
 **Files:**
 
-- Create: `packages/xagent/business-skill/src/test-runner.ts`
+- Create: `packages/xagent/business-skill/src/{test-runner.ts}`
 - Modify: `packages/xagent/business-skill/src/index.ts`
-- Create: `packages/xagent/business-skill/tests/test-runner.spec.ts`
+- Create: `packages/xagent/business-skill/tests/{test-runner.spec.ts}`
 - Modify: `packages/xagent/tool-fact/src/index.ts`
 - Modify: `packages/xagent/tool-fact/tests/tool-fact.spec.ts`
 - Modify: `packages/xagent/tool-fact/tests/invariant.spec.ts`
@@ -338,7 +338,7 @@ Browser operations identify a Skill by project plus public `slug`, a version by 
 - [ ] Add RED defense-in-depth tests proving `@xagent/dsh-tool-fact` refuses registration whenever authenticated Session purpose is `business_skill_test`, even if loaded into the test composition accidentally.
 - [ ] Add RED isolation tests proving ordinary Session history/title/bootstrap stays untouched and late model/tool output cannot mutate a settled run.
 - [ ] Implement the dedicated Agent lifecycle, exact draft provider, final read-only `tools/pre-execute` listener, settlement owner, and Fact-purpose exclusion.
-- [ ] Run `pnpm exec vitest run packages/xagent/business-skill/tests/test-runner.spec.ts packages/xagent/tool-fact/tests/tool-fact.spec.ts packages/xagent/tool-fact/tests/invariant.spec.ts`; expect all selected tests to pass.
+- [ ] Run `pnpm exec vitest run packages/xagent/business-skill/tests/{test-runner.spec.ts} packages/xagent/tool-fact/tests/tool-fact.spec.ts packages/xagent/tool-fact/tests/invariant.spec.ts`; expect all selected tests to pass.
 - [ ] Re-record the tool-fact README pair and commit: `feat(xagent): run isolated business skill tests`
 
 ### Task 9: Build the Project Governance UI

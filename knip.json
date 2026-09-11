@@ -260,6 +260,11 @@
         "zod"
       ]
     },
+    "packages/xagent/business-skill": {
+      "ignoreDependencies": [
+        "zod"
+      ]
+    },
     "packages/xagent/project": {
       "ignoreDependencies": [
         "zod"

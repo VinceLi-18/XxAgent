@@ -218,6 +218,14 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Derives proposal and review authority from the physical Project Session, while private receipt and Outbox registries carry append identities only to Session persistence.',
   },
   {
+    key: 'xagentBusinessSkill',
+    pkg: 'xagent-business-skill',
+    title: 'Governed XAgent Business Skill seam',
+    mode: 'seam',
+    consumers: ['api-gateway', 'tool-skill'],
+    note: 'Uses an authenticated conversation Project Session to register non-cacheable catalogs and reauthorize exact immutable loads; private definition ownership stays on the Host.',
+  },
+  {
     key: 'xagentRetrieval',
     pkg: 'xagent-retrieval',
     title: 'Authenticated XAgent retrieval seam',

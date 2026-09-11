@@ -290,10 +290,10 @@ Browser 操作用项目加公开 `slug` 标识 Skill，以正数公开版本号�
 **文件：**
 
 - 修改：`packages/xagent/business-skill/src/types.ts`
-- 新建：`packages/xagent/business-skill/src/turn-binding.ts`
-- 新建：`packages/xagent/business-skill/src/runtime-policy.ts`
+- 新建：`packages/xagent/business-skill/src/{turn-binding.ts}`
+- 新建：`packages/xagent/business-skill/src/{runtime-policy.ts}`
 - 修改：`packages/xagent/business-skill/src/index.ts`
-- 新建：`packages/xagent/business-skill/tests/runtime-policy.spec.ts`
+- 新建：`packages/xagent/business-skill/tests/{runtime-policy.spec.ts}`
 - 新建：`packages/xagent/session-persistence-api/src/{business-skill-event-codec.ts}`
 - 修改：`packages/xagent/session-persistence-api/src/index.ts`
 - 修改：`packages/xagent/session-persistence-api/tests/session-persistence-api.spec.ts`
@@ -312,16 +312,16 @@ Browser 操作用项目加公开 `slug` 标识 Skill，以正数公开版本号�
 - [ ] 编写 RED `tools/pre-execute` 测试，覆盖允许时 `next()`、拒绝/错误/取消时不运行工具正文、每次调用重新授权、固定历史版本、取消授权/退役/撤销成员后拒绝，以及不回退缓存权限。
 - [ ] 实现 Agent 所有的绑定生命周期、typed ignorable Session event、严格 codec、surface replacement、作用域 restriction 和受等待 waterfall 监听器。拒绝时返回一个稳定原因，并禁用该轮后续绑定工具执行。
 - [ ] 在同一提交更新 TypeScript 与 Python SDK 预期事件集合及 round-trip 断言。
-- [ ] 运行 `pnpm exec vitest run packages/xagent/business-skill/tests/runtime-policy.spec.ts packages/xagent/session-persistence-api/tests/session-persistence-api.spec.ts packages/sdk/client/tests/sdk-client.spec.ts` 和 `uv run --project python/sdk pytest python/sdk/tests/test_client.py`；预期所有选中测试通过。
+- [ ] 运行 `pnpm exec vitest run packages/xagent/business-skill/tests/{runtime-policy.spec.ts} packages/xagent/session-persistence-api/tests/session-persistence-api.spec.ts packages/sdk/client/tests/sdk-client.spec.ts` 和 `uv run --project python/sdk pytest python/sdk/tests/test_client.py`；预期所有选中测试通过。
 - [ ] 提交：`feat(xagent): pin and enforce business skills per turn`
 
 ### 任务 8：实现只读草稿测试 Runner
 
 **文件：**
 
-- 新建：`packages/xagent/business-skill/src/test-runner.ts`
+- 新建：`packages/xagent/business-skill/src/{test-runner.ts}`
 - 修改：`packages/xagent/business-skill/src/index.ts`
-- 新建：`packages/xagent/business-skill/tests/test-runner.spec.ts`
+- 新建：`packages/xagent/business-skill/tests/{test-runner.spec.ts}`
 - 修改：`packages/xagent/tool-fact/src/index.ts`
 - 修改：`packages/xagent/tool-fact/tests/tool-fact.spec.ts`
 - 修改：`packages/xagent/tool-fact/tests/invariant.spec.ts`
@@ -338,7 +338,7 @@ Browser 操作用项目加公开 `slug` 标识 Skill，以正数公开版本号�
 - [ ] 编写 RED 纵深防御测试，证明认证 Session purpose 为 `business_skill_test` 时，`@xagent/dsh-tool-fact` 一律拒绝注册，即使被误装入测试组合。
 - [ ] 编写 RED 隔离测试，证明普通 Session history/title/bootstrap 不受影响，迟到模型/工具输出不能修改已结算运行。
 - [ ] 实现专用 Agent 生命周期、准确草稿 provider、最终只读 `tools/pre-execute` 监听器、结算 owner 和 Fact-purpose 排除。
-- [ ] 运行 `pnpm exec vitest run packages/xagent/business-skill/tests/test-runner.spec.ts packages/xagent/tool-fact/tests/tool-fact.spec.ts packages/xagent/tool-fact/tests/invariant.spec.ts`；预期所有选中测试通过。
+- [ ] 运行 `pnpm exec vitest run packages/xagent/business-skill/tests/{test-runner.spec.ts} packages/xagent/tool-fact/tests/tool-fact.spec.ts packages/xagent/tool-fact/tests/invariant.spec.ts`；预期所有选中测试通过。
 - [ ] 重新记录 tool-fact README 配对并提交：`feat(xagent): run isolated business skill tests`
 
 ### 任务 9：构建项目治理 UI

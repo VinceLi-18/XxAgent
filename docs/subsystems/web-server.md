@@ -209,6 +209,151 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 
 Source: [`packages/xagent/artifact/src/index.ts:196`](../../packages/xagent/artifact/src/index.ts)
 
+<a id="ctxxagentbusinessskill--xagentbusinessskillservice-abstract-seam"></a>
+
+### `ctx.xagentBusinessSkill` — `XAgentBusinessSkillService` (abstract seam)
+
+Service Definition for authenticated discovery and exact-version runtime Consumers.
+
+```ts cordis-catalog
+/**
+ * Bind all provider and Remote work to one physical request.
+ * @param scope - backend-derived conversation Project Session authority.
+ * @param operation - operation whose settlement expires the request.
+ * @returns result or stable failure without retaining request authority.
+ */
+abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * Install this request's provider in the exact Agent scope; repeated attachment is idempotent.
+ * @param agent - Agent whose Session must match the current request.
+ * @returns provider or undefined outside eligible requests or after Agent disposal.
+ */
+abstract attach(agent: Agent): SkillProvider | undefined
+
+/**
+ * Recover private version information for an owned immutable loaded definition.
+ * @param agent - exact receiving Agent.
+ * @param definition - exact returned definition, never reconstructed metadata.
+ * @returns Host-private version while its registration is live, otherwise undefined.
+ */
+abstract loadedVersion(agent: Agent, definition: SkillDefinition): XAgentBusinessSkillLoad | undefined
+
+/**
+ * Register the isolated executor before the test Remote may create a backend run.
+ * @param runner - Host-only executor owning admission and settlement.
+ * @returns effect disposer; duplicate registration fails and disposal disables testing.
+ */
+abstract registerTestRunner(runner: XAgentBusinessSkillTestRunner): () => void
+
+/**
+ * List the current project's bounded public catalog.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract list(input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal): Promise<XAgentBusinessSkillPage>
+
+/**
+ * Read the Skill's bounded draft, version, test and audit records.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract detail( slug: string, input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number }, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Create a draft under current backend authorization.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract create(input: XAgentBusinessSkillCreateInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Update only the expected mutable draft revision.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract draft(slug: string, input: XAgentBusinessSkillDraftInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Execute one isolated test; unavailable without a dedicated runner.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract test(slug: string, input: XAgentBusinessSkillTestInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTest>
+
+/**
+ * Read a dedicated test transcript through its public run number.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param runNumber - Positive public test-run number.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract transcript( slug: string, runNumber: number, input: { readonly afterSequence?: number; readonly limit?: number }, signal?: AbortSignal, ): Promise<BusinessSkillRemoteTranscript>
+
+/**
+ * Record a human verdict for an exact public test run.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param runNumber - Positive public test-run number.
+ * @param verdict - Human pass or reject verdict.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract verdict( slug: string, runNumber: number, verdict: XAgentBusinessSkillVerdict, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Publish only an exact qualifying draft revision.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @param expectedDraftRevision - Exact positive draft revision read by the caller.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract publish( slug: string, expectedDraftRevision: number, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Change stable-Skill authorization through backend Manager checks.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @param authorized - Whether production invocation is authorized.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract authorization( slug: string, authorized: boolean, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Select an immutable historical public version as current.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @param versionNumber - Positive immutable public version number.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract version(slug: string, versionNumber: number, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Retire the stable Skill permanently while preserving its history.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract retire(slug: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+```
+
+Types: [Agent](core.md) · [SkillDefinition](skills.md) · [SkillProvider](skills.md)
+
+Source: [`packages/xagent/business-skill/src/index.ts:87`](../../packages/xagent/business-skill/src/index.ts)
+
 <a id="ctxxagentcitation--xagentcitationremoteservice"></a>
 
 ### `ctx.xagentCitation` — `XAgentCitationRemoteService`

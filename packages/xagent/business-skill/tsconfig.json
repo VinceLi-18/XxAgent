@@ -1,0 +1,48 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types"
+  },
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../../../vendor/cordis"
+    },
+    {
+      "path": "../../../vendor/schemastery"
+    },
+    {
+      "path": "../../runtime-diagnostics/invariants"
+    },
+    {
+      "path": "../../typert/protocol"
+    },
+    {
+      "path": "../../core/agent"
+    },
+    {
+      "path": "../../core/scope"
+    },
+    {
+      "path": "../../core/session"
+    },
+    {
+      "path": "../../util/brand"
+    },
+    {
+      "path": "../../skill/skill"
+    },
+    {
+      "path": "../../skill/tool-skill"
+    },
+    {
+      "path": "../backend-client"
+    },
+    {
+      "path": "../principal"
+    }
+  ]
+}

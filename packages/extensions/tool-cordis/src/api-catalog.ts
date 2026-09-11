@@ -2276,6 +2276,103 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'xagentBusinessSkill',
+    summary: 'Service Definition for authenticated discovery and exact-version runtime Consumers.',
+    description: 'Service Definition for authenticated discovery and exact-version runtime Consumers.',
+    methods: [
+      {
+        signature: 'abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: 'Bind all provider and Remote work to one physical request.',
+        parameters: [{ name: 'scope', description: 'backend-derived conversation Project Session authority.' }, { name: 'operation', description: 'operation whose settlement expires the request.' }],
+        returns: 'result or stable failure without retaining request authority.',
+      },
+      {
+        signature: 'abstract attach(agent: Agent): SkillProvider | undefined',
+        description: 'Install this request\'s provider in the exact Agent scope; repeated attachment is idempotent.',
+        parameters: [{ name: 'agent', description: 'Agent whose Session must match the current request.' }],
+        returns: 'provider or undefined outside eligible requests or after Agent disposal.',
+      },
+      {
+        signature: 'abstract loadedVersion(agent: Agent, definition: SkillDefinition): XAgentBusinessSkillLoad | undefined',
+        description: 'Recover private version information for an owned immutable loaded definition.',
+        parameters: [{ name: 'agent', description: 'exact receiving Agent.' }, { name: 'definition', description: 'exact returned definition, never reconstructed metadata.' }],
+        returns: 'Host-private version while its registration is live, otherwise undefined.',
+      },
+      {
+        signature: 'abstract registerTestRunner(runner: XAgentBusinessSkillTestRunner): () => void',
+        description: 'Register the isolated executor before the test Remote may create a backend run.',
+        parameters: [{ name: 'runner', description: 'Host-only executor owning admission and settlement.' }],
+        returns: 'effect disposer; duplicate registration fails and disposal disables testing.',
+      },
+      {
+        signature: 'abstract list(input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal): Promise<XAgentBusinessSkillPage>',
+        description: 'List the current project\'s bounded public catalog.',
+        parameters: [{ name: 'input', description: 'Public pagination or mutation fields.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract detail( slug: string, input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number }, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>',
+        description: 'Read the Skill\'s bounded draft, version, test and audit records.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'input', description: 'Public pagination or mutation fields.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract create(input: XAgentBusinessSkillCreateInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>',
+        description: 'Create a draft under current backend authorization.',
+        parameters: [{ name: 'input', description: 'Public pagination or mutation fields.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract draft(slug: string, input: XAgentBusinessSkillDraftInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>',
+        description: 'Update only the expected mutable draft revision.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'input', description: 'Public pagination or mutation fields.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract test(slug: string, input: XAgentBusinessSkillTestInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTest>',
+        description: 'Execute one isolated test; unavailable without a dedicated runner.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'input', description: 'Public pagination or mutation fields.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract transcript( slug: string, runNumber: number, input: { readonly afterSequence?: number; readonly limit?: number }, signal?: AbortSignal, ): Promise<BusinessSkillRemoteTranscript>',
+        description: 'Read a dedicated test transcript through its public run number.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'input', description: 'Public pagination or mutation fields.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }, { name: 'runNumber', description: 'Positive public test-run number.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract verdict( slug: string, runNumber: number, verdict: XAgentBusinessSkillVerdict, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>',
+        description: 'Record a human verdict for an exact public test run.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }, { name: 'runNumber', description: 'Positive public test-run number.' }, { name: 'verdict', description: 'Human pass or reject verdict.' }, { name: 'idempotencyKey', description: 'Key identifying this mutation intent.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract publish( slug: string, expectedDraftRevision: number, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>',
+        description: 'Publish only an exact qualifying draft revision.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }, { name: 'idempotencyKey', description: 'Key identifying this mutation intent.' }, { name: 'expectedDraftRevision', description: 'Exact positive draft revision read by the caller.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract authorization( slug: string, authorized: boolean, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>',
+        description: 'Change stable-Skill authorization through backend Manager checks.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }, { name: 'idempotencyKey', description: 'Key identifying this mutation intent.' }, { name: 'authorized', description: 'Whether production invocation is authorized.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract version(slug: string, versionNumber: number, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>',
+        description: 'Select an immutable historical public version as current.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }, { name: 'idempotencyKey', description: 'Key identifying this mutation intent.' }, { name: 'versionNumber', description: 'Positive immutable public version number.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+      {
+        signature: 'abstract retire(slug: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>',
+        description: 'Retire the stable Skill permanently while preserving its history.',
+        parameters: [{ name: 'slug', description: 'Project-local public Skill name.' }, { name: 'signal', description: 'Optional caller cancellation, combined with the physical request.' }, { name: 'idempotencyKey', description: 'Key identifying this mutation intent.' }],
+        returns: 'Public backend records or a stable authorization, input or availability failure.',
+      },
+    ],
+  },
+  {
     key: 'xagentCitation',
     summary: 'Request-scoped citation locator backed by durable provenance and current-actor authorization.',
     description: 'Request-scoped citation locator backed by durable provenance and current-actor authorization.',
@@ -3033,6 +3130,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'Branded',
     declaration: 'export type Branded<B extends string> = string & {\n    readonly [BRAND]: B;\n};',
+  },
+  {
+    name: 'BusinessSkillRemoteTranscript',
+    declaration: 'export interface BusinessSkillRemoteTranscript {\n    readonly test: XAgentBusinessSkillTest;\n    readonly events: readonly {\n        readonly sequence: number;\n        readonly eventType: string;\n        readonly payload: JsonValue;\n        readonly createdAt: string;\n    }[];\n    readonly nextSequence: number;\n}',
   },
   {
     name: 'CancelOptions',
@@ -4356,7 +4457,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SkillProviderObservation',
-    declaration: 'export interface SkillProviderObservation {\n    readonly candidates: readonly SkillCandidate[];\n    readonly complete: boolean;\n}',
+    declaration: 'export interface SkillProviderObservation {\n    readonly candidates: readonly SkillCandidate[];\n    readonly complete: boolean;\n    readonly cacheable?: boolean;\n}',
   },
   {
     name: 'SkillRegistration',
@@ -4977,6 +5078,78 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'XAgentAuthenticatedSessionRequestScope',
     declaration: 'export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestScope & ({\n    readonly sessionId: string;\n    readonly visibility: \'private\';\n    readonly projectId: null;\n    readonly purpose: XAgentSessionPurpose;\n} | {\n    readonly sessionId: string;\n    readonly visibility: \'project\';\n    readonly projectId: string;\n    readonly purpose: XAgentSessionPurpose;\n});',
+  },
+  {
+    name: 'XAgentBusinessSkillAuditSummary',
+    declaration: 'export interface XAgentBusinessSkillAuditSummary {\n    readonly action: string;\n    readonly result: string;\n    readonly versionNumber?: number;\n    readonly createdAt: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillCatalogEntry',
+    declaration: 'export interface XAgentBusinessSkillCatalogEntry {\n    readonly slug: string;\n    readonly description: string;\n    readonly versionNumber: number;\n    readonly versionKey: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillContentInput',
+    declaration: 'export interface XAgentBusinessSkillContentInput {\n    readonly displayName: string;\n    readonly description: string;\n    readonly instructions: string;\n    readonly primaryTools: readonly string[];\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillCreateInput',
+    declaration: 'export interface XAgentBusinessSkillCreateInput extends XAgentBusinessSkillContentInput {\n    readonly slug: string;\n    readonly idempotencyKey: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillDetail',
+    declaration: 'export interface XAgentBusinessSkillDetail extends XAgentBusinessSkillSummary {\n    readonly draft?: XAgentBusinessSkillDraft;\n    readonly versions: readonly XAgentBusinessSkillVersion[];\n    readonly tests: readonly XAgentBusinessSkillTest[];\n    readonly nextVersionCursor?: number;\n    readonly nextRunCursor?: number;\n    readonly auditSummary: readonly XAgentBusinessSkillAuditSummary[];\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillDraft',
+    declaration: 'export interface XAgentBusinessSkillDraft {\n    readonly revision: number;\n    readonly description: string;\n    readonly instructions: string;\n    readonly primaryTools: readonly string[];\n    readonly contentDigest: string;\n    readonly toolPolicyDigest: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillDraftInput',
+    declaration: 'export interface XAgentBusinessSkillDraftInput {\n    readonly expectedDraftRevision: number;\n    readonly idempotencyKey: string;\n    readonly sourceVersionNumber?: number;\n    readonly displayName?: string;\n    readonly description?: string;\n    readonly instructions?: string;\n    readonly primaryTools?: readonly string[];\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillLoad',
+    declaration: 'export interface XAgentBusinessSkillLoad extends XAgentBusinessSkillCatalogEntry {\n    readonly instructions: string;\n    readonly contentDigest: string;\n    readonly toolPolicyDigest: string;\n    readonly completeTools: readonly string[];\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillPage',
+    declaration: 'export interface XAgentBusinessSkillPage {\n    readonly items: readonly XAgentBusinessSkillSummary[];\n    readonly nextCursor?: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillStatus',
+    declaration: 'export type XAgentBusinessSkillStatus = \'active\' | \'retired\';',
+  },
+  {
+    name: 'XAgentBusinessSkillSummary',
+    declaration: 'export interface XAgentBusinessSkillSummary {\n    readonly slug: string;\n    readonly displayName: string;\n    readonly status: XAgentBusinessSkillStatus;\n    readonly authorized: boolean;\n    readonly currentVersion?: number;\n    readonly draftRevision?: number;\n    readonly latestTest?: XAgentBusinessSkillTest;\n    readonly updatedAt: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillTerminationReason',
+    declaration: 'export type XAgentBusinessSkillTerminationReason = \'completed\' | \'failed\' | \'cancelled\' | \'tool-denied\' | \'authorization-denied\' | \'skill-not-loaded\' | \'service-unavailable\';',
+  },
+  {
+    name: 'XAgentBusinessSkillTest',
+    declaration: 'export interface XAgentBusinessSkillTest {\n    readonly runNumber: number;\n    readonly draftRevision: number;\n    readonly contentDigest: string;\n    readonly toolPolicyDigest: string;\n    readonly status: XAgentBusinessSkillTestStatus;\n    readonly terminationReason?: XAgentBusinessSkillTerminationReason;\n    readonly verdict?: XAgentBusinessSkillVerdict;\n    readonly startedAt: string;\n    readonly settledAt?: string;\n    readonly verdictAt?: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillTestInput',
+    declaration: 'export interface XAgentBusinessSkillTestInput {\n    readonly expectedDraftRevision: number;\n    readonly toolPolicyDigest: string;\n    readonly scenario: string;\n    readonly idempotencyKey: string;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillTestRunner',
+    declaration: 'export interface XAgentBusinessSkillTestRunner {\n    run(slug: string, input: XAgentBusinessSkillTestInput, signal: AbortSignal): Promise<XAgentBusinessSkillTest>;\n}',
+  },
+  {
+    name: 'XAgentBusinessSkillTestStatus',
+    declaration: 'export type XAgentBusinessSkillTestStatus = \'running\' | \'completed\' | \'failed\' | \'cancelled\';',
+  },
+  {
+    name: 'XAgentBusinessSkillVerdict',
+    declaration: 'export type XAgentBusinessSkillVerdict = \'pass\' | \'reject\';',
+  },
+  {
+    name: 'XAgentBusinessSkillVersion',
+    declaration: 'export interface XAgentBusinessSkillVersion {\n    readonly versionNumber: number;\n    readonly description: string;\n    readonly instructions: string;\n    readonly primaryTools: readonly string[];\n    readonly completeTools: readonly string[];\n    readonly contentDigest: string;\n    readonly toolPolicyDigest: string;\n    readonly sourceDraftRevision: number;\n    readonly publishedAt: string;\n}',
   },
   {
     name: 'XAgentCitationIdentity',

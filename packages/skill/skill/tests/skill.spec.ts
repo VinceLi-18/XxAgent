@@ -58,6 +58,40 @@ function scopedSkills(ctx: Context): SkillRegistry {
 }
 
 describe('SkillRegistry registry', () => {
+  it('publishes complete non-cacheable observations without reusing authority across reads', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SkillRegistry)
+    let visible = true
+    const plugin = {
+      name: 'request-bound-provider', inject: ['skills'],
+      apply(inner: Context) {
+        inner.skills.registerProvider(() => ({
+          name: 'memory',
+          async list() {
+            return { candidates: visible ? [memorySkill('review', 'Current authorized instructions', 0)] : [], complete: true, cacheable: false }
+          },
+          async get(candidate) { return { ...candidate, content: 'Authorized body' } },
+        }))
+      },
+    }
+    const fiber = ctx.plugin(plugin)
+    await fiber
+    expect(await ctx.skills.snapshot()).toMatchObject({ complete: true, skills: [{ name: 'review' }] })
+    visible = false
+    expect(await ctx.skills.snapshot()).toEqual({ complete: true, skills: [] })
+    visible = true
+    expect((await ctx.skills.get('review'))?.content).toBe('Authorized body')
+    await fiber.dispose()
+    expect(await ctx.skills.snapshot()).toEqual({ complete: true, skills: [] })
+    const remounted = ctx.plugin(plugin)
+    await remounted
+    expect(await ctx.skills.snapshot()).toMatchObject({ complete: true, skills: [{ name: 'review' }] })
+    visible = false
+    expect(await ctx.skills.snapshot()).toEqual({ complete: true, skills: [] })
+    await remounted.dispose()
+    await ctx.fiber.dispose()
+  })
+
   it('registers providers, resolves duplicates first-wins, and disposes providers', async () => {
     const ctx = new Context()
     await ctx.plugin(SkillRegistry)
@@ -219,7 +253,7 @@ describe('SkillRegistry registry', () => {
   })
 
   it('rejects malformed provider results and every malformed candidate scalar', async () => {
-    const malformedOutputs: unknown[] = [null, 1, {}, { candidates: [], complete: 'yes' }]
+    const malformedOutputs: unknown[] = [null, 1, {}, { candidates: [], complete: 'yes' }, { candidates: [], complete: true, cacheable: 'yes' }]
     for (const [index, output] of malformedOutputs.entries()) {
       const badList = new Context()
       await badList.plugin(SkillRegistry)
