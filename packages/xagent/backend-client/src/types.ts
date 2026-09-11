@@ -651,6 +651,8 @@ export interface XAgentBusinessSkillTest {
   readonly draftRevision: number
   readonly contentDigest: string
   readonly toolPolicyDigest: string
+  /** Immutable production write permissions excluded from this read-only execution. */
+  readonly unexecutedWriteTools: readonly string[]
   readonly status: XAgentBusinessSkillTestStatus
   readonly terminationReason?: XAgentBusinessSkillTerminationReason
   readonly verdict?: XAgentBusinessSkillVerdict
@@ -762,6 +764,20 @@ export interface XAgentBusinessSkillTestStart {
   readonly unexecutedWriteTools: readonly string[]
 }
 
+/** Host factory publication for an already allocated, empty test Session. */
+export interface XAgentBusinessSkillTestMountInput {
+  readonly sessionId: string
+  readonly runtimeHeader: Readonly<Record<string, unknown>>
+  readonly events: XAgentSessionAppendInput['events']
+  readonly idempotencyKey: string
+}
+
+/** Only the first committed mount grants execution; retries report false. */
+export interface XAgentBusinessSkillTestMount {
+  readonly claimed: boolean
+  readonly test: XAgentBusinessSkillTest
+}
+
 /** Public transcript event from one isolated Business Skill test Session. */
 export interface XAgentBusinessSkillTranscriptEvent {
   readonly sequence: number
@@ -835,6 +851,30 @@ export interface XAgentBusinessSkillBackend {
     userToken: string, projectId: string, slug: string,
     input: XAgentBusinessSkillTestInput, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillTestStart>
+  /**
+   * Atomically publish the factory header and startup events before execution.
+   * @param userToken - authenticated starting actor's token.
+   * @param projectId - authenticated Project identity.
+   * @param slug - public Skill name.
+   * @param runNumber - public run number allocated by startTest.
+   * @param input - exact Session, factory publication and one mount-attempt key.
+   * @param signal - optional transport cancellation.
+   * @returns exclusive ownership only for the first commit; exact replay never grants execution again.
+   */
+  mountTest(userToken: string, projectId: string, slug: string, runNumber: number,
+    input: XAgentBusinessSkillTestMountInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTestMount>
+  /**
+   * Cancel an unmounted empty test, without interfering with a claimed runner.
+   * @param userToken - original starting actor's token, reauthenticated by the backend.
+   * @param projectId - authenticated Project identity.
+   * @param slug - public Skill name.
+   * @param runNumber - public run number.
+   * @param sessionId - exact Host-only Session allocated by startTest.
+   * @param idempotencyKey - stable cleanup key.
+   * @returns current report; a mounted running test is left unchanged.
+   */
+  cancelUnmountedTest(userToken: string, projectId: string, slug: string, runNumber: number,
+    sessionId: string, idempotencyKey: string): Promise<XAgentBusinessSkillTest>
   settleTest(
     userToken: string, projectId: string, slug: string, runNumber: number, sessionId: string,
     terminationReason: XAgentBusinessSkillTerminationReason, idempotencyKey: string,

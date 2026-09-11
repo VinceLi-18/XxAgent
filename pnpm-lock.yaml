@@ -8599,6 +8599,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: workspace:^
         version: link:../../core/session
+      '@deepseek-ai/dsh-session-title':
+        specifier: workspace:^
+        version: link:../../session/session-title
       '@deepseek-ai/dsh-skill':
         specifier: workspace:^
         version: link:../../skill/skill
@@ -8632,6 +8635,9 @@ importers:
       '@xagent/dsh-retrieval':
         specifier: workspace:^
         version: link:../retrieval
+      '@xagent/dsh-session-persistence-api':
+        specifier: workspace:^
+        version: link:../session-persistence-api
       '@xagent/dsh-tool-retrieval':
         specifier: workspace:^
         version: link:../tool-retrieval
@@ -8823,6 +8829,9 @@ importers:
       '@xagent/dsh-backend-client':
         specifier: workspace:^
         version: link:../backend-client
+      '@xagent/dsh-principal':
+        specifier: workspace:^
+        version: link:../principal
       '@xagent/dsh-retrieval':
         specifier: workspace:^
         version: link:../retrieval

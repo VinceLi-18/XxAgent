@@ -43,11 +43,13 @@ const detail = () => ({
 })
 
 export const testRecord = {
+  unexecutedWriteTools: [],
   runNumber: 1, draftRevision: 1, contentDigest: 'a'.repeat(64), toolPolicyDigest: 'b'.repeat(64),
   status: 'completed' as const, terminationReason: 'completed' as const,
   startedAt: '2026-09-12T00:00:00Z', settledAt: '2026-09-12T00:01:00Z',
 }
 const wireTest = {
+  unexecuted_write_tools: [],
   run_number: 1, draft_revision: 1, content_digest: 'a'.repeat(64), tool_policy_digest: 'b'.repeat(64),
   status: 'completed', termination_reason: 'completed', verdict: null,
   started_at: '2026-09-12T00:00:00Z', settled_at: '2026-09-12T00:01:00Z', verdict_at: null,

@@ -111,6 +111,7 @@ class BusinessSkillTestResponse(BaseModel):
     draft_revision: PositiveNumber
     content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     tool_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    unexecuted_write_tools: list[Literal["propose_fact"]] = Field(max_length=1)
     status: Literal["running", "completed", "failed", "cancelled"]
     termination_reason: Literal["completed", "failed", "cancelled", "tool-denied", "authorization-denied", "skill-not-loaded", "service-unavailable"] | None
     verdict: Literal["pass", "reject"] | None
@@ -202,6 +203,41 @@ class BusinessSkillTestSettleRequest(BusinessSkillMutationRequest):
     termination_reason: TerminationReason
 
 
+class BusinessSkillStartupEvent(BusinessSkillRequest):
+    event_type: str = Field(min_length=1, max_length=100)
+    payload: dict[str, object]
+
+
+class BusinessSkillTestCancelRequest(BusinessSkillMutationRequest):
+    """Host cleanup may cancel only an unmounted empty Session."""
+
+    session_id: HostKey
+
+
+class BusinessSkillTestMountRequest(BusinessSkillMutationRequest):
+    """Atomically publish a Host factory header and its pre-turn events once."""
+
+    session_id: HostKey
+    runtime_header: dict[str, object]
+    events: list[BusinessSkillStartupEvent] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def initial_log(self):
+        header = self.runtime_header
+        if (set(header) != {"id", "version", "createdAt"}
+                or header["id"] != f"session-{self.session_id}" or type(header["version"]) is not int
+                or header["version"] != 0 or type(header["createdAt"]) is not int or header["createdAt"] < 0):
+            raise ValueError("invalid test runtime header")
+        for seq, event in enumerate(self.events):
+            payload = event.payload
+            if (payload.get("seq") != seq or type(payload.get("seq")) is not int
+                    or payload.get("type") != event.event_type or type(payload.get("time")) is not int
+                    or payload["time"] < 0 or "data" not in payload or "surfaceOp" in payload
+                    or event.event_type not in {"config", "session/title"}):
+                raise ValueError("test startup events must precede model admission")
+        return self
+
+
 class BusinessSkillTranscriptRequest(BusinessSkillRequest):
     after_sequence: int = Field(default=-1, ge=-1)
     limit: int = Field(default=500, ge=1, le=500)
@@ -209,6 +245,10 @@ class BusinessSkillTranscriptRequest(BusinessSkillRequest):
 
 class BusinessSkillTestResult(BusinessSkillRequest):
     test: BusinessSkillTestResponse
+
+
+class BusinessSkillTestMountResponse(BusinessSkillTestResult):
+    claimed: bool
 
 
 class BusinessSkillTestStartResponse(BusinessSkillTestResult):

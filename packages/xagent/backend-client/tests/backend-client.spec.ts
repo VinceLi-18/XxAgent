@@ -317,6 +317,7 @@ describe('XAgent 后端客户端', () => {
     const versionKey = '00000000-0000-0000-0000-000000000801'
     const testRow = {
       run_number: 4,
+      unexecuted_write_tools: [],
       draft_revision: 2,
       content_digest: digest,
       tool_policy_digest: digest,
@@ -537,6 +538,7 @@ describe('XAgent 后端客户端', () => {
         current_version: null, draft_revision: 1,
         latest_test: {
           run_number: 1, draft_revision: 1, content_digest: 'a'.repeat(64),
+          unexecuted_write_tools: [],
           tool_policy_digest: 'b'.repeat(64), status: 'running', termination_reason: 'completed',
           verdict: null, started_at: '2026-09-11T08:00:00Z', settled_at: null, verdict_at: null,
         },
@@ -548,6 +550,7 @@ describe('XAgent 后端客户端', () => {
       schema_version: 1,
       test: {
         run_number: 1, draft_revision: 1, content_digest: 'a'.repeat(64),
+        unexecuted_write_tools: ['propose_fact'],
         tool_policy_digest: 'b'.repeat(64), status: 'running', termination_reason: null,
         verdict: null, started_at: '2026-09-11T08:00:00Z', settled_at: null, verdict_at: null,
       },
@@ -578,6 +581,7 @@ describe('XAgent 后端客户端', () => {
       schema_version: 1,
       test: {
         run_number: 1, draft_revision: 1, content_digest: digest, tool_policy_digest: digest,
+        unexecuted_write_tools: [],
         status: 'running', termination_reason: null, verdict: null,
         started_at: '2026-09-11T08:00:00Z', settled_at: null, verdict_at: null,
       },
@@ -612,6 +616,7 @@ describe('XAgent 后端客户端', () => {
         current_version: null, draft_revision: 1,
         latest_test: {
           run_number: 1, draft_revision: 1, content_digest: digest, tool_policy_digest: digest,
+          unexecuted_write_tools: [],
           started_at: '2026-09-11T08:00:00Z',
           ...terminal,
         },

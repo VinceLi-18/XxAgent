@@ -144,6 +144,7 @@ class BusinessSkillTestRun(Base):
         CheckConstraint("(verdict IS NULL AND verdict_by_id IS NULL AND verdict_at IS NULL) OR (verdict IS NOT NULL AND verdict_by_id IS NOT NULL AND verdict_at IS NOT NULL AND status <> 'running' AND (verdict <> 'pass' OR status = 'completed'))", name="ck_business_skill_test_verdict_identity"),
         CheckConstraint("termination_reason IS NULL OR termination_reason IN ('completed','failed','cancelled','tool-denied','authorization-denied','skill-not-loaded','service-unavailable')", name="ck_business_skill_test_termination_reason"),
         CheckConstraint("status <> 'completed' OR termination_reason = 'completed'", name="ck_business_skill_test_completed"),
+        CheckConstraint("unexecuted_write_tools IN ('[]'::jsonb, '[\"propose_fact\"]'::jsonb)", name="ck_business_skill_test_write_tools"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -154,6 +155,7 @@ class BusinessSkillTestRun(Base):
     content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     tool_policy_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     session_id: Mapped[UUID] = mapped_column(nullable=False)
+    unexecuted_write_tools: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="running")
     termination_reason: Mapped[str | None] = mapped_column(String(32))
     verdict: Mapped[str | None] = mapped_column(String(16))

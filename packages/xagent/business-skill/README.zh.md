@@ -6,7 +6,7 @@
 
 ## 配置
 
-Host 插件依赖 `agents`、`skills`、`tools` 和 `systemPrompt`。`backendOrigin` 指定 FastAPI origin，`serviceToken` 指定内部 Host 凭证，`maxCatalogEntries` 必须是限制完整目录条目数的正安全整数。缺失或无效配置在安装时失败；后端目录超限时拒绝，而不截断授权结果。
+Host 插件依赖 `agents`、`skills`、`tools` 和 `systemPrompt`。`backendOrigin` 指定 FastAPI origin，`serviceToken` 指定内部 Host 凭证，`maxCatalogEntries` 必须是限制完整目录条目数的正安全整数。必填且非空白的 `testProvider` 和 `testModel` 选择草稿测试实际调用的模型；Browser 输入不能覆盖这些值。缺失或无效配置在安装时失败；后端目录超限时拒绝，而不截断授权结果。
 
 ## 请求与提供方生命周期
 
@@ -36,7 +36,11 @@ Agent 作用域审批监听器委托正常答复链，并将答复与物理请�
 
 `xagentBusinessSkill` Remote 提供 list、detail、create、draft、test、transcript、verdict、publish、authorization、version 和 retire 操作。后端授权和生命周期决策始终权威。已知后端错误保留稳定错误码；未知错误映射为 `service-unavailable`，不携带内部详情。调用方取消信号与请求、连接和服务信号合并，并在操作完成后再次检查。
 
-`registerTestRunner` 注册一个可逆的 Host 专用执行器。未安装执行器时，test Remote 在启动任何后端操作之前拒绝。执行器负责隔离 Session 的接纳、执行和结算，只返回公开测试记录。测试记录文本通过公开测试序号独立分页读取。
+安装 FastAPI Session 持久化提供方后，插件通过 `registerTestRunner` 注册可逆的 Host 专用测试执行器。未安装执行器时，test Remote 在启动任何后端操作之前拒绝。测试记录通过公开运行编号独立分页读取。
+
+执行器通过真实 Agent factory 挂载 `tests/start` 分配的空 `business_skill_test` Session。后端原子挂载写入该 factory 的 header 和编码后的启动事件；只有首次成功取得归属的执行器可以运行。精确重放不会再次取得执行归属，进程内 single-flight 合并并发请求。已有日志不会再次接纳场景。常规技能加载器先将确切草稿作为用户显式调用接纳，再接纳唯一场景消息，日志顺序与模型输入一致。在此测试用途的 Session 内，激活元数据使用草稿修订号。普通对话历史、bootstrap 和标题生成保持不变。
+
+测试目录和执行前策略只允许 `skill`、所选只读工具及其必要配套只读工具。即使生产权限声明了 `propose_fact`，测试仍排除它；不可变测试报告以 `unexecutedWriteTools` 单独记录该权限，与执行结果和人工结论分离。每次工具调用重新检查当前后端访问权限。一个 owner 在循环和持久化收敛后结算，覆盖模型或工具失败、取消及销毁。挂载前取消只会原子终结空的未领取运行，不能取消其他 owner 已挂载的运行。分配和清理保留原始认证令牌，但不复用已中止的 transport 信号。后端失败不会允许执行或改变已有终态。
 
 ## 模型体验
 
@@ -48,5 +52,5 @@ Agent 作用域审批监听器委托正常答复链，并将答复与物理请�
 
 ## 已知限制与暂缓事项
 
-- 专用只读测试执行器与 Business profile 组合是独立集成；单独安装本包不会向其他 profile 暴露治理功能或执行测试场景。
+- Business profile 组合决定治理功能的可见范围；本包不会在其他 profile 中启用它。
 - 后端读取带来授权延迟，且不提供离线回退。

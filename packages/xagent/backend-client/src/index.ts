@@ -54,6 +54,8 @@ import type {
 } from './types.ts'
 
 export type {
+  XAgentBusinessSkillTestMountInput,
+  XAgentBusinessSkillTestMount,
   XAgentBackend,
   XAgentBackendErrorCode,
   XAgentBusinessSkillAuditSummary,
@@ -1408,6 +1410,7 @@ function parseBusinessSkillTest(value: unknown): XAgentBusinessSkillTest {
   const row = exactRecord(value, [
     'run_number', 'draft_revision', 'content_digest', 'tool_policy_digest', 'status',
     'termination_reason', 'verdict', 'started_at', 'settled_at', 'verdict_at',
+    'unexecuted_write_tools',
   ])
   if (!['running', 'completed', 'failed', 'cancelled'].includes(row.status as string)) failSchema()
   if (row.termination_reason !== null && !BUSINESS_SKILL_TERMINATION_REASONS.has(row.termination_reason as never)) failSchema()
@@ -1429,6 +1432,7 @@ function parseBusinessSkillTest(value: unknown): XAgentBusinessSkillTest {
     draftRevision: positiveInteger(row.draft_revision),
     contentDigest: businessSkillDigest(row.content_digest),
     toolPolicyDigest: businessSkillDigest(row.tool_policy_digest),
+    unexecutedWriteTools: closedStringArray(row.unexecuted_write_tools, new Set(['propose_fact'])),
     status: row.status as XAgentBusinessSkillTest['status'],
     ...(row.termination_reason === null ? {} : { terminationReason: row.termination_reason as XAgentBusinessSkillTerminationReason }),
     ...(row.verdict === null ? {} : { verdict: row.verdict }),
@@ -1580,12 +1584,14 @@ function parseBusinessSkillStart(value: unknown): XAgentBusinessSkillTestStart {
   const completeTools = businessSkillCompleteTools(draft.primaryTools)
   const testTools = closedStringArray(row.test_tools, BUSINESS_SKILL_TEST_TOOLS)
   const unexecutedWriteTools = closedStringArray(row.unexecuted_write_tools, new Set(['propose_fact']))
+  const test = parseBusinessSkillTest(row.test)
   if (
     !sameStrings(testTools, completeTools.filter(tool => tool !== 'propose_fact'))
     || !sameStrings(unexecutedWriteTools, completeTools.filter(tool => tool === 'propose_fact'))
+    || !sameStrings(unexecutedWriteTools, test.unexecutedWriteTools)
   ) failSchema()
   return {
-    test: parseBusinessSkillTest(row.test),
+    test,
     sessionId: requiredUuid(row.session_id),
     purpose: 'business_skill_test',
     draft,
@@ -2011,8 +2017,7 @@ export class XAgentBackendClient implements XAgentBackend {
     const skillPath = (projectId: string, slug: string): string =>
       `${projectPath(projectId)}/${encodeURIComponent(businessSkillSlug(slug))}`
     const mutationKey = (value: string): string => boundedString(value, 255)
-    const optionalBoundedPositive = (value: number | undefined, maximum: number): number | undefined => {
-      if (value === undefined) return undefined
+    const optionalBoundedPositive = (value: number, maximum: number): number => {
       const result = positiveInteger(value)
       if (result > maximum) failSchema()
       return result
@@ -2117,6 +2122,23 @@ export class XAgentBackendClient implements XAgentBackend {
           idempotency_key: mutationKey(input.idempotencyKey),
         }, signal),
       ),
+      mountTest: async (token, projectId, slug, runNumber, input, signal) => {
+        const value = exactRecord(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/mount`, {
+            schema_version: 1, session_id: requiredUuid(input.sessionId), runtime_header: input.runtimeHeader,
+            events: input.events, idempotency_key: mutationKey(input.idempotencyKey),
+          }, signal), ['schema_version', 'claimed', 'test'])
+        if (value.schema_version !== 1 || typeof value.claimed !== 'boolean') failSchema()
+        return { claimed: value.claimed, test: parseBusinessSkillTest(value.test) }
+      },
+      cancelUnmountedTest: async (token, projectId, slug, runNumber, sessionId, idempotencyKey) => {
+        const value = exactRecord(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/cancel-unmounted`, {
+            schema_version: 1, session_id: requiredUuid(sessionId), idempotency_key: mutationKey(idempotencyKey),
+          }), ['schema_version', 'test'])
+        if (value.schema_version !== 1) failSchema()
+        return parseBusinessSkillTest(value.test)
+      },
       settleTest: async (token, projectId, slug, runNumber, sessionId, reason, idempotencyKey, signal) => {
         if (!BUSINESS_SKILL_TERMINATION_REASONS.has(reason)) failSchema()
         const value = exactRecord(await this.businessSkillRequest(

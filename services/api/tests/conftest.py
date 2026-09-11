@@ -469,8 +469,8 @@ async def business_skill_rows(seeded_database: AsyncEngine, fact_project_session
             "VALUES (:session, :actor, :project, 'project', 1, 'Skill test', 'business_skill_test', 1)"
         ), ids)
         await connection.execute(text(
-            "INSERT INTO business_skill_test_runs (id, skill_id, project_id, run_number, draft_revision, content_digest, tool_policy_digest, session_id, started_by_id) "
-            "VALUES (:run, :skill, :project, 1, 1, repeat('a',64), repeat('b',64), :session, :actor)"
+            "INSERT INTO business_skill_test_runs (id, skill_id, project_id, run_number, draft_revision, content_digest, tool_policy_digest, session_id, started_by_id, unexecuted_write_tools) "
+            "VALUES (:run, :skill, :project, 1, 1, repeat('a',64), repeat('b',64), :session, :actor, '[]')"
         ), ids)
         await connection.execute(text(
             "INSERT INTO business_skill_authorizations (id, skill_id, project_id, authorized_by_id) "

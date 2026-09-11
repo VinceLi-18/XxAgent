@@ -24,6 +24,8 @@ import {
 import type { BusinessSkillLocator, BusinessSkillRemoteTranscript, XAgentBusinessSkillRemote, XAgentBusinessSkillScopeRunner, XAgentBusinessSkillTestRunner } from './types.ts'
 import { BusinessSkillRuntimePolicy } from './runtime-policy.ts'
 import { replaceCompletedInstructions } from './turn-binding.ts'
+import { XAgentSessionPersistence } from '@xagent/dsh-session-persistence-api'
+import { BusinessSkillTestRunner } from './test-runner.ts'
 
 export type * from './types.ts'
 
@@ -35,10 +37,15 @@ export interface Config {
   serviceToken: string
   /** Maximum complete catalog entries; oversized responses fail closed. */
   maxCatalogEntries: number
+  /** Registered provider used for real draft-test model calls. */
+  testProvider: string
+  /** Provider model used for real draft-test model calls. */
+  testModel: string
 }
 /** Required deployment settings; catalog bounds have no implicit fallback. */
 export const Config: z<Config> = z.object({
   backendOrigin: z.string().required(), serviceToken: z.string().required(), maxCatalogEntries: z.number().required(),
+  testProvider: z.string().pattern(/\S/).required(), testModel: z.string().pattern(/\S/).required(),
 })
 /** Cordis function plugin name. */
 export const name = 'xagent-business-skill'
@@ -549,6 +556,12 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
 
 /** Install the capability with explicit transport and catalog limits. */
 export function apply(ctx: Context, config: Config): void {
-  new FastApiBusinessSkillService(ctx,
-    new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken }).businessSkills, config)
+  const backend = new XAgentBackendClient({ origin: config.backendOrigin, serviceToken: config.serviceToken }).businessSkills
+  const service = new FastApiBusinessSkillService(ctx, backend, config)
+  ctx.inject(['sessionPersistence'], (child) => {
+    if (!(child.sessionPersistence instanceof XAgentSessionPersistence)) return
+    const runner = new BusinessSkillTestRunner(child, backend, child.sessionPersistence,
+      { provider: config.testProvider, model: config.testModel })
+    child.effect(() => service.registerTestRunner(runner), 'business skill test executor')
+  })
 }

@@ -14,6 +14,7 @@ import {
   type XAgentFactPersistenceSidecars,
 } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
+import type { XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
 import { describe, expect, test, vi } from 'vitest'
 import * as persistenceModule from '../src/index.ts'
 import { decodeFactSessionEvent, encodeFactSessionEvent } from '../src/fact-event-codec.ts'
@@ -1635,12 +1636,34 @@ describe('XAgent FastAPI Session Persistence', () => {
       id: SessionId('session-00000000-0000-0000-0000-000000000702'),
     }
 
-    const session = await persistence.withUserToken('test-token', async () =>
-      persistence.loadBusinessSkillTest(testHeader))
+    const session = ctx.sessions.prepare(testHeader.id, { meta: testHeader })
+    const scope = {
+      principal: { actorId: '00000000-0000-0000-0000-000000000001', authSessionId: '00000000-0000-0000-0000-000000000002',
+        role: 'specialist' as const, permissionRevision: 1, connectionId: 'test' },
+      connectionId: 'test', userToken: 'test-token', sessionId: '00000000-0000-0000-0000-000000000702',
+      purpose: 'business_skill_test' as const, visibility: 'project' as const, projectId: '00000000-0000-0000-0000-000000000003',
+      requestSignal: new AbortController().signal, connectionSignal: new AbortController().signal,
+    }
+    const unbind = persistence.bindBusinessSkillTestPublication(session, scope, async (published, events) => {
+      expect(published).toEqual(testHeader)
+      expect(events).toEqual([])
+    })
+    expect(() => persistence.bindBusinessSkillTestPublication(session, scope, async () => {})).toThrow('invalid Business Skill test publication')
+    await persistence.preparePublication(session)
+    expect(value.calls.some(call => call.name === 'create')).toBe(false)
+    const detach = ctx.sessions.enter(session)
     expect(session.header).toEqual(testHeader)
     session.append('turn/start', { turn: 0 })
     await ctx.sessions.flush(session)
     expect(value.calls.filter(call => call.name === 'append').at(-1)?.args[0]).toBe('test-token')
+    unbind()
+    for (const override of [{ purpose: 'conversation' as const }, { sessionId: 'other' }, { requestSignal: AbortSignal.abort() },
+      { connectionSignal: AbortSignal.abort() }, { requestSignal: undefined }, { projectId: null }]) {
+      const invalidScope = { ...scope, ...override } as XAgentAuthenticatedSessionRequestScope
+      expect(() => persistence.bindBusinessSkillTestPublication(session, invalidScope, async () => {}))
+        .toThrow('invalid Business Skill test publication')
+    }
+    detach()
     await ctx.fiber.dispose()
   })
 

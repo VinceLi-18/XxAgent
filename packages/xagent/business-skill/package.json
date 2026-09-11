@@ -51,6 +51,8 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh-session-title": "workspace:^",
+    "@xagent/dsh-session-persistence-api": "workspace:^",
     "@deepseek-ai/dsh-user-approval": "workspace:^",
     "@xagent/dsh-retrieval": "workspace:^",
     "@xagent/dsh-tool-retrieval": "workspace:^",
@@ -70,6 +72,8 @@
     "@deepseek-ai/dsh-llm": "workspace:^"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-session-title": "workspace:^",
+    "@xagent/dsh-session-persistence-api": "workspace:^",
     "@deepseek-ai/dsh-compaction-tool-result-pruner": "workspace:^",
     "@deepseek-ai/dsh-token-meter": "workspace:^",
     "@deepseek-ai/dsh-user-approval": "workspace:^",

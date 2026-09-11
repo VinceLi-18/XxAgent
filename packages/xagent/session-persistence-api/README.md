@@ -2,7 +2,7 @@
 
 `@xagent/dsh-session-persistence-api` 是 XAgent Business 的唯一 Session Persistence。Header 和 append-only 事件只读写 FastAPI；`locate()` 返回 `undefined`，`supportsRawArtifacts` 为 `false`，远端失败不会回退 JSONL、SQLite 或本地目录。
 
-FastAPI Session 行必须携带不可变 `purpose`。普通读取、列表和快照列表只接受 `conversation`，并防御性排除 `business_skill_test`；测试 Session 不进入普通恢复、工作台计数或 fork。Business Skill 测试启动已由 FastAPI 完成授权和创建后，专用 `loadBusinessSkillTest()` 才建立空的内存 Session 与当前用户令牌租约，供真实测试轮次追加事件。
+FastAPI Session 行必须携带不可变 `purpose`。普通读取、列表和快照列表只接受 `conversation`，并防御性排除 `business_skill_test`；测试 Session 不进入普通恢复、工作台计数或 fork。`bindBusinessSkillTestPublication()` 将真实 factory 尚未发布的 Session 绑定到 `tests/start` 创建的同一测试身份。绑定要求已认证的 Project 测试用途、匹配的 Session ID 与有效物理生命周期；正常 publication 通过现有 codec 把真实 header 与启动事件交给后端原子 mount，只有成功领取的 owner 才建立追加令牌租约，不调用普通 create。`flushSession()` 也等待已卸载 Session 的持久化尾部，避免结算早于最后一批事件。
 
 每个认证 RPC 在串行令牌作用域内执行。成功创建或读取 Session 后，Host 为该 Session 保存内部用户令牌租约，使模型轮次产生的后台 append 继续通过 FastAPI 复核登录记录、权限版本与 RLS。租约不进入事件、模型上下文、浏览器响应或日志。
 
@@ -40,5 +40,5 @@ provider 不增加提示词或工具 token。
 - 本后端不提供逐 Session 原始文件导出；产品导出需要使用受授权的结构化事件接口。
 - 请求令牌作用域为保证多用户隔离而串行执行；后台 append 按 Session 独立使用已认证租约。
 - 工作上下文切换不会迁移既有 Session；fork 由 FastAPI 从已授权源 Session 派生范围和子身份。
-- Business Skill 测试 Session 只能通过专用加载入口进入 Host，普通 Session 列表和恢复路径始终排除该用途。
+- Business Skill 测试 Session 只能通过专用 factory publication 绑定进入 Host，普通 Session 列表和恢复路径始终排除该用途。
 - Fact sidecar 只在 `xagentFact` 服务已装配时参与 append；provider 不持有也不重建其私有注册表。

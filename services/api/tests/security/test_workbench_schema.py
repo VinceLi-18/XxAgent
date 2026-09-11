@@ -80,7 +80,7 @@ async def test_workbench_migration_round_trip(
         revision = await connection.scalar(
             text("SELECT version_num FROM alembic_version")
         )
-    assert revision == "018_xagent_business_skills"
+    assert revision == "019_skill_test_permissions"
 
 
 async def _insert_session(

@@ -14,6 +14,8 @@ Fact 值只接受 text、number、boolean 和 `YYYY-MM-DD` date；文本、标�
 
 Business Skill 接口覆盖列表、创建、详情、草稿、发布、授权、当前版本选择、退役、人工测试结论、测试启动与结算、测试 transcript，以及运行时目录、加载和工具授权。公开对象只使用 slug、版本号和运行编号；版本键、测试 Session ID 与测试 transcript 仅返回给 Host 私有执行路径。客户端严格校验关闭的状态、结论、终止原因、工具集合、响应字段和稳定 status/code 配对，未知字段或畸形值统一失败关闭且不附带服务端正文。
 
+Host 专用 `mountTest` 原子提交真实 factory header 与编码后的启动事件；关闭响应中的 `claimed` 只有首次提交为 true，精确重放为 false。`cancelUnmountedTest` 使用原用户令牌清理空且未挂载的测试，不中止已领取运行。公开测试对象的 `unexecutedWriteTools` 是启动时保存的不可变生产写权限快照，仅接受 `[]` 或 `["propose_fact"]`，不从当前草稿重算；所有测试响应均严格解码该字段。内部 Session ID、挂载结果和凭据不进入 Browser Remote 参数。
+
 Fact 路径共同接受 401 `unauthenticated`、404 `not-found` 和 503 `service-unavailable`。其余稳定 HTTP status/code 配对如下；未列出的配对、未知字段、未知 code、畸形 detail 和不可解析响应都返回 `service-unavailable`，且不附带原始正文。
 
 | 操作 | endpoint 特有的稳定 status/code |

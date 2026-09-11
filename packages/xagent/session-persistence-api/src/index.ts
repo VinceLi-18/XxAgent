@@ -23,6 +23,8 @@ import {
 } from '@deepseek-ai/dsh-session'
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend, type XAgentFactPersistenceSidecars } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
+import { isXAgentAuthenticatedSessionRequestScope, type XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
+import type { XAgentSessionAppendInput } from '@xagent/dsh-backend-client'
 import { decodeFactSessionEvent, encodeFactSessionEvent } from './fact-event-codec.ts'
 import { decodeBusinessSkillEvent, encodeBusinessSkillEvent } from './business-skill-event-codec.ts'
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
@@ -282,6 +284,10 @@ export class XAgentSessionPersistence extends SessionPersistence {
     timer: ReturnType<typeof setTimeout> | undefined
   }>()
   private readonly preparedSuffixes = new WeakMap<Session, SessionEvent[]>()
+  private readonly testPublications = new WeakMap<Session, {
+    readonly token: string
+    readonly publish: (header: SessionHeader, events: XAgentSessionAppendInput['events']) => Promise<void>
+  }>()
   private scopeTail: Promise<void> = Promise.resolve()
   private activeToken: string | undefined
 
@@ -326,6 +332,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   override async preparePublication(session: Session): Promise<void> {
+    const test = this.testPublications.get(session)
+    if (test !== undefined) {
+      await test.publish(session.header, session.events.map(eventEnvelope))
+      this.leases.set(session.id, test.token)
+      return
+    }
     const token = this.requireActiveToken()
     const events = session.events.map(event => structuredClone(event))
     const expectedId = backendSessionId(session.id)
@@ -383,13 +395,14 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   /**
-   * Flush queued events for one live Session before a remote authorization read.
+   * Flush queued events for one Session, including its detached disposal suffix.
    * @param id - Session whose pending append must settle.
-   * @returns after the live Session flush completes or immediately when absent.
+   * @returns after the live checkpoint or detached persistence queue settles.
    */
   async flushSession(id: SessionIdType): Promise<void> {
     const session = this.ctx.get('sessions')?.get(id)
     if (session !== undefined) await this.ctx.sessions.flush(session)
+    else await this.flushWrites(id)
   }
 
   async create(meta: SessionHeader): Promise<void> {
@@ -559,17 +572,23 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   /**
-   * Create the one empty Host Session allocated by an authorized Business Skill test start.
-   * @param meta - Host runtime header whose ID matches the FastAPI-created test Session.
-   * @returns the live Session with writes leased to the current authenticated token scope.
-   * @throws when called outside the authorizing request token scope or with an invalid header.
+   * Bind an unpublished factory Session to its dedicated atomic backend publication.
+   * @param session - factory-owned unpublished Session allocated by tests/start.
+   * @param scope - authenticated Project test purpose and matching Session identity.
+   * @param publish - atomic mount operation receiving the actual header and codec-encoded startup events.
+   * @returns disposer for the exact publication binding; no ordinary Session is created remotely.
+   * @throws when purpose, project, identity or physical request lifetime is invalid.
    */
-  loadBusinessSkillTest(meta: SessionHeader): Session {
-    const token = this.requireActiveToken()
-    const header = headerFrom(meta)
-    const session = this.ctx.sessions.create(header.id, { meta: header })
-    this.leases.set(header.id, token)
-    return session
+  bindBusinessSkillTestPublication(session: Session, scope: XAgentAuthenticatedSessionRequestScope,
+    publish: (header: SessionHeader, events: XAgentSessionAppendInput['events']) => Promise<void>): () => void {
+    if (!isXAgentAuthenticatedSessionRequestScope(scope) || scope.purpose !== 'business_skill_test'
+      || scope.visibility !== 'project' || session.id !== `session-${scope.sessionId}`
+      || scope.requestSignal === undefined || scope.connectionSignal === undefined
+      || scope.requestSignal.aborted || scope.connectionSignal.aborted || this.testPublications.has(session)) {
+      throw new Error('invalid Business Skill test publication')
+    }
+    this.testPublications.set(session, { token: scope.userToken, publish })
+    return () => { this.testPublications.delete(session) }
   }
 
   async listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]> {

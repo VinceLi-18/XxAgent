@@ -3074,10 +3074,14 @@ export interface Config {
   serviceToken: string
   /** Maximum complete catalog entries; oversized responses fail closed. */
   maxCatalogEntries: number
+  /** Registered provider used for real draft-test model calls. */
+  testProvider: string
+  /** Provider model used for real draft-test model calls. */
+  testModel: string
 }
 ```
 
-源码： [`packages/xagent/business-skill/src/index.ts:31`](../packages/xagent/business-skill/src/index.ts)
+源码： [`packages/xagent/business-skill/src/index.ts:33`](../packages/xagent/business-skill/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 
@@ -3183,7 +3187,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/session-persistence-api/src/index.ts:32`](../packages/xagent/session-persistence-api/src/index.ts)
+来源：[`packages/xagent/session-persistence-api/src/index.ts:34`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## 无配置的可加载插件
 

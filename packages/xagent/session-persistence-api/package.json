@@ -34,6 +34,7 @@
     "@deepseek-ai/schemastery": "workspace:^"
   },
   "peerDependencies": {
+    "@xagent/dsh-principal": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
@@ -42,6 +43,7 @@
     "@xagent/dsh-retrieval": "workspace:^"
   },
   "devDependencies": {
+    "@xagent/dsh-principal": "workspace:^",
     "@deepseek-ai/dsh-agent": "workspace:^",
     "@deepseek-ai/dsh-agent-loop": "workspace:^",
     "@deepseek-ai/cordis": "workspace:^",

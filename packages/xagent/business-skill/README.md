@@ -6,7 +6,7 @@ Authenticated project Business Skills backed by FastAPI governance. The abstract
 
 ## Configuration
 
-The Host plugin requires `agents`, `skills`, `tools` and `systemPrompt`. Configure `backendOrigin` as the FastAPI origin, `serviceToken` as the internal Host credential, and `maxCatalogEntries` as a positive safe integer bounding the complete catalog. Missing or invalid configuration fails at installation; oversized backend catalogs fail closed rather than truncating authorized results.
+The Host plugin requires `agents`, `skills`, `tools` and `systemPrompt`. Configure `backendOrigin` as the FastAPI origin, `serviceToken` as the internal Host credential, and `maxCatalogEntries` as a positive safe integer bounding the complete catalog. Required nonblank `testProvider` and `testModel` select the real model calls made by draft tests; Browser input cannot override them. Missing or invalid configuration fails at installation; oversized backend catalogs fail closed rather than truncating authorized results.
 
 ## Request and provider lifetime
 
@@ -36,7 +36,11 @@ An Agent-scoped approval listener delegates to the normal answerer chain and rac
 
 The `xagentBusinessSkill` Remote provides list, detail, create, draft, test, transcript, verdict, publish, authorization, version and retire operations. Backend authorization and lifecycle decisions remain authoritative. Known backend errors retain their stable codes; unknown failures become `service-unavailable` with no internal details. Caller cancellation is combined with request, connection and service cancellation, and responses are checked again after completion.
 
-`registerTestRunner` contributes one reversible Host-only executor. The test Remote rejects before starting backend work unless an executor is installed. That executor owns isolated Session admission, execution and settlement and returns only a public test record. A test transcript is separately paginated by public run number.
+With the FastAPI Session persistence provider installed, the plugin registers a reversible Host-only test executor through `registerTestRunner`. The test Remote rejects before starting backend work unless an executor is installed. A test transcript is separately paginated by public run number.
+
+The executor mounts the empty `business_skill_test` Session allocated by `tests/start` through the real Agent factory. Atomic backend mounting publishes that factory's header and encoded startup events; only its first successful owner may execute. Exact replay never grants ownership again, and a process-local single-flight joins concurrent requests. An existing transcript never receives another scenario. The ordinary Skill loader admits the exact draft as a user-explicit invocation before the single scenario message, preserving their model order in the log. Activation metadata uses the draft revision in this test-purpose Session. Ordinary conversation history, bootstrap and title generation are untouched.
+
+The test catalog and pre-execution policy permit only `skill`, selected read tools and their required read companions. `propose_fact` is excluded even when declared for production; the immutable test report retains `unexecutedWriteTools` separately from its outcome and human verdict. Every tool rechecks current backend access. One owner drains the loop and persistence before settlement, including model/tool failure, cancellation and disposal. Cancellation before mounting atomically closes only an empty unclaimed run; it cannot cancel another owner's mounted run. Allocation and cleanup retain the original authenticated token but do not reuse an aborted transport signal. Backend failures never permit execution or change an existing terminal outcome.
 
 ## Model Experience
 
@@ -48,5 +52,5 @@ Public catalog replacements and immutable Skill bodies consume tokens through th
 
 ## Known Limitations and Deferred Work
 
-- The dedicated read-only test executor and Business profile composition are separate integrations; this package alone does not expose governance in other profiles or execute a test scenario.
+- Business profile composition controls where governance is exposed; this package does not enable it in other profiles.
 - Backend reads add authorization latency and have no offline fallback.

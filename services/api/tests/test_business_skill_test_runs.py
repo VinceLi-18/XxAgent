@@ -32,6 +32,26 @@ async def existing_actor_headers(client, skill_api):
 
 
 @pytest.mark.anyio
+async def test_write_permissions_are_immutable_public_test_history(skill_api):
+    draft = (await skill_api("/create", {**creation(), "primary_tools": ["propose_fact"]})).json()["draft"]
+    request = body(expected_draft_revision=1, scenario="Review a fact", tool_policy_digest=draft["tool_policy_digest"])
+    started = (await skill_api("/research/tests/start", request)).json()
+    assert started["test"]["unexecuted_write_tools"] == ["propose_fact"]
+    changed = (await skill_api("/research/draft", body(expected_draft_revision=1, primary_tools=[]))).json()["draft"]
+    second = (await skill_api("/research/tests/start", body(expected_draft_revision=2, scenario="Read only", tool_policy_digest=changed["tool_policy_digest"]))).json()
+    assert second["test"]["unexecuted_write_tools"] == []
+    assert (await skill_api("/research/tests/start", request)).json() == started
+    settled = (await skill_api("/research/tests/1/settle", body(session_id=started["session_id"], termination_reason="completed"))).json()
+    assert settled["test"]["unexecuted_write_tools"] == ["propose_fact"]
+    verdict = await skill_api("/research/tests/1/verdict", body(verdict="reject"))
+    assert verdict.status_code == 200, verdict.text
+    detail = (await skill_api("/research/detail")).json()
+    assert [test["unexecuted_write_tools"] for test in detail["tests"]] == [[], ["propose_fact"]]
+    assert (await skill_api("/list")).json()["items"][0]["latest_test"]["unexecuted_write_tools"] == []
+    assert (await skill_api("/research/tests/1/transcript")).json()["test"]["unexecuted_write_tools"] == ["propose_fact"]
+
+
+@pytest.mark.anyio
 async def test_start_is_atomic_exact_and_replay_does_not_reuse_another_scenario(skill_api, seeded_database):
     draft = (await skill_api("/create", creation())).json()["draft"]
     request = body(expected_draft_revision=1, scenario="Find project evidence",

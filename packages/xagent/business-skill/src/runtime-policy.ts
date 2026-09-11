@@ -148,8 +148,9 @@ export class BusinessSkillRuntimePolicy {
    * @param definition - exact provider-owned definition.
    * @param version - private immutable backend response.
    * @param invocation - invocation form recorded for the first activation.
+   * @param readOnly - exclude declared production writes for an isolated draft test while checking the production digest.
    */
-  activate(definition: SkillDefinition, version: XAgentBusinessSkillLoad, invocation: 'model-tool' | 'user-explicit'): void {
+  activate(definition: SkillDefinition, version: XAgentBusinessSkillLoad, invocation: 'model-tool' | 'user-explicit', readOnly = false): void {
     if (this.turn === undefined || this.denied) throw failure('business-skill-not-authorized')
     if (this.pin !== undefined) {
       if (this.pin.version.versionKey !== version.versionKey) throw failure('business-skill-conflict')
@@ -157,6 +158,7 @@ export class BusinessSkillRuntimePolicy {
     }
     const tools = new Set(version.completeTools)
     const digest = createHash('sha256').update(JSON.stringify({ complete_tools: [...tools].sort(), version: 1 })).digest('hex')
+    if (readOnly) tools.delete('propose_fact')
     const runtime = this.runtime
     const search = runtime.get(SEARCH_ARTIFACTS_TOOL, this.agent)
     const deferredCompanion = tools.has(SEARCH_ARTIFACTS_TOOL) && search !== undefined && isArtifactSearchTool(search)
@@ -167,7 +169,7 @@ export class BusinessSkillRuntimePolicy {
         || (runtime.get(name, this.agent) === undefined && !(name === CITED_ANSWER_TOOL && deferredCompanion)))) {
       throw failure('business-skill-policy-changed')
     }
-    const pin = new TurnBinding(definition, version, this.turn)
+    const pin = new TurnBinding(definition, { ...version, completeTools: [...tools] }, this.turn)
     const lift = runtime.restrict({ deny: runtime.schemas().map(tool => tool.name).filter(name => !tools.has(name)) })
     try {
       this.agent.session.append('business-skill/activated', { slug: version.slug, version: version.versionNumber,

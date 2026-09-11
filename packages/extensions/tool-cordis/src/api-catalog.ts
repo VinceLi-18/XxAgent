@@ -5129,7 +5129,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'XAgentBusinessSkillTest',
-    declaration: 'export interface XAgentBusinessSkillTest {\n    readonly runNumber: number;\n    readonly draftRevision: number;\n    readonly contentDigest: string;\n    readonly toolPolicyDigest: string;\n    readonly status: XAgentBusinessSkillTestStatus;\n    readonly terminationReason?: XAgentBusinessSkillTerminationReason;\n    readonly verdict?: XAgentBusinessSkillVerdict;\n    readonly startedAt: string;\n    readonly settledAt?: string;\n    readonly verdictAt?: string;\n}',
+    declaration: 'export interface XAgentBusinessSkillTest {\n    readonly runNumber: number;\n    readonly draftRevision: number;\n    readonly contentDigest: string;\n    readonly toolPolicyDigest: string;\n    readonly unexecutedWriteTools: readonly string[];\n    readonly status: XAgentBusinessSkillTestStatus;\n    readonly terminationReason?: XAgentBusinessSkillTerminationReason;\n    readonly verdict?: XAgentBusinessSkillVerdict;\n    readonly startedAt: string;\n    readonly settledAt?: string;\n    readonly verdictAt?: string;\n}',
   },
   {
     name: 'XAgentBusinessSkillTestInput',

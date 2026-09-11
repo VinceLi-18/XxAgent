@@ -126,6 +126,7 @@ function requestScope(
     sessionId: SESSION,
     visibility: 'project' as const,
     projectId: PROJECT,
+    purpose: 'conversation',
     ...overrides,
   }) as XAgentAuthenticatedSessionRequestScope
 }
@@ -221,6 +222,45 @@ function claimMessage(ctx: Context, agent: Agent, message: ReturnType<typeof cre
 }
 
 describe('Project-only propose_fact registration', () => {
+  test('an authenticated draft-test purpose never registers Fact writes, including consumer and provider HMR', async () => {
+    const { agent, ctx, factFiber, fiber } = await setup()
+    const testScope = requestScope({ purpose: 'business_skill_test' })
+    const adapter = new RequestProbeAdapter()
+    ctx.llm.registerAdapter(['mock'], adapter)
+    runWithXAgentAuthenticatedRequestScope(testScope, () => {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'test a draft' }], source: { kind: 'user' } }))
+    })
+    await agent.whenIdle()
+    expect(adapter.requests).toHaveLength(1)
+    expect(adapter.requests[0]?.tools?.map(value => value.name) ?? []).not.toContain('propose_fact')
+    expect((await executeProposal(ctx, agent, proposal())).isError).toBe(true)
+    await fiber.dispose()
+    await factFiber?.dispose()
+    await ctx.plugin((child) => { new FakeFact(child) })
+    await ctx.plugin(tool)
+    await enterProjectStep(ctx, agent, testScope)
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+    await enterProjectStep(ctx, agent)
+    expect(ctx.tools.get('propose_fact', agent)).toBeDefined()
+    await enterProjectStep(ctx, agent, testScope)
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+  })
+
+  test.each(['stale', 'other-session', 'unowned'] as const)('test-purpose claims cannot retain an earlier proposal registration: %s', async (kind) => {
+    const { agent, ctx } = await setup()
+    await enterProjectStep(ctx, agent)
+    const ended = new AbortController()
+    ended.abort()
+    const message = createUserMessage({ content: [{ type: 'text', text: 'draft test' }], source: { kind: 'user' } })
+    const scope = requestScope({ purpose: 'business_skill_test',
+      ...(kind === 'stale' ? { requestSignal: ended.signal } : {}),
+      ...(kind === 'other-session' ? { sessionId: '00000000-0000-0000-0000-000000000202' } : {}) })
+    if (kind === 'unowned') agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
+    else runWithXAgentAuthenticatedRequestScope(scope, () => { agentEvents(ctx, agent).emit('agent/inbox/inserted', { message }) })
+    claimMessage(ctx, agent, message, ++syntheticTurn)
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+  })
+
   test('enters the real Agent-loop request under the authenticated Project carrier', async () => {
     const { agent, ctx } = await setup('native', true, true)
     const adapter = new RequestProbeAdapter()

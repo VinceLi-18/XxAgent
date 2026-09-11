@@ -18,6 +18,8 @@ from app.schemas.business_skills import (
     BusinessSkillDraftRequest, BusinessSkillMutationRequest, BusinessSkillPageRequest,
     BusinessSkillPublishRequest, BusinessSkillVerdictRequest, BusinessSkillVersionRequest,
     BusinessSkillTestStartRequest, BusinessSkillTestSettleRequest, BusinessSkillTranscriptRequest,
+    BusinessSkillTestMountRequest,
+    BusinessSkillTestCancelRequest,
     BusinessSkillRuntimeRequest, BusinessSkillLoadRequest, BusinessSkillToolRequest,
 )
 from app.services.audit import business_skill_audit_details, write_audit_event
@@ -60,6 +62,7 @@ async def skill_summary(session: AsyncSession, item: BusinessSkill) -> dict[str,
 def test_payload(run: BusinessSkillTestRun) -> dict[str, object]:
     return {"run_number": run.run_number, "draft_revision": run.draft_revision,
             "content_digest": run.content_digest, "tool_policy_digest": run.tool_policy_digest,
+            "unexecuted_write_tools": run.unexecuted_write_tools,
             "status": run.status, "termination_reason": run.termination_reason, "verdict": run.verdict,
             "started_at": run.started_at.isoformat(),
             "settled_at": run.settled_at.isoformat() if run.settled_at else None,
@@ -308,6 +311,7 @@ async def start_business_skill_test(session: AsyncSession, principal: Principal,
     await session.flush()
     run = BusinessSkillTestRun(id=uuid4(), skill_id=skill.id, project_id=project_id, run_number=number,
         draft_revision=draft.revision, content_digest=draft.content_digest, tool_policy_digest=policy.digest,
+        unexecuted_write_tools=list(policy.unexecuted_write_tools),
         session_id=test_session.id, started_by_id=principal.actor_id)
     session.add(run)
     await session.flush()
@@ -363,6 +367,48 @@ async def settle_business_skill_test(session: AsyncSession, principal: Principal
                       run_number=run.run_number, session_id=run.session_id, request_sha256=digest)
     await store_test_replay(session, principal, "business_skill.test_settle", request, digest, result)
     return result
+
+
+async def mount_business_skill_test(session: AsyncSession, principal: Principal, project_id: UUID,
+                                    slug: str, run_number: int, request: BusinessSkillTestMountRequest) -> dict[str, object]:
+    """Publish one factory atomically; an exact replay observes ownership but never reacquires it."""
+    _, run = await locked_test(session, project_id, slug, run_number)
+    if run.session_id != request.session_id or run.started_by_id != principal.actor_id:
+        raise BusinessSkillServiceError("not-found")
+    replay, digest = await test_replay(session, principal, project_id, slug, "business_skill.test_mount", request, run_number)
+    if replay is not None:
+        return {"schema_version": 1, "test": test_payload(run), "claimed": False}
+    item = await session.get(XAgentSession, run.session_id)
+    assert item is not None
+    nonempty = await session.scalar(select(XAgentSessionEvent.sequence).where(XAgentSessionEvent.session_id == item.id).limit(1))
+    if run.status != "running" or item.runtime_header is not None or item.last_event_sequence != -1 or nonempty is not None:
+        raise BusinessSkillServiceError("business-skill-conflict")
+    item.runtime_header = request.runtime_header
+    for sequence, event in enumerate(request.events):
+        session.add(XAgentSessionEvent(session_id=item.id, sequence=sequence, schema_version=1,
+            event_type=event.event_type, payload=event.payload, actor_id=principal.actor_id))
+    item.last_event_sequence = len(request.events) - 1
+    await session.flush()
+    result = {"schema_version": 1, "test": test_payload(run), "claimed": True}
+    await store_test_replay(session, principal, "business_skill.test_mount", request, digest, result)
+    return result
+
+
+async def cancel_unmounted_business_skill_test(session: AsyncSession, principal: Principal, project_id: UUID,
+                                               slug: str, run_number: int, request: BusinessSkillTestCancelRequest) -> dict[str, object]:
+    """Race mounting under the same locks; mounted runs remain exclusively owned by their runner."""
+    _, run = await locked_test(session, project_id, slug, run_number)
+    if run.session_id != request.session_id or run.started_by_id != principal.actor_id:
+        raise BusinessSkillServiceError("not-found")
+    test_session = await session.get(XAgentSession, run.session_id)
+    assert test_session is not None
+    occupied = await session.scalar(select(XAgentSessionEvent.sequence).where(
+        XAgentSessionEvent.session_id == run.session_id).limit(1))
+    if run.status != "running" or test_session.runtime_header is not None or test_session.last_event_sequence != -1 or occupied is not None:
+        return {"schema_version": 1, "test": test_payload(run)}
+    return await settle_business_skill_test(session, principal, project_id, slug, run_number,
+        BusinessSkillTestSettleRequest(schema_version=1, session_id=request.session_id,
+            termination_reason="cancelled", idempotency_key=request.idempotency_key))
 
 
 async def business_skill_transcript(session: AsyncSession, project_id: UUID, slug: str,

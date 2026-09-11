@@ -31,7 +31,7 @@ async def test_api_cannot_change_private_identities_or_test_evidence(seeded_data
         "business_skills": ("id", "project_id", "slug", "created_by_id"),
         "business_skill_drafts": ("skill_id", "project_id"),
         "business_skill_versions": ("instructions", "published_by_id", "tool_policy_digest"),
-        "business_skill_test_runs": ("session_id", "draft_revision", "content_digest", "tool_policy_digest", "started_by_id"),
+        "business_skill_test_runs": ("session_id", "draft_revision", "content_digest", "tool_policy_digest", "started_by_id", "unexecuted_write_tools"),
         "business_skill_authorizations": ("skill_id", "project_id", "authorized_by_id"),
     }
     async with seeded_database.connect() as connection:

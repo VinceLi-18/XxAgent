@@ -4,10 +4,14 @@ import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
 import SkillRegistry, { type SkillProviderObservation } from '@deepseek-ai/dsh-skill'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, test, vi } from 'vitest'
-import { apply } from '../src/index.ts'
+import { apply, Config } from '../src/index.ts'
 import { entry, request, setup, transcriptResponse, claimTurn } from './fixtures.ts'
 
 describe('Business Skill admission and transport lifetime', () => {
+  test.each([{}, { testProvider: '', testModel: 'mock' }, { testProvider: 'mock', testModel: '' },
+    { testProvider: ' ', testModel: 'mock' }])('test model configuration rejects missing and blank deployment values %#', (route) => {
+    expect(() => Config({ backendOrigin: 'https://backend.example', serviceToken: 'host', maxCatalogEntries: 5, ...route } as Config)).toThrow()
+  })
   test('an unrelated physical request ending leaves the current message and turn owners intact', async () => {
     const h = await setup()
     h.state.catalog = [entry()]
@@ -114,22 +118,37 @@ describe('Business Skill admission and transport lifetime', () => {
   test.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid catalog bound %s at installation', async (maxCatalogEntries) => {
     const ctx = new Context()
     try {
-      expect(() => { apply(ctx, { backendOrigin: 'https://backend.example', serviceToken: 'host', maxCatalogEntries }) }).toThrow('positive safe integer')
+      expect(() => { apply(ctx, { backendOrigin: 'https://backend.example', serviceToken: 'host', maxCatalogEntries, testProvider: 'mock', testModel: 'mock' }) }).toThrow('positive safe integer')
     } finally { await ctx.fiber.dispose() }
   })
 
   test('configured plugin forwards only the physical request token to the configured backend', async () => {
     const ctx = new Context()
+    await ctx.plugin(SkillRegistry)
     const requests: { url: string; token: string | null }[] = []
     const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       requests.push({ url: input instanceof Request ? input.url : String(input), token: new Headers(init?.headers).get('authorization') })
       return Response.json({ schema_version: 1, items: [], next_cursor: null })
     })
     try {
-      apply(ctx, { backendOrigin: 'https://configured.example', serviceToken: 'host', maxCatalogEntries: 5 })
+      apply(ctx, { backendOrigin: 'https://configured.example', serviceToken: 'host', maxCatalogEntries: 5, testProvider: 'mock', testModel: 'mock' })
       expect(await ctx.xagentBusinessSkill.withRequest(request(), () => ctx.xagentBusinessSkill.list({}))).toEqual({ items: [] })
       expect(requests).toEqual([{ url: 'https://configured.example/internal/xagent/business-skills/projects/00000000-0000-0000-0000-000000000201/list', token: 'Bearer alice-token' }])
     } finally { fetch.mockRestore(); await ctx.fiber.dispose() }
+  })
+
+  test('a different persistence provider does not install the isolated backend executor', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SkillRegistry)
+    try {
+      ctx.provide('sessionPersistence', {})
+      apply(ctx, { backendOrigin: 'https://configured.example', serviceToken: 'host', maxCatalogEntries: 5,
+        testProvider: 'mock', testModel: 'mock' })
+      await ctx.plugin({ apply: () => {} })
+      await expect(ctx.xagentBusinessSkill.withRequest(request(), () => ctx.xagentBusinessSkill.test('review', {
+        expectedDraftRevision: 1, toolPolicyDigest: 'a'.repeat(64), scenario: 'Read', idempotencyKey: 'test',
+      }))).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+    } finally { await ctx.fiber.dispose() }
   })
 
   test('rejects a second live physical request attempting to replace the same Agent owner', async () => {
