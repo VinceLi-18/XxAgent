@@ -9,11 +9,24 @@ import { Session, SessionId, type SessionEvent, type UserMessage } from '@deepse
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { agentEvents, Inbox, type Agent, type PreStepDecision } from '@deepseek-ai/dsh-agent'
-import SkillRegistry from '@deepseek-ai/dsh-skill'
+import SkillRegistry, { renderSkillContent, type SkillDefinition } from '@deepseek-ai/dsh-skill'
 import * as SkillFileSystem from '@deepseek-ai/dsh-skill-filesystem'
 import * as toolSkill from '@deepseek-ai/dsh-tool-skill'
 
 const testToolSignal = new AbortController().signal
+
+interface SkillLoadObservation {
+  readonly agent: Agent
+  readonly definition: SkillDefinition
+  readonly invocation: 'model-tool' | 'user-explicit'
+  readonly callId?: ReturnType<typeof CallId>
+}
+
+function observeSkillLoads(ctx: Context): SkillLoadObservation[] {
+  const observations: SkillLoadObservation[] = []
+  ctx.on('skill/loaded', (payload) => { observations.push(payload) })
+  return observations
+}
 
 async function tempDir(name: string): Promise<string> {
   return await import('node:fs/promises').then(fs => fs.mkdtemp(join(tmpdir(), `dsh-${name}-`)))
@@ -208,6 +221,7 @@ describe('dsh-tool-skill', () => {
   it('injects a stable durable name-and-description catalog at the first step', async () => {
     const home = await tempDir('tool-catalog')
     const ctx = await setup(home, { catalogDescriptionMaxLength: 50 })
+    const observations = observeSkillLoads(ctx)
     ctx.skills.register({
       name: 'z-skill',
       description: 'Long   description '.repeat(5),
@@ -300,6 +314,7 @@ describe('dsh-tool-skill', () => {
     expect(rendered).not.toContain('Secret body')
     expect(rendered).not.toContain('user-only-skill')
     expect(renderPrompt(await ctx.systemPrompt.assemble({ agent: agentForCwd('/workspace') }))).not.toContain('<available_skills>')
+    expect(observations).toEqual([])
   })
 
   it('does not inject a catalog when no model-invocable skills are available', async () => {
@@ -798,6 +813,134 @@ describe('dsh-tool-skill', () => {
     expect(block.text).not.toContain('# Skill:')
   })
 
+  it('publishes one resolved model-tool load before returning its rendered body', async () => {
+    const home = await tempDir('tool-load-observation')
+    const ctx = await setup(home)
+    const agent = agentForCwd('/workspace')
+    ctx.skills.register({
+      name: 'observed-skill',
+      description: 'Observed skill',
+      source: 'runtime',
+      content: 'Observed instructions.',
+    })
+    const observations = observeSkillLoads(ctx)
+    const definition = await ctx.skills.get('observed-skill', { scope: agent })
+    if (definition === undefined) throw new Error('expected resolved skill fixture')
+    expect(observations).toEqual([])
+
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('observed-call'),
+      name: 'skill',
+      arguments: { name: 'observed-skill' },
+      agent,
+    })
+
+    expect(result.isError).toBe(false)
+    expect(observations).toHaveLength(1)
+    const observed = observations[0]
+    if (observed === undefined) throw new Error('expected one skill load observation')
+    expect(observed.agent).toBe(agent)
+    expect(observed.definition).toBe(definition)
+    expect(observed).toMatchObject({
+      invocation: 'model-tool',
+      callId: CallId('observed-call'),
+      definition: {
+        name: 'observed-skill',
+        provider: 'runtime',
+        content: 'Observed instructions.',
+      },
+    })
+    expect(result.content).toEqual([{ type: 'text', text: renderSkillContent(observed.definition) }])
+  })
+
+  it('dispatches model-tool load observations through the receiving Agent scope', async () => {
+    const home = await tempDir('tool-load-scope')
+    const ctx = await setup(home)
+    const agent = agentForCwd('/workspace')
+    const { scope } = await mintAgentScope(ctx, agent)
+    ctx.skills.register({
+      name: 'scoped-observation',
+      description: 'Scoped observation',
+      source: 'runtime',
+      content: 'Scoped instructions.',
+    })
+    const observations: SkillLoadObservation[] = []
+    scope.ctx.on('skill/loaded', (payload) => { observations.push(payload) })
+
+    await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('scoped-observation-call'),
+      name: 'skill',
+      arguments: { name: 'scoped-observation' },
+      agent,
+    })
+
+    expect(observations).toHaveLength(1)
+    expect(observations[0]?.agent).toBe(agent)
+    await scope.dispose()
+  })
+
+  it('awaits model-tool load listeners before returning the body', async () => {
+    const home = await tempDir('tool-load-order')
+    const ctx = await setup(home)
+    const agent = agentForCwd('/workspace')
+    ctx.skills.register({
+      name: 'ordered-skill',
+      description: 'Ordered skill',
+      source: 'runtime',
+      content: 'BODY MUST STAY PRIVATE ON FAILURE.',
+    })
+    let release!: () => void
+    let started!: () => void
+    const listenerStarted = new Promise<void>((resolve) => { started = resolve })
+    const listenerGate = new Promise<void>((resolve) => { release = resolve })
+    ctx.on('skill/loaded', async () => {
+      started()
+      await listenerGate
+    })
+
+    let settled = false
+    const pending = ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('ordered-call'),
+      name: 'skill',
+      arguments: { name: 'ordered-skill' },
+      agent,
+    }).then((result) => {
+      settled = true
+      return result
+    })
+    await listenerStarted
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    release()
+    expect((await pending).isError).toBe(false)
+  })
+
+  it('withholds the model-tool body when a load listener fails', async () => {
+    const home = await tempDir('tool-load-rejection')
+    const ctx = await setup(home)
+    const agent = agentForCwd('/workspace')
+    ctx.skills.register({
+      name: 'rejected-skill',
+      description: 'Rejected skill',
+      source: 'runtime',
+      content: 'BODY MUST STAY PRIVATE ON FAILURE.',
+    })
+    ctx.on('skill/loaded', () => { throw new Error('load rejected') }, { prepend: true })
+    const rejected = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('rejected-call'),
+      name: 'skill',
+      arguments: { name: 'rejected-skill' },
+      agent,
+    })
+    expect(rejected.isError).toBe(true)
+    expect(JSON.stringify(rejected.content)).toContain('load rejected')
+    expect(JSON.stringify(rejected.content)).not.toContain('BODY MUST STAY PRIVATE ON FAILURE.')
+  })
+
   it('renders provider-managed resource hints for non-local skills', async () => {
     const home = await tempDir('tool-resource-hints')
     const ctx = await setup(home)
@@ -977,6 +1120,7 @@ describe('user-explicit invocation injection', () => {
 
   it('injects a user-invocable skill named by a leading /token, after every other injection', async () => {
     const { ctx, agent } = await invokeHarness()
+    const observations = observeSkillLoads(ctx)
     const first = gesture('/hidden-demo what does this do')
     const second = gesture('plain follow-up prose')
     const decision = await proposeStep(ctx, agent, [first, second])
@@ -994,6 +1138,51 @@ describe('user-explicit invocation injection', () => {
     expect(block.text).toContain('<skill_content name="hidden-demo">')
     expect(block.text).toContain('Say the magic word: PINEAPPLE.')
     expect(block.text).not.toContain('what does this do')
+    expect(observations).toHaveLength(1)
+    const observed = observations[0]
+    if (observed === undefined) throw new Error('expected one skill load observation')
+    expect(observed.agent).toBe(agent)
+    expect(observed).toMatchObject({
+      invocation: 'user-explicit',
+      definition: {
+        name: 'hidden-demo',
+        provider: 'filesystem',
+        content: 'Say the magic word: PINEAPPLE.',
+      },
+    })
+    expect(observed).not.toHaveProperty('callId')
+    expect(block.text).toBe(renderSkillContent(observed.definition))
+  })
+
+  it('awaits user-explicit load listeners before admitting the injection', async () => {
+    const { ctx, agent } = await invokeHarness()
+    let release!: () => void
+    let started!: () => void
+    const listenerStarted = new Promise<void>((resolve) => { started = resolve })
+    const listenerGate = new Promise<void>((resolve) => { release = resolve })
+    ctx.on('skill/loaded', async () => {
+      started()
+      await listenerGate
+    })
+
+    let settled = false
+    const pending = proposeStep(ctx, agent, [gesture('/hidden-demo wait')]).then((decision) => {
+      settled = true
+      return decision
+    })
+    await listenerStarted
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    release()
+    await expect(pending).resolves.toMatchObject({ kind: 'enter' })
+  })
+
+  it('rejects user-explicit admission when a load listener fails', async () => {
+    const { ctx, agent } = await invokeHarness()
+    ctx.on('skill/loaded', () => { throw new Error('injection rejected') }, { prepend: true })
+    await expect(proposeStep(ctx, agent, [gesture('/hidden-demo blocked')]))
+      .rejects.toThrow('injection rejected')
+    expect(agent.session.deriveMessages().some(message => JSON.stringify(message).includes('PINEAPPLE'))).toBe(false)
   })
 
   it('injects an ordinary skill the same way (one uniform user-explicit path)', async () => {

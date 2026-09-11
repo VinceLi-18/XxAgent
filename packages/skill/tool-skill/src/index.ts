@@ -7,9 +7,10 @@
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import { agentEvents, type Agent, type PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { Scoped } from '@deepseek-ai/dsh-scope'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type CallId } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import {
   escapeText,
@@ -17,6 +18,7 @@ import {
   isSkillName,
   isUserInvocable,
   renderSkillContent,
+  type SkillDefinition,
   type SkillInvocationSource,
   type SkillSummary,
 } from '@deepseek-ai/dsh-skill'
@@ -43,6 +45,27 @@ export interface SkillCatalogSource {
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'skill-catalog': SkillCatalogSource
+  }
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * A resolved skill is about to become model-visible. Dispatch is awaited
+     * before the tool result or injected message is admitted; listener failure
+     * prevents the loaded body from entering model context.
+     * @param payload - the receiving agent, exact complete provider definition,
+     * model-tool or user-explicit load path, and the model call ID present only
+     * for a model-tool load.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode serial
+     */
+    'skill/loaded'(this: Scoped<Agent>, payload: {
+      agent: Agent
+      definition: SkillDefinition
+      invocation: 'model-tool' | 'user-explicit'
+      callId?: CallId
+    }): Promise<void> | void
   }
 }
 
@@ -145,6 +168,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (!isModelInvocable(skill)) {
         throw new Error(`skill "${args.name}" is not available for model invocation`)
       }
+      if (exec.agent !== undefined) {
+        await agentEvents(ctx, exec.agent).serial('skill/loaded', {
+          definition: skill,
+          invocation: 'model-tool',
+          callId: exec.callId,
+        })
+      }
       return {
         name: skill.name,
         provider: skill.provider,
@@ -193,6 +223,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       // on the loaded definition — the single lookup that produces what is
       // actually injected.
       if (skill === undefined || !isUserInvocable(skill)) continue
+      await agentEvents(ctx, agent).serial('skill/loaded', {
+        definition: skill,
+        invocation: 'user-explicit',
+      })
+      signal.throwIfAborted()
       const source: SkillInvocationSource = { kind: 'skill-invocation', name, form: 'instructions' }
       injections.push(createUserMessage({
         content: [{ type: 'text', text: renderSkillContent(skill) }],

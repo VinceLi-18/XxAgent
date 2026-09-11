@@ -2747,6 +2747,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'ns', description: 'the namespace whose resolved value changed.' }, { name: 'next', description: 'the new resolved value.' }, { name: 'prev', description: 'the previous resolved value.' }, { name: 'source', description: 'whether the change entered through `update()` or the provider.' }],
   },
   {
+    name: 'skill/loaded',
+    mode: 'serial',
+    signature: '\'skill/loaded\'(this: Scoped<Agent>, payload: { agent: Agent definition: SkillDefinition invocation: \'model-tool\' | \'user-explicit\' callId?: CallId }): Promise<void> | void',
+    summary: 'A resolved skill is about to become model-visible.',
+    description: 'A resolved skill is about to become model-visible. Dispatch is awaited before the tool result or injected message is admitted; listener failure prevents the loaded body from entering model context.',
+    parameters: [{ name: 'payload', description: 'the receiving agent, exact complete provider definition, model-tool or user-explicit load path, and the model call ID present only for a model-tool load. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
+  },
+  {
     name: 'skills/change',
     mode: 'emit',
     signature: '\'skills/change\'(): void',

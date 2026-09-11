@@ -306,6 +306,34 @@ async get(name: string, options: SkillViewOptions = {}): Promise<SkillDefinition
 
 Source: [`packages/skill/skill/src/index.ts:357`](../../packages/skill/skill/src/index.ts)
 
+<a id="skill-events"></a>
+
+### `skill/*` events
+
+<a id="skillloaded--serial"></a>
+
+#### `skill/loaded` — serial
+
+A resolved skill is about to become model-visible. Dispatch is awaited before the tool result or injected message is admitted; listener failure prevents the loaded body from entering model context.
+
+```ts cordis-catalog
+/**
+ * A resolved skill is about to become model-visible. Dispatch is awaited
+ * before the tool result or injected message is admitted; listener failure
+ * prevents the loaded body from entering model context.
+ * @param payload - the receiving agent, exact complete provider definition,
+ * model-tool or user-explicit load path, and the model call ID present only
+ * for a model-tool load.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+ * @mode serial
+ */
+'skill/loaded'(this: Scoped<Agent>, payload: { agent: Agent definition: SkillDefinition invocation: 'model-tool' | 'user-explicit' callId?: CallId }): Promise<void> | void
+```
+
+Types: [Agent](core.md) · [CallId](llm-streaming.md) · [Scoped](scope.md)
+
+Source: [`packages/skill/tool-skill/src/index.ts:63`](../../packages/skill/tool-skill/src/index.ts)
+
 <a id="skills-events"></a>
 
 ### `skills/*` events

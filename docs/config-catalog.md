@@ -2569,7 +2569,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/skill/tool-skill/src/index.ts:61`](../packages/skill/tool-skill/src/index.ts)
+Source: [`packages/skill/tool-skill/src/index.ts:84`](../packages/skill/tool-skill/src/index.ts)
 
 <a id="deepseek-aidsh-tool-str-replace-editor"></a>
 
