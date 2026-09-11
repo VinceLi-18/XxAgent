@@ -24,6 +24,46 @@ def migration_config(engine):
     return config
 
 
+async def _insert_test_session(connection, project_id, actor_id):
+    session_id = uuid4()
+    await connection.execute(text(
+        "INSERT INTO xagent_sessions (id, owner_id, project_id, visibility, "
+        "permission_revision_created, title, purpose, next_citation_ordinal) "
+        "VALUES (:id, :actor, :project, 'project', 1, 'Skill test', 'business_skill_test', 1)"
+    ), {"id": session_id, "actor": actor_id, "project": project_id})
+    return session_id
+
+
+async def _insert_skill_history(connection, table, rows, skill_id, number, session_id=None):
+    row_id = uuid4()
+    if table == "business_skill_versions":
+        statement = text(
+            "INSERT INTO business_skill_versions (id, skill_id, project_id, version_number, "
+            "description, instructions, primary_tools, complete_tools, content_digest, "
+            "tool_policy_digest, source_draft_revision, published_by_id) "
+            "SELECT :id, :skill, project_id, :number, description, instructions, primary_tools, "
+            "complete_tools, content_digest, tool_policy_digest, source_draft_revision, "
+            "published_by_id FROM business_skill_versions WHERE id = :source"
+        )
+        source_id = rows["version"]
+    else:
+        if session_id is None:
+            session_id = await _insert_test_session(connection, rows["project"], rows["actor"])
+        statement = text(
+            "INSERT INTO business_skill_test_runs (id, skill_id, project_id, run_number, "
+            "draft_revision, content_digest, tool_policy_digest, session_id, started_by_id) "
+            "SELECT :id, :skill, project_id, :number, draft_revision, content_digest, "
+            "tool_policy_digest, :session, started_by_id "
+            "FROM business_skill_test_runs WHERE id = :source"
+        )
+        source_id = rows["run"]
+    await connection.execute(statement, {
+        "id": row_id, "skill": skill_id, "number": number,
+        "source": source_id, "session": session_id,
+    })
+    return row_id
+
+
 @pytest.mark.anyio
 async def test_revision_018_installs_governed_skill_relations(seeded_database):
     async with seeded_database.connect() as connection:
@@ -151,12 +191,19 @@ async def test_project_numbers_must_increase_across_skills(seeded_database, busi
         second = uuid4()
         await connection.execute(text("INSERT INTO business_skills (id, project_id, slug, display_name, created_by_id) VALUES (:id, :project, 'second-skill', 'Second', :actor)"),
                                  {"id": second, "project": business_skill_rows["project"], "actor": alice.id})
-    async with seeded_database.connect() as connection:
-        columns = list(await connection.scalars(text("SELECT column_name FROM information_schema.columns WHERE table_name = :table ORDER BY ordinal_position"), {"table": table}))
-    expressions = ["gen_random_uuid()" if c == "id" else ":second" if c == "skill_id" else "0" if c == number else c for c in columns]
+        await _insert_skill_history(connection, table, business_skill_rows, business_skill_rows["skill"], 5)
     with pytest.raises(DBAPIError, match="project number must increase"):
         async with seeded_database.begin() as connection:
-            await connection.execute(text(f"INSERT INTO {table} ({', '.join(columns)}) SELECT {', '.join(expressions)} FROM {table}"), {"second": second})
+            await _insert_skill_history(connection, table, business_skill_rows, second, 3)
+    async with seeded_database.begin() as connection:
+        higher_id = await _insert_skill_history(connection, table, business_skill_rows, second, 6)
+        assert await connection.scalar(
+            text(f"SELECT {number} FROM {table} WHERE id = :id"), {"id": higher_id}
+        ) == 6
+        assert list(await connection.scalars(
+            text(f"SELECT {number} FROM {table} WHERE project_id = :project ORDER BY {number}"),
+            {"project": business_skill_rows["project"]},
+        )) == [1, 5, 6]
 
 
 @pytest.mark.anyio
@@ -177,10 +224,20 @@ async def test_retirement_requires_authorization_removal_and_is_terminal(seeded_
 
 
 @pytest.mark.anyio
-async def test_test_run_requires_its_own_project_test_session(seeded_database, business_skill_rows, fact_project_session):
-    with pytest.raises(DBAPIError):
+@pytest.mark.parametrize("session_scope", ["same-project-conversation", "other-project-test"])
+async def test_test_run_requires_its_own_project_test_session(
+    seeded_database, business_skill_rows, fact_project_session, bob_project, alice, session_scope,
+):
+    session_id = fact_project_session.id
+    if session_scope == "other-project-test":
         async with seeded_database.begin() as connection:
-            await connection.execute(text("UPDATE business_skill_test_runs SET session_id = :session"), {"session": fact_project_session.id})
+            session_id = await _insert_test_session(connection, bob_project.id, alice.id)
+    with pytest.raises(DBAPIError, match="test run requires its project test session"):
+        async with seeded_database.begin() as connection:
+            await _insert_skill_history(
+                connection, "business_skill_test_runs", business_skill_rows,
+                business_skill_rows["skill"], 2, session_id,
+            )
 
 
 @pytest.mark.anyio
