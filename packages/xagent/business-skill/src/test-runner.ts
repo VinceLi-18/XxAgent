@@ -48,9 +48,11 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
     const scope = current as XAgentAuthenticatedSessionRequestScope
     if (!isXAgentAuthenticatedSessionRequestScope(scope) || scope.visibility !== 'project'
       || scope.purpose !== 'conversation' || scope.requestSignal === undefined || scope.connectionSignal === undefined) throw unavailable()
+    const cwd = this.ctx.sessions.get(SessionId(`session-${scope.sessionId}`))?.header.cwd
+    if (cwd === undefined) throw unavailable()
     const combined = AbortSignal.any([signal, this.lifetime.signal, scope.requestSignal, scope.connectionSignal])
     combined.throwIfAborted()
-    const operation = this.start(slug, input, scope, scope.projectId, combined)
+    const operation = this.start(slug, input, scope, scope.projectId, cwd, combined)
     this.pending.add(operation)
     try { return await operation } finally { this.pending.delete(operation) }
   }
@@ -59,18 +61,18 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
   async dispose(): Promise<void> { await this.close() }
 
   private async start(slug: string, input: XAgentBusinessSkillTestInput, scope: XAgentAuthenticatedSessionRequestScope,
-    project: string, signal: AbortSignal): Promise<XAgentBusinessSkillTest> {
+    project: string, cwd: string, signal: AbortSignal): Promise<XAgentBusinessSkillTest> {
     // Allocation must finish so cancellation can identify and atomically close an empty run.
     const start = await this.backend.startTest(scope.userToken, project, slug, input)
     const existing = this.runs.get(start.sessionId)
     if (existing !== undefined) return await existing
-    const operation = this.execute(slug, start, scope, project, signal)
+    const operation = this.execute(slug, start, scope, project, cwd, signal)
     this.runs.set(start.sessionId, operation)
     try { return await operation } finally { this.runs.delete(start.sessionId) }
   }
 
   private async execute(slug: string, start: XAgentBusinessSkillTestStart, scope: XAgentAuthenticatedSessionRequestScope,
-    project: string, signal: AbortSignal): Promise<XAgentBusinessSkillTest> {
+    project: string, cwd: string, signal: AbortSignal): Promise<XAgentBusinessSkillTest> {
     const read = async (caller?: AbortSignal) => this.backend.transcript(scope.userToken, project, slug,
       start.test.runNumber, { afterSequence: -1, limit: 1 }, caller)
     const testScope: XAgentAuthenticatedSessionRequestScope = { ...scope, sessionId: start.sessionId,
@@ -89,7 +91,7 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
       const previous = await read(signal)
       if (previous.test.status !== 'running' || previous.events.length !== 0) return previous.test
       handle = await runWithXAgentAuthenticatedRequestScope(testScope, () => this.ctx.agents.create({
-        sessionId: id, agentOptions: this.options, signal,
+        sessionId: id, meta: { cwd }, agentOptions: this.options, signal,
         setup: (agentCtx) => {
           const owner = agentCtx.agent as Agent
           agent = owner

@@ -3,7 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SessionStore, { type SessionEvent } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionTitle, { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -111,7 +111,8 @@ test('real mounted runs cannot transfer definitions across Agents or reuse an ea
   expect(second.calls.find(call => call.path.endsWith('/mount'))?.path).toContain('/tests/2/')
 })
 
-async function harness(script: ConstructorParameters<typeof MockAdapter>[0] = [textResponse('Reviewed.')], primary: string[] = []) {
+async function harness(script: ConstructorParameters<typeof MockAdapter>[0] = [textResponse('Reviewed.')], primary: string[] = [],
+  persona = '') {
   const production = [...new Set(['skill', ...primary, ...(primary.includes('search_artifacts') ? ['submit_cited_answer'] : [])])].sort()
   const digest = createHash('sha256').update(JSON.stringify({ complete_tools: production, version: 1 })).digest('hex')
   const input = { expectedDraftRevision: 2, toolPolicyDigest: digest, scenario, idempotencyKey: 'scenario-1' }
@@ -171,8 +172,9 @@ async function harness(script: ConstructorParameters<typeof MockAdapter>[0] = [t
   roots.push(ctx)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(SessionStore)
+  ctx.sessions.create(SessionId(`session-${sessionId}`), { meta: { cwd: '/workspace/project' } })
   const skillPlugin = await ctx.plugin(SkillRegistry)
-  await ctx.plugin(SystemPrompt)
+  await ctx.plugin(SystemPrompt, { persona })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(ToolSkill)
   await ctx.plugin(LlmRuntime)
@@ -450,6 +452,15 @@ test('one factory mounts the exact hidden Session and logs explicit draft before
   expect(h.calls.filter(call => call.path.endsWith('/settle'))).toHaveLength(1)
   await expect(h.run()).resolves.toEqual(result)
   expect(h.adapter.requests).toHaveLength(1)
+})
+
+test('the isolated test Session inherits the source Project workspace for prompt variables', async () => {
+  const h = await harness([textResponse('Reviewed.')], [], 'Working in {{cwd}}.')
+  await expect(h.run()).resolves.toMatchObject({ status: 'completed', terminationReason: 'completed' })
+  expect(h.adapter.requests).toHaveLength(1)
+  expect(h.adapter.requests[0]!.system).toContain('Working in /workspace/project.')
+  expect(h.calls.find(call => call.path.endsWith('/mount'))?.body.runtime_header)
+    .toMatchObject({ cwd: '/workspace/project' })
 })
 
 test.each(['propose_fact', 'write_file', 'project_update', 'publish_skill', 'list_accessible_projects', 'search_artifacts', 'submit_cited_answer'])(

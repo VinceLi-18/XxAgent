@@ -50,8 +50,8 @@ export const Config: z<Config> = z.object({
 })
 /** Cordis function plugin name. */
 export const name = 'xagent-business-skill'
-/** Registry and Agent lifecycle consumed by the provider. */
-export const inject = ['agents', 'skills', 'tools', 'systemPrompt']
+/** Registry, Session and Agent lifecycle consumed by the provider. */
+export const inject = ['agents', 'sessions', 'skills', 'tools', 'systemPrompt']
 
 const PROVIDER = 'xagent-project'
 const REMOTE_ERRORS = new Set([

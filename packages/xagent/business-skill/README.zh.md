@@ -6,7 +6,7 @@
 
 ## 配置
 
-Host 插件依赖 `agents`、`skills`、`tools` 和 `systemPrompt`。`backendOrigin` 指定 FastAPI origin，`serviceToken` 指定内部 Host 凭证，`maxCatalogEntries` 必须是限制完整目录条目数的正安全整数。必填且非空白的 `testProvider` 和 `testModel` 选择草稿测试实际调用的模型；Browser 输入不能覆盖这些值。缺失或无效配置在安装时失败；后端目录超限时拒绝，而不截断授权结果。
+Host 插件依赖 `agents`、`sessions`、`skills`、`tools` 和 `systemPrompt`。`backendOrigin` 指定 FastAPI origin，`serviceToken` 指定内部 Host 凭证，`maxCatalogEntries` 必须是限制完整目录条目数的正安全整数。必填且非空白的 `testProvider` 和 `testModel` 选择草稿测试实际调用的模型；Browser 输入不能覆盖这些值。缺失或无效配置在安装时失败；后端目录超限时拒绝，而不截断授权结果。
 
 Business 组合包通过 [Profile 配置](../../bundle/xagent-business/README.md#deployment)提供部署默认值；它启用通用 Skill 工具，但继续禁用文件系统提供方与任意执行。
 
@@ -42,7 +42,7 @@ Agent 作用域审批监听器委托正常答复链，并将答复与物理请�
 
 安装 FastAPI Session 持久化提供方后，插件通过 `registerTestRunner` 注册可逆的 Host 专用测试执行器。未安装执行器时，test Remote 在启动任何后端操作之前拒绝。测试记录通过公开运行编号独立分页读取。
 
-执行器通过真实 Agent factory 挂载 `tests/start` 分配的空 `business_skill_test` Session。后端原子挂载写入该 factory 的 header 和编码后的启动事件；只有首次成功取得归属的执行器可以运行。精确重放不会再次取得执行归属，进程内 single-flight 合并并发请求。已有日志不会再次接纳场景。常规技能加载器先将确切草稿作为用户显式调用接纳，再接纳唯一场景消息，日志顺序与模型输入一致。在此测试用途的 Session 内，激活元数据使用草稿修订号。普通对话历史、bootstrap 和标题生成保持不变。
+执行器通过真实 Agent factory 挂载 `tests/start` 分配的空 `business_skill_test` Session。其 header 快照发起 Project Session 的绝对工作区，使部署提示词变量相对该项目解析，但不授予文件系统工具。后端原子挂载写入该 factory 的 header 和编码后的启动事件；只有首次成功取得归属的执行器可以运行。精确重放不会再次取得执行归属，进程内 single-flight 合并并发请求。已有日志不会再次接纳场景。常规技能加载器先将确切草稿作为用户显式调用接纳，再接纳唯一场景消息，日志顺序与模型输入一致。在此测试用途的 Session 内，激活元数据使用草稿修订号。普通对话历史、bootstrap 和标题生成保持不变。
 
 测试目录和执行前策略只允许 `skill`、所选只读工具及其必要配套只读工具。即使生产权限声明了 `propose_fact`，测试仍排除它；不可变测试报告以 `unexecutedWriteTools` 单独记录该权限，与执行结果和人工结论分离。每次工具调用使用后端专用测试授权操作，重新检查当前账号、项目、确切的已挂载运行中 Session、活跃技能及不可变测试工具集合。读取 transcript 不授予执行权限。草稿编辑保留既有固定策略；退役拒绝挂载和下一次工具调用，但保留历史读取。
 

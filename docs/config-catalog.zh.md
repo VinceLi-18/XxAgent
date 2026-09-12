@@ -3063,7 +3063,7 @@ export interface Config {
 
 ## `@xagent/dsh-business-skill`
 
-依赖： `agents` · `skills` · `tools` · `systemPrompt`
+依赖： `agents` · `sessions` · `skills` · `tools` · `systemPrompt`
 
 ```ts config-catalog
 /** FastAPI transport and catalog resource limits for the Host plugin. */

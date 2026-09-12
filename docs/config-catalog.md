@@ -3061,7 +3061,7 @@ Source: [`packages/xagent/authorization/src/index.ts:53`](../packages/xagent/aut
 
 ## `@xagent/dsh-business-skill`
 
-Requires: `agents` · `skills` · `tools` · `systemPrompt`
+Requires: `agents` · `sessions` · `skills` · `tools` · `systemPrompt`
 
 ```ts config-catalog
 /** FastAPI transport and catalog resource limits for the Host plugin. */

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-11-project-business-skills.md
-2026-09-11-project-business-skills.md: fdbaf77a3d8cf6dce73dbf348d8b01a297670f4a
-2026-09-11-project-business-skills.zh.md: 85847209b701ecbca52c160bfbc100ef1bbd9be0
+2026-09-11-project-business-skills.md: 6a69f01e9a24aaedd94326937d5fc4e39888ef56
+2026-09-11-project-business-skills.zh.md: 64a7563d0c37fe6457ae5f7a34e36e1bee908dda
