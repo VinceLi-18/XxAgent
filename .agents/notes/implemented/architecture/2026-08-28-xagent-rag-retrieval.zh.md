@@ -12,7 +12,7 @@ Status: implemented
 
 ## Decision
 
-PostgreSQL 启用 `vector` 与 `pg_trgm` 扩展，并保存 `artifact_text_indexes`、`artifact_text_chunks`、`artifact_index_jobs`、`artifact_search_heads`、`xagent_retrieval_receipts`、`xagent_admitted_evidence` 和 `xagent_cited_answer_evidence`。一个 Artifact 每个 generation 只有一个 Index，单个 Version 与相同配置指纹只有一个并发 `building` Index；Index 只可从 `building` 进入 `ready` 或 `failed`。分片按 Index 的 ordinal 唯一，正文不超过 8 KiB、token 数为 1 至 512、向量固定为 `vector(1024)`，并由数据库生成 `simple` 全文和规范化 trigram 文本。
+PostgreSQL 启用 `vector` 与 `pg_trgm` 扩展，并保存 `artifact_text_indexes`、`artifact_text_chunks`、`artifact_index_jobs`、`artifact_search_heads`、`xagent_retrieval_receipts`、`xagent_admitted_evidence` 和 `xagent_cited_answer_evidence`。一个 Artifact 每个 generation 只有一个 Index，单个 Version 与相同配置指纹只有一个并发 `building` Index；Index 只可从 `building` 进入 `ready` 或 `failed`。分片按 Index 的 ordinal 唯一，正文不超过 8 KiB、token 数为 1 至 512、向量固定为 `vector(1024)`，并由数据库生成 `simple` 全文和规范化 trigram 文本。worker 接受起点与终点分别单调的固定多语言 tokenizer 重叠字符区间；逆序、空或越界区间失败关闭。
 
 搜索 head 每个 Artifact 最多一个，且只能引用同一 Artifact 的 `ready` Index 与仍为 `clean` 的 Version。新 generation 失败或未发布时不会替换既有 head；历史 Index 和分片保留给已持久化引用。
 

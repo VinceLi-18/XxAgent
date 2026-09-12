@@ -22,6 +22,20 @@ class WhitespaceTokenizer:
 TOKENIZER = WhitespaceTokenizer()
 
 
+class OverlappingTokenizer:
+    def encode_with_offsets(self, text: str) -> list[tuple[int, int]]:
+        assert text == "客户交付条款"
+        return [(0, 1), (0, 2), (2, 4), (4, 6)]
+
+
+class FixedOffsetTokenizer:
+    def __init__(self, offsets: list[tuple[int, int]]) -> None:
+        self.offsets = offsets
+
+    def encode_with_offsets(self, text: str) -> list[tuple[int, int]]:
+        return self.offsets
+
+
 def test_chunk_text_normalizes_crlf_without_changing_logical_line_numbers() -> None:
     chunks = chunk_text(b"first line\r\nsecond line\r\n\r\nthird line", "text/plain", TOKENIZER)
 
@@ -32,6 +46,27 @@ def test_chunk_text_normalizes_crlf_without_changing_logical_line_numbers() -> N
 
 def test_chunk_text_returns_no_chunks_for_blank_content() -> None:
     assert chunk_text(b" \r\n\t", "text/plain", TOKENIZER) == []
+
+
+def test_chunk_text_accepts_monotonic_overlapping_offsets_from_bge_m3() -> None:
+    chunks = chunk_text("客户交付条款".encode(), "text/plain", OverlappingTokenizer())
+
+    assert [(chunk.text, chunk.token_count) for chunk in chunks] == [("客户交付条款", 4)]
+
+
+@pytest.mark.parametrize(
+    "offsets",
+    [
+        [(1, 2), (0, 3)],
+        [(0, 3), (1, 2)],
+        [(-1, 1)],
+        [(0, 0)],
+        [(0, 7)],
+    ],
+)
+def test_chunk_text_rejects_nonmonotonic_or_invalid_offsets(offsets: list[tuple[int, int]]) -> None:
+    with pytest.raises(RetrievalInputError, match="retrieval-unavailable"):
+        chunk_text(b"abcdef", "text/plain", FixedOffsetTokenizer(offsets))
 
 
 @pytest.mark.parametrize("content_type", ["text/markdown", "text/csv", "application/json"])

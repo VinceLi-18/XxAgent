@@ -15,7 +15,7 @@ class Tokenizer(Protocol):
     """BGE tokenizer operation used to index bounded source spans."""
 
     def encode_with_offsets(self, text: str) -> Sequence[tuple[int, int]]:
-        """Return sorted exclusive character offsets for BGE tokens in text."""
+        """Return monotonic exclusive character offsets, which may overlap."""
 
 
 class RetrievalInputError(ValueError):
@@ -99,13 +99,21 @@ def chunk_text(payload: bytes, content_type: str, tokenizer: Tokenizer) -> list[
 
 def _token_spans(text: str, tokenizer: Tokenizer) -> tuple[_TokenSpan, ...]:
     spans: list[_TokenSpan] = []
+    previous_start = -1
     previous_end = 0
     for start, end in tokenizer.encode_with_offsets(text):
         if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int) or not isinstance(end, int):
             raise RetrievalInputError("retrieval-unavailable")
-        if start < previous_end or end <= start or end > len(text):
+        if (
+            start < previous_start
+            or end < previous_end
+            or start < 0
+            or end <= start
+            or end > len(text)
+        ):
             raise RetrievalInputError("retrieval-unavailable")
         spans.extend(_bounded_spans(text, start, end))
+        previous_start = start
         previous_end = end
     return tuple(spans)
 
