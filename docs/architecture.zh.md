@@ -58,6 +58,8 @@ Business 检索只在 `xagent-business` 中组装。`@xagent/dsh-retrieval` 把�
 
 非空证据结果进入下一次模型请求后，Retrieval 会注册仅限 Native 的终止型 `submit_cited_answer` 工具。规范结果包含有序 Markdown block 与 citation block；Markdown 绝不授予引用权限，只有精确 citation block 会重新授权并持久化。receipt admission 会把每个 citation ID 的精确 Artifact Version、Index generation 与 Chunk 记录到不可变关系中，且不依赖表层投影或入账 actor 的 receipt。cited-answer append 仅通过索引和显式行上限，把本批次引用的 ID 绑定到更早的关系；没有 cited answer 的 append 不查询 provenance 或历史事件。`@xagent/dsh-ui-citation` 在实时状态和重新加载后从相同的持久 result metadata 渲染。点击已验证 chip 时只通过认证 citation Remote 发送 Session 与 citation ID；FastAPI 解析持久的回答至 admission 关系，并为当前 actor 重新授权该不可变证据，包括 compaction 或保留范围的 fork 之后。Browser 不会收到存储 URL，而是打开“资料”页签、重新读取精确的 clean 不可变版本，并高亮已授权行范围。
 
+项目 Business Skill 是受治理内容，而不是可执行插件。FastAPI 与 PostgreSQL 拥有项目内草稿、隔离测试 Session、不可变发布版本、授权、回滚、终止退役、幂等及审计。Specialist 与 Manager 可编辑并运行只读草稿测试，只有 Manager 能发布已测试修订或改变生产授权。`@xagent/dsh-business-skill` 仅为经过认证的项目对话 Session 向通用 Skill 注册表贡献请求作用域提供方。一个轮次固定一个已授权版本及其完整工具集合；每次工具调用都会重新获得后端授权，发布或回滚只影响后续轮次。持久化 `business-skill/activated` 事件使重启重放具有确定性，已完成轮次的模型历史只保留不含指令的使用标记。`@xagent/dsh-ui-business-skill` 提供按角色开放的 Draft → Test → Publish → Authorize 工作流，但不会收到凭据、不透明版本键、内部记录 ID 或测试 Session ID。
+
 `@xagent/dsh-ui-account` 向浏览器连接的生成式 Remote 与既有 Web API 传输贡献 CSRF Cookie 请求头。没有贡献者时，该请求头服务保持惰性。只有 `xagent-business` 挂载这些 XAgent 配置项；通用布局、Developer Profile 和上游 Profile 保持原有 UI 与传输行为。
 
 ## 核心包

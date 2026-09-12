@@ -84,7 +84,7 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 ## 工作台与 Session 内部接口
 
-Business Skill 的 PostgreSQL 存储以项目内唯一且不可变的 slug 标识稳定技能，分别保存一个可变草稿、不可变发布版本、独立测试记录和稳定技能授权。版本号与运行编号跨整个项目递增，调用方必须先锁项目行再锁技能行；复合外键禁止跨技能选择当前版本或跨项目关联测试 Session。`xagent_sessions.purpose` 创建时可选 `conversation` 或 `business_skill_test`，此后不可变；测试用途只允许 Project Session，返回给 Host 的 Session 行始终包含该用途。API 数据库角色仅获得必要列的写权限，worker 无权访问技能关系。存在技能记录、测试 Session 或技能审计时，revision `018_xagent_business_skills` 在执行 DDL 前拒绝降级。[治理提案](../../.agents/notes/proposed/feature/2026-09-11-project-business-skills.md)定义完整发布、授权和执行流程。
+Business Skill 的 PostgreSQL 存储以项目内唯一且不可变的 slug 标识稳定技能，分别保存一个可变草稿、不可变发布版本、独立测试记录和稳定技能授权。版本号与运行编号跨整个项目递增，调用方必须先锁项目行再锁技能行；复合外键禁止跨技能选择当前版本或跨项目关联测试 Session。`xagent_sessions.purpose` 创建时可选 `conversation` 或 `business_skill_test`，此后不可变；测试用途只允许 Project Session，返回给 Host 的 Session 行始终包含该用途。API 数据库角色仅获得必要列的写权限，worker 无权访问技能关系。存在技能记录、测试 Session 或技能审计时，revision `018_xagent_business_skills` 在执行 DDL 前拒绝降级。[治理决策](../../.agents/notes/implemented/feature/2026-09-11-project-business-skills.zh.md)定义完整发布、授权和执行流程。
 
 Business Skill 治理入口位于 `/internal/xagent/business-skills/projects/{project_id}`：`list`、`create` 和 `/{slug}/detail|draft|publish|authorization|current-version|retire`，人工测试结论使用 `/{slug}/tests/{run_number}/verdict`。请求只接受声明字段及 `schema_version: 1`，写入还要求 `idempotency_key`；草稿和发布要求正整数 `expected_draft_revision`。当前 Specialist、Manager 项目成员均可编辑和记录结论，发布、授权、选择历史版本与退役仅限 Manager；失效登录、权限版本、成员关系和未知资源统一返回 `not-found`。服务在 serializable 事务中锁定当前权限与项目，再切换到应用角色执行 RLS 写入；成功重放先重验当前权限，并返回原始响应，键与请求不匹配则返回 `idempotency-conflict`。
 

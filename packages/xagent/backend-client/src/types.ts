@@ -817,42 +817,135 @@ export interface XAgentBusinessSkillLoad extends XAgentBusinessSkillCatalogEntry
 
 /** Closed FastAPI operations for Business Skill governance, testing, and runtime policy. */
 export interface XAgentBusinessSkillBackend {
+  /**
+   * List the bounded public Skill catalog for one authenticated Project.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param input - pagination limit and opaque cursor.
+   * @param signal - optional transport cancellation.
+   * @returns public summaries and the next opaque cursor.
+   */
   list(
     userToken: string, projectId: string,
     input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillPage>
+  /**
+   * Create one project-local mutable draft.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param input - validated public content, tool selection and idempotency key.
+   * @param signal - optional transport cancellation.
+   * @returns the created public Skill dossier.
+   */
   create(
     userToken: string, projectId: string, input: XAgentBusinessSkillCreateInput, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Read bounded governance history for one public Skill name.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param input - independent version, run and audit pagination cursors.
+   * @param signal - optional transport cancellation.
+   * @returns the current draft, immutable versions, tests and audit summary.
+   */
   detail(
     userToken: string, projectId: string, slug: string,
     input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number },
     signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Update the caller's exact optimistic draft revision.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param input - expected revision, changed public fields and idempotency key.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
   draft(
     userToken: string, projectId: string, slug: string,
     input: XAgentBusinessSkillDraftInput, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Publish an exact draft revision after a qualifying human-pass test.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param expectedDraftRevision - positive revision read by the caller.
+   * @param idempotencyKey - stable identity for this publication intent.
+   * @param signal - optional transport cancellation.
+   * @returns the dossier containing the new immutable version.
+   */
   publish(
     userToken: string, projectId: string, slug: string, expectedDraftRevision: number,
     idempotencyKey: string, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Change whether the current published version may start new invocations.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param authorized - requested production authorization state.
+   * @param idempotencyKey - stable identity for this authorization intent.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
   authorization(
     userToken: string, projectId: string, slug: string, authorized: boolean,
     idempotencyKey: string, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Select one immutable historical version for later invocations.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param versionNumber - positive public version number.
+   * @param idempotencyKey - stable identity for this selection intent.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
   version(
     userToken: string, projectId: string, slug: string, versionNumber: number,
     idempotencyKey: string, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Permanently retire a Skill while preserving its history.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param idempotencyKey - stable identity for this retirement intent.
+   * @param signal - optional transport cancellation.
+   * @returns the terminal public Skill dossier.
+   */
   retire(
     userToken: string, projectId: string, slug: string, idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Record a human verdict for one completed public test run.
+   * @param userToken - current starting actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param runNumber - positive public test-run number.
+   * @param verdict - human pass or reject decision.
+   * @param idempotencyKey - stable identity for this verdict intent.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
   verdict(
     userToken: string, projectId: string, slug: string, runNumber: number,
     verdict: XAgentBusinessSkillVerdict, idempotencyKey: string, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Allocate an isolated test Session for an exact draft and policy.
+   * @param userToken - current starting actor credential retained for the run.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param input - exact draft revision, scenario, policy digest and idempotency key.
+   * @param signal - optional transport cancellation.
+   * @returns Host-only Session identity and immutable test inputs.
+   */
   startTest(
     userToken: string, projectId: string, slug: string,
     input: XAgentBusinessSkillTestInput, signal?: AbortSignal,
@@ -896,22 +989,75 @@ export interface XAgentBusinessSkillBackend {
    */
   authorizeTestTool(userToken: string, projectId: string, sessionId: string, slug: string, runNumber: number,
     toolPolicyDigest: string, toolName: string, cancelled: boolean, signal?: AbortSignal): Promise<void>
+  /**
+   * Settle one mounted test Session exactly once.
+   * @param userToken - original starting actor's current credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param runNumber - positive public test-run number.
+   * @param sessionId - exact Host-only test Session identity.
+   * @param terminationReason - normalized terminal execution outcome.
+   * @param idempotencyKey - stable identity for this settlement intent.
+   * @param signal - optional transport cancellation.
+   * @returns the immutable terminal public test report.
+   */
   settleTest(
     userToken: string, projectId: string, slug: string, runNumber: number, sessionId: string,
     terminationReason: XAgentBusinessSkillTerminationReason, idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillTest>
+  /**
+   * Read a bounded page from one isolated test transcript.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param runNumber - positive public test-run number.
+   * @param input - exclusive event sequence cursor and page limit; omit the cursor for the first page.
+   * @param signal - optional transport cancellation.
+   * @returns public events and the next exclusive sequence cursor.
+   */
   transcript(
     userToken: string, projectId: string, slug: string, runNumber: number,
     input: { readonly afterSequence?: number; readonly limit?: number }, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillTranscript>
+  /**
+   * Discover authorized versions for one ordinary Project Session.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param sessionId - opaque ordinary conversation Session identity.
+   * @param signal - optional transport cancellation.
+   * @returns current public entries whose versionKey values remain Host-only.
+   */
   catalog(
     userToken: string, projectId: string, sessionId: string, signal?: AbortSignal,
   ): Promise<readonly XAgentBusinessSkillCatalogEntry[]>
+  /**
+   * Load one exact current immutable version after fresh authorization.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param sessionId - opaque ordinary conversation Session identity.
+   * @param slug - project-local public Skill name.
+   * @param versionKey - Host-only opaque version identity from catalog.
+   * @param signal - optional transport cancellation.
+   * @returns immutable instructions and the complete tool policy.
+   */
   load(
     userToken: string, projectId: string, sessionId: string, slug: string,
     versionKey: string, signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillLoad>
+  /**
+   * Reauthorize one imminent tool call against a pinned immutable version.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param sessionId - opaque ordinary conversation Session identity.
+   * @param slug - project-local public Skill name.
+   * @param versionKey - Host-only opaque pinned version identity.
+   * @param toolPolicyDigest - complete policy digest pinned on activation.
+   * @param toolName - exact tool about to execute.
+   * @param cancelled - current physical cancellation state.
+   * @param signal - physical execution lifetime.
+   * @returns after fresh authorization; rejection prevents execution.
+   */
   authorizeTool(
     userToken: string, projectId: string, sessionId: string, slug: string,
     versionKey: string, toolPolicyDigest: string, toolName: string, cancelled: boolean,

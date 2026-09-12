@@ -1,25 +1,29 @@
-# XAgent 运行时包
+# XAgent runtime packages
 
-本组包含 XAgent 多用户运行时的 Host 安全边界和浏览器产品面。包名使用私有 `@xagent` scope，不进入上游 DSH 默认组合。
+English | [中文](README.zh.md)
 
-| 包 | 职责 |
+This group contains the Host security boundaries and browser product surfaces for the multi-user XAgent runtime. Its private `@xagent` package scope is not part of upstream dsh's default composition.
+
+| Package | Responsibility |
 | --- | --- |
-| `@xagent/dsh-principal` | 严格解析 FastAPI introspection 结果，并绑定 Host 生成的连接标识 |
-| `@xagent/dsh-backend-client` | 通过固定内部路径、服务身份和用户 JWT 访问 FastAPI |
-| `@xagent/dsh-delegation-token` | 签发和验证最长 60 秒的 Ed25519 限域单次委托令牌 |
-| `@xagent/dsh-connection-auth` | 将浏览器 Cookie 登录态绑定为每个 Connection 请求和物理 WebSocket 的 Principal |
-| `@xagent/dsh-authorization` | 在 Session RPC 执行前通过 FastAPI 与 RLS 统一判定 read/edit 权限 |
-| `@xagent/dsh-session-persistence-api` | 以 FastAPI/PostgreSQL 作为 Business Session Header 与事件的唯一真源 |
-| `@xagent/dsh-project` | 在物理连接绑定的 Principal 请求作用域内代理项目工作台接口 |
-| `@xagent/dsh-artifact` | 在同一认证作用域内代理资料操作，并通过固定同源路由流式转发短期签名正文 |
-| `@xagent/dsh-retrieval` | 在认证 prompt 作用域内签发逐次委托、调用混合检索并管理 opaque receipt 生命周期 |
-| `@xagent/dsh-tool-retrieval` | 提供显式范围的项目发现与只读资料检索模型工具 |
-| `@xagent/dsh-fact` | 提供项目 Fact 提案、审批 Remote、私有收据／Outbox sidecar 和一次性后续轮次决策投影 |
-| `@xagent/dsh-tool-fact` | 只为认证项目请求提供 Native `propose_fact` 工具 |
-| `@xagent/dsh-ui-account` | 提供正式登录、账号状态与退出界面 |
-| `@xagent/dsh-ui-project` | 提供项目导航、上下文标识与第三栏项目概览 |
-| `@xagent/dsh-ui-artifact` | 在项目详情 Slot 中提供资料上传、扫描状态、不可变版本、预览与下载 |
-| `@xagent/dsh-ui-citation` | 渲染结构化引用回答，并把已验证资料导航到精确不可变版本 |
-| `@xagent/dsh-ui-fact` | 在项目详情中提供当前 Fact、待审提案、不可变历史和按权限开放的决策操作 |
+| `@xagent/dsh-principal` | Strictly parse FastAPI introspection results and bind Host-generated connection identities |
+| `@xagent/dsh-backend-client` | Access fixed FastAPI internal paths with service identity and the user's JWT |
+| `@xagent/dsh-delegation-token` | Issue and verify scope-limited, single-use Ed25519 delegations lasting at most 60 seconds |
+| `@xagent/dsh-connection-auth` | Bind the browser Cookie login to the Principal for each Connection request and physical WebSocket |
+| `@xagent/dsh-authorization` | Resolve read or edit authorization through FastAPI and RLS before Session RPC execution |
+| `@xagent/dsh-session-persistence-api` | Use FastAPI/PostgreSQL as the only Business Session Header and event authority |
+| `@xagent/dsh-project` | Proxy the project workbench within the Principal request scope bound to a physical connection |
+| `@xagent/dsh-artifact` | Proxy artifact operations in that scope and stream short-lived signed content through fixed same-origin routes |
+| `@xagent/dsh-retrieval` | Issue per-call delegations in the authenticated prompt scope, call hybrid retrieval, and own opaque receipt lifetimes |
+| `@xagent/dsh-tool-retrieval` | Provide explicitly scoped project discovery and read-only artifact retrieval model tools |
+| `@xagent/dsh-fact` | Provide governed Project Fact proposals, approval Remotes, private receipt/Outbox sidecars, and one-use later-turn decision projection |
+| `@xagent/dsh-tool-fact` | Provide the Native `propose_fact` tool only for authenticated Project requests |
+| `@xagent/dsh-business-skill` | Bind governed project Skill discovery, immutable version activation, per-call tool authorization, and isolated draft tests to the authenticated request |
+| `@xagent/dsh-ui-account` | Provide the production login, account-state, and logout surface |
+| `@xagent/dsh-ui-project` | Provide project navigation, context identity, and the third-column project overview |
+| `@xagent/dsh-ui-artifact` | Provide artifact upload, scan status, immutable versions, preview, and download in the project details Slot |
+| `@xagent/dsh-ui-citation` | Render structured cited answers and navigate verified evidence to the exact immutable version |
+| `@xagent/dsh-ui-fact` | Provide current Facts, pending proposals, immutable history, and role-gated decisions in project details |
+| `@xagent/dsh-ui-business-skill` | Provide the role-gated Draft → Test → Publish → Authorize workflow and version, test, and audit history |
 
-这些包本身不接管通用 DSH Profile。只有 XAgent Business 组合显式装载后才生效；Developer 和上游 Profile 不会启用这些服务或界面，也不会获得服务凭据或委托私钥。资料管理能力只服务人工界面；独立检索工具包显式装载后，才会把当前授权范围内的只读证据加入 Session 与模型上下文。Fact 写入只在认证项目请求中注册；异步人工作审通过 Outbox 进入来源 Session，但不启动轮次，并在下一次用户发起的模型请求中按日志顺序显示一次。
+These packages do not take over a generic dsh Profile. They become active only when the XAgent Business bundle explicitly mounts them; Developer and upstream Profiles receive neither these services nor their service credential or delegation private key. Artifact management remains a human-interface capability. The separately mounted retrieval tools add only currently authorized read-only evidence to the Session and model context. Fact writes register only in authenticated Project requests; asynchronous human decisions enter the source Session through its Outbox without starting a turn and appear once, in log order, on the next user-initiated model request. Business Skills are governed project content: read-only tests exclude production Fact writes, published invocation uses one immutable version per turn, and each tool call reauthorizes through FastAPI.

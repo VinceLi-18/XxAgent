@@ -187,6 +187,25 @@ async def test_nonmember_cannot_read_or_replay_another_project(client, skill_api
 
 
 @pytest.mark.anyio
+async def test_membership_removal_denies_an_existing_idempotent_replay(
+    skill_api, seeded_database, alice, fact_project_session,
+):
+    request = creation()
+    created = await skill_api("/create", request)
+    assert created.status_code == 200, created.text
+
+    async with seeded_database.begin() as connection:
+        await connection.execute(
+            text("DELETE FROM project_memberships WHERE account_id = :actor AND project_id = :project"),
+            {"actor": alice.id, "project": fact_project_session.project_id},
+        )
+
+    replay = await skill_api("/create", request)
+    assert replay.status_code == 404
+    assert replay.json() == {"detail": {"code": "not-found"}}
+
+
+@pytest.mark.anyio
 async def test_detail_includes_bounded_public_audit_summary(skill_api):
     assert (await skill_api("/create", creation())).status_code == 200
     assert (await skill_api("/research/draft", body(expected_draft_revision=1, display_name="Renamed"))).status_code == 200

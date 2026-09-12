@@ -82,6 +82,36 @@ describe('Business Skill release dossier', () => {
     expect(actions.select).toHaveBeenCalledWith('review-facts')
   })
 
+  it('localizes test and audit protocol values before rendering them', () => {
+    const { store } = mount()
+    const state = store.getSnapshot() as Extract<BusinessSkillState, { phase: 'ready' }>
+    const base = detail.tests[0]!
+    const { verdict: _verdict, verdictAt: _verdictAt, ...unreviewed } = base
+    act(() => { store.replace({
+      ...state,
+      items: [{ ...detail, latestTest: { ...base, status: 'failed', terminationReason: 'tool-denied', verdict: 'reject' } }],
+      detail: {
+        ...detail,
+        tests: [
+          { ...base, status: 'failed', terminationReason: 'tool-denied', verdict: 'reject' },
+          { ...unreviewed, runNumber: 4, status: 'failed', terminationReason: 'authorization-denied' },
+          { ...unreviewed, runNumber: 5, status: 'failed', terminationReason: 'skill-not-loaded' },
+          { ...unreviewed, runNumber: 6, status: 'failed', terminationReason: 'service-unavailable' },
+        ],
+        auditSummary: [
+          { action: 'business_skill.publish', result: 'published', versionNumber: 2, createdAt: '2026-09-12' },
+          { action: 'business_skill.tool_authorization_denied', result: 'business-skill-tool-denied', createdAt: '2026-09-12' },
+        ],
+      },
+    }) })
+
+    expect(screen.getByText(/最近测试 失败/)).toBeTruthy()
+    for (const label of ['工具被拒绝', '授权被拒绝', 'Skill 未加载', '服务不可用', '发布版本 · 已发布', '工具授权被拒绝 · 工具不在允许范围']) {
+      expect(screen.getAllByText(new RegExp(label)).length).toBeGreaterThan(0)
+    }
+    expect(screen.queryByText(/tool-denied|authorization-denied|skill-not-loaded|service-unavailable|business_skill\./)).toBeNull()
+  })
+
   it('renders empty, loading, blocked, submitting, uncertain and retired ready states', () => {
     const { store, actions } = mount()
     const state = store.getSnapshot() as Extract<BusinessSkillState, { phase: 'ready' }>

@@ -24,6 +24,35 @@ type Props = PropsRuntime<'xagent.workbench.skills'> & InjectFace<BusinessSkillP
 const TOOLS = [
   ['list_accessible_projects', '查看可访问项目'], ['search_artifacts', '检索项目资料'], ['propose_fact', '提交待审批事实（生产写权限）'],
 ] as const
+const TEST_STATUS_LABELS = {
+  running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
+} as const
+const TEST_TERMINATION_LABELS = {
+  completed: '正常完成', failed: '执行失败', cancelled: '已取消', 'tool-denied': '工具被拒绝',
+  'authorization-denied': '授权被拒绝', 'skill-not-loaded': 'Skill 未加载', 'service-unavailable': '服务不可用',
+} as const
+const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
+  'business_skill.create': '创建 Skill',
+  'business_skill.draft_update': '更新草稿',
+  'business_skill.test_start': '开始测试',
+  'business_skill.test_mount': '挂载测试',
+  'business_skill.test_settle': '结束测试',
+  'business_skill.test_verdict': '记录人工判定',
+  'business_skill.publish': '发布版本',
+  'business_skill.authorize': '授权使用',
+  'business_skill.unauthorize': '取消授权',
+  'business_skill.rollback': '切换版本',
+  'business_skill.authorization_denied': '治理权限被拒绝',
+  'business_skill.load_denied': 'Skill 加载被拒绝',
+  'business_skill.tool_authorization_denied': '工具授权被拒绝',
+  'business_skill.retire': '退役 Skill',
+}
+const AUDIT_RESULT_LABELS: Readonly<Record<string, string>> = {
+  created: '已创建', updated: '已更新', started: '已开始', mounted: '已挂载', settled: '已结束',
+  reviewed: '已记录', published: '已发布', authorized: '已授权', unauthorized: '已取消授权',
+  selected: '已切换', retired: '已退役', forbidden: '权限不足', 'not-found': '不可见或不存在',
+  'business-skill-tool-denied': '工具不在允许范围',
+}
 
 function qualifyingRun(detail: XAgentBusinessSkillDetail) {
   const draft = detail.draft
@@ -128,8 +157,8 @@ function Dossier({ state, detail, actions, scenario, setScenario }: {
     <section className={css.section} aria-label="测试历史"><h4>测试历史</h4>
       {detail.tests.length === 0 && <p className={css.muted}>暂无测试。保存草稿后运行一个场景。</p>}
       <ol className={css.history}>{detail.tests.map(test => <li key={test.runNumber}>
-        <div><code>run {test.runNumber}</code> · <code>revision {test.draftRevision}</code> · {({ running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消' })[test.status]}</div>
-        <p>人工判定：{test.verdict === undefined ? '待判定' : test.verdict === 'pass' ? '通过' : '拒绝'} · {test.terminationReason ?? '尚未结束'}</p>
+        <div><code>run {test.runNumber}</code> · <code>revision {test.draftRevision}</code> · {TEST_STATUS_LABELS[test.status]}</div>
+        <p>人工判定：{test.verdict === undefined ? '待判定' : test.verdict === 'pass' ? '通过' : '拒绝'} · {test.terminationReason === undefined ? '尚未结束' : TEST_TERMINATION_LABELS[test.terminationReason]}</p>
         {test.unexecutedWriteTools.length > 0 && <p className={css.warning}>测试未执行的生产写权限：{test.unexecutedWriteTools.join('、')}</p>}
         <time>{test.startedAt}</time>
         <div className={css.actions}><button type="button" onClick={() => { void actions.openTranscript(test.runNumber) }}>查看测试 run {test.runNumber}</button>
@@ -154,7 +183,7 @@ function Dossier({ state, detail, actions, scenario, setScenario }: {
       <p>{version.description}</p><details><summary>版本指令与工具</summary><pre>{version.instructions}</pre><p>{version.completeTools.join('、')}</p></details>
       {manager && !retired && version.versionNumber !== detail.currentVersion && <button type="button" disabled={locked} onClick={() => { confirm('确认切换版本', '确认切换', `/${detail.slug} 切换至 v${version.versionNumber}，后续调用使用此版本；当前运行保持已绑定版本。`, { kind: 'version', slug: detail.slug, version: version.versionNumber }) }}>切换至 v{version.versionNumber}</button>}
     </li>)}</ol>{detail.nextVersionCursor !== undefined && <button type="button" onClick={() => { void actions.loadHistory('versions') }}>更多版本</button>}</section>
-    <section className={css.section} aria-label="审计摘要"><h4>审计摘要</h4><ul className={css.history}>{detail.auditSummary.map((audit, index) => <li key={`${audit.createdAt}:${index}`}>{audit.action} · {audit.result}{audit.versionNumber !== undefined && <code> v{audit.versionNumber}</code>}<time>{audit.createdAt}</time></li>)}</ul></section>
+    <section className={css.section} aria-label="审计摘要"><h4>审计摘要</h4><ul className={css.history}>{detail.auditSummary.map((audit, index) => <li key={`${audit.createdAt}:${index}`}>{AUDIT_ACTION_LABELS[audit.action] ?? '未知操作'} · {AUDIT_RESULT_LABELS[audit.result] ?? '未知结果'}{audit.versionNumber !== undefined && <code> v{audit.versionNumber}</code>}<time>{audit.createdAt}</time></li>)}</ul></section>
     {confirmation !== undefined && <Modal open title={confirmation.title} closeLabel="取消操作" onClose={() => { setConfirmation(undefined) }} footer={<div className={css.actions}><button type="button" onClick={() => { setConfirmation(undefined) }}>取消</button><button type="button" disabled={locked} onClick={() => { void actions.mutate(confirmation.request); setConfirmation(undefined) }}>{confirmation.label}</button></div>}><p>{confirmation.body}</p></Modal>}
   </article>
 }
@@ -184,7 +213,7 @@ function ScopedPanel({ state, actions }: { state: BusinessSkillState; actions: A
       {state.items.length === 0 && <p>暂无业务 Skill。新建草稿开始测试和发布。</p>}
       <ul className={css.rows}>{state.items.map(item => <li key={item.slug}><button className={css.row} type="button" aria-current={state.selected === item.slug && !creating} disabled={state.action !== undefined} onClick={() => { setCreating(false); setScenario(undefined); void actions.select(item.slug) }}>
         <strong>{item.displayName}</strong><code>/{item.slug}</code><span>{item.status === 'retired' ? '已退役' : item.authorized ? '已授权' : '未授权'} · {item.currentVersion === undefined ? '未发布' : `v${item.currentVersion}`}</span>
-        <small>草稿 {item.draftRevision ?? '—'} · 最近测试 {item.latestTest?.status ?? '暂无'}<time>{item.updatedAt}</time></small>
+        <small>草稿 {item.draftRevision ?? '—'} · 最近测试 {item.latestTest === undefined ? '暂无' : TEST_STATUS_LABELS[item.latestTest.status]}<time>{item.updatedAt}</time></small>
       </button></li>)}</ul>
       {state.cursor !== undefined && <button type="button" onClick={() => { void actions.loadMore() }}>更多 Skill</button>}
       <button type="button" disabled={state.action !== undefined} onClick={() => { void actions.refresh() }}>重新加载</button>
