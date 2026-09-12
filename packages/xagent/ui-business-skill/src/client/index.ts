@@ -45,7 +45,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
         inject: (): BusinessSkillPanelInjected => ({ hooks: { skills: controller.snapshot },
           select: slug => controller.select(slug), refresh: () => controller.refresh(), loadMore: () => controller.loadMore(),
           loadHistory: kind => controller.loadHistory(kind), openTranscript: (run, more) => controller.openTranscript(run, more),
-          mutate: request => controller.mutate(request), retryMutation: () => controller.retryMutation(),
+          mutate: (request, scopeEpoch) => controller.mutate(request, scopeEpoch), retryMutation: () => controller.retryMutation(),
         }),
       }, BusinessSkillPanel)
       return () => { controller.clear(); disposePanel() }

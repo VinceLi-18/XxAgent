@@ -38,6 +38,7 @@ export class BusinessSkillController {
   private retry: { request: BusinessSkillMutation; key: string } | undefined
   private catalogOwner: ReadOwner | undefined
   private selectionOwner: ReadOwner | undefined
+  private selected: string | undefined
 
   constructor(private readonly remote: BusinessSkillRemote) {}
 
@@ -57,20 +58,22 @@ export class BusinessSkillController {
   /** Cancel requests and remove project content when the selection becomes unavailable. */
   clear(): void {
     this.scope = undefined
+    this.selected = undefined
     this.retry = undefined
     this.catalogOwner = undefined
     this.selectionOwner?.controller.abort()
     this.selectionOwner = undefined
     for (const controller of this.requests.keys()) controller.abort()
-    this.snapshot.replace({ phase: 'empty' })
+    this.snapshot.invalidate()
   }
 
-  /** Reload authoritative list and selection after a read failure.
+  /** Reload the catalog within the same epoch, retaining the selected slug when still available.
    * @returns Settlement without retaining inaccessible content.
    */
   refresh(): Promise<void> {
     const scope = this.scope
     if (scope === undefined || this.disposed) return Promise.resolve()
+    const selected = this.selected
     for (const controller of this.requests.keys()) controller.abort()
     this.scope = { ...scope }
     this.catalogOwner = this.readOwner(undefined)
@@ -83,7 +86,8 @@ export class BusinessSkillController {
       if (!result.ok) { this.snapshot.replace({ phase: 'error', error: '无法加载业务 Skill，请重新加载' }); return }
       const items = [...new Map(result.value.items.map(item => [item.slug, item])).values()].sort((a, b) => a.slug.localeCompare(b.slug))
       this.snapshot.replace({ phase: 'ready', scope, items, cursor: result.value.nextCursor })
-      if (items[0] !== undefined) await this.select(items[0].slug)
+      const next = items.find(item => item.slug === selected) ?? items[0]
+      if (next !== undefined) await this.select(next.slug)
     })
   }
 
@@ -97,6 +101,7 @@ export class BusinessSkillController {
     this.selectionOwner?.controller.abort()
     const owner = this.readOwner(slug)
     this.selectionOwner = owner
+    this.selected = slug
     this.snapshot.patch({ selected: slug, detail: undefined, transcript: undefined, detailLoading: true, error: undefined })
     return this.perform(async (signal, live, scope) => {
       const result = await this.remote.detail(scope.projectId, scope.sessionId, slug, { limit: 50 }, signal)
@@ -201,11 +206,12 @@ export class BusinessSkillController {
 
   /** Submit one user intent, creating a fresh idempotency key.
    * @param request Exact content and revision confirmed by the actor.
+   * @param scopeEpoch Captured form owner; immediate callers may use the current epoch.
    * @returns Explicit success, rejection, uncertainty, cancellation or refusal to start.
    */
-  mutate(request: BusinessSkillMutation): Promise<BusinessSkillMutationOutcome> {
+  mutate(request: BusinessSkillMutation, scopeEpoch = this.snapshot.getSnapshot().scopeEpoch): Promise<BusinessSkillMutationOutcome> {
     const state = this.snapshot.getSnapshot()
-    if (state.phase !== 'ready' || state.action !== undefined || state.blocked || this.disposed) return Promise.resolve('not-started')
+    if (state.phase !== 'ready' || scopeEpoch !== state.scopeEpoch || state.action !== undefined || state.blocked || this.disposed) return Promise.resolve('not-started')
     if (state.scope.role !== 'manager' && ['publish', 'authorization', 'version', 'retire'].includes(request.kind)) return Promise.resolve('not-started')
     this.retry = undefined
     return this.submit(structuredClone(request), crypto.randomUUID())
@@ -221,11 +227,11 @@ export class BusinessSkillController {
     return this.submit(retry.request, retry.key)
   }
 
-  /** Abort requests, stop notifications and await all pending work. */
+  /** Abort requests, publish input invalidation, stop notifications and await all pending work. */
   async dispose(): Promise<void> {
     this.disposed = true
-    this.snapshot.dispose()
     this.clear()
+    this.snapshot.dispose()
     await Promise.allSettled([...this.requests.values()])
   }
 
@@ -266,6 +272,7 @@ export class BusinessSkillController {
         if (request.kind === 'create') {
           this.selectionOwner?.controller.abort()
           this.selectionOwner = this.readOwner(slug)
+          this.selected = slug
         }
         this.snapshot.patch({ detail, selected: slug, detailLoading: false,
           transcript: request.kind === 'create' ? undefined : state.transcript,

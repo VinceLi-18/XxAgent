@@ -12,8 +12,7 @@ export interface BusinessSkillScope {
   readonly generation: unknown
 }
 
-/** Observable server records and pending UI operations for one scope. */
-export type BusinessSkillState =
+type Snapshot =
   | { readonly phase: 'empty' }
   | { readonly phase: 'loading' }
   | { readonly phase: 'error'; readonly error: string }
@@ -31,9 +30,12 @@ export type BusinessSkillState =
     readonly transcript?: BusinessSkillRemoteTranscript | undefined
   }
 
+/** Every phase carries a monotonic scope epoch; same-scope refresh preserves it. */
+export type BusinessSkillState = Snapshot & { readonly scopeEpoch: number }
+
 /** Memory-only observable; disposal closes listeners before cancellation settles. */
 export class BusinessSkillStore implements HostObservable<BusinessSkillState> {
-  private state: BusinessSkillState = { phase: 'empty' }
+  private state: BusinessSkillState = { phase: 'empty', scopeEpoch: 0 }
   private readonly listeners = new Set<() => void>()
   readonly getSnapshot = (): BusinessSkillState => this.state
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -41,10 +43,19 @@ export class BusinessSkillStore implements HostObservable<BusinessSkillState> {
     return () => { this.listeners.delete(listener) }
   }
 
-  /** Publish a complete replacement while containing observer failures.
+  /** Replace records within the current scope epoch while containing observer failures.
    * @param state Current in-memory records.
    */
-  replace(state: BusinessSkillState): void {
+  replace(state: Snapshot): void {
+    this.publish({ ...state, scopeEpoch: this.state.scopeEpoch })
+  }
+
+  /** Invalidate retained input owners synchronously, including during batched scope changes. */
+  invalidate(): void {
+    this.publish({ phase: 'empty', scopeEpoch: this.state.scopeEpoch + 1 })
+  }
+
+  private publish(state: BusinessSkillState): void {
     this.state = state
     for (const listener of this.listeners) {
       try { listener() } catch (error) { console.error('[xagent-ui-business-skill] subscriber threw:', error) }
@@ -59,5 +70,5 @@ export class BusinessSkillStore implements HostObservable<BusinessSkillState> {
   }
 
   /** Forget all content and subscriptions at plugin disposal. */
-  dispose(): void { this.listeners.clear(); this.state = { phase: 'empty' } }
+  dispose(): void { this.listeners.clear(); this.state = { phase: 'empty', scopeEpoch: this.state.scopeEpoch } }
 }

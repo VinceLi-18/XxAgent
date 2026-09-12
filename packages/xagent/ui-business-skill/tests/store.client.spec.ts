@@ -5,6 +5,40 @@ import { detail, scope, ok, remoteFixture } from './fixtures.client.ts'
 import { BusinessSkillStore } from '../src/client/store.ts'
 
 describe('Business Skill governance scope', () => {
+  it('rejects a captured form command after its epoch is invalidated even when the same scope returns', async () => {
+    const remote = remoteFixture()
+    const controller = new BusinessSkillController(remote)
+    await controller.setScope(scope)
+    const epoch = controller.snapshot.getSnapshot().scopeEpoch
+    controller.clear(); await controller.setScope(scope)
+    expect(await controller.mutate({ kind: 'create', input: {
+      slug: 'old', displayName: 'Old', description: 'Old', instructions: '# Old', primaryTools: [],
+    } }, epoch)).toBe('not-started')
+    expect(remote.create).not.toHaveBeenCalled()
+    await controller.dispose()
+  })
+
+  it('publishes a monotonic scope epoch in loading/error/empty states and keeps it stable for refresh', async () => {
+    const remote = remoteFixture()
+    const controller = new BusinessSkillController(remote)
+    await controller.setScope(scope)
+    const original = controller.snapshot.getSnapshot().scopeEpoch
+    const pending = Promise.withResolvers<Awaited<ReturnType<typeof remote.list>>>()
+    remote.list.mockReturnValueOnce(pending.promise)
+    const refresh = controller.refresh()
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ phase: 'loading', scopeEpoch: original })
+    pending.resolve({ ok: false, error: { code: 'forbidden', message: 'denied', details: {} } }); await refresh
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ phase: 'error', scopeEpoch: original })
+    await controller.refresh()
+    expect(controller.snapshot.getSnapshot().scopeEpoch).toBe(original)
+    controller.clear()
+    const cleared = controller.snapshot.getSnapshot().scopeEpoch
+    expect(cleared).toBeGreaterThan(original)
+    await controller.setScope(scope)
+    expect(controller.snapshot.getSnapshot().scopeEpoch).toBeGreaterThan(cleared)
+    await controller.dispose()
+  })
+
   it.each([false, true])('gives successful creation independent page ownership with an existing selection: %s', async (existing) => {
     const remote = remoteFixture()
     remote.list.mockResolvedValueOnce(ok({ items: existing ? [detail] : [] }))
@@ -271,7 +305,7 @@ describe('Business Skill governance scope', () => {
     expect(second).toHaveBeenCalledOnce()
     expect(report).toHaveBeenCalledOnce()
     stop(); store.patch({ items: [] })
-    expect(store.getSnapshot()).toEqual({ phase: 'loading' })
+    expect(store.getSnapshot()).toEqual({ phase: 'loading', scopeEpoch: 0 })
     report.mockRestore()
   })
 
@@ -372,7 +406,7 @@ describe('Business Skill governance scope', () => {
     await controller.dispose()
   })
 
-  it('keeps disposal pending until cancelled transport settles without notifying subscribers', async () => {
+  it('publishes disposal invalidation once and waits for transport without subsequent notifications', async () => {
     const remote = remoteFixture()
     const pending = Promise.withResolvers<Awaited<ReturnType<typeof remote.list>>>()
     remote.list.mockReturnValueOnce(pending.promise)
@@ -386,8 +420,8 @@ describe('Business Skill governance scope', () => {
     expect(settled).toBe(false)
     expect(remote.list.mock.calls[0]![3]!.aborted).toBe(true)
     pending.resolve(ok({ items: [detail] })); await loading; await disposed
-    expect(listener).not.toHaveBeenCalled()
-    expect(controller.snapshot.getSnapshot()).toEqual({ phase: 'empty' })
+    expect(listener).toHaveBeenCalledOnce()
+    expect(controller.snapshot.getSnapshot()).toEqual({ phase: 'empty', scopeEpoch: 2 })
   })
 
   it('invalidates overlapping refreshes within one physical scope', async () => {
@@ -440,7 +474,7 @@ describe('Business Skill governance scope', () => {
       expect.objectContaining({ expectedDraftRevision: 2, instructions: '# 新说明' }),
       expect.any(AbortSignal))
     await controller.dispose()
-    expect(controller.snapshot.getSnapshot()).toEqual({ phase: 'empty' })
+    expect(controller.snapshot.getSnapshot()).toEqual({ phase: 'empty', scopeEpoch: 2 })
   })
 
   it.each(['accountId', 'projectId', 'sessionId', 'generation'] as const)('cancels and suppresses old %s responses', async (field) => {

@@ -7,7 +7,7 @@ import { BusinessSkillStore, type BusinessSkillState } from '../src/client/store
 import { detail } from './fixtures.client.ts'
 
 afterEach(cleanup)
-function mount(role: 'manager' | 'specialist' = 'manager', override?: BusinessSkillState) {
+function mount(role: 'manager' | 'specialist' = 'manager', override?: Parameters<BusinessSkillStore['replace']>[0]) {
   const store = new BusinessSkillStore()
   store.replace(override ?? { phase: 'ready', scope: { accountId: 'a', projectId: 'p', sessionId: 's', role, generation: {} }, items: [detail], selected: detail.slug, detail })
   const actions = {
@@ -31,7 +31,7 @@ describe('Business Skill release dossier', () => {
     fireEvent.click(checkbox); fireEvent.click(checkbox)
     fireEvent.click(screen.getByRole('checkbox', { name: /检索项目资料/ }))
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '创建草稿' })) })
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'create', input: { slug: 'new-review', displayName: '新流程', description: '审核项目', instructions: '# 审核项目', primaryTools: ['search_artifacts'] } })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'create', input: { slug: 'new-review', displayName: '新流程', description: '审核项目', instructions: '# 审核项目', primaryTools: ['search_artifacts'] } }, 0)
     expect(screen.getByRole('article', { name: 'Skill 详情' })).toBeTruthy()
   })
 
@@ -57,16 +57,16 @@ describe('Business Skill release dossier', () => {
     expect(actions.loadHistory.mock.calls).toEqual([['versions'], ['tests']]); expect(actions.loadMore).toHaveBeenCalledOnce()
     fireEvent.click(screen.getByRole('button', { name: '授权使用' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '确认授权' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'authorization', slug: 'review-facts', authorized: true })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'authorization', slug: 'review-facts', authorized: true }, 0)
     fireEvent.click(screen.getByRole('button', { name: '切换至 v1' }))
     expect(screen.getByRole('dialog').textContent).toMatch(/v1/)
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '确认切换' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'version', slug: 'review-facts', version: 1 })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'version', slug: 'review-facts', version: 1 }, 0)
     const updated = store.getSnapshot() as typeof state
     act(() => { store.replace({ ...updated, detail: { ...updated.detail!, authorized: true } }) })
     fireEvent.click(screen.getByRole('button', { name: '取消授权' }))
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '确认取消授权' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'authorization', slug: 'review-facts', authorized: false })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'authorization', slug: 'review-facts', authorized: false }, 0)
   })
 
   it('requires a new qualifying run for changed digests and exposes failed, running and rejected history', () => {
@@ -77,7 +77,7 @@ describe('Business Skill release dossier', () => {
     expect(screen.getByRole('button', { name: '发布版本' }).matches(':disabled')).toBe(true)
     expect(screen.getByText('需要当前草稿的完成测试与人工通过')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '人工拒绝 run 3' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'verdict', slug: 'review-facts', run: 3, verdict: 'reject' })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'verdict', slug: 'review-facts', run: 3, verdict: 'reject' }, 0)
     fireEvent.click(screen.getByRole('button', { name: /审核项目事实.*review-facts/ }))
     expect(actions.select).toHaveBeenCalledWith('review-facts')
   })
@@ -133,12 +133,12 @@ describe('Business Skill release dossier', () => {
     const { actions } = mount('specialist')
     fireEvent.change(screen.getByLabelText('Markdown 指令'), { target: { value: '# 新审核' } })
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
-    expect(actions.mutate).toHaveBeenCalledWith(expect.objectContaining({ kind: 'draft', slug: 'review-facts' }))
-    expect(actions.mutate.mock.calls[0]).toMatchObject([{ input: { expectedDraftRevision: 2, instructions: '# 新审核' } }])
+    expect(actions.mutate).toHaveBeenCalledWith(expect.objectContaining({ kind: 'draft', slug: 'review-facts' }), 0)
+    expect(actions.mutate.mock.calls[0]).toMatchObject([{ input: { expectedDraftRevision: 2, instructions: '# 新审核' } }, 0])
     expect(screen.getAllByRole('checkbox')).toHaveLength(3)
     fireEvent.change(screen.getByLabelText('测试场景'), { target: { value: '审核项目的事实证据' } })
     fireEvent.click(screen.getByRole('button', { name: '运行只读测试' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'test', slug: 'review-facts', revision: 2, policy: 'policy', scenario: '审核项目的事实证据' })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'test', slug: 'review-facts', revision: 2, policy: 'policy', scenario: '审核项目的事实证据' }, 0)
   })
   it('shows exact test provenance and keeps manager actions absent for Specialists', () => {
     const { actions } = mount('specialist')
@@ -148,7 +148,7 @@ describe('Business Skill release dossier', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看测试 run 3' }))
     expect(actions.openTranscript).toHaveBeenCalledWith(3)
     fireEvent.click(screen.getByRole('button', { name: '人工通过 run 3' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'verdict', slug: 'review-facts', run: 3, verdict: 'pass' })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'verdict', slug: 'review-facts', run: 3, verdict: 'pass' }, 0)
   })
   it('publication confirmation binds the exact revision, qualifying run and write permissions', () => {
     const { actions } = mount()
@@ -158,7 +158,7 @@ describe('Business Skill release dossier', () => {
     expect(dialog.textContent).toMatch(/run 3/)
     expect(dialog.textContent).toMatch(/propose_fact/)
     fireEvent.click(within(dialog).getByRole('button', { name: '确认发布' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'publish', slug: 'review-facts', revision: 2 })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'publish', slug: 'review-facts', revision: 2 }, 0)
   })
   it('retirement explains terminal state and immediate unauthorization before sending', () => {
     const { actions } = mount()
@@ -168,6 +168,6 @@ describe('Business Skill release dossier', () => {
     expect(dialog.textContent).toMatch(/立即取消授权/)
     expect(actions.mutate).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: '确认退役' }))
-    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'retire', slug: 'review-facts' })
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'retire', slug: 'review-facts' }, 0)
   })
 })

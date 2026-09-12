@@ -52,6 +52,8 @@ Browser governance retains only one live account/project/Session/connection gene
 
 **Slug equality as request ownership.** Returning to a Skill does not revive its previous selection: each selection owns cancellable history and transcript pages independently. Shared page locks would let an obsolete request block the active Skill, while slug-only response checks would admit a late response after switching away and back. Similarly, a settled mutation Promise cannot establish backend success. Unsaved creation inputs remain within their account/project/Session/role/connection scope until authoritative success; retaining them across a different scope would disclose draft content.
 
+**Inferring form ownership from rendered scope fields.** React can batch invalidation and loading, so a switch away and back can render identical scope fields without exposing the intervening loss of authority. A monotonic epoch records every invalidation independently of rendering and rejects commands captured by an obsolete form. Same-scope refresh preserves that epoch, but the scenario also requires its selected slug: a catalog refresh can select a different Skill without changing the security scope.
+
 **Own governance in Session events.** Project-wide concurrent publication and authorization must survive individual Sessions and enforce PostgreSQL project access; the Session log owns execution evidence instead.
 
 **Store Skills as workspace files.** File permissions cannot express project membership, exact tested publication, current-version selection, and formal audit without granting business users server access.

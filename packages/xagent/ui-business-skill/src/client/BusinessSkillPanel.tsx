@@ -4,7 +4,7 @@ import type { HostObservable, InjectFace, PropsRuntime } from '@deepseek-ai/dsh-
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { XAgentBusinessSkillDetail, XAgentBusinessSkillDraft } from '@xagent/dsh-backend-client/types'
 import type { BusinessSkillMutation, BusinessSkillMutationOutcome } from './service.ts'
-import type { BusinessSkillScope, BusinessSkillState } from './store.ts'
+import type { BusinessSkillState } from './store.ts'
 import css from './business-skill.module.css'
 
 /** Slot data and commands owned by the connected project controller. */
@@ -15,7 +15,7 @@ export interface BusinessSkillPanelInjected {
   loadMore(): Promise<void>
   loadHistory(kind: 'versions' | 'tests'): Promise<void>
   openTranscript(run: number, more?: boolean): Promise<void>
-  mutate(request: BusinessSkillMutation): Promise<BusinessSkillMutationOutcome>
+  mutate(request: BusinessSkillMutation, scopeEpoch?: number): Promise<BusinessSkillMutationOutcome>
   retryMutation(): Promise<BusinessSkillMutationOutcome>
 }
 type Actions = Omit<BusinessSkillPanelInjected, 'hooks'>
@@ -165,24 +165,24 @@ function Dossier({ state, detail, actions, scenario, setScenario }: {
  */
 export function BusinessSkillPanel({ useSkills, ...actions }: Props) {
   const state = useSkills(value => value)
+  return <ScopedPanel key={state.scopeEpoch} state={state} actions={{ ...actions,
+    mutate: request => actions.mutate(request, state.scopeEpoch),
+  }} />
+}
+
+function ScopedPanel({ state, actions }: { state: BusinessSkillState; actions: Actions }) {
   const [creating, setCreating] = useState(false)
   const [creation, setCreation] = useState<EditorValues>()
-  const [scenario, setScenario] = useState('')
-  const [formScope, setFormScope] = useState<BusinessSkillScope>()
-  const resetForm = (): void => { setCreating(false); setCreation(undefined); setScenario('') }
-  if (state.phase === 'empty' && formScope !== undefined) { setFormScope(undefined); resetForm() }
-  if (state.phase === 'ready' && (formScope === undefined || formScope.accountId !== state.scope.accountId
-    || formScope.projectId !== state.scope.projectId || formScope.sessionId !== state.scope.sessionId
-    || formScope.generation !== state.scope.generation || formScope.role !== state.scope.role)) {
-    setFormScope(state.scope); resetForm()
-  }
+  const [scenario, setScenario] = useState<{ scopeEpoch: number; slug: string; text: string }>()
+  const resetForm = (): void => { setCreating(false); setCreation(undefined); setScenario(undefined) }
   if (state.phase === 'empty') return <p>请选择项目会话以管理业务 Skill</p>
   if (state.phase === 'loading') return <p role="status">正在加载业务 Skill…</p>
   if (state.phase === 'error') return <div><p role="alert">{state.error}</p><button type="button" onClick={() => { void actions.refresh() }}>重新加载</button></div>
+  const detail = state.detail
   return <div className={css.workbench}>
     <aside className={css.collection} aria-label="项目 Skill 列表"><header><h3>业务 Skills</h3><button type="button" disabled={state.action !== undefined} onClick={() => { setCreating(true) }}>新建 Skill</button></header>
       {state.items.length === 0 && <p>暂无业务 Skill。新建草稿开始测试和发布。</p>}
-      <ul className={css.rows}>{state.items.map(item => <li key={item.slug}><button className={css.row} type="button" aria-current={state.selected === item.slug && !creating} disabled={state.action !== undefined} onClick={() => { setCreating(false); setScenario(''); void actions.select(item.slug) }}>
+      <ul className={css.rows}>{state.items.map(item => <li key={item.slug}><button className={css.row} type="button" aria-current={state.selected === item.slug && !creating} disabled={state.action !== undefined} onClick={() => { setCreating(false); setScenario(undefined); void actions.select(item.slug) }}>
         <strong>{item.displayName}</strong><code>/{item.slug}</code><span>{item.status === 'retired' ? '已退役' : item.authorized ? '已授权' : '未授权'} · {item.currentVersion === undefined ? '未发布' : `v${item.currentVersion}`}</span>
         <small>草稿 {item.draftRevision ?? '—'} · 最近测试 {item.latestTest?.status ?? '暂无'}<time>{item.updatedAt}</time></small>
       </button></li>)}</ul>
@@ -202,8 +202,11 @@ export function BusinessSkillPanel({ useSkills, ...actions }: Props) {
           return outcome
         }} />
         : state.detailLoading ? <p role="status">正在加载 Skill 详情…</p>
-          : state.detail === undefined ? <p>选择 Skill 查看草稿、测试和版本。</p>
-            : <Dossier key={`${state.scope.accountId}:${state.scope.projectId}:${state.detail.slug}`} state={state} detail={state.detail} actions={actions} scenario={scenario} setScenario={setScenario} />}
+          : detail === undefined ? <p>选择 Skill 查看草稿、测试和版本。</p>
+            : <Dossier key={detail.slug} state={state} detail={detail} actions={actions}
+              scenario={scenario?.scopeEpoch === state.scopeEpoch && scenario.slug === state.selected
+                && scenario.slug === detail.slug ? scenario.text : ''}
+              setScenario={(text) => { setScenario({ scopeEpoch: state.scopeEpoch, slug: detail.slug, text }) }} />}
     </div>
   </div>
 }
