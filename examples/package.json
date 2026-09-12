@@ -120,6 +120,7 @@
     "@deepseek-ai/dsh-agent-instructions": "workspace:*",
     "@xagent/dsh-fact": "workspace:*",
     "@xagent/dsh-business-skill": "workspace:*",
+    "@xagent/dsh-business": "workspace:*",
     "@xagent/dsh-principal": "workspace:*",
     "@xagent/dsh-retrieval": "workspace:*",
     "@xagent/dsh-session-persistence-api": "workspace:*",

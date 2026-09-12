@@ -222,6 +222,7 @@ const EXACT_EDITS: readonly ExactEdit[] = [
     find: `      "ignoreDependencies": [
         "@cordisjs/plugin-logger-console",
         "@deepseek-ai/.+",
+        "@xagent/dsh-business",
         "@xagent/dsh-business-skill",
         "@xagent/dsh-fact",
         "@xagent/dsh-tool-fact",
@@ -231,6 +232,7 @@ const EXACT_EDITS: readonly ExactEdit[] = [
     "packages/util/home": {`,
     replace: `      "ignoreDependencies": [
         "@deepseek-ai/.+",
+        "@xagent/dsh-business",
         "@xagent/dsh-business-skill",
         "@xagent/dsh-fact",
         "@xagent/dsh-tool-fact",

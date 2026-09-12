@@ -12,6 +12,8 @@
 
 `xagent-business-skill` 行提供 `maxCatalogEntries: 100`、`testProvider: deepseek-official` 和 `testModel: deepseek-v4-flash`。部署可使用与普通 Agent 相同的 provider/model 路由方式修改这些经过校验的 Host 设置。Browser 测试请求不能选择提供方或模型。
 
+可选不变量伴随插件将模型请求与精确归属的生产策略或已挂载测试运行核对。测试保留不可变的所选只读集合；多余和缺少工具均失败，唯一例外是真实的延迟引用配套工具。第二 Skill 冲突和普通 Skill 错误后，生产策略完整性仍然必须满足；只有运行时策略实际锁定拒绝，终止请求才可省略工具。
+
 ## Model Experience
 
 ### Governed turn instructions（受治理的轮次指令）

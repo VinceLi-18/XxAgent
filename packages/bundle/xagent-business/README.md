@@ -12,6 +12,8 @@ Provide `XAGENT_API_ORIGIN`, `XAGENT_SERVICE_TOKEN`, allowed Browser origins and
 
 The `xagent-business-skill` row supplies `maxCatalogEntries: 100`, `testProvider: deepseek-official` and `testModel: deepseek-v4-flash`. Deployments can patch these validated Host settings using the same provider/model routing as ordinary Agents. Browser test requests cannot select a provider or model.
 
+The optional invariant companion checks model requests against the exact owned production policy or mounted test run. Tests retain their immutable selected read-only set; extra and missing tools fail, except the genuine deferred citation companion. Production completeness remains required after second-Skill conflicts and ordinary Skill errors; only the runtime policy's actual denial latch permits a terminating request to omit tools.
+
 ## Model Experience
 
 ### Governed turn instructions

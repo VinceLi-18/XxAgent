@@ -36,6 +36,8 @@ An Agent-scoped approval listener delegates to the normal answerer chain and rac
 
 ## Governance and testing
 
+The diagnostic `businessSkillRelationship` query exposes only the exact Agent/definition's selected tools, activation state and live denial latch. Test ownership requires the TestRunner's successful mount and exact run identity; public provider metadata, matching IDs and copied definitions do not establish it. Admission and bundle invariants share this query. It grants no execution authority and exposes no backend proof.
+
 The `xagentBusinessSkill` Remote provides list, detail, create, draft, test, transcript, verdict, publish, authorization, version and retire operations. Backend authorization and lifecycle decisions remain authoritative. Known backend errors retain their stable codes; unknown failures become `service-unavailable` with no internal details. Caller cancellation is combined with request, connection and service cancellation, and responses are checked again after completion.
 
 With the FastAPI Session persistence provider installed, the plugin registers a reversible Host-only test executor through `registerTestRunner`. The test Remote rejects before starting backend work unless an executor is installed. A test transcript is separately paginated by public run number.

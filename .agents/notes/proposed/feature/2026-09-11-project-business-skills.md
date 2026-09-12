@@ -50,6 +50,8 @@ Project discovery is a fixed-project read under an active Skill, not permission 
 
 ## Alternatives considered
 
+**Infer invariant policy from provider names or durable error text.** A draft provider name cannot identify the mounted run's selected reads, and a second-Skill conflict does not close the original policy. Diagnostics observe the TestRunner's exact Agent/definition/run identity and immutable test tools, plus the activated runtime policy's existing denial latch. Both admission and bundle companions consume this Host-private relationship; neither creates authorization or copies the runtime's error classification.
+
 **Use a public discovery selector or widen all Project Sessions.** Either would let an unbound conversation bypass the active Skill policy and confuse project discovery with cross-project permission. A private execution proof plus same-transaction reauthorization preserves both the Project restriction and Private discovery semantics.
 
 Browser governance retains only one live account/project/Session/connection generation in memory. Project and ordinary Session IDs select the request scope, not Skill records; omitting them would prevent the authorizer from validating the requested conversation. The physical token remains the authority, and a second service check prevents a differently scoped invocation inside an authenticated request. Exact draft revision, qualifying run and excluded production writes remain visible at publication. Only an uncertain mutation may retain its original idempotency key and immutable intent; a revision conflict reloads authoritative content instead of overwriting it.

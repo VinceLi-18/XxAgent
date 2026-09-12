@@ -12,6 +12,7 @@ import type { XAgentBusinessSkillLoad } from '@xagent/dsh-backend-client'
 import { bindBusinessSkillDiscovery, CITED_ANSWER_TOOL, XAgentRetrievalService } from '@xagent/dsh-retrieval'
 import { isArtifactSearchTool, SEARCH_ARTIFACTS_TOOL } from '@xagent/dsh-tool-retrieval'
 import { replaceCompletedInstructions, TurnBinding } from './turn-binding.ts'
+import { registerPolicyRelationship, type BusinessSkillTestOwner } from './relationships.ts'
 
 const SAFE_TOOLS = new Set(['skill', 'list_accessible_projects', 'search_artifacts', 'submit_cited_answer', 'propose_fact'])
 const DENIED = 'Business Skill tool execution is unavailable for this turn.'
@@ -30,6 +31,7 @@ export class BusinessSkillRuntimePolicy {
   private schemas: ToolSchema[] | undefined
   private lift: (() => void) | undefined
   private closeDiscovery: (() => void) | undefined
+  private closeRelationship: (() => void) | undefined
   private readonly closeListeners: (() => void)[]
   private permitted = new WeakSet<object>()
   private readonly executing = new Set<Promise<void>>()
@@ -151,7 +153,7 @@ export class BusinessSkillRuntimePolicy {
    * @param invocation - invocation form recorded for the first activation.
    * @param test - Isolated run identity; excludes production writes while checking the production digest.
    */
-  activate(definition: SkillDefinition, version: XAgentBusinessSkillLoad, invocation: 'model-tool' | 'user-explicit', test?: { readonly runNumber: number }): void {
+  activate(definition: SkillDefinition, version: XAgentBusinessSkillLoad, invocation: 'model-tool' | 'user-explicit', test?: BusinessSkillTestOwner): void {
     if (this.turn === undefined || this.denied) throw failure('business-skill-not-authorized')
     if (this.pin !== undefined) {
       if (this.pin.version.versionKey !== version.versionKey) throw failure('business-skill-conflict')
@@ -178,6 +180,7 @@ export class BusinessSkillRuntimePolicy {
     } catch (error) { lift(); throw error }
     this.pin = pin
     this.lift = lift
+    this.closeRelationship = registerPolicyRelationship(this.agent, definition, [...tools], () => this.denied, test)
     if (tools.has('list_accessible_projects')) {
       this.closeDiscovery = bindBusinessSkillDiscovery(this.agent, test === undefined
         ? { kind: 'published', slug: version.slug, versionKey: version.versionKey, toolPolicyDigest: version.toolPolicyDigest }
@@ -245,6 +248,8 @@ export class BusinessSkillRuntimePolicy {
     this.releaseCatalog()
     this.closeDiscovery?.()
     this.closeDiscovery = undefined
+    this.closeRelationship?.()
+    this.closeRelationship = undefined
     this.pin = undefined
     this.turn = undefined
     this.denied = false

@@ -8,6 +8,8 @@ import SessionTitle, { SessionTitleProviderId } from '@deepseek-ai/dsh-session-t
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import InvariantRegistry from '@deepseek-ai/dsh-invariants'
+import * as bundleInvariant from '@xagent/dsh-business/invariant'
 import * as ToolSkill from '@deepseek-ai/dsh-tool-skill'
 import { XAgentBackendClient, type XAgentRetrievalBackend } from '@xagent/dsh-backend-client'
 import { BGE_M3_MODEL_ID, BGE_M3_REVISION, CITED_ANSWER_TOOL, XAgentReceiptRegistry, XAgentRetrievalService } from '@xagent/dsh-retrieval'
@@ -18,6 +20,8 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import { BusinessSkillTestRunner } from '../src/test-runner.ts'
 import * as businessSkill from '../src/index.ts'
+import * as skillInvariant from '../src/invariant.ts'
+import type { SkillDefinition } from '@deepseek-ai/dsh-skill'
 import { request, projectId, sessionId } from './fixtures.ts'
 
 const roots: Context[] = []
@@ -25,6 +29,87 @@ afterEach(async () => { for (const root of roots.splice(0)) await root.fiber.dis
 const testSession = '00000000-0000-0000-0000-000000000701'
 const instructions = 'Use this exact draft, then inspect the project evidence.'
 const scenario = 'Find the project budget.'
+
+test.each([
+  { primary: [], changed: ['skill', 'search_artifacts'] },
+  { primary: ['list_accessible_projects', 'propose_fact'], changed: ['skill'] },
+  { primary: ['search_artifacts'], changed: ['skill'] },
+])('the mounted draft invariant rejects tool drift from its exact run selection: $changed', async ({ primary, changed }) => {
+  const denied: boolean[] = []
+  const h = await harness([(options) => {
+    try {
+      h.ctx.waterfall('llm/stream', { ...options, tools: changed.map(name => ({ name, description: 'Drift', parameters: {} })) },
+        () => (async function* () {})())
+      denied.push(false)
+    } catch { denied.push(true) }
+    return textResponse('Reviewed.')
+  }], primary)
+  await h.ctx.plugin(InvariantRegistry)
+  await h.ctx.plugin(bundleInvariant)
+  await h.ctx.plugin(skillInvariant)
+  const backend = new XAgentBackendClient({ origin: 'https://backend.example', serviceToken: 'service', fetch: h.fetch })
+  new XAgentRetrievalService(h.ctx, backend.retrieval, new XAgentReceiptRegistry(), {
+    issuer: 'host', audience: 'api', privateKey: generateKeyPairSync('ed25519').privateKey,
+    tokenizer: { modelId: BGE_M3_MODEL_ID, revision: BGE_M3_REVISION, count: async () => 1 },
+  })
+  await h.ctx.plugin(retrievalTools)
+  await expect(h.run()).resolves.toMatchObject({ status: 'completed' })
+  expect(denied).toEqual([true])
+})
+
+test('a latched test authorization denial still requires its selected read-only request tools', async () => {
+  const errors: unknown[] = []
+  const h = await harness([toolCallResponse('denied', 'list_accessible_projects', {}), textResponse('Authorization unavailable.')],
+    ['list_accessible_projects'])
+  h.ctx.on('agent/error', ({ error }) => { errors.push(error) })
+  await h.ctx.plugin(InvariantRegistry)
+  await h.ctx.plugin(bundleInvariant)
+  const backend = new XAgentBackendClient({ origin: 'https://backend.example', serviceToken: 'service', fetch: h.fetch })
+  new XAgentRetrievalService(h.ctx, backend.retrieval, new XAgentReceiptRegistry(), {
+    issuer: 'host', audience: 'api', privateKey: generateKeyPairSync('ed25519').privateKey,
+    tokenizer: { modelId: BGE_M3_MODEL_ID, revision: BGE_M3_REVISION, count: async () => 1 },
+  })
+  await h.ctx.plugin(retrievalTools)
+  h.state.authorizationFailure = 'business-skill-not-authorized'
+  await expect(h.run()).resolves.toMatchObject({ status: 'failed', terminationReason: 'authorization-denied' })
+  expect(h.adapter.requests).toHaveLength(1)
+  expect(errors).toHaveLength(1)
+  expect(String(errors[0])).toContain('requires every mounted primary tool')
+})
+
+test('real mounted runs cannot transfer definitions across Agents or reuse an earlier run admission', async () => {
+  let firstDefinition!: SkillDefinition
+  let secondDefinition!: SkillDefinition
+  const observations: unknown[] = []
+  const first = await harness([() => {
+    observations.push(businessSkill.businessSkillRelationship(first.agent!, firstDefinition))
+    return textResponse('First review.')
+  }])
+  first.ctx.on('skill/loaded', ({ definition }) => { firstDefinition = definition })
+  await first.ctx.plugin(InvariantRegistry)
+  await first.ctx.plugin(skillInvariant)
+  await first.ctx.plugin(bundleInvariant)
+  await expect(first.run()).resolves.toMatchObject({ status: 'completed' })
+  expect(businessSkill.businessSkillRelationship(first.agent!, firstDefinition)).toBeUndefined()
+  const second = await harness([() => {
+    observations.push(businessSkill.businessSkillRelationship(second.agent!, secondDefinition))
+    observations.push(businessSkill.businessSkillRelationship(second.agent!, firstDefinition))
+    observations.push(businessSkill.businessSkillRelationship(first.agent!, secondDefinition))
+    observations.push(businessSkill.businessSkillRelationship(second.agent!, { ...secondDefinition }))
+    return textResponse('Second review.')
+  }])
+  second.testRow.run_number = 2
+  second.ctx.on('skill/loaded', ({ definition }) => { secondDefinition = definition })
+  await second.ctx.plugin(InvariantRegistry)
+  await second.ctx.plugin(skillInvariant)
+  await second.ctx.plugin(bundleInvariant)
+  await expect(second.run()).resolves.toMatchObject({ status: 'completed' })
+  expect(observations).toEqual([
+    { kind: 'test', tools: ['skill'], activated: true, denied: false },
+    { kind: 'test', tools: ['skill'], activated: true, denied: false }, undefined, undefined, undefined,
+  ])
+  expect(second.calls.find(call => call.path.endsWith('/mount'))?.path).toContain('/tests/2/')
+})
 
 async function harness(script: ConstructorParameters<typeof MockAdapter>[0] = [textResponse('Reviewed.')], primary: string[] = []) {
   const production = [...new Set(['skill', ...primary, ...(primary.includes('search_artifacts') ? ['submit_cited_answer'] : [])])].sort()

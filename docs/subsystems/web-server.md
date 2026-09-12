@@ -374,7 +374,7 @@ abstract retire(projectId: string, sessionId: string, slug: string, idempotencyK
 
 Types: [Agent](core.md) · [SkillDefinition](skills.md) · [SkillProvider](skills.md)
 
-Source: [`packages/xagent/business-skill/src/index.ts:98`](../../packages/xagent/business-skill/src/index.ts)
+Source: [`packages/xagent/business-skill/src/index.ts:99`](../../packages/xagent/business-skill/src/index.ts)
 
 <a id="ctxxagentcitation--xagentcitationremoteservice"></a>
 

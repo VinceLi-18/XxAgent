@@ -18,9 +18,9 @@ function dispatch(h: Awaited<ReturnType<typeof setup>>, names?: string[]) {
   () => (async function* () {})())
 }
 
-function result(h: Awaited<ReturnType<typeof setup>>, isError: boolean) {
+function result(h: Awaited<ReturnType<typeof setup>>, isError: boolean, text = 'Probe result') {
   const event = h.agent.session.append('tool/result', { turn: 1, step: 1,
-    message: createToolResultMessage({ callId: CallId('probe'), content: [{ type: 'text', text: 'Probe result' }], isError }) }, { surfaceOp: 'append' })
+    message: createToolResultMessage({ callId: CallId('probe'), content: [{ type: 'text', text }], isError }) }, { surfaceOp: 'append' })
   h.ctx.emit('session/event', h.agent.session, event)
 }
 
@@ -49,6 +49,8 @@ test('the assembled Skill invariant rejects a live foreign tool registered after
       close()
       expect(() => dispatch(h, ['skill'])).not.toThrow()
       await agentEvents(h.ctx, h.agent).serial('skill/loaded', { definition: { ...definition, provider: 'unrelated' }, invocation: 'user-explicit' })
+      claimTurn(h.ctx, h.agent, 2)
+      expect(() => dispatch(h, ['skill'])).toThrow(/exact live runtime policy/u)
     })
     agentEvents(h.ctx, h.agent).emit('agent/disposed', {})
     expect(() => dispatch(h)).not.toThrow()
@@ -102,7 +104,14 @@ test.each(['primary-removed', 'search-provider-removed', 'companion'])('live adm
         await closeTools()
         if (change === 'primary-removed') {
           expect(() => dispatch(h, ['skill'])).toThrow(/primary/u)
-          result(h, true)
+          result(h, true, 'Error: business-skill-conflict')
+          expect(() => dispatch(h, ['skill'])).toThrow(/primary/u)
+          result(h, true, 'Error: Skill body unavailable')
+          expect(() => dispatch(h, ['skill'])).toThrow(/primary/u)
+          h.state.failure = 'not-found'
+          const denied = await h.ctx.tools.execute({ name: 'skill', arguments: { name: 'review' }, agent: h.agent,
+            signal: new AbortController().signal, callId: CallId('denied') })
+          expect(denied.isError).toBe(true)
           expect(() => dispatch(h, ['skill'])).not.toThrow()
           const end = h.agent.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
           h.ctx.emit('session/event', h.agent.session, end)
@@ -111,13 +120,28 @@ test.each(['primary-removed', 'search-provider-removed', 'companion'])('live adm
         else {
           h.agent.ctx.get('tools')!.register(defineTool({ name: 'submit_cited_answer', description: 'Orphan companion', parameters: {},
             output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => 'invalid' }))
-          await agentEvents(h.ctx, h.agent).serial('skill/loaded', {
+          await expect(agentEvents(h.ctx, h.agent).serial('skill/loaded', {
             definition: { ...definition, provider: 'xagent-draft' }, invocation: 'user-explicit',
-          })
-          expect(() => dispatch(h, ['skill', 'submit_cited_answer'])).toThrow(/requires artifact search/u)
+          })).rejects.toThrow(/exact owned backend policy/u)
+          expect(() => dispatch(h, ['skill', 'submit_cited_answer'])).toThrow(/primary/u)
           expect(() => dispatch(h, ['skill', 'search_artifacts', 'submit_cited_answer'])).not.toThrow()
+          h.state.failure = 'not-found'
+          expect((await h.ctx.tools.execute({ name: 'skill', arguments: { name: 'review' }, agent: h.agent,
+            signal: new AbortController().signal, callId: CallId('denied') })).isError).toBe(true)
+          expect(() => dispatch(h, ['skill', 'submit_cited_answer'])).toThrow(/requires artifact search/u)
         }
       }
     })
+  } finally { await h.ctx.fiber.dispose() }
+})
+
+test('an ownerless draft cannot establish a read policy by copying public metadata', async () => {
+  const h = await setup()
+  await h.ctx.plugin(InvariantRegistry)
+  await h.ctx.plugin(invariant)
+  const definition: SkillDefinition = { name: 'review', description: 'Review', content: 'Unowned instructions',
+    provider: 'xagent-draft', source: 'xagent-draft', invocation: { userInvocable: true, modelInvocable: true } }
+  try {
+    await expect(agentEvents(h.ctx, h.agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).rejects.toThrow()
   } finally { await h.ctx.fiber.dispose() }
 })

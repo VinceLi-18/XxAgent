@@ -81,6 +81,7 @@
       ],
       "ignoreDependencies": [
         "@deepseek-ai/.+",
+        "@xagent/dsh-business",
         "@xagent/dsh-business-skill",
         "@xagent/dsh-fact",
         "@xagent/dsh-tool-fact",

@@ -34,6 +34,9 @@ describe('Business Skill loaded-definition relationship', () => {
       await expect(agentEvents(ctx, agent).serial('skill/loaded', {
         definition: { ...definition, content: 'Unapproved instructions' }, invocation: 'user-explicit',
       })).rejects.toThrow()
+      await expect(agentEvents(ctx, agent).serial('skill/loaded', {
+        definition: { ...definition, provider: 'xagent-draft' }, invocation: 'user-explicit',
+      })).rejects.toThrow(/exact mounted TestRunner/u)
     })
     await ctx.fiber.dispose()
   })

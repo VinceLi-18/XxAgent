@@ -803,6 +803,9 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:*
         version: link:../packages/workflow/workflow-worker-thread
+      '@xagent/dsh-business':
+        specifier: workspace:*
+        version: link:../packages/bundle/xagent-business
       '@xagent/dsh-business-skill':
         specifier: workspace:*
         version: link:../packages/xagent/business-skill
@@ -1617,6 +1620,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-skill':
+        specifier: workspace:^
+        version: link:../../skill/skill
 
   packages/bundle/xagent-developer:
     devDependencies:

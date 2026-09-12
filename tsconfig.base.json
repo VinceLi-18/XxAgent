@@ -37,6 +37,8 @@
       "@xagent/dsh-fact": ["./packages/xagent/fact/src/index.ts"],
       "@xagent/dsh-fact/types": ["./packages/xagent/fact/src/types.ts"],
       "@xagent/dsh-business-skill": ["./packages/xagent/business-skill/src/index.ts"],
+      "@xagent/dsh-business/invariant": ["./packages/bundle/xagent-business/src/invariant.ts"],
+      "@xagent/dsh-business-skill/invariant": ["./packages/xagent/business-skill/src/invariant.ts"],
       "@xagent/dsh-business-skill/types": ["./packages/xagent/business-skill/src/types.ts"],
       "@xagent/dsh-delegation-token": ["./packages/xagent/delegation-token/src/index.ts"],
       "@xagent/dsh-delegation-token/types": ["./packages/xagent/delegation-token/src/types.ts"],

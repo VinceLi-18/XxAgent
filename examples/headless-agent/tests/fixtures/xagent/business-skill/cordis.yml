@@ -1,5 +1,11 @@
 - id: backend
   name: './backend.ts'
+- id: invariants
+  name: '@deepseek-ai/dsh-invariants'
+- id: business-invariant
+  name: '@xagent/dsh-business/invariant'
+- id: business-skill-invariant
+  name: '@xagent/dsh-business-skill/invariant'
 - id: agent
   name: '@deepseek-ai/dsh-agent-spine-demo'
   config:

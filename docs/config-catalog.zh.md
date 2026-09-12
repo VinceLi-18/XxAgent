@@ -3081,7 +3081,7 @@ export interface Config {
 }
 ```
 
-源码： [`packages/xagent/business-skill/src/index.ts:33`](../packages/xagent/business-skill/src/index.ts)
+源码： [`packages/xagent/business-skill/src/index.ts:34`](../packages/xagent/business-skill/src/index.ts)
 
 <a id="xagentdsh-connection-auth"></a>
 

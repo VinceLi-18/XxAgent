@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 import type { XAgentBusinessSkillService } from './index.ts'
 import type {} from '@deepseek-ai/dsh-tool-skill'
+import { businessSkillRelationship } from '@xagent/dsh-business-skill'
 /** Companion plugin name. */
 export const name = 'xagent-business-skill-invariant'
 /** Registry receiving the package's runtime relationship checks. */
@@ -10,6 +11,12 @@ export const inject = ['invariants']
 
 const install: InvariantInstaller = (ctx, fail) => {
   ctx.on('skill/loaded', ({ agent, definition }) => {
+    if (definition.provider === 'xagent-draft') {
+      if (businessSkillRelationship(agent, definition)?.kind !== 'test') {
+        fail('Business Skill draft admission requires its exact mounted TestRunner definition and run owner')
+      }
+      return
+    }
     if (definition.provider !== 'xagent-project') return
     const service: XAgentBusinessSkillService | undefined = ctx.get('xagentBusinessSkill')
     const version = service?.loadedVersion(agent, definition)

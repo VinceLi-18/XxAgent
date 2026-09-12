@@ -36,6 +36,8 @@ Agent 作用域审批监听器委托正常答复链，并将答复与物理请�
 
 ## 治理与测试
 
+诊断查询 `businessSkillRelationship` 仅暴露精确 Agent／定义的所选工具、激活状态和实时拒绝锁定状态。测试归属要求 TestRunner 成功挂载及精确 run 标识；公开提供方元数据、相同 ID 和复制定义不能建立归属。接纳与 bundle 不变量共享此查询。它不授予执行权限，也不暴露后端证明。
+
 `xagentBusinessSkill` Remote 提供 list、detail、create、draft、test、transcript、verdict、publish、authorization、version 和 retire 操作。后端授权和生命周期决策始终权威。已知后端错误保留稳定错误码；未知错误映射为 `service-unavailable`，不携带内部详情。调用方取消信号与请求、连接和服务信号合并，并在操作完成后再次检查。
 
 安装 FastAPI Session 持久化提供方后，插件通过 `registerTestRunner` 注册可逆的 Host 专用测试执行器。未安装执行器时，test Remote 在启动任何后端操作之前拒绝。测试记录通过公开运行编号独立分页读取。

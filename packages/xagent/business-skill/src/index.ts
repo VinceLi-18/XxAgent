@@ -28,6 +28,7 @@ import { XAgentSessionPersistence } from '@xagent/dsh-session-persistence-api'
 import { BusinessSkillTestRunner } from './test-runner.ts'
 
 export type * from './types.ts'
+export { businessSkillRelationship, type BusinessSkillRelationship } from './relationships.ts'
 
 /** FastAPI transport and catalog resource limits for the Host plugin. */
 export interface Config {

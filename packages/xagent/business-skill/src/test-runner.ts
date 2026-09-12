@@ -14,6 +14,7 @@ import { currentXAgentAuthenticatedRequestScope, isXAgentAuthenticatedSessionReq
 import type { XAgentSessionPersistence } from '@xagent/dsh-session-persistence-api'
 import type { XAgentBusinessSkillTestRunner } from './types.ts'
 import { BusinessSkillRuntimePolicy } from './runtime-policy.ts'
+import { registerTestRelationship } from './relationships.ts'
 
 const DENIED = 'Business Skill tests permit only the selected read-only tools.'
 const READ_TOOLS = new Set(['skill', 'list_accessible_projects', 'search_artifacts', 'submit_cited_answer'])
@@ -102,6 +103,7 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
           const definition: SkillDefinition = Object.freeze({ name: slug, description: start.draft.description,
             content: start.draft.instructions, provider: 'xagent-draft', source: 'xagent-draft',
             invocation: Object.freeze({ userInvocable: true, modelInvocable: true }) })
+          const relationship = registerTestRelationship(owner, definition, start.test.runNumber, start.testTools, () => state.claimed)
           const skills = agentCtx.get('skills')
           const runtime = agentCtx.get('tools')
           if (skills === undefined || runtime === undefined) throw unavailable()
@@ -121,7 +123,7 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
             policy.activate(definition, { slug, description: start.draft.description, instructions: start.draft.instructions,
               versionNumber: start.draft.revision, versionKey: start.sessionId, contentDigest: start.draft.contentDigest,
               toolPolicyDigest: start.draft.toolPolicyDigest,
-              completeTools: [...start.testTools, ...start.unexecutedWriteTools] }, invocation, { runNumber: start.test.runNumber })
+              completeTools: [...start.testTools, ...start.unexecutedWriteTools] }, invocation, relationship)
             state.activated = true
           })
           agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
