@@ -2122,6 +2122,14 @@ export class XAgentBackendClient implements XAgentBackend {
           idempotency_key: mutationKey(input.idempotencyKey),
         }, signal),
       ),
+      authorizeTestTool: async (token, projectId, sessionId, slug, runNumber, policyDigest, toolName, cancelled, signal) => {
+        const value = exactRecord(await this.businessSkillRequest(token,
+          `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/authorize-tool`, {
+            schema_version: 1, session_id: requiredUuid(sessionId), tool_policy_digest: businessSkillDigest(policyDigest),
+            tool_name: boundedUtf8String(toolName, 255), cancelled,
+          }, signal), ['schema_version', 'allowed'])
+        if (value.schema_version !== 1 || value.allowed !== true) failSchema()
+      },
       mountTest: async (token, projectId, slug, runNumber, input, signal) => {
         const value = exactRecord(await this.businessSkillRequest(
           token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/mount`, {

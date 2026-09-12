@@ -8,6 +8,26 @@ const testRow = { run_number: 1, draft_revision: 1, content_digest: 'a'.repeat(6
   status: 'running', termination_reason: null, verdict: null, started_at: '2026-09-12T00:00:00Z', settled_at: null, verdict_at: null }
 const input = { sessionId: session, runtimeHeader: { version: 0, id: `session-${session}`, createdAt: 1 }, events: [], idempotencyKey: 'mount-1' }
 
+test('test execution authorization sends the exact run pin through the Host-only endpoint', async () => {
+  const calls: unknown[] = []
+  const client = new XAgentBackendClient({ origin: 'https://api.example', serviceToken: 'service', fetch: async (url, init) => {
+    if (typeof init?.body !== 'string') throw new Error('Expected JSON request body')
+    calls.push({ path: new URL(url instanceof Request ? url.url : url).pathname, body: JSON.parse(init.body) as unknown })
+    return Response.json({ schema_version: 1, allowed: true })
+  } })
+  await client.businessSkills.authorizeTestTool('actor', project, session, 'review', 1, 'b'.repeat(64), 'skill', false)
+  expect(calls).toEqual([{ path: `/internal/xagent/business-skills/projects/${project}/review/tests/1/authorize-tool`,
+    body: { schema_version: 1, session_id: session, tool_policy_digest: 'b'.repeat(64), tool_name: 'skill', cancelled: false } }])
+})
+
+test.each([{ schema_version: 2, allowed: true }, { schema_version: 1, allowed: false }, { schema_version: 1, allowed: 'true' },
+  { schema_version: 1, allowed: true, session_id: session }, { schema_version: 1 },
+])('test execution authorization fails closed on invalid replies %#', async (reply) => {
+  const client = new XAgentBackendClient({ origin: 'https://api.example', serviceToken: 'service', fetch: async () => Response.json(reply) })
+  await expect(client.businessSkills.authorizeTestTool('actor', project, session, 'review', 1, 'b'.repeat(64), 'skill', false))
+    .rejects.toMatchObject({ code: 'service-unavailable' })
+})
+
 test('cancel-unmounted keeps cleanup authority private and parses the current report', async () => {
   const calls: unknown[] = []
   const client = new XAgentBackendClient({ origin: 'https://api.example', serviceToken: 'service', fetch: async (url, init) => {

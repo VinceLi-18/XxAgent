@@ -26,6 +26,7 @@ from app.schemas.business_skills import (
     BusinessSkillTestStartRequest, BusinessSkillTestStartResponse, BusinessSkillTestSettleRequest,
     BusinessSkillTestResult, BusinessSkillTranscriptRequest, BusinessSkillTranscriptResponse,
     BusinessSkillTestMountRequest, BusinessSkillTestMountResponse, BusinessSkillTestCancelRequest,
+    BusinessSkillTestToolRequest,
     BusinessSkillRuntimeRequest, BusinessSkillCatalogResponse, BusinessSkillLoadRequest,
     BusinessSkillLoadResponse, BusinessSkillToolRequest, BusinessSkillToolResponse,
 )
@@ -35,6 +36,7 @@ from app.services.business_skills import (
     skill_detail, visible_skill,
     start_business_skill_test, settle_business_skill_test, business_skill_transcript,
     mount_business_skill_test, cancel_unmounted_business_skill_test,
+    authorize_business_skill_test_tool,
     business_skill_catalog, business_skill_runtime_decision,
 )
 
@@ -216,6 +218,17 @@ async def test_settle_route(project_id: UUID, slug: SlugPath, run_number: RunPat
                             request: BusinessSkillTestSettleRequest, token: Token, database: Database):
     return await governance_transaction(database, token, project_id,
         lambda session, principal: settle_business_skill_test(session, principal, project_id, slug, run_number, request))
+
+
+@router.post("/projects/{project_id}/{slug}/tests/{run_number}/authorize-tool", response_model=BusinessSkillToolResponse)
+async def test_tool_route(project_id: UUID, slug: SlugPath, run_number: RunPath,
+                          request: BusinessSkillTestToolRequest, token: Token, database: Database):
+    async def execute(session: AsyncSession, principal: Principal) -> GovernanceResult:
+        try:
+            return await authorize_business_skill_test_tool(session, principal, project_id, slug, run_number, request)
+        except BusinessSkillServiceError as error:
+            return error_response(error.code)
+    return await governance_transaction(database, token, project_id, execute)
 
 
 @router.post("/projects/{project_id}/{slug}/tests/{run_number}/cancel-unmounted", response_model=BusinessSkillTestResult)

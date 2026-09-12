@@ -36,7 +36,8 @@ async function harness(script: ConstructorParameters<typeof MockAdapter>[0] = [t
     started_at: '2026-09-12T00:00:00Z', settled_at: null as string | null, verdict_at: null }
   const stored: SessionEvent[] = []
   const calls: { path: string; body: Record<string, unknown> }[] = []
-  const state = { mounted: false, claimed: true, failure: undefined as string | undefined, titleCalls: 0,
+  const state = { mounted: false, claimed: true, failure: undefined as string | undefined,
+    authorizationFailure: undefined as string | undefined, titleCalls: 0,
     before: undefined as ((path: string) => Promise<void>) | undefined }
   const fetch: typeof globalThis.fetch = async (url, init) => {
     const path = new URL(url instanceof Request ? url.url : url).pathname
@@ -55,6 +56,9 @@ async function harness(script: ConstructorParameters<typeof MockAdapter>[0] = [t
       stored.push(...(body.events as { payload: SessionEvent }[]).map(event => event.payload))
       return Response.json({ schema_version: 1, claimed: true, test: testRow })
     }
+    if (path.endsWith('/authorize-tool')) return state.authorizationFailure || testRow.status !== 'running'
+      ? Response.json({ detail: { code: state.authorizationFailure ?? 'business-skill-conflict' } }, { status: 409 })
+      : Response.json({ schema_version: 1, allowed: true })
     if (path.endsWith('/transcript')) {
       if (state.failure) return Response.json({ detail: { code: state.failure } }, { status: 404 })
       const events = stored.filter(event => event.seq > Number(body.after_sequence ?? -1)).slice(0, Number(body.limit ?? 500))
@@ -164,6 +168,36 @@ test('failure after an owned factory publication settles once without invoking t
   expect(h.calls.filter(call => call.path.endsWith('/settle'))).toHaveLength(1)
 })
 
+test.each([
+  { failure: false, cancel: false, reason: 'completed' },
+  { failure: true, cancel: false, reason: 'failed' },
+  { failure: false, cancel: true, reason: 'cancelled' },
+  { failure: true, cancel: true, reason: 'cancelled' },
+])('final durable append retains cancellation ownership: %j', async ({ failure, cancel, reason }) => {
+  const h = await harness(failure ? [() => { throw new Error('model failed') }] : [textResponse('Reviewed.')])
+  const entered = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  h.state.before = async (path) => {
+    const events = h.calls.at(-1)?.body.events as { payload: SessionEvent }[] | undefined
+    if (path.endsWith('/append') && events?.some(event => event.payload.type === 'turn/end')) {
+      entered.resolve(undefined)
+      await release.promise
+    }
+  }
+  const controller = new AbortController()
+  const pending = h.run(controller.signal)
+  await entered.promise
+  expect(h.calls.some(call => call.path.endsWith('/settle'))).toBe(false)
+  if (cancel) controller.abort()
+  release.resolve(undefined)
+  await expect(pending).resolves.toMatchObject({ terminationReason: reason })
+  const terminal = JSON.stringify({ test: h.testRow, events: h.stored })
+  controller.abort()
+  await h.runner.dispose()
+  expect(JSON.stringify({ test: h.testRow, events: h.stored })).toBe(terminal)
+  expect(h.calls.filter(call => call.path.endsWith('/settle'))).toHaveLength(1)
+})
+
 test('late read-tool output drains before cancellation becomes terminal', async () => {
   const h = await harness([toolCallResponse('read', 'list_accessible_projects', {}), textResponse('Late.')], ['list_accessible_projects'])
   const entered = Promise.withResolvers<undefined>()
@@ -193,14 +227,30 @@ test('a failed read tool closes subsequent reads for the turn', async () => {
   expect(execute).toHaveBeenCalledOnce()
 })
 
+test.each(['business-skill-retired', 'not-found', 'business-skill-policy-changed', 'business-skill-tool-denied', 'service-unavailable'])(
+  'historical transcript access cannot authorize test execution after %s', async (code) => {
+    const h = await harness([toolCallResponse('read', 'list_accessible_projects', {}), textResponse('Denied.')], ['list_accessible_projects'])
+    const execute = vi.fn(async () => 'read')
+    h.ctx.tools.register(defineTool({ name: 'list_accessible_projects', description: 'Read', parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute }))
+    h.state.authorizationFailure = code
+    await expect(h.run()).resolves.toMatchObject({ status: 'failed', terminationReason: 'authorization-denied' })
+    expect(execute).not.toHaveBeenCalled()
+    expect(h.calls.filter(call => call.path.endsWith('/transcript'))).toHaveLength(1)
+    expect(h.calls.filter(call => call.path.endsWith('/authorize-tool')).map(call => call.body)).toEqual([{
+      schema_version: 1, session_id: testSession, tool_policy_digest: h.input.toolPolicyDigest,
+      tool_name: 'list_accessible_projects', cancelled: false,
+    }])
+  },
+)
+
 test('a terminal run observed during authorization rejects late writes and keeps the authoritative report', async () => {
   const h = await harness([toolCallResponse('read', 'list_accessible_projects', {}), textResponse('Denied.')], ['list_accessible_projects'])
   const execute = vi.fn(async () => 'read')
   h.ctx.tools.register(defineTool({ name: 'list_accessible_projects', description: 'Read', parameters: {},
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute }))
-  let reads = 0
   h.state.before = async (path) => {
-    if (path.endsWith('/transcript') && ++reads === 2) {
+    if (path.endsWith('/authorize-tool')) {
       h.testRow.status = 'cancelled'
       h.testRow.termination_reason = 'cancelled'
       h.testRow.settled_at = '2026-09-12T00:01:00Z'

@@ -875,6 +875,21 @@ export interface XAgentBusinessSkillBackend {
    */
   cancelUnmountedTest(userToken: string, projectId: string, slug: string, runNumber: number,
     sessionId: string, idempotencyKey: string): Promise<XAgentBusinessSkillTest>
+  /**
+   * Authorize one test tool against its immutable run policy and current execution state.
+   * @param userToken - original starting actor's current credential.
+   * @param projectId - authenticated Project identity.
+   * @param sessionId - exact test Session identity.
+   * @param slug - public Skill name.
+   * @param runNumber - exact test run number.
+   * @param toolPolicyDigest - policy digest pinned at test start.
+   * @param toolName - tool about to execute.
+   * @param cancelled - current physical cancellation state.
+   * @param signal - physical execution lifetime.
+   * @returns after fresh authorization; rejects retired, terminal, unauthorized or unavailable execution.
+   */
+  authorizeTestTool(userToken: string, projectId: string, sessionId: string, slug: string, runNumber: number,
+    toolPolicyDigest: string, toolName: string, cancelled: boolean, signal?: AbortSignal): Promise<void>
   settleTest(
     userToken: string, projectId: string, slug: string, runNumber: number, sessionId: string,
     terminationReason: XAgentBusinessSkillTerminationReason, idempotencyKey: string,

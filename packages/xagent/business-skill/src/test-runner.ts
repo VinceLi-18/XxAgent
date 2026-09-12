@@ -109,9 +109,11 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
             { ...definition, rank: 0, locator: definition },
           ]), get: () => Promise.resolve(definition) }))
           runtime.guard(exec => signal.aborted || !state.activated || !permitted.has(exec.name) ? DENIED : undefined)
-          const policy = new BusinessSkillRuntimePolicy(owner, runtime, async (_version, _name, caller) => {
-            const current = await read(caller)
-            if (current.test.status !== 'running') { state.reason = 'authorization-denied'; throw unavailable() }
+          const policy = new BusinessSkillRuntimePolicy(owner, runtime, async (_version, name, caller) => {
+            try {
+              await this.backend.authorizeTestTool(scope.userToken, project, start.sessionId, slug,
+                start.test.runNumber, start.test.toolPolicyDigest, name, signal.aborted, caller)
+            } catch (error) { state.reason = 'authorization-denied'; throw error }
           }, signal)
           agentCtx.on('agent/inbox/claimed', ({ turn }) => { policy.claim(turn) })
           agentCtx.on('skill/loaded', ({ definition: loaded, invocation }) => {
@@ -134,7 +136,9 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
             }
             return await next()
           }, { prepend: true })
-          agentCtx.on('tools/result', (_exec, result) => { if (result.isError) state.reason = 'tool-denied' })
+          agentCtx.on('tools/result', (_exec, result) => {
+            if (result.isError && state.reason !== 'authorization-denied') state.reason = 'tool-denied'
+          })
           agentCtx.on('agent/pre-step', async ({ turn, step, messages }, next) => {
             if (turn !== 1) return { kind: 'reject' }
             const result = await next()
@@ -164,10 +168,12 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
       }
       state.reason = signal.aborted ? 'cancelled' : 'service-unavailable'
     } finally {
-      signal.removeEventListener('abort', cancel)
-      await handle?.dispose()
-      await this.persistence.flushSession(id)
+      try {
+        await handle?.dispose()
+        await this.persistence.flushSession(id)
+      } finally { signal.removeEventListener('abort', cancel) }
     }
+    if (signal.aborted) state.reason = 'cancelled'
     return await this.backend.settleTest(scope.userToken, project, slug, start.test.runNumber, start.sessionId, state.reason, `settle:${mountKey}`)
   }
 }

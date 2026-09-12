@@ -214,6 +214,15 @@ class BusinessSkillTestCancelRequest(BusinessSkillMutationRequest):
     session_id: HostKey
 
 
+class BusinessSkillTestToolRequest(BusinessSkillRequest):
+    """Host-only execution pin; historical transcript access cannot authorize a tool."""
+
+    session_id: HostKey
+    tool_policy_digest: Digest
+    tool_name: str = Field(min_length=1, max_length=255)
+    cancelled: bool
+
+
 class BusinessSkillTestMountRequest(BusinessSkillMutationRequest):
     """Atomically publish a Host factory header and its pre-turn events once."""
 

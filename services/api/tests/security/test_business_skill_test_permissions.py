@@ -21,9 +21,9 @@ async def test_invalid_write_permission_reports_are_rejected(seeded_database, bu
             session = await _insert_test_session(connection, rows["project"], rows["actor"])
             await connection.execute(text(
                 "INSERT INTO business_skill_test_runs (id, skill_id, project_id, run_number, draft_revision, "
-                "content_digest, tool_policy_digest, session_id, started_by_id, unexecuted_write_tools) "
+                "content_digest, tool_policy_digest, session_id, started_by_id, unexecuted_write_tools, test_tools) "
                 "SELECT :id, skill_id, project_id, 2, draft_revision, content_digest, tool_policy_digest, "
-                ":session, started_by_id, CAST(:value AS jsonb) FROM business_skill_test_runs WHERE id=:source"
+                ":session, started_by_id, CAST(:value AS jsonb), test_tools FROM business_skill_test_runs WHERE id=:source"
             ), {"id": uuid4(), "session": session, "source": rows["run"], "value": None if value is None else json.dumps(value)})
 
 
@@ -73,8 +73,8 @@ async def test_nonempty_legacy_upgrade_fails_without_partial_migration(seeded_da
 async def test_nonempty_downgrade_preserves_permission_reports(seeded_database, business_skill_rows):
     config = migration_config(seeded_database)
     await seeded_database.dispose()
-    with pytest.raises(DBAPIError, match="cannot migrate nonempty Business Skill test permission history"):
+    with pytest.raises(DBAPIError, match="cannot migrate nonempty Business Skill test tool policy"):
         await to_thread.run_sync(command.downgrade, config, "018_xagent_business_skills")
     async with seeded_database.connect() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "019_skill_test_permissions"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "020_skill_test_policy"
         assert await connection.scalar(text("SELECT unexecuted_write_tools FROM business_skill_test_runs")) == []

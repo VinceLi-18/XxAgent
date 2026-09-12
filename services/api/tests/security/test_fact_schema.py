@@ -125,7 +125,7 @@ async def test_revision_017_installs_all_fact_relations(seeded_database: AsyncEn
             )
         )
 
-    assert revision == "019_skill_test_permissions"
+    assert revision == "020_skill_test_policy"
     assert FACT_TABLES <= tables
 
 
@@ -1073,7 +1073,7 @@ async def test_empty_fact_schema_can_downgrade_and_upgrade_again(
                 text("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
             )
         )
-    assert revision == "019_skill_test_permissions"
+    assert revision == "020_skill_test_policy"
     assert FACT_TABLES <= tables
 
 
@@ -1121,7 +1121,7 @@ async def test_opaque_fact_tool_call_audit_rejects_revision_017_downgrade_before
         stored = await connection.scalar(
             text("SELECT id FROM audit_events WHERE id = :id"), {"id": audit_id}
         )
-    assert revision == "019_skill_test_permissions"
+    assert revision == "020_skill_test_policy"
     assert stored == audit_id
 
 
@@ -1159,7 +1159,7 @@ async def test_fact_audit_event_rejects_downgrade_before_ddl(
         stored = await connection.scalar(
             text("SELECT id FROM audit_events WHERE id = :id"), {"id": audit_id}
         )
-    assert revision == "019_skill_test_permissions"
+    assert revision == "020_skill_test_policy"
     assert stored == audit_id
 
 
@@ -1191,6 +1191,6 @@ async def test_non_empty_fact_schema_rejects_downgrade_before_ddl(
                 text("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
             )
         )
-    assert revision == "019_skill_test_permissions"
+    assert revision == "020_skill_test_policy"
     assert stored == proposal_id
     assert FACT_TABLES <= tables

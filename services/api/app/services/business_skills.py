@@ -20,6 +20,7 @@ from app.schemas.business_skills import (
     BusinessSkillTestStartRequest, BusinessSkillTestSettleRequest, BusinessSkillTranscriptRequest,
     BusinessSkillTestMountRequest,
     BusinessSkillTestCancelRequest,
+    BusinessSkillTestToolRequest,
     BusinessSkillRuntimeRequest, BusinessSkillLoadRequest, BusinessSkillToolRequest,
 )
 from app.services.audit import business_skill_audit_details, write_audit_event
@@ -312,6 +313,7 @@ async def start_business_skill_test(session: AsyncSession, principal: Principal,
     run = BusinessSkillTestRun(id=uuid4(), skill_id=skill.id, project_id=project_id, run_number=number,
         draft_revision=draft.revision, content_digest=draft.content_digest, tool_policy_digest=policy.digest,
         unexecuted_write_tools=list(policy.unexecuted_write_tools),
+        test_tools=list(policy.test_tools),
         session_id=test_session.id, started_by_id=principal.actor_id)
     session.add(run)
     await session.flush()
@@ -319,7 +321,7 @@ async def start_business_skill_test(session: AsyncSession, principal: Principal,
         "purpose": "business_skill_test", "scenario": request.scenario,
         "draft": {"revision": draft.revision, "description": draft.description, "instructions": draft.instructions,
                   "primary_tools": draft.primary_tools, "content_digest": draft.content_digest, "tool_policy_digest": policy.digest},
-        "test_tools": list(policy.test_tools), "unexecuted_write_tools": list(policy.unexecuted_write_tools)}
+        "test_tools": run.test_tools, "unexecuted_write_tools": run.unexecuted_write_tools}
     await audit_skill(session, principal, skill, "test_start", "running", run_number=number,
         session_id=test_session.id, draft_revision=draft.revision, content_digest=draft.content_digest,
         tool_policy_digest=policy.digest, request_sha256=digest)
@@ -372,9 +374,11 @@ async def settle_business_skill_test(session: AsyncSession, principal: Principal
 async def mount_business_skill_test(session: AsyncSession, principal: Principal, project_id: UUID,
                                     slug: str, run_number: int, request: BusinessSkillTestMountRequest) -> dict[str, object]:
     """Publish one factory atomically; an exact replay observes ownership but never reacquires it."""
-    _, run = await locked_test(session, project_id, slug, run_number)
+    skill, run = await locked_test(session, project_id, slug, run_number)
     if run.session_id != request.session_id or run.started_by_id != principal.actor_id:
         raise BusinessSkillServiceError("not-found")
+    if skill.status != "active":
+        raise BusinessSkillServiceError("business-skill-retired")
     replay, digest = await test_replay(session, principal, project_id, slug, "business_skill.test_mount", request, run_number)
     if replay is not None:
         return {"schema_version": 1, "test": test_payload(run), "claimed": False}
@@ -392,6 +396,34 @@ async def mount_business_skill_test(session: AsyncSession, principal: Principal,
     result = {"schema_version": 1, "test": test_payload(run), "claimed": True}
     await store_test_replay(session, principal, "business_skill.test_mount", request, digest, result)
     return result
+
+
+async def authorize_business_skill_test_tool(session: AsyncSession, principal: Principal, project_id: UUID,
+                                             slug: str, run_number: int, request: BusinessSkillTestToolRequest) -> dict[str, object]:
+    """Recheck the mounted run and immutable test policy under current authority and retirement locks."""
+    skill, run = await locked_test(session, project_id, slug, run_number)
+    try:
+        if run.session_id != request.session_id or run.started_by_id != principal.actor_id:
+            raise BusinessSkillServiceError("not-found")
+        item = await session.get(XAgentSession, run.session_id)
+        assert item is not None
+        if run.status != "running" or item.runtime_header is None:
+            raise BusinessSkillServiceError("business-skill-conflict")
+        if skill.status != "active":
+            raise BusinessSkillServiceError("business-skill-retired")
+        if request.cancelled:
+            raise BusinessSkillServiceError("business-skill-cancelled")
+        if request.tool_policy_digest != run.tool_policy_digest:
+            raise BusinessSkillServiceError("business-skill-policy-changed")
+        if request.tool_name not in run.test_tools:
+            raise BusinessSkillServiceError("business-skill-tool-denied")
+        return {"schema_version": 1, "allowed": True}
+    except BusinessSkillServiceError as error:
+        outcome = {"business-skill-conflict": "forbidden", "business-skill-policy-changed": "forbidden",
+                   "business-skill-cancelled": "cancelled"}.get(error.code, error.code)
+        await audit_skill(session, principal, skill, "tool_authorization_denied", outcome,
+                          session_id=run.session_id, run_number=run.run_number)
+        raise
 
 
 async def cancel_unmounted_business_skill_test(session: AsyncSession, principal: Principal, project_id: UUID,
