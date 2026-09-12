@@ -111,6 +111,13 @@ export interface XAgentBusinessSkillScopeRunner {
    * @returns the operation result while descendants inherit the same scope.
    */
   withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+  /**
+   * Admit one Project Session prompt while retaining its authority for the accepted Agent turn.
+   * @param scope - physical connection identity and FastAPI-owned Session facts.
+   * @param operation - prompt admission operation; its response does not wait for model execution.
+   * @returns the prompt admission result while the accepted turn retains an owned scope.
+   */
+  withPrompt<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
 }
 
 function projectNamespace(endpoint: string): boolean {
@@ -449,7 +456,13 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
           const scoped = authenticatedSessionScope(
             await this.backend.sessions.list(request.userToken, signal), values?.sessionId as string, requestScope,
           )
-          result = await runWithXAgentAuthenticatedRequestScope(scoped, operation)
+          result = await runWithXAgentAuthenticatedRequestScope(scoped, () => {
+            if (method !== 'prompt' || scoped.visibility !== 'project' || scoped.purpose !== 'conversation') {
+              return operation()
+            }
+            const businessSkill = typeof this.businessSkill === 'function' ? this.businessSkill() : this.businessSkill
+            return businessSkill === undefined ? operation() : businessSkill.withPrompt(scoped, operation)
+          })
         } else {
           result = await operation()
         }

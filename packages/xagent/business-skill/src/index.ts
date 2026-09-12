@@ -71,6 +71,9 @@ interface RequestState {
   readonly lifetime: AbortController
   readonly registrations: Set<Registration>
   readonly pending: Set<Promise<unknown>>
+  readonly prompt: boolean
+  readonly cleanups: Set<() => void>
+  closing: Promise<void> | undefined
 }
 interface Registration {
   readonly agent: Agent
@@ -106,6 +109,13 @@ export abstract class XAgentBusinessSkillService extends Service
    * @returns result or stable failure after owned backend work settles, without retaining request authority.
    */
   abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+  /**
+   * Admit one prompt without delaying its RPC receipt while retaining authority for its accepted turn.
+   * @param scope - backend-derived conversation Project Session authority.
+   * @param operation - prompt admission operation that inserts the exact owned message.
+   * @returns prompt admission result; accepted Agent work continues under the captured scope.
+   */
+  abstract withPrompt<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
   /**
    * Install this request's provider in the exact Agent scope; repeated attachment is idempotent.
    * @param agent - Agent whose Session must match the current request.
@@ -283,6 +293,7 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
   readonly typertRemote = bindTypertRemote(this, 'xagentBusinessSkill')
   private readonly requests = new AsyncLocalStorage<RequestState>()
   private readonly lifetime = new AbortController()
+  private readonly requestStates = new Set<RequestState>()
   private readonly registrations = new Map<Agent, Registration>()
   private readonly definitions = new WeakMap<SkillDefinition, LoadedOwner>()
   private readonly disposedAgents = new WeakSet<Agent>()
@@ -303,7 +314,11 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
         this.messages.set(String(message.id), { agent, state })
       }
     })
-    ctx.on('agent/inbox/discarded', ({ message }) => { this.messages.delete(String(message.id)) })
+    ctx.on('agent/inbox/discarded', ({ message }) => {
+      const owner = this.messages.get(String(message.id))
+      this.messages.delete(String(message.id))
+      if (owner?.state.prompt === true && !this.ownsPromptWork(owner.state)) void this.closeRequestState(owner.state)
+    })
     ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
       const owner = this.messages.get(String(message.id))
       this.messages.delete(String(message.id))
@@ -334,31 +349,30 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
     })
     ctx.on('agent/disposed', ({ agent }) => {
       this.disposedAgents.add(agent)
+      const states = new Set<RequestState>()
+      const claimed = this.claimed.get(agent)
+      if (claimed !== undefined) states.add(claimed.state)
       this.claimed.delete(agent)
-      for (const [id, owner] of this.messages) if (owner.agent === agent) this.messages.delete(id)
-      void this.registrations.get(agent)?.close()
+      for (const [id, owner] of this.messages) if (owner.agent === agent) {
+        states.add(owner.state)
+        this.messages.delete(id)
+      }
+      const registration = this.registrations.get(agent)
+      if (registration !== undefined) states.add(registration.state)
+      for (const state of states) {
+        if (state.prompt) void this.closeRequestState(state)
+      }
+      if (registration !== undefined && !registration.state.prompt) void registration.close()
     })
     ctx.effect(() => async () => {
       this.lifetime.abort(failure('unauthenticated'))
+      await Promise.allSettled([...this.requestStates].map(state => this.closeRequestState(state)))
       await Promise.allSettled(this.pending)
     }, 'business skill service lifetime')
   }
 
   async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> {
-    if (this.lifetime.signal.aborted || !eligible(scope)) throw failure('unauthenticated')
-    if (this.requests.getStore() !== undefined) throw failure('business-skill-conflict')
-    const state: RequestState = { scope, lifetime: new AbortController(), registrations: new Set(), pending: new Set() }
-    const end = (): void => {
-      state.lifetime.abort(failure('unauthenticated'))
-      for (const [id, owner] of this.messages) if (owner.state === state) this.messages.delete(id)
-      for (const [agent, owner] of this.claimed) if (owner.state === state) {
-        this.invalidTurns.set(agent, owner.turn)
-        this.claimed.delete(agent)
-      }
-      for (const registration of state.registrations) state.pending.add(registration.close())
-    }
-    const signals = [scope.requestSignal, scope.connectionSignal, this.lifetime.signal]
-    for (const signal of signals) signal.addEventListener('abort', end, { once: true })
+    const state = this.createRequestState(scope, false)
     try {
       return await this.requests.run(state, () => runWithXAgentAuthenticatedRequestScope(scope, async () => {
         const result = await operation()
@@ -366,10 +380,81 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
         return result
       }))
     } finally {
-      end()
-      for (const signal of signals) signal.removeEventListener('abort', end)
-      await Promise.allSettled(state.pending)
+      await this.closeRequestState(state)
     }
+  }
+
+  async withPrompt<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> {
+    const state = this.createRequestState(scope, true)
+    const closeAtTurnEnd = this.ctx.on('session/event', (session, event) => {
+      if (event.type !== 'turn/end') return
+      for (const [agent, owner] of this.claimed) {
+        if (owner.state === state && owner.turn === event.data.turn && agent.session === session) {
+          void this.closeRequestState(state)
+          return
+        }
+      }
+    })
+    state.cleanups.add(closeAtTurnEnd)
+    try {
+      const result = await this.requests.run(state, async () => {
+        const accepted = await operation()
+        state.lifetime.signal.throwIfAborted()
+        return accepted
+      })
+      if (!this.ownsPromptWork(state)) await this.closeRequestState(state)
+      return result
+    } catch (error) {
+      await this.closeRequestState(state)
+      throw error
+    }
+  }
+
+  private createRequestState(scope: XAgentAuthenticatedSessionRequestScope, prompt: boolean): RequestState {
+    if (this.lifetime.signal.aborted || !eligible(scope)) throw failure('unauthenticated')
+    if (this.requests.getStore() !== undefined) throw failure('business-skill-conflict')
+    const state: RequestState = {
+      scope,
+      lifetime: new AbortController(),
+      registrations: new Set(),
+      pending: new Set(),
+      prompt,
+      cleanups: new Set(),
+      closing: undefined,
+    }
+    this.requestStates.add(state)
+    const signals = [scope.requestSignal, scope.connectionSignal, this.lifetime.signal]
+    const abort = (): void => { void this.closeRequestState(state) }
+    for (const signal of signals) signal.addEventListener('abort', abort, { once: true })
+    state.cleanups.add(() => {
+      for (const signal of signals) signal.removeEventListener('abort', abort)
+    })
+    return state
+  }
+
+  private ownsPromptWork(state: RequestState): boolean {
+    return [...this.messages.values()].some(owner => owner.state === state)
+      || [...this.claimed.values()].some(owner => owner.state === state)
+  }
+
+  private closeRequestState(state: RequestState): Promise<void> {
+    if (state.closing !== undefined) return state.closing
+    const settled = Promise.withResolvers<void>()
+    state.closing = settled.promise
+    state.lifetime.abort(failure('unauthenticated'))
+    for (const cleanup of state.cleanups) cleanup()
+    state.cleanups.clear()
+    for (const [id, owner] of this.messages) if (owner.state === state) this.messages.delete(id)
+    for (const [agent, owner] of this.claimed) if (owner.state === state) {
+      this.invalidTurns.set(agent, owner.turn)
+      this.claimed.delete(agent)
+    }
+    for (const registration of state.registrations) state.pending.add(registration.close())
+    void Promise.allSettled([...state.pending]).then(() => {
+      this.requestStates.delete(state)
+      settled.resolve()
+    })
+    return state.closing
   }
 
   attach(agent: Agent): SkillProvider | undefined {

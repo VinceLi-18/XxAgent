@@ -46,6 +46,32 @@ describe('Business Skill admission and transport lifetime', () => {
     } finally { await ctx.fiber.dispose() }
   })
 
+  test('prompt ownership closes after discard, rejection and claimed Agent disposal', async () => {
+    const h = await setup()
+    h.state.catalog = [entry()]
+    const discarded = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'discarded' }] })
+    const claimed = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'claimed' }] })
+    try {
+      await expect(h.service.withPrompt(request(), async () => 'unowned')).resolves.toBe('unowned')
+      await expect(h.service.withPrompt(request(), async () => { throw new Error('admission failed') }))
+        .rejects.toThrow('admission failed')
+      await expect(h.service.withPrompt(request(), async () => {
+        agentEvents(h.ctx, h.agent).emit('agent/inbox/inserted', { message: discarded })
+        return 'queued'
+      })).resolves.toBe('queued')
+      agentEvents(h.ctx, h.agent).emit('agent/inbox/discarded', { message: discarded })
+
+      await expect(h.service.withPrompt(request(), async () => {
+        agentEvents(h.ctx, h.agent).emit('agent/inbox/inserted', { message: claimed })
+        return 'queued'
+      })).resolves.toBe('queued')
+      agentEvents(h.ctx, h.agent).emit('agent/inbox/claimed', { message: claimed, turn: 1 })
+      expect((await h.ctx.skills.list({ scope: h.agent })).map(row => row.name)).toEqual(['review'])
+      agentEvents(h.ctx, h.agent).emit('agent/disposed', {})
+      expect(await h.ctx.skills.list({ scope: h.agent })).toEqual([])
+    } finally { await h.ctx.fiber.dispose() }
+  })
+
   test('queued ownership is removed on Agent disposal and physical request settlement', async () => {
     const h = await setup()
     const other = await setup()

@@ -4,7 +4,7 @@
 
 list 和 search 通过 FastAPI 可见列表预检；history、models、fork 和 attachment 要求 read；selectModel、rename、prompt、updateQueue 和 cancel 要求 edit。未知 Session 方法默认拒绝。不可见与不存在统一返回 `session-not-found`，认证失效返回 `unauthenticated`，后端细节不会进入响应。
 
-prompt 在 edit 预检后从同一用户令牌的可见会话列表解析唯一会话 ID、可见性和固定项目，再把这些事实与物理连接 Principal 一起包围消息准入操作。带显式会话 ID 的 `session/create` 恢复路径使用相同上下文包围整个打开操作，使 `session/created` 消费方取得同一权威会话范围。下游在 inbox 插入时捕获该冻结值，并在消息被认领时重新激活；长寿命 Agent 驱动器的继承值不作为后续排队 prompt 的身份。缺失、重复或不一致的会话记录均失败关闭。
+prompt 在 edit 预检后从同一用户令牌的可见会话列表解析唯一会话 ID、可见性和固定项目，再把这些事实与物理连接 Principal 一起包围消息准入操作。普通 Project 对话还通过 Business Skill 的 prompt 入口捕获该消息；RPC 在持久准入后立即返回，而专用作用域保留到对应轮次结束、消息丢弃、请求取消、连接失效或 Agent 释放。带显式会话 ID 的 `session/create` 恢复路径使用相同上下文包围整个打开操作，使 `session/created` 消费方取得同一权威会话范围。下游在 inbox 插入时捕获该冻结值，并在消息被认领时重新激活；长寿命 Agent 驱动器的继承值不作为后续排队 prompt 的身份。缺失、重复或不一致的会话记录均失败关闭。
 
 `xagentProject/*` 只接受四个固定认证方法。Authorizer 从连接 Principal 建立项目请求 scope 并包围完整 Remote operation；缺少项目服务、缺少认证、未知方法或 scope 异常都失败关闭。非 XAgent 项目 endpoint 不进入该 scope。
 

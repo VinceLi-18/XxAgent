@@ -5,9 +5,74 @@ import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, interruptedTurnClosers, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import { setup, request, entry, sessionId, loaded, version2 } from './fixtures.ts'
+
+test('prompt admission returns before the accepted turn and retains its Business Skill catalog', async () => {
+  const h = await setup()
+  h.state.catalog = [entry()]
+  const adapter = new MockAdapter([
+    toolCallResponse('load', 'skill', { name: 'review' }),
+    textResponse('review complete'),
+  ])
+  await h.ctx.plugin(LlmRuntime)
+  await h.ctx.plugin(SessionStore)
+  await h.ctx.plugin(AgentLoop, { agents: [] })
+  h.ctx.llm.registerAdapter(['mock'], adapter)
+  const { agent } = await h.ctx.agents.create({
+    sessionId: SessionId(`session-${sessionId}`),
+    agentOptions: { provider: 'mock', model: 'mock' },
+  })
+  try {
+    await expect(h.service.withPrompt(request(), async () => {
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '/review' }] }))
+      return 'accepted'
+    })).resolves.toBe('accepted')
+    await agent.whenIdle()
+    expect(agent.session.events.filter(event => event.type === 'business-skill/activated'))
+      .toMatchObject([{ data: { slug: 'review', version: 1, turn: 1 } }])
+    expect(adapter.requests).toHaveLength(2)
+  } finally { await h.ctx.fiber.dispose() }
+})
+
+test('prompt scope returns its receipt while model work is active and releases on request cancellation', async () => {
+  const h = await setup()
+  h.state.catalog = [entry()]
+  const adapter = new MockAdapter(['hang', textResponse('next prompt')])
+  await h.ctx.plugin(LlmRuntime)
+  await h.ctx.plugin(SessionStore)
+  await h.ctx.plugin(AgentLoop, { agents: [] })
+  h.ctx.llm.registerAdapter(['mock'], adapter)
+  const { agent } = await h.ctx.agents.create({
+    sessionId: SessionId(`session-${sessionId}`),
+    agentOptions: { provider: 'mock', model: 'mock' },
+  })
+  const requestLifetime = new AbortController()
+  try {
+    await expect(h.service.withPrompt(request({ requestSignal: requestLifetime.signal }), async () => {
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Review' }] }))
+      return 'accepted'
+    })).resolves.toBe('accepted')
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(1) })
+    expect(agent.status).toBe('running')
+    expect(JSON.stringify(adapter.requests[0])).toContain('review')
+    const unrelated = h.ctx.sessions.create(SessionId('session-unrelated'))
+    unrelated.append('turn/start', { turn: 1 })
+    unrelated.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    expect(JSON.stringify(await h.ctx.skills.list({ scope: agent }))).toContain('review')
+    requestLifetime.abort()
+    agent.cancel({ kind: 'user' })
+    await agent.whenIdle()
+
+    await expect(h.service.withPrompt(request(), async () => {
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Continue' }] }))
+      return 'accepted-again'
+    })).resolves.toBe('accepted-again')
+    await agent.whenIdle()
+    expect(adapter.requests).toHaveLength(2)
+  } finally { requestLifetime.abort(); await h.ctx.fiber.dispose() }
+})
 
 test('a queued next turn collects its new complete tool set after the cancelled prior turn ends', async () => {
   const h = await setup()

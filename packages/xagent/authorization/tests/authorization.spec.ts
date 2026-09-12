@@ -139,20 +139,23 @@ function factScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => void): 
 
 function businessSkillScope(onScope?: (scope: XAgentAuthenticatedSessionRequestScope) => void): XAgentBusinessSkillScopeRunner & {
   readonly active: () => XAgentAuthenticatedSessionRequestScope | undefined
+  readonly withPrompt: <T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>) => Promise<T>
 } {
   let active: XAgentAuthenticatedSessionRequestScope | undefined
+  const run = async <T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> => {
+    if (active !== undefined) throw new Error('nested Business Skill request scope')
+    active = scope
+    onScope?.(scope)
+    try {
+      return await operation()
+    } finally {
+      active = undefined
+    }
+  }
   return {
     active: () => active,
-    async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> {
-      if (active !== undefined) throw new Error('nested Business Skill request scope')
-      active = scope
-      onScope?.(scope)
-      try {
-        return await operation()
-      } finally {
-        active = undefined
-      }
-    },
+    withRequest: run,
+    withPrompt: run,
   }
 }
 
@@ -169,13 +172,16 @@ describe('XAgent Session 授权', () => {
         runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
       }],
     }))
-    const auth = new XAgentAuthorization(value, persistence())
+    const businessSkill = businessSkillScope()
+    const auth = new XAgentAuthorization(
+      value, persistence(), undefined, undefined, undefined, undefined, () => businessSkill,
+    )
     const request = new AbortController()
     const connection = new AbortController()
     let resolveDetached!: (scope: unknown) => void
     const detached = new Promise<unknown>((resolve) => { resolveDetached = resolve })
 
-    await auth.run(
+    const result = await auth.run(
       'session/prompt',
       { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
       { ...context, requestId: 'rpc-1', lifetime: connection.signal },
@@ -183,10 +189,17 @@ describe('XAgent Session 授权', () => {
       async () => {
         void new Promise<void>(resolve => setImmediate(resolve))
           .then(() => { resolveDetached(currentXAgentAuthenticatedRequestScope()) })
+        expect(businessSkill.active()).toMatchObject({
+          sessionId: '00000000-0000-0000-0000-000000000701',
+          visibility: 'project',
+          projectId: '00000000-0000-0000-0000-000000000401',
+          purpose: 'conversation',
+        })
         return { ok: true, value: 'ok' }
       },
     )
 
+    expect(result).toEqual({ ok: true, value: 'ok' })
     await expect(detached).resolves.toMatchObject({
       principal: context.principal,
       userToken: 'alice-token',
@@ -197,6 +210,15 @@ describe('XAgent Session 授权', () => {
       requestSignal: request.signal,
       connectionSignal: connection.signal,
     })
+
+    const withoutBusinessSkill = new XAgentAuthorization(value, persistence())
+    await expect(withoutBusinessSkill.run(
+      'session/prompt',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      { ...context, requestId: 'rpc-2', lifetime: connection.signal },
+      request.signal,
+      async () => ({ ok: true, value: 'without-business-skill' }),
+    )).resolves.toEqual({ ok: true, value: 'without-business-skill' })
   })
   test('模块插件入口只暴露带配置的安装函数', () => {
     expect('default' in authorizationModule).toBe(false)

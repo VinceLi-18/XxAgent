@@ -225,6 +225,14 @@ Service Definition for authenticated discovery and exact-version runtime Consume
 abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
 
 /**
+ * Admit one prompt without delaying its RPC receipt while retaining authority for its accepted turn.
+ * @param scope - backend-derived conversation Project Session authority.
+ * @param operation - prompt admission operation that inserts the exact owned message.
+ * @returns prompt admission result; accepted Agent work continues under the captured scope.
+ */
+abstract withPrompt<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
  * Install this request's provider in the exact Agent scope; repeated attachment is idempotent.
  * @param agent - Agent whose Session must match the current request.
  * @returns provider or undefined outside eligible requests or after Agent disposal.
@@ -374,7 +382,7 @@ abstract retire(projectId: string, sessionId: string, slug: string, idempotencyK
 
 Types: [Agent](core.md) · [SkillDefinition](skills.md) · [SkillProvider](skills.md)
 
-Source: [`packages/xagent/business-skill/src/index.ts:99`](../../packages/xagent/business-skill/src/index.ts)
+Source: [`packages/xagent/business-skill/src/index.ts:102`](../../packages/xagent/business-skill/src/index.ts)
 
 <a id="ctxxagentcitation--xagentcitationremoteservice"></a>
 

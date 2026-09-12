@@ -2287,6 +2287,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'result or stable failure after owned backend work settles, without retaining request authority.',
       },
       {
+        signature: 'abstract withPrompt<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>',
+        description: 'Admit one prompt without delaying its RPC receipt while retaining authority for its accepted turn.',
+        parameters: [{ name: 'scope', description: 'backend-derived conversation Project Session authority.' }, { name: 'operation', description: 'prompt admission operation that inserts the exact owned message.' }],
+        returns: 'prompt admission result; accepted Agent work continues under the captured scope.',
+      },
+      {
         signature: 'abstract attach(agent: Agent): SkillProvider | undefined',
         description: 'Install this request\'s provider in the exact Agent scope; repeated attachment is idempotent.',
         parameters: [{ name: 'agent', description: 'Agent whose Session must match the current request.' }],
