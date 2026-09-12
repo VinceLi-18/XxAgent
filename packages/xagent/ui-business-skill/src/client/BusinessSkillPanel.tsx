@@ -3,8 +3,8 @@ import { useState } from 'react'
 import type { HostObservable, InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { XAgentBusinessSkillDetail, XAgentBusinessSkillDraft } from '@xagent/dsh-backend-client/types'
-import type { BusinessSkillMutation } from './service.ts'
-import type { BusinessSkillState } from './store.ts'
+import type { BusinessSkillMutation, BusinessSkillMutationOutcome } from './service.ts'
+import type { BusinessSkillScope, BusinessSkillState } from './store.ts'
 import css from './business-skill.module.css'
 
 /** Slot data and commands owned by the connected project controller. */
@@ -15,8 +15,8 @@ export interface BusinessSkillPanelInjected {
   loadMore(): Promise<void>
   loadHistory(kind: 'versions' | 'tests'): Promise<void>
   openTranscript(run: number, more?: boolean): Promise<void>
-  mutate(request: BusinessSkillMutation): Promise<void>
-  retryMutation(): Promise<void>
+  mutate(request: BusinessSkillMutation): Promise<BusinessSkillMutationOutcome>
+  retryMutation(): Promise<BusinessSkillMutationOutcome>
 }
 type Actions = Omit<BusinessSkillPanelInjected, 'hooks'>
 type Ready = Extract<BusinessSkillState, { phase: 'ready' }>
@@ -46,18 +46,33 @@ function ReleaseTrack({ detail }: { detail: XAgentBusinessSkillDetail }) {
   </li>)}</ol>
 }
 
-function Editor({ detail, locked, mutate }: {
+interface EditorValues {
+  slug: string
+  displayName: string
+  description: string
+  instructions: string
+  tools: readonly string[]
+}
+
+function Editor({ detail, locked, mutate, initial, remember }: {
   detail?: XAgentBusinessSkillDetail & { draft: XAgentBusinessSkillDraft }
   locked: boolean
   mutate: Actions['mutate']
+  initial?: EditorValues | undefined
+  remember?: (values: EditorValues) => void
 }) {
   const draft = detail?.draft
   const source = draft
-  const [slug, setSlug] = useState('')
-  const [displayName, setDisplayName] = useState(detail?.displayName ?? '')
-  const [description, setDescription] = useState(source?.description ?? '')
-  const [instructions, setInstructions] = useState(source?.instructions ?? '')
-  const [tools, setTools] = useState<readonly string[]>(source?.primaryTools ?? [])
+  const [values, setValues] = useState<EditorValues>(() => initial ?? {
+    slug: '', displayName: detail?.displayName ?? '', description: source?.description ?? '',
+    instructions: source?.instructions ?? '', tools: source?.primaryTools ?? [],
+  })
+  const { slug, displayName, description, instructions, tools } = values
+  const update = (patch: Partial<EditorValues>): void => {
+    const next = { ...values, ...patch }
+    setValues(next)
+    remember?.(next)
+  }
   const save = (): void => {
     const content = { displayName, description, instructions, primaryTools: [...tools].sort() }
     void mutate(detail === undefined ? { kind: 'create', input: { ...content, slug } }
@@ -65,14 +80,14 @@ function Editor({ detail, locked, mutate }: {
   }
   return <fieldset className={css.editor} disabled={locked}>
     <legend>{detail === undefined ? '新建业务 Skill' : '草稿'}</legend>
-    {detail === undefined && <label>Slug<input value={slug} onChange={(event) => { setSlug(event.target.value) }} placeholder="review-project-facts" /></label>}
-    <label>显示名称<input value={displayName} onChange={(event) => { setDisplayName(event.target.value) }} /></label>
-    <label>目录说明<textarea value={description} onChange={(event) => { setDescription(event.target.value) }} rows={2} /></label>
+    {detail === undefined && <label>Slug<input value={slug} onChange={(event) => { update({ slug: event.target.value }) }} placeholder="review-project-facts" /></label>}
+    <label>显示名称<input value={displayName} onChange={(event) => { update({ displayName: event.target.value }) }} /></label>
+    <label>目录说明<textarea value={description} onChange={(event) => { update({ description: event.target.value }) }} rows={2} /></label>
     <label>Markdown 指令<textarea className={css.markdown} value={instructions}
-      onChange={(event) => { setInstructions(event.target.value) }} rows={9} /></label>
+      onChange={(event) => { update({ instructions: event.target.value }) }} rows={9} /></label>
     <fieldset className={css.tools}><legend>允许使用的工具</legend>{TOOLS.map(([tool, label]) => <label key={tool}>
       <input type="checkbox" checked={tools.includes(tool)} onChange={(event) => {
-        setTools(event.target.checked ? [...tools, tool] : tools.filter(item => item !== tool))
+        update({ tools: event.target.checked ? [...tools, tool] : tools.filter(item => item !== tool) })
       }} />
       <span>{label}<code>{tool}</code></span>
     </label>)}</fieldset>
@@ -83,8 +98,13 @@ function Editor({ detail, locked, mutate }: {
   </fieldset>
 }
 
-function Dossier({ state, detail, actions }: { state: Ready; detail: XAgentBusinessSkillDetail; actions: Actions }) {
-  const [scenario, setScenario] = useState('')
+function Dossier({ state, detail, actions, scenario, setScenario }: {
+  state: Ready
+  detail: XAgentBusinessSkillDetail
+  actions: Actions
+  scenario: string
+  setScenario: (value: string) => void
+}) {
   const [confirmation, setConfirmation] = useState<{ title: string; label: string; body: string; request: BusinessSkillMutation }>()
   const draft = detail.draft
   const run = qualifyingRun(detail)
@@ -146,29 +166,44 @@ function Dossier({ state, detail, actions }: { state: Ready; detail: XAgentBusin
 export function BusinessSkillPanel({ useSkills, ...actions }: Props) {
   const state = useSkills(value => value)
   const [creating, setCreating] = useState(false)
+  const [creation, setCreation] = useState<EditorValues>()
+  const [scenario, setScenario] = useState('')
+  const [formScope, setFormScope] = useState<BusinessSkillScope>()
+  const resetForm = (): void => { setCreating(false); setCreation(undefined); setScenario('') }
+  if (state.phase === 'empty' && formScope !== undefined) { setFormScope(undefined); resetForm() }
+  if (state.phase === 'ready' && (formScope === undefined || formScope.accountId !== state.scope.accountId
+    || formScope.projectId !== state.scope.projectId || formScope.sessionId !== state.scope.sessionId
+    || formScope.generation !== state.scope.generation || formScope.role !== state.scope.role)) {
+    setFormScope(state.scope); resetForm()
+  }
   if (state.phase === 'empty') return <p>请选择项目会话以管理业务 Skill</p>
   if (state.phase === 'loading') return <p role="status">正在加载业务 Skill…</p>
   if (state.phase === 'error') return <div><p role="alert">{state.error}</p><button type="button" onClick={() => { void actions.refresh() }}>重新加载</button></div>
   return <div className={css.workbench}>
     <aside className={css.collection} aria-label="项目 Skill 列表"><header><h3>业务 Skills</h3><button type="button" disabled={state.action !== undefined} onClick={() => { setCreating(true) }}>新建 Skill</button></header>
       {state.items.length === 0 && <p>暂无业务 Skill。新建草稿开始测试和发布。</p>}
-      <ul className={css.rows}>{state.items.map(item => <li key={item.slug}><button className={css.row} type="button" aria-current={state.selected === item.slug && !creating} disabled={state.action !== undefined} onClick={() => { setCreating(false); void actions.select(item.slug) }}>
+      <ul className={css.rows}>{state.items.map(item => <li key={item.slug}><button className={css.row} type="button" aria-current={state.selected === item.slug && !creating} disabled={state.action !== undefined} onClick={() => { setCreating(false); setScenario(''); void actions.select(item.slug) }}>
         <strong>{item.displayName}</strong><code>/{item.slug}</code><span>{item.status === 'retired' ? '已退役' : item.authorized ? '已授权' : '未授权'} · {item.currentVersion === undefined ? '未发布' : `v${item.currentVersion}`}</span>
         <small>草稿 {item.draftRevision ?? '—'} · 最近测试 {item.latestTest?.status ?? '暂无'}<time>{item.updatedAt}</time></small>
       </button></li>)}</ul>
       {state.cursor !== undefined && <button type="button" onClick={() => { void actions.loadMore() }}>更多 Skill</button>}
-      <button type="button" disabled={state.action !== undefined} onClick={() => { setCreating(false); void actions.refresh() }}>重新加载</button>
+      <button type="button" disabled={state.action !== undefined} onClick={() => { void actions.refresh() }}>重新加载</button>
     </aside>
     <div className={css.content}>
       {state.error !== undefined && <p role="alert" className={css.error}>{state.error}</p>}
       {state.action === 'submitting' && <p role="status">正在提交，请等待服务器确认…</p>}
-      {state.action === 'uncertain' && <button type="button" onClick={() => { void actions.retryMutation() }}>使用原请求重试</button>}
-      {creating ? <Editor locked={state.action !== undefined || state.blocked === true} mutate={async (request) => {
-        await actions.mutate(request); setCreating(false)
-      }} />
+      {state.action === 'uncertain' && <button type="button" onClick={() => {
+        void actions.retryMutation().then((outcome) => { if (creating && outcome === 'succeeded') resetForm() })
+      }}>使用原请求重试</button>}
+      {creating ? <Editor initial={creation} remember={setCreation} locked={state.action !== undefined || state.blocked === true}
+        mutate={async (request) => {
+          const outcome = await actions.mutate(request)
+          if (outcome === 'succeeded') resetForm()
+          return outcome
+        }} />
         : state.detailLoading ? <p role="status">正在加载 Skill 详情…</p>
           : state.detail === undefined ? <p>选择 Skill 查看草稿、测试和版本。</p>
-            : <Dossier key={`${state.scope.accountId}:${state.scope.projectId}:${state.detail.slug}`} state={state} detail={state.detail} actions={actions} />}
+            : <Dossier key={`${state.scope.accountId}:${state.scope.projectId}:${state.detail.slug}`} state={state} detail={state.detail} actions={actions} scenario={scenario} setScenario={setScenario} />}
     </div>
   </div>
 }

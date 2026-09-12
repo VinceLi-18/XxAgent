@@ -11,8 +11,8 @@ function mount(role: 'manager' | 'specialist' = 'manager', override?: BusinessSk
   const store = new BusinessSkillStore()
   store.replace(override ?? { phase: 'ready', scope: { accountId: 'a', projectId: 'p', sessionId: 's', role, generation: {} }, items: [detail], selected: detail.slug, detail })
   const actions = {
-    mutate: vi.fn(async () => {}), select: vi.fn(async () => {}), refresh: vi.fn(async () => {}), loadMore: vi.fn(async () => {}),
-    loadHistory: vi.fn(async () => {}), openTranscript: vi.fn(async () => {}), retryMutation: vi.fn(async () => {}),
+    mutate: vi.fn(async () => 'succeeded' as const), select: vi.fn(async () => {}), refresh: vi.fn(async () => {}), loadMore: vi.fn(async () => {}),
+    loadHistory: vi.fn(async () => {}), openTranscript: vi.fn(async () => {}), retryMutation: vi.fn(async () => 'succeeded' as const),
   }
   render(<BusinessSkillPanel {...actions} useSkills={selector => selector(useSyncExternalStore(store.subscribe, store.getSnapshot))}
     useSessions={vi.fn() as never} useWorkspaces={vi.fn() as never} />)

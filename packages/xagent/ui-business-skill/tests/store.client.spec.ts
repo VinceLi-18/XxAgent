@@ -1,10 +1,103 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest'
-import { BusinessSkillController } from '../src/client/service.ts'
+import { BusinessSkillController, type BusinessSkillRemote } from '../src/client/service.ts'
 import { detail, scope, ok, remoteFixture } from './fixtures.client.ts'
 import { BusinessSkillStore } from '../src/client/store.ts'
 
 describe('Business Skill governance scope', () => {
+  it.each([false, true])('gives successful creation independent page ownership with an existing selection: %s', async (existing) => {
+    const remote = remoteFixture()
+    remote.list.mockResolvedValueOnce(ok({ items: existing ? [detail] : [] }))
+    remote.detail.mockResolvedValueOnce(ok({ ...detail, nextVersionCursor: 2 }))
+    remote.create.mockResolvedValueOnce(ok({ ...detail, slug: 'created', nextVersionCursor: 2 }))
+    const controller = new BusinessSkillController(remote)
+    await controller.setScope(scope)
+    if (existing) await controller.openTranscript(3)
+    const pending = Promise.withResolvers<never>()
+    if (existing) remote.detail.mockReturnValueOnce(pending.promise)
+    const old = existing ? controller.loadHistory('versions') : Promise.resolve()
+    const oldSignal = remote.detail.mock.calls.at(-1)?.[4]
+    await controller.mutate({ kind: 'create', input: {
+      slug: 'created', displayName: 'Created', description: 'Created', instructions: '# Created', primaryTools: [],
+    } })
+    if (existing) expect(oldSignal?.aborted).toBe(true)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ transcript: undefined })
+    await controller.loadHistory('versions')
+    expect(remote.detail.mock.calls.at(-1)?.[2]).toBe('created')
+    pending.resolve(ok(detail) as never); await old
+    await controller.dispose()
+  })
+
+  it.each(['versions', 'tests', 'transcript'] as const)('releases %s work on selection changes and rejects A → B → A late content', async (kind) => {
+    const remote = remoteFixture()
+    remote.detail.mockImplementation(async (...[_project, _session, slug]: Parameters<BusinessSkillRemote['detail']>) =>
+      ok({ ...detail, slug, nextVersionCursor: 2, nextRunCursor: 3 }))
+    const controller = new BusinessSkillController(remote)
+    await controller.setScope(scope)
+    const pending = Promise.withResolvers<never>()
+    if (kind === 'transcript') remote.transcript.mockReturnValueOnce(pending.promise)
+    else remote.detail.mockReturnValueOnce(pending.promise)
+    const load = () => kind === 'transcript' ? controller.openTranscript(3) : controller.loadHistory(kind)
+    const old = load()
+    const oldSignal = kind === 'transcript' ? remote.transcript.mock.calls[0]?.[5] : remote.detail.mock.calls[1]?.[4]
+    await controller.select('other')
+    expect(oldSignal?.aborted).toBe(true)
+    await load()
+    if (kind === 'transcript') expect(remote.transcript.mock.calls.at(-1)?.[2]).toBe('other')
+    else expect(remote.detail.mock.calls.at(-1)?.[3]).toEqual({ limit: 50, [kind === 'versions' ? 'versionCursor' : 'runCursor']: kind === 'versions' ? 2 : 3 })
+    await controller.select(detail.slug)
+    pending.resolve(ok(kind === 'transcript'
+      ? { test: detail.tests[0], events: [{ sequence: 0, eventType: 'old', payload: {}, createdAt: 'old' }], nextSequence: 0 }
+      : { ...detail, tests: [{ ...detail.tests[0], runNumber: 99 }], versions: [{ versionNumber: 99 }] }) as never)
+    await old
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ detail: { tests: [{ runNumber: 3 }], versions: [] }, transcript: undefined })
+    await controller.dispose()
+  })
+
+  it('suppresses a rejected history page from an abandoned selection', async () => {
+    const remote = remoteFixture()
+    remote.detail.mockResolvedValueOnce(ok({ ...detail, nextVersionCursor: 2 }))
+    const controller = new BusinessSkillController(remote)
+    await controller.setScope(scope)
+    const pending = Promise.withResolvers<never>()
+    remote.detail.mockReturnValueOnce(pending.promise)
+    const old = controller.loadHistory('versions')
+    await controller.select('other')
+    pending.reject(new Error('old history failed')); await old
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ error: undefined })
+    await controller.dispose()
+  })
+
+  it('includes sequence-zero startup and advances the backend last-sequence cursor without gaps', async () => {
+    const remote = remoteFixture()
+    const events = [0, 1, 2].map(sequence => ({ sequence, eventType: 'message', payload: { text: String(sequence) }, createdAt: 'now' }))
+    remote.transcript.mockImplementation(async (...[_project, _session, _slug, _run, input]: Parameters<BusinessSkillRemote['transcript']>) => {
+      const page = events.filter(event => event.sequence > (input.afterSequence ?? -1)).slice(0, 2)
+      return ok({ test: detail.tests[0]!, events: page, nextSequence: page.at(-1)?.sequence ?? input.afterSequence ?? -1 })
+    })
+    const controller = new BusinessSkillController(remote)
+    await controller.setScope(scope)
+    await controller.openTranscript(3)
+    await controller.openTranscript(3, true)
+    await controller.openTranscript(3, true)
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ transcript: {
+      events: [{ sequence: 0 }, { sequence: 1 }, { sequence: 2 }], nextSequence: 2,
+    } })
+    await controller.dispose()
+  })
+
+  it.each(['input-invalid', 'business-skill-input-invalid', 'business-skill-conflict'] as const)('permits correcting a create rejected with %s', async (code) => {
+    const remote = remoteFixture()
+    remote.create.mockResolvedValueOnce({ ok: false, error: { code, message: 'rejected', details: {} } })
+    const controller = new BusinessSkillController(remote)
+    await controller.setScope(scope)
+    const input = { slug: 'new', displayName: 'New', description: 'New', instructions: '# New', primaryTools: [] }
+    expect(await controller.mutate({ kind: 'create', input })).toBe('failed')
+    expect(controller.snapshot.getSnapshot()).toMatchObject({ action: undefined })
+    expect(await controller.mutate({ kind: 'create', input: { ...input, slug: 'corrected' } })).toBe('succeeded')
+    expect(remote.create.mock.calls[1]?.[2].idempotencyKey).not.toBe(remote.create.mock.calls[0]?.[2].idempotencyKey)
+    await controller.dispose()
+  })
   it('keeps a new generation page locked when the preceding page settles', async () => {
     const remote = remoteFixture()
     remote.list.mockResolvedValue(ok({ items: [detail], nextCursor: 'next' }))
@@ -127,7 +220,7 @@ describe('Business Skill governance scope', () => {
     expect(controller.snapshot.getSnapshot()).toMatchObject({ transcript: { events: [{ sequence: 1 }, { sequence: 2 }], nextSequence: 3 } })
     expect(remote.transcript.mock.calls[1]?.[4]).toEqual({ limit: 50, afterSequence: 2 })
     await controller.openTranscript(7, true)
-    expect(remote.transcript.mock.calls[2]?.[4]).toEqual({ limit: 50, afterSequence: 0 })
+    expect(remote.transcript.mock.calls[2]?.[4]).toEqual({ limit: 50, afterSequence: -1 })
     await controller.loadHistory('tests'); await controller.loadHistory('tests')
     expect(remote.detail).toHaveBeenCalledTimes(4)
     await controller.dispose()
@@ -332,7 +425,7 @@ describe('Business Skill governance scope', () => {
     expect(remote.detail).toHaveBeenLastCalledWith('project', 'session', 'review-facts', { limit: 50, versionCursor: 2 },
       expect.any(AbortSignal))
     await controller.openTranscript(3)
-    expect(remote.transcript).toHaveBeenCalledWith('project', 'session', 'review-facts', 3, { limit: 50, afterSequence: 0 },
+    expect(remote.transcript).toHaveBeenCalledWith('project', 'session', 'review-facts', 3, { limit: 50, afterSequence: -1 },
       expect.any(AbortSignal))
     expect(controller.snapshot.getSnapshot()).toMatchObject({ transcript: { test: { runNumber: 3 } } })
     await controller.dispose()

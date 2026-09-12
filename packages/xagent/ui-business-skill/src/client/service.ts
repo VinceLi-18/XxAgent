@@ -2,10 +2,20 @@
 import type { TypertRemoteNamespaceMap, RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@xagent/dsh-business-skill/remote'
 import type { XAgentBusinessSkillCreateInput, XAgentBusinessSkillDraftInput, XAgentBusinessSkillDetail, XAgentBusinessSkillTest } from '@xagent/dsh-backend-client/types'
-import { BusinessSkillStore, type BusinessSkillScope } from './store.ts'
+import { BusinessSkillStore, type BusinessSkillScope, type BusinessSkillState } from './store.ts'
 
 /** Generated browser face; server authorization owns every decision. */
 export type BusinessSkillRemote = TypertRemoteNamespaceMap['xagentBusinessSkill']
+
+interface ReadOwner {
+  readonly scope: BusinessSkillScope
+  readonly slug: string | undefined
+  readonly controller: AbortController
+  readonly pages: Map<string, AbortController>
+}
+
+/** Authoritative mutation settlement; a resolved request alone does not establish success. */
+export type BusinessSkillMutationOutcome = 'succeeded' | 'failed' | 'uncertain' | 'cancelled' | 'not-started'
 
 /** Immutable user intent. Retry adds no changed content to an uncertain request. */
 export type BusinessSkillMutation =
@@ -26,8 +36,8 @@ export class BusinessSkillController {
   private disposed = false
   private readonly requests = new Map<AbortController, Promise<void>>()
   private retry: { request: BusinessSkillMutation; key: string } | undefined
-  private readonly pages = new Map<string, AbortController>()
-  private detailRequest: AbortController | undefined
+  private catalogOwner: ReadOwner | undefined
+  private selectionOwner: ReadOwner | undefined
 
   constructor(private readonly remote: BusinessSkillRemote) {}
 
@@ -48,7 +58,9 @@ export class BusinessSkillController {
   clear(): void {
     this.scope = undefined
     this.retry = undefined
-    this.pages.clear()
+    this.catalogOwner = undefined
+    this.selectionOwner?.controller.abort()
+    this.selectionOwner = undefined
     for (const controller of this.requests.keys()) controller.abort()
     this.snapshot.replace({ phase: 'empty' })
   }
@@ -61,7 +73,9 @@ export class BusinessSkillController {
     if (scope === undefined || this.disposed) return Promise.resolve()
     for (const controller of this.requests.keys()) controller.abort()
     this.scope = { ...scope }
-    this.pages.clear()
+    this.catalogOwner = this.readOwner(undefined)
+    this.selectionOwner?.controller.abort()
+    this.selectionOwner = undefined
     this.snapshot.replace({ phase: 'loading' })
     return this.perform(async (signal, live, scope) => {
       const result = await this.remote.list(scope.projectId, scope.sessionId, { limit: 50 }, signal)
@@ -73,14 +87,16 @@ export class BusinessSkillController {
     })
   }
 
-  /** Read one slug without allowing earlier selections to replace it.
+  /** Read one slug, cancelling the preceding selection's detail, history and transcript requests.
    * @param slug Public project-local Skill name.
    * @returns Selected detail settlement.
    */
   select(slug: string): Promise<void> {
     const state = this.snapshot.getSnapshot()
     if (state.phase !== 'ready' || state.action !== undefined || this.disposed) return Promise.resolve()
-    this.detailRequest?.abort()
+    this.selectionOwner?.controller.abort()
+    const owner = this.readOwner(slug)
+    this.selectionOwner = owner
     this.snapshot.patch({ selected: slug, detail: undefined, transcript: undefined, detailLoading: true, error: undefined })
     return this.perform(async (signal, live, scope) => {
       const result = await this.remote.detail(scope.projectId, scope.sessionId, slug, { limit: 50 }, signal)
@@ -89,7 +105,7 @@ export class BusinessSkillController {
       this.snapshot.patch(result.ok
         ? { detail: result.value, detailLoading: false }
         : { detailLoading: false, error: '无法加载 Skill 详情，请重新加载' })
-    }, true)
+    }, owner, owner.controller)
   }
 
   /** Append the next catalog page, retaining the current selection.
@@ -99,7 +115,7 @@ export class BusinessSkillController {
     const state = this.snapshot.getSnapshot()
     if (state.phase !== 'ready' || state.cursor === undefined) return Promise.resolve()
     const cursor = state.cursor
-    return this.page('list', async (signal, live, scope) => {
+    return this.page(this.catalogOwner as ReadOwner, 'list', async (signal, live, scope) => {
       const result = await this.remote.list(scope.projectId, scope.sessionId, { limit: 50, cursor }, signal)
       const current = this.snapshot.getSnapshot()
       if (!live() || current.phase !== 'ready') return
@@ -119,7 +135,7 @@ export class BusinessSkillController {
     const detail = state.detail
     const cursor = kind === 'versions' ? detail.nextVersionCursor : detail.nextRunCursor
     if (cursor === undefined) return Promise.resolve()
-    return this.page(kind, async (signal, live, scope) => {
+    return this.page(this.selectionOwner as ReadOwner, kind, async (signal, live, scope) => {
       const result = await this.remote.detail(scope.projectId, scope.sessionId, detail.slug, { limit: 50,
         [kind === 'versions' ? 'versionCursor' : 'runCursor']: cursor }, signal)
       const current = this.snapshot.getSnapshot()
@@ -139,7 +155,7 @@ export class BusinessSkillController {
     })
   }
 
-  /** Open or advance the dedicated public test transcript.
+  /** Open the public test transcript before sequence zero, or advance from its returned last-sequence cursor.
    * @param run Public run number belonging to the selected Skill.
    * @param more Append the next event page when true.
    * @returns Transcript events, never an ordinary Session lookup.
@@ -150,9 +166,9 @@ export class BusinessSkillController {
     const slug = state.selected
     const previous = more && state.transcript?.test.runNumber === run ? state.transcript : undefined
     if (!more) this.snapshot.patch({ transcript: undefined })
-    return this.page('transcript', async (signal, live, scope) => {
+    return this.page(this.selectionOwner as ReadOwner, 'transcript', async (signal, live, scope) => {
       const result = await this.remote.transcript(scope.projectId, scope.sessionId, slug, run, { limit: 50,
-        afterSequence: previous?.nextSequence ?? 0 }, signal)
+        afterSequence: previous?.nextSequence ?? -1 }, signal)
       const current = this.snapshot.getSnapshot()
       if (!live() || current.phase !== 'ready' || current.selected !== slug) return
       if (!result.ok) { this.snapshot.patch({ error: '无法加载测试记录' }); return }
@@ -162,40 +178,45 @@ export class BusinessSkillController {
   }
 
   private page(
+    owner: ReadOwner,
     key: string,
     operation: (signal: AbortSignal, live: () => boolean, scope: BusinessSkillScope) => Promise<void>,
     replace = false,
   ): Promise<void> {
     if (replace) {
-      this.pages.get(key)?.abort()
-      this.pages.delete(key)
+      owner.pages.get(key)?.abort()
+      owner.pages.delete(key)
     }
-    if (this.pages.has(key) || this.disposed) return Promise.resolve()
+    if (owner.pages.has(key) || this.disposed) return Promise.resolve()
     const controller = new AbortController()
-    this.pages.set(key, controller)
-    return this.perform(operation, false, controller).finally(() => {
-      if (this.pages.get(key) === controller) this.pages.delete(key)
+    owner.pages.set(key, controller)
+    return this.perform(operation, owner, controller).finally(() => {
+      if (owner.pages.get(key) === controller) owner.pages.delete(key)
     })
+  }
+
+  private readOwner(slug: string | undefined): ReadOwner {
+    return { scope: this.scope as BusinessSkillScope, slug, controller: new AbortController(), pages: new Map() }
   }
 
   /** Submit one user intent, creating a fresh idempotency key.
    * @param request Exact content and revision confirmed by the actor.
-   * @returns Mutation and authoritative refresh settlement.
+   * @returns Explicit success, rejection, uncertainty, cancellation or refusal to start.
    */
-  mutate(request: BusinessSkillMutation): Promise<void> {
+  mutate(request: BusinessSkillMutation): Promise<BusinessSkillMutationOutcome> {
     const state = this.snapshot.getSnapshot()
-    if (state.phase !== 'ready' || state.action !== undefined || state.blocked || this.disposed) return Promise.resolve()
-    if (state.scope.role !== 'manager' && ['publish', 'authorization', 'version', 'retire'].includes(request.kind)) return Promise.resolve()
+    if (state.phase !== 'ready' || state.action !== undefined || state.blocked || this.disposed) return Promise.resolve('not-started')
+    if (state.scope.role !== 'manager' && ['publish', 'authorization', 'version', 'retire'].includes(request.kind)) return Promise.resolve('not-started')
     this.retry = undefined
     return this.submit(structuredClone(request), crypto.randomUUID())
   }
 
   /** Retry only the identical mutation whose transport outcome remains unknown.
-   * @returns Original-key settlement, or no work if no uncertain intent exists.
+   * @returns Original-key outcome, or not-started if no uncertain intent exists.
    */
-  retryMutation(): Promise<void> {
+  retryMutation(): Promise<BusinessSkillMutationOutcome> {
     const retry = this.retry
-    if (retry === undefined || this.disposed) return Promise.resolve()
+    if (retry === undefined || this.disposed) return Promise.resolve('not-started')
     this.retry = undefined
     return this.submit(retry.request, retry.key)
   }
@@ -208,37 +229,51 @@ export class BusinessSkillController {
     await Promise.allSettled([...this.requests.values()])
   }
 
-  private submit(request: BusinessSkillMutation, key: string): Promise<void> {
+  private submit(request: BusinessSkillMutation, key: string): Promise<BusinessSkillMutationOutcome> {
+    let outcome: BusinessSkillMutationOutcome = 'cancelled'
     this.snapshot.patch({ action: 'submitting', error: undefined })
     return this.perform(async (signal, live, scope) => {
       let result: RemoteResult<XAgentBusinessSkillDetail | XAgentBusinessSkillTest>
       try { result = await this.dispatch(request, key, signal, scope) }
       catch {
-        if (live()) this.uncertain(request, key)
+        if (live()) { this.uncertain(request, key); outcome = 'uncertain' }
         return
       }
       if (!live()) return
-      if (!result.ok && result.error.code === 'service-unavailable') { this.uncertain(request, key); return }
+      if (!result.ok && result.error.code === 'service-unavailable') {
+        this.uncertain(request, key); outcome = 'uncertain'; return
+      }
       this.retry = undefined
       this.snapshot.patch({ action: undefined })
+      if (!live()) return
       const slug = request.kind === 'create' ? request.input.slug : request.slug
       if (!result.ok) {
-        if (result.error.code === 'business-skill-revision-conflict' || result.error.code === 'business-skill-policy-changed') {
+        outcome = 'failed'
+        if (result.error.code === 'input-invalid' || result.error.code === 'business-skill-input-invalid'
+          || (request.kind === 'create' && result.error.code === 'business-skill-conflict')) {
+          this.snapshot.patch({ error: '草稿未保存，请检查名称和内容后重试' })
+        } else if (result.error.code === 'business-skill-revision-conflict' || result.error.code === 'business-skill-policy-changed') {
           await this.select(slug)
           if (live()) this.snapshot.patch({ error: '草稿或工具策略已更新，已重新加载；请检查新内容后再保存' })
         } else this.snapshot.patch({ blocked: true, error: '操作未完成，请重新加载当前权限和 Skill 状态' })
         return
       }
+      outcome = 'succeeded'
       if (request.kind === 'test') await this.select(slug)
       else {
         const detail = result.value as XAgentBusinessSkillDetail
-        const state = this.snapshot.getSnapshot()
-        if (state.phase === 'ready') this.snapshot.patch({ detail, selected: slug,
+        const state = this.snapshot.getSnapshot() as Extract<BusinessSkillState, { phase: 'ready' }>
+        if (request.kind === 'create') {
+          this.selectionOwner?.controller.abort()
+          this.selectionOwner = this.readOwner(slug)
+        }
+        this.snapshot.patch({ detail, selected: slug, detailLoading: false,
+          transcript: request.kind === 'create' ? undefined : state.transcript,
           items: [...new Map([...state.items, detail].map(item => [item.slug, item])).values()].sort((a,
             b) => a.slug.localeCompare(b.slug)),
         })
       }
-    })
+    }).then(() => outcome)
   }
 
   private dispatch(request: BusinessSkillMutation, key: string, signal: AbortSignal,
@@ -266,13 +301,13 @@ export class BusinessSkillController {
 
   private perform(
     operation: (signal: AbortSignal, live: () => boolean, scope: BusinessSkillScope) => Promise<void>,
-    detail = false,
+    owner?: ReadOwner,
     controller = new AbortController(),
   ): Promise<void> {
-    const scope = this.scope as BusinessSkillScope
-    if (detail) this.detailRequest = controller
-    const live = (): boolean => !this.disposed && !controller.signal.aborted && this.scope === scope
-    const task = operation(controller.signal, live, scope).catch(() => {
+    const scope = (owner?.scope ?? this.scope) as BusinessSkillScope
+    const signal = owner === undefined ? controller.signal : AbortSignal.any([owner.controller.signal, controller.signal])
+    const live = (): boolean => !this.disposed && !signal.aborted && this.scope === scope
+    const task = operation(signal, live, scope).catch(() => {
       if (!live()) return
       const state = this.snapshot.getSnapshot()
       if (state.phase === 'loading') this.snapshot.replace({ phase: 'error', error: '无法加载业务 Skill，请重新加载' })

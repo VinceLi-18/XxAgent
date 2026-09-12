@@ -70,5 +70,5 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
 }
 
 export { BusinessSkillPanel, BusinessSkillController }
-export type { BusinessSkillRemote, BusinessSkillMutation } from './service.ts'
+export type { BusinessSkillRemote, BusinessSkillMutation, BusinessSkillMutationOutcome } from './service.ts'
 export type { BusinessSkillScope, BusinessSkillState } from './store.ts'
