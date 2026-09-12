@@ -73,7 +73,7 @@ Browser governance retains only one live account/project/Session/connection gene
 - Real PostgreSQL tests prove project RLS, worker denial, least-privilege API grants, immutable identities and versions, exact references, terminal retirement, and downgrade refusal before DDL when Skill data, test Sessions, or Skill audit exists.
 - Governance tests prove exact-revision publication, concurrent edit conflicts, idempotency, stable-Skill authorization, rollback, and immediate revocation.
 - Runtime and assembled snapshots prove both invocation forms, one-version turn pinning, per-tool authorization, logged bodies, historical markers, and test read-only isolation. Both SDK projections include the activation event.
-- Deterministic real-stack acceptance verifies draft testing, publication, authorization, and Project Session invocation. Post-fix Browser/GIF verification remains pending because the local pinned BGE-M3 cache is incomplete and the attempted cache completion could not reach Hugging Face; the exact built commit must complete that real-model flow before remote publication.
+- Deterministic real-stack acceptance verifies draft testing, publication, authorization, and Project Session invocation. Local Browser/GIF acceptance uses a strictly verified offline BGE-M3 cache, fresh Specialist and Manager contexts, the configured real model, and one isolated unspliced service run through creation, testing, publication, authorization, production invocation, and a pending Fact proposal. Remote publication still requires the final reviewed commit and its final inspected GIF.
 
 ## Consequences
 

@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write docs/superpowers/progress/2026-09-11-xagent-phase-6.md
-2026-09-11-xagent-phase-6.md: 05b4bf7c94f20176f812b813041fb3fc3c805aa4
-2026-09-11-xagent-phase-6.zh.md: c501267ea5251ac8f70f96618d133b7737645ca5
+2026-09-11-xagent-phase-6.md: da4838f0feb2a6f1336310563f6ab0ee48b5684c
+2026-09-11-xagent-phase-6.zh.md: 142acc74f1f27754e5872c158ab646d09291d7af

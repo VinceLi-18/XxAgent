@@ -24,11 +24,11 @@ Phase 6 为 XAgent Business 增加受治理、可复用的项目 Business Skill�
 
 真实 FastAPI/PostgreSQL 验收贯通 Specialist 测试／通过和 Manager 发布／授权流程，随后覆盖运行时目录、加载及工具授权、对项目索引证据的真实检索、仍需独立人工审批的生产 Fact 提案、第二个通过测试的发布、历史固定版本授权、回滚、立即撤权拒绝、隐藏测试 Session、持久化测试记录读取、不可变版本重放及终止退役。并发验收证明乐观草稿只有一个写入获胜、完全相同的发布请求精确重放，且退役后不会残留授权。聚焦真实循环测试覆盖两种调用形式、同轮次版本固定、后续轮次版本变化、检索工具执行、持久化激活、崩溃修复及不含指令的历史投影。TypeScript 与 Python SDK fixture 均接纳并保留激活事件。
 
-仓库内的无密钥 Loader 快照使用真实 Agent loop、生产 Business Skill 提供方、Retrieval、Fact 和隔离草稿 TestRunner 启动可运行夹具。生产调用留下一个 `propose_fact` 待审批结果；草稿测试尝试同一写入，记录拒绝，以 `tool-denied`／失败结算，并且不会创建第二个提案。夹具从 XAgent Business Profile 读取部署使用的测试提供方和模型路由，但不会启动完整 Profile。修复后的必要 Browser/GIF 验证尚未完成：本地固定 BGE-M3 缓存不完整，导致构建后的 XAgent Business Profile 无法进入登录界面；当次补全缓存也未能访问 Hugging Face。因此没有生成修复后的真实模型请求、Browser 帧或 GIF。后续运行必须使用真实 FastAPI/PostgreSQL 状态、两个已认证项目角色、已配置的真实模型及全新浏览器上下文；仍不得使用测试 transport、合成界面状态或采集凭据。
+仓库内的无密钥 Loader 快照使用真实 Agent loop、生产 Business Skill 提供方、Retrieval、Fact 和隔离草稿 TestRunner 启动可运行夹具。生产调用留下一个 `propose_fact` 待审批结果；草稿测试尝试同一写入，记录拒绝，以 `tool-denied`／失败结算，并且不会创建第二个提案。夹具从 XAgent Business Profile 读取部署使用的测试提供方和模型路由，但不会启动完整 Profile。本地 Browser/GIF 验收使用经过严格验证的离线 BGE-M3 缓存，并以全新的 Specialist 与 Manager 浏览器上下文连接一个全新隔离的 FastAPI/PostgreSQL/MinIO/ClamAV/embedding/Host 栈。已配置的真实模型在一次未拼接运行中完成创建、编辑、只读测试、人工判定、发布、授权、生产调用及待审批 Fact 提案。忽略目录中的证据经过状态可读性与秘密检查；流程未使用测试 transport、合成界面状态、持久化凭据或真实客户数据。
 
 ## 尚余发布工作
 
-实现、确定性验收、当前态双语文档及 implemented 决策记录已在本地完成。产品可见验收仍未完成；必须先提供经过完整校验的 BGE-M3 缓存，让精确构建提交完成真实模型 Browser 流程，生成不含秘密的 GIF 并通过视觉检查。此后才能推送最终提交、把 GIF 发布到专用 assets 分支、将其附加到 Pull Request，并等待远端 required checks。本地 Task 11 刻意不执行这些远端变更。
+实现、确定性验收、当前态双语文档、implemented 决策记录及本地产品可见验收均已完成。发布仍需推送最终审查通过的提交、把最终 GIF 发布到专用 assets 分支、将其附加到 Pull Request，并等待远端 required checks。本地 Task 11 刻意不执行这些远端变更。
 
 ## Agent Note 结果
 

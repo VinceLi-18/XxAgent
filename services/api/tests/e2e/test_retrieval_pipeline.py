@@ -274,6 +274,70 @@ def _embedding(text: str) -> str:
     ).stdout.strip()
 
 
+def _real_tokenizer_chunks(samples: dict[str, str]) -> dict[str, list[dict[str, object]]]:
+    encoded = base64.b64encode(json.dumps(samples, ensure_ascii=False).encode()).decode()
+    script = """
+import base64
+import json
+
+from app.retrieval.chunking import chunk_text
+from app.services.artifact_indexing import _BgeTokenizer
+
+samples = json.loads(base64.b64decode(%r))
+tokenizer = _BgeTokenizer()
+result = {}
+for label, text in samples.items():
+    result[label] = [
+        {
+            "text": chunk.text,
+            "stored_tokens": chunk.token_count,
+            "actual_tokens": tokenizer.count_tokens(chunk.text),
+            "bytes": len(chunk.text.encode()),
+        }
+        for chunk in chunk_text(text.encode(), "text/plain", tokenizer)
+    ]
+print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+""" % encoded
+    output = _compose("exec", "-T", "worker", "python", "-c", script).stdout
+    return json.loads(output)
+
+
+def _assert_exact_chunk_coverage(source: str, chunks: list[dict[str, object]]) -> None:
+    covered_end = 0
+    for ordinal, chunk in enumerate(chunks):
+        text = chunk["text"]
+        assert isinstance(text, str)
+        if ordinal == 0:
+            assert source.startswith(text)
+            start = 0
+        else:
+            start = source.rfind(text, 0, covered_end + len(text))
+            assert 0 <= start <= covered_end < start + len(text)
+        covered_end = max(covered_end, start + len(text))
+    assert covered_end == len(source)
+
+
+def test_real_bge_chunks_reencode_within_limits_and_cover_exact_source() -> None:
+    samples = {
+        "chinese": "客户交付条款" * 500,
+        "mixed": "客户 delivery 🚀 2027-03-15｜条款😀" * 300,
+        "emoji": "👩‍💻👍🏽交付A🇨🇳" * 500,
+    }
+
+    results = _real_tokenizer_chunks(samples)
+
+    assert results.keys() == samples.keys()
+    for label, source in samples.items():
+        chunks = results[label]
+        assert len(chunks) > 1
+        assert all(
+            chunk["stored_tokens"] == chunk["actual_tokens"] <= 512
+            and chunk["bytes"] <= 8 * 1024
+            for chunk in chunks
+        )
+        _assert_exact_chunk_coverage(source, chunks)
+
+
 def _seed_ready_artifact(
     session: RetrievalSession,
     *,
