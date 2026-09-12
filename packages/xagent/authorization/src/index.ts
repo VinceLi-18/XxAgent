@@ -98,7 +98,7 @@ const FACT_METHODS = new Set([
   'withdraw',
 ])
 const BUSINESS_SKILL_METHODS = new Set([
-  'list', 'detail', 'create', 'draft', 'test', 'verdict', 'publish',
+  'list', 'detail', 'create', 'draft', 'test', 'transcript', 'verdict', 'publish',
   'authorization', 'version', 'retire',
 ])
 

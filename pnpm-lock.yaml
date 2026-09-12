@@ -8626,6 +8626,9 @@ importers:
       '@deepseek-ai/dsh-user-approval':
         specifier: workspace:^
         version: link:../../interaction/user-approval
+      '@xagent/dsh-authorization':
+        specifier: workspace:^
+        version: link:../authorization
       '@xagent/dsh-backend-client':
         specifier: workspace:^
         version: link:../backend-client
@@ -8955,6 +8958,48 @@ importers:
       '@xagent/dsh-artifact':
         specifier: workspace:^
         version: link:../artifact
+      '@xagent/dsh-ui-project':
+        specifier: workspace:^
+        version: link:../ui-project
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.2.0
+        version: 18.3.1(react@18.3.1)
+
+  packages/xagent/ui-business-skill:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-client-runtime':
+        specifier: workspace:^
+        version: link:../../client/runtime
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: workspace:^
+        version: link:../../client/ui-primitives
+      '@deepseek-ai/dsh-client-ui-slots':
+        specifier: workspace:^
+        version: link:../../client/ui-slots
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-typert-protocol':
+        specifier: workspace:^
+        version: link:../../typert/protocol
+      '@testing-library/react':
+        specifier: ^16.1.0
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@types/react':
+        specifier: ~18.3.1
+        version: 18.3.31
+      '@xagent/dsh-backend-client':
+        specifier: workspace:^
+        version: link:../backend-client
+      '@xagent/dsh-business-skill':
+        specifier: workspace:^
+        version: link:../business-skill
       '@xagent/dsh-ui-project':
         specifier: workspace:^
         version: link:../ui-project

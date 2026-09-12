@@ -3260,6 +3260,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@xagent/dsh-tool-retrieval` — requires `tools` ([`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts))
 - `@xagent/dsh-ui-account` ([`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts))
 - `@xagent/dsh-ui-artifact` ([`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts))
+- `@xagent/dsh-ui-business-skill` ([`packages/xagent/ui-business-skill/src/index.ts`](../packages/xagent/ui-business-skill/src/index.ts))
 - `@xagent/dsh-ui-citation` ([`packages/xagent/ui-citation/src/index.ts`](../packages/xagent/ui-citation/src/index.ts))
 - `@xagent/dsh-ui-fact` ([`packages/xagent/ui-fact/src/index.ts`](../packages/xagent/ui-fact/src/index.ts))
 - `@xagent/dsh-ui-project` ([`packages/xagent/ui-project/src/index.ts`](../packages/xagent/ui-project/src/index.ts))

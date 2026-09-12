@@ -5,7 +5,7 @@ import SkillRegistry, { type SkillProviderObservation } from '@deepseek-ai/dsh-s
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { describe, expect, test, vi } from 'vitest'
 import { apply, Config } from '../src/index.ts'
-import { entry, request, setup, transcriptResponse, claimTurn } from './fixtures.ts'
+import { entry, request, setup, transcriptResponse, claimTurn , projectId, sessionId } from './fixtures.ts'
 
 describe('Business Skill admission and transport lifetime', () => {
   test.each([{}, { testProvider: '', testModel: 'mock' }, { testProvider: 'mock', testModel: '' },
@@ -28,7 +28,7 @@ describe('Business Skill admission and transport lifetime', () => {
       await expect(agentEvents(h.ctx, h.agent).serial('skill/loaded', { definition, invocation: 'user-explicit' })).resolves.toBeUndefined()
     })
     await entered.promise
-    try { await h.service.withRequest(request(), () => h.service.list({})) }
+    try { await h.service.withRequest(request(), () => h.service.list(projectId, `session-${sessionId}`, {})) }
     finally { release.resolve(undefined); await owner; await h.ctx.fiber.dispose() }
   })
 
@@ -132,7 +132,7 @@ describe('Business Skill admission and transport lifetime', () => {
     })
     try {
       apply(ctx, { backendOrigin: 'https://configured.example', serviceToken: 'host', maxCatalogEntries: 5, testProvider: 'mock', testModel: 'mock' })
-      expect(await ctx.xagentBusinessSkill.withRequest(request(), () => ctx.xagentBusinessSkill.list({}))).toEqual({ items: [] })
+      expect(await ctx.xagentBusinessSkill.withRequest(request(), () => ctx.xagentBusinessSkill.list(projectId, `session-${sessionId}`, {}))).toEqual({ items: [] })
       expect(requests).toEqual([{ url: 'https://configured.example/internal/xagent/business-skills/projects/00000000-0000-0000-0000-000000000201/list', token: 'Bearer alice-token' }])
     } finally { fetch.mockRestore(); await ctx.fiber.dispose() }
   })
@@ -145,7 +145,7 @@ describe('Business Skill admission and transport lifetime', () => {
       apply(ctx, { backendOrigin: 'https://configured.example', serviceToken: 'host', maxCatalogEntries: 5,
         testProvider: 'mock', testModel: 'mock' })
       await ctx.plugin({ apply: () => {} })
-      await expect(ctx.xagentBusinessSkill.withRequest(request(), () => ctx.xagentBusinessSkill.test('review', {
+      await expect(ctx.xagentBusinessSkill.withRequest(request(), () => ctx.xagentBusinessSkill.test(projectId, `session-${sessionId}`, 'review', {
         expectedDraftRevision: 1, toolPolicyDigest: 'a'.repeat(64), scenario: 'Read', idempotencyKey: 'test',
       }))).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
     } finally { await ctx.fiber.dispose() }
@@ -201,11 +201,11 @@ describe('Business Skill admission and transport lifetime', () => {
     const { ctx, service, state } = await setup()
     await service.withRequest(request(), async () => {
       state.response = transcriptResponse('{"text":"Approved body","meta":[1,true,null]}')
-      expect((await service.transcript('review', 1, {})).events).toEqual([{
+      expect((await service.transcript(projectId, `session-${sessionId}`, 'review', 1, {})).events).toEqual([{
         sequence: 0, eventType: 'message', payload: { text: 'Approved body', meta: [1, true, null] }, createdAt: '2026-09-12T00:00:00Z',
       }])
       state.response = transcriptResponse('{"overflow":1e400}')
-      await expect(service.transcript('review', 1, {})).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+      await expect(service.transcript(projectId, `session-${sessionId}`, 'review', 1, {})).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
     })
     await ctx.fiber.dispose()
   })
@@ -213,7 +213,7 @@ describe('Business Skill admission and transport lifetime', () => {
   test('unexpected transport failure returns a stable error without its private message', async () => {
     const { ctx, service, state } = await setup()
     state.beforeResponse = async () => { throw new Error('private host endpoint') }
-    await expect(service.withRequest(request(), () => service.list({}))).rejects.toMatchObject({ failure: { code: 'service-unavailable', details: {} } })
+    await expect(service.withRequest(request(), () => service.list(projectId, `session-${sessionId}`, {}))).rejects.toMatchObject({ failure: { code: 'service-unavailable', details: {} } })
     await ctx.fiber.dispose()
   })
 
@@ -247,9 +247,9 @@ describe('Business Skill admission and transport lifetime', () => {
     const { ctx, service, state } = await setup()
     state.response = Response.json({ detail: { code: 'business-skill-cancelled' } }, { status: 409 })
     await service.withRequest(request(), async () => {
-      await expect(service.list({})).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+      await expect(service.list(projectId, `session-${sessionId}`, {})).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
       service.registerTestRunner({ run: async () => { throw new Error('private runner credentials') } })
-      await expect(service.test('review', { expectedDraftRevision: 1, toolPolicyDigest: 'b'.repeat(64), scenario: 'Read', idempotencyKey: 'failure' }))
+      await expect(service.test(projectId, `session-${sessionId}`, 'review', { expectedDraftRevision: 1, toolPolicyDigest: 'b'.repeat(64), scenario: 'Read', idempotencyKey: 'failure' }))
         .rejects.toMatchObject({ failure: { code: 'service-unavailable', details: {} } })
     })
     await ctx.fiber.dispose()

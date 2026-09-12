@@ -126,48 +126,65 @@ export abstract class XAgentBusinessSkillService extends Service
   abstract registerTestRunner(runner: XAgentBusinessSkillTestRunner): () => void
   /**
    * List the current project's bounded public catalog.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param input - Public pagination or mutation fields.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
-  abstract list(input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal): Promise<XAgentBusinessSkillPage>
+  abstract list(projectId: string, sessionId: string,
+    input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal): Promise<XAgentBusinessSkillPage>
   /**
    * Read the Skill's bounded draft, version, test and audit records.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param input - Public pagination or mutation fields.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
   abstract detail(
+    projectId: string, sessionId: string,
     slug: string,
     input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number },
     signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail>
   /**
    * Create a draft under current backend authorization.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param input - Public pagination or mutation fields.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
-  abstract create(input: XAgentBusinessSkillCreateInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+  abstract create(projectId: string, sessionId: string,
+    input: XAgentBusinessSkillCreateInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
   /**
    * Update only the expected mutable draft revision.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param input - Public pagination or mutation fields.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
-  abstract draft(slug: string, input: XAgentBusinessSkillDraftInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+  abstract draft(projectId: string, sessionId: string,
+    slug: string, input: XAgentBusinessSkillDraftInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
   /**
    * Execute one isolated test; unavailable without a dedicated runner.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param input - Public pagination or mutation fields.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
-  abstract test(slug: string, input: XAgentBusinessSkillTestInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTest>
+  abstract test(projectId: string, sessionId: string,
+    slug: string, input: XAgentBusinessSkillTestInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTest>
   /**
    * Read a dedicated test transcript through its public run number.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param input - Public pagination or mutation fields.
    * @param signal - Optional caller cancellation, combined with the physical request.
@@ -175,6 +192,7 @@ export abstract class XAgentBusinessSkillService extends Service
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
   abstract transcript(
+    projectId: string, sessionId: string,
     slug: string,
     runNumber: number,
     input: { readonly afterSequence?: number; readonly limit?: number },
@@ -182,6 +200,8 @@ export abstract class XAgentBusinessSkillService extends Service
   ): Promise<BusinessSkillRemoteTranscript>
   /**
    * Record a human verdict for an exact public test run.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @param runNumber - Positive public test-run number.
@@ -190,6 +210,7 @@ export abstract class XAgentBusinessSkillService extends Service
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
   abstract verdict(
+    projectId: string, sessionId: string,
     slug: string,
     runNumber: number,
     verdict: XAgentBusinessSkillVerdict,
@@ -198,6 +219,8 @@ export abstract class XAgentBusinessSkillService extends Service
   ): Promise<XAgentBusinessSkillDetail>
   /**
    * Publish only an exact qualifying draft revision.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @param idempotencyKey - Key identifying this mutation intent.
@@ -205,6 +228,7 @@ export abstract class XAgentBusinessSkillService extends Service
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
   abstract publish(
+    projectId: string, sessionId: string,
     slug: string,
     expectedDraftRevision: number,
     idempotencyKey: string,
@@ -212,6 +236,8 @@ export abstract class XAgentBusinessSkillService extends Service
   ): Promise<XAgentBusinessSkillDetail>
   /**
    * Change stable-Skill authorization through backend Manager checks.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @param idempotencyKey - Key identifying this mutation intent.
@@ -219,6 +245,7 @@ export abstract class XAgentBusinessSkillService extends Service
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
   abstract authorization(
+    projectId: string, sessionId: string,
     slug: string,
     authorized: boolean,
     idempotencyKey: string,
@@ -226,21 +253,27 @@ export abstract class XAgentBusinessSkillService extends Service
   ): Promise<XAgentBusinessSkillDetail>
   /**
    * Select an immutable historical public version as current.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @param idempotencyKey - Key identifying this mutation intent.
    * @param versionNumber - Positive immutable public version number.
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
-  abstract version(slug: string, versionNumber: number, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+  abstract version(projectId: string, sessionId: string,
+    slug: string, versionNumber: number, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
   /**
    * Retire the stable Skill permanently while preserving its history.
+   * @param projectId - Selected project ID, checked against backend-derived request scope.
+   * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
    * @param slug - Project-local public Skill name.
    * @param signal - Optional caller cancellation, combined with the physical request.
    * @param idempotencyKey - Key identifying this mutation intent.
    * @returns Public backend records or a stable authorization, input or availability failure.
    */
-  abstract retire(slug: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+  abstract retire(projectId: string, sessionId: string,
+    slug: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
 }
 
 /** FastAPI Provider with a generic Skill registry Consumer scoped to authenticated requests. */
@@ -258,7 +291,8 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
   private readonly claimed = new Map<Agent, { readonly state: RequestState; readonly turn: number }>()
   private readonly invalidTurns = new WeakMap<Agent, number>()
 
-  constructor(ctx: Context, private readonly backend: XAgentBusinessSkillBackend, private readonly limits: Pick<Config, 'maxCatalogEntries'>) {
+  constructor(ctx: Context, private readonly backend: XAgentBusinessSkillBackend, private readonly limits: Pick<Config,
+    'maxCatalogEntries'>) {
     super(ctx)
     if (!Number.isSafeInteger(limits.maxCatalogEntries) || limits.maxCatalogEntries < 1) throw new Error('maxCatalogEntries must be a positive safe integer')
     ctx.on('agent/session-start', ({ agent }) => { replaceCompletedInstructions(agent.session) })
@@ -452,40 +486,50 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
   }
 
   @Remote
-  async list(input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal): Promise<XAgentBusinessSkillPage> {
-    return this.call((scope, signal) => this.backend.list(scope.userToken, scope.projectId, input, signal), signal)
+  async list(projectId: string, sessionId: string,
+    input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal): Promise<XAgentBusinessSkillPage> {
+    return this.remoteCall(projectId, sessionId, (scope, signal) => this.backend.list(scope.userToken, scope.projectId,
+      input, signal), signal)
   }
   @Remote
   async detail(
+    projectId: string, sessionId: string,
     slug: string,
     input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number },
     signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) => this.backend.detail(scope.userToken, scope.projectId, slug, input, signal), signal)
+    return this.remoteCall(projectId, sessionId, (scope, signal) => this.backend.detail(scope.userToken, scope.projectId,
+      slug, input, signal), signal)
   }
   @Remote
-  async create(input: XAgentBusinessSkillCreateInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) => this.backend.create(scope.userToken, scope.projectId, input, signal), signal)
+  async create(projectId: string, sessionId: string,
+    input: XAgentBusinessSkillCreateInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
+    return this.remoteCall(projectId, sessionId, (scope, signal) => this.backend.create(scope.userToken, scope.projectId,
+      input, signal), signal)
   }
   @Remote
-  async draft(slug: string, input: XAgentBusinessSkillDraftInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) => this.backend.draft(scope.userToken, scope.projectId, slug, input, signal), signal)
+  async draft(projectId: string, sessionId: string,
+    slug: string, input: XAgentBusinessSkillDraftInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
+    return this.remoteCall(projectId, sessionId, (scope, signal) => this.backend.draft(scope.userToken, scope.projectId,
+      slug, input, signal), signal)
   }
   @Remote
-  async test(slug: string, input: XAgentBusinessSkillTestInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTest> {
-    return this.call((_scope, signal) => {
+  async test(projectId: string, sessionId: string,
+    slug: string, input: XAgentBusinessSkillTestInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTest> {
+    return this.remoteCall(projectId, sessionId, (_scope, signal) => {
       if (this.testRunner === undefined) throw failure()
       return this.testRunner.run(slug, input, signal)
     }, signal)
   }
   @Remote
   async transcript(
+    projectId: string, sessionId: string,
     slug: string,
     runNumber: number,
     input: { readonly afterSequence?: number; readonly limit?: number },
     signal?: AbortSignal,
   ): Promise<BusinessSkillRemoteTranscript> {
-    return this.call(async (scope, signal) => {
+    return this.remoteCall(projectId, sessionId, async (scope, signal) => {
       const page = await this.backend.transcript(scope.userToken, scope.projectId, slug, runNumber, input, signal)
       const events = page.events.map((event) => {
         if (!isJsonValue(event.payload)) throw failure()
@@ -497,38 +541,52 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
   }
   @Remote
   async verdict(
+    projectId: string, sessionId: string,
     slug: string,
     runNumber: number,
     verdict: XAgentBusinessSkillVerdict,
     idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) =>
+    return this.remoteCall(projectId, sessionId, (scope, signal) =>
       this.backend.verdict(scope.userToken, scope.projectId, slug, runNumber, verdict, idempotencyKey, signal), signal)
   }
   @Remote
   async publish(
+    projectId: string, sessionId: string,
     slug: string,
     expectedDraftRevision: number,
     idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) =>
+    return this.remoteCall(projectId, sessionId, (scope, signal) =>
       this.backend.publish(scope.userToken, scope.projectId, slug, expectedDraftRevision, idempotencyKey, signal), signal)
   }
   @Remote
-  async authorization(slug: string, authorized: boolean, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) =>
+  async authorization(projectId: string, sessionId: string,
+    slug: string, authorized: boolean, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
+    return this.remoteCall(projectId, sessionId, (scope, signal) =>
       this.backend.authorization(scope.userToken, scope.projectId, slug, authorized, idempotencyKey, signal), signal)
   }
   @Remote
-  async version(slug: string, versionNumber: number, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) =>
+  async version(projectId: string, sessionId: string,
+    slug: string, versionNumber: number, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
+    return this.remoteCall(projectId, sessionId, (scope, signal) =>
       this.backend.version(scope.userToken, scope.projectId, slug, versionNumber, idempotencyKey, signal), signal)
   }
   @Remote
-  async retire(slug: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
-    return this.call((scope, signal) => this.backend.retire(scope.userToken, scope.projectId, slug, idempotencyKey, signal), signal)
+  async retire(projectId: string, sessionId: string,
+    slug: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail> {
+    return this.remoteCall(projectId, sessionId, (scope, signal) => this.backend.retire(scope.userToken, scope.projectId,
+      slug, idempotencyKey, signal), signal)
+  }
+
+  private remoteCall<T>(projectId: string, sessionId: string,
+    operation: (scope: ProjectScope, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.call((scope, signal) => {
+      if (projectId.toLowerCase() !== scope.projectId || sessionId.toLowerCase() !== `session-${scope.sessionId}`) throw failure('unauthenticated')
+      return operation(scope, signal)
+    }, signal)
   }
 
   private async call<T>(operation: (scope: ProjectScope, signal: AbortSignal) => Promise<T>, callerSignal?: AbortSignal): Promise<T> {

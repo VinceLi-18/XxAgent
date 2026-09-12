@@ -1,0 +1,284 @@
+/** Cancelled-generation suppression and exact mutation intents for Skill governance. */
+import type { TypertRemoteNamespaceMap, RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
+import type {} from '@xagent/dsh-business-skill/remote'
+import type { XAgentBusinessSkillCreateInput, XAgentBusinessSkillDraftInput, XAgentBusinessSkillDetail, XAgentBusinessSkillTest } from '@xagent/dsh-backend-client/types'
+import { BusinessSkillStore, type BusinessSkillScope } from './store.ts'
+
+/** Generated browser face; server authorization owns every decision. */
+export type BusinessSkillRemote = TypertRemoteNamespaceMap['xagentBusinessSkill']
+
+/** Immutable user intent. Retry adds no changed content to an uncertain request. */
+export type BusinessSkillMutation =
+  | { readonly kind: 'create'; readonly input: Omit<XAgentBusinessSkillCreateInput, 'idempotencyKey'> }
+  | { readonly kind: 'draft'; readonly slug: string; readonly input: Omit<XAgentBusinessSkillDraftInput, 'idempotencyKey'> }
+  | { readonly kind: 'test'; readonly slug: string; readonly revision: number; readonly policy: string; readonly scenario: string }
+  | { readonly kind: 'verdict'; readonly slug: string; readonly run: number; readonly verdict: 'pass' | 'reject' }
+  | { readonly kind: 'publish'; readonly slug: string; readonly revision: number }
+  | { readonly kind: 'authorization'; readonly slug: string; readonly authorized: boolean }
+  | { readonly kind: 'version'; readonly slug: string; readonly version: number }
+  | { readonly kind: 'retire'; readonly slug: string }
+
+/** Owns all requests and retained content for one connected project. */
+export class BusinessSkillController {
+  /** Only current-generation public records, cleared on scope loss and disposal. */
+  readonly snapshot = new BusinessSkillStore()
+  private scope: BusinessSkillScope | undefined
+  private disposed = false
+  private readonly requests = new Map<AbortController, Promise<void>>()
+  private retry: { request: BusinessSkillMutation; key: string } | undefined
+  private readonly pages = new Map<string, AbortController>()
+  private detailRequest: AbortController | undefined
+
+  constructor(private readonly remote: BusinessSkillRemote) {}
+
+  /** Replace scope, cancelling every request from its preceding generation.
+   * @param scope Authenticated workbench selection and physical connection identity.
+   * @returns Initial list and selected detail settlement.
+   */
+  setScope(scope: BusinessSkillScope): Promise<void> {
+    const old = this.scope
+    if (this.disposed || (old !== undefined && old.accountId === scope.accountId && old.projectId === scope.projectId
+      && old.sessionId === scope.sessionId && old.role === scope.role && old.generation === scope.generation)) return Promise.resolve()
+    this.clear()
+    this.scope = scope
+    return this.refresh()
+  }
+
+  /** Cancel requests and remove project content when the selection becomes unavailable. */
+  clear(): void {
+    this.scope = undefined
+    this.retry = undefined
+    this.pages.clear()
+    for (const controller of this.requests.keys()) controller.abort()
+    this.snapshot.replace({ phase: 'empty' })
+  }
+
+  /** Reload authoritative list and selection after a read failure.
+   * @returns Settlement without retaining inaccessible content.
+   */
+  refresh(): Promise<void> {
+    const scope = this.scope
+    if (scope === undefined || this.disposed) return Promise.resolve()
+    for (const controller of this.requests.keys()) controller.abort()
+    this.scope = { ...scope }
+    this.pages.clear()
+    this.snapshot.replace({ phase: 'loading' })
+    return this.perform(async (signal, live, scope) => {
+      const result = await this.remote.list(scope.projectId, scope.sessionId, { limit: 50 }, signal)
+      if (!live()) return
+      if (!result.ok) { this.snapshot.replace({ phase: 'error', error: '无法加载业务 Skill，请重新加载' }); return }
+      const items = [...new Map(result.value.items.map(item => [item.slug, item])).values()].sort((a, b) => a.slug.localeCompare(b.slug))
+      this.snapshot.replace({ phase: 'ready', scope, items, cursor: result.value.nextCursor })
+      if (items[0] !== undefined) await this.select(items[0].slug)
+    })
+  }
+
+  /** Read one slug without allowing earlier selections to replace it.
+   * @param slug Public project-local Skill name.
+   * @returns Selected detail settlement.
+   */
+  select(slug: string): Promise<void> {
+    const state = this.snapshot.getSnapshot()
+    if (state.phase !== 'ready' || state.action !== undefined || this.disposed) return Promise.resolve()
+    this.detailRequest?.abort()
+    this.snapshot.patch({ selected: slug, detail: undefined, transcript: undefined, detailLoading: true, error: undefined })
+    return this.perform(async (signal, live, scope) => {
+      const result = await this.remote.detail(scope.projectId, scope.sessionId, slug, { limit: 50 }, signal)
+      const current = this.snapshot.getSnapshot()
+      if (!live() || current.phase !== 'ready' || current.selected !== slug) return
+      this.snapshot.patch(result.ok
+        ? { detail: result.value, detailLoading: false }
+        : { detailLoading: false, error: '无法加载 Skill 详情，请重新加载' })
+    }, true)
+  }
+
+  /** Append the next catalog page, retaining the current selection.
+   * @returns Deduplicated public rows in slug order.
+   */
+  loadMore(): Promise<void> {
+    const state = this.snapshot.getSnapshot()
+    if (state.phase !== 'ready' || state.cursor === undefined) return Promise.resolve()
+    const cursor = state.cursor
+    return this.page('list', async (signal, live, scope) => {
+      const result = await this.remote.list(scope.projectId, scope.sessionId, { limit: 50, cursor }, signal)
+      const current = this.snapshot.getSnapshot()
+      if (!live() || current.phase !== 'ready') return
+      if (!result.ok) { this.snapshot.patch({ error: '无法加载更多 Skill' }); return }
+      this.snapshot.patch({ items: [...new Map([...current.items, ...result.value.items].map(item => [item.slug,
+        item])).values()].sort((a, b) => a.slug.localeCompare(b.slug)), cursor: result.value.nextCursor })
+    })
+  }
+
+  /** Append an independent immutable history page.
+   * @param kind Version or test-run history to advance.
+   * @returns History settlement without replacing the selected draft.
+   */
+  loadHistory(kind: 'versions' | 'tests'): Promise<void> {
+    const state = this.snapshot.getSnapshot()
+    if (state.phase !== 'ready' || state.detail === undefined) return Promise.resolve()
+    const detail = state.detail
+    const cursor = kind === 'versions' ? detail.nextVersionCursor : detail.nextRunCursor
+    if (cursor === undefined) return Promise.resolve()
+    return this.page(kind, async (signal, live, scope) => {
+      const result = await this.remote.detail(scope.projectId, scope.sessionId, detail.slug, { limit: 50,
+        [kind === 'versions' ? 'versionCursor' : 'runCursor']: cursor }, signal)
+      const current = this.snapshot.getSnapshot()
+      if (!live() || current.phase !== 'ready' || current.detail?.slug !== detail.slug) return
+      if (!result.ok) { this.snapshot.patch({ error: '无法加载 Skill 历史' }); return }
+      const { nextVersionCursor: _versions, nextRunCursor: _runs, ...history } = current.detail
+      this.snapshot.patch({ detail: kind === 'versions'
+        ? { ...history, ...(_runs === undefined ? {} : { nextRunCursor: _runs }),
+          versions: [...new Map([...current.detail.versions, ...result.value.versions].map(item => [item.versionNumber,
+            item])).values()].sort((a, b) => b.versionNumber - a.versionNumber),
+          ...(result.value.nextVersionCursor === undefined ? {} : { nextVersionCursor: result.value.nextVersionCursor }) }
+        : { ...history, ...(_versions === undefined ? {} : { nextVersionCursor: _versions }),
+          tests: [...new Map([...current.detail.tests, ...result.value.tests].map(item => [item.runNumber, item])).values()].sort((a,
+            b) => b.runNumber - a.runNumber),
+          ...(result.value.nextRunCursor === undefined ? {} : { nextRunCursor: result.value.nextRunCursor }) },
+      })
+    })
+  }
+
+  /** Open or advance the dedicated public test transcript.
+   * @param run Public run number belonging to the selected Skill.
+   * @param more Append the next event page when true.
+   * @returns Transcript events, never an ordinary Session lookup.
+   */
+  openTranscript(run: number, more = false): Promise<void> {
+    const state = this.snapshot.getSnapshot()
+    if (state.phase !== 'ready' || state.selected === undefined) return Promise.resolve()
+    const slug = state.selected
+    const previous = more && state.transcript?.test.runNumber === run ? state.transcript : undefined
+    if (!more) this.snapshot.patch({ transcript: undefined })
+    return this.page('transcript', async (signal, live, scope) => {
+      const result = await this.remote.transcript(scope.projectId, scope.sessionId, slug, run, { limit: 50,
+        afterSequence: previous?.nextSequence ?? 0 }, signal)
+      const current = this.snapshot.getSnapshot()
+      if (!live() || current.phase !== 'ready' || current.selected !== slug) return
+      if (!result.ok) { this.snapshot.patch({ error: '无法加载测试记录' }); return }
+      this.snapshot.patch({ transcript: { ...result.value, events: [...new Map([...(previous?.events ?? []),
+        ...result.value.events].map(item => [item.sequence, item])).values()].sort((a, b) => a.sequence - b.sequence) } })
+    }, !more)
+  }
+
+  private page(
+    key: string,
+    operation: (signal: AbortSignal, live: () => boolean, scope: BusinessSkillScope) => Promise<void>,
+    replace = false,
+  ): Promise<void> {
+    if (replace) {
+      this.pages.get(key)?.abort()
+      this.pages.delete(key)
+    }
+    if (this.pages.has(key) || this.disposed) return Promise.resolve()
+    const controller = new AbortController()
+    this.pages.set(key, controller)
+    return this.perform(operation, false, controller).finally(() => {
+      if (this.pages.get(key) === controller) this.pages.delete(key)
+    })
+  }
+
+  /** Submit one user intent, creating a fresh idempotency key.
+   * @param request Exact content and revision confirmed by the actor.
+   * @returns Mutation and authoritative refresh settlement.
+   */
+  mutate(request: BusinessSkillMutation): Promise<void> {
+    const state = this.snapshot.getSnapshot()
+    if (state.phase !== 'ready' || state.action !== undefined || state.blocked || this.disposed) return Promise.resolve()
+    if (state.scope.role !== 'manager' && ['publish', 'authorization', 'version', 'retire'].includes(request.kind)) return Promise.resolve()
+    this.retry = undefined
+    return this.submit(structuredClone(request), crypto.randomUUID())
+  }
+
+  /** Retry only the identical mutation whose transport outcome remains unknown.
+   * @returns Original-key settlement, or no work if no uncertain intent exists.
+   */
+  retryMutation(): Promise<void> {
+    const retry = this.retry
+    if (retry === undefined || this.disposed) return Promise.resolve()
+    this.retry = undefined
+    return this.submit(retry.request, retry.key)
+  }
+
+  /** Abort requests, stop notifications and await all pending work. */
+  async dispose(): Promise<void> {
+    this.disposed = true
+    this.snapshot.dispose()
+    this.clear()
+    await Promise.allSettled([...this.requests.values()])
+  }
+
+  private submit(request: BusinessSkillMutation, key: string): Promise<void> {
+    this.snapshot.patch({ action: 'submitting', error: undefined })
+    return this.perform(async (signal, live, scope) => {
+      let result: RemoteResult<XAgentBusinessSkillDetail | XAgentBusinessSkillTest>
+      try { result = await this.dispatch(request, key, signal, scope) }
+      catch {
+        if (live()) this.uncertain(request, key)
+        return
+      }
+      if (!live()) return
+      if (!result.ok && result.error.code === 'service-unavailable') { this.uncertain(request, key); return }
+      this.retry = undefined
+      this.snapshot.patch({ action: undefined })
+      const slug = request.kind === 'create' ? request.input.slug : request.slug
+      if (!result.ok) {
+        if (result.error.code === 'business-skill-revision-conflict' || result.error.code === 'business-skill-policy-changed') {
+          await this.select(slug)
+          if (live()) this.snapshot.patch({ error: '草稿或工具策略已更新，已重新加载；请检查新内容后再保存' })
+        } else this.snapshot.patch({ blocked: true, error: '操作未完成，请重新加载当前权限和 Skill 状态' })
+        return
+      }
+      if (request.kind === 'test') await this.select(slug)
+      else {
+        const detail = result.value as XAgentBusinessSkillDetail
+        const state = this.snapshot.getSnapshot()
+        if (state.phase === 'ready') this.snapshot.patch({ detail, selected: slug,
+          items: [...new Map([...state.items, detail].map(item => [item.slug, item])).values()].sort((a,
+            b) => a.slug.localeCompare(b.slug)),
+        })
+      }
+    })
+  }
+
+  private dispatch(request: BusinessSkillMutation, key: string, signal: AbortSignal,
+    scope: BusinessSkillScope): Promise<RemoteResult<XAgentBusinessSkillDetail | XAgentBusinessSkillTest>> {
+    switch (request.kind) {
+      case 'create': return this.remote.create(scope.projectId, scope.sessionId, { ...request.input, idempotencyKey: key }, signal)
+      case 'draft': return this.remote.draft(scope.projectId, scope.sessionId, request.slug, { ...request.input,
+        idempotencyKey: key }, signal)
+      case 'test': return this.remote.test(scope.projectId, scope.sessionId, request.slug,
+        { expectedDraftRevision: request.revision, toolPolicyDigest: request.policy, scenario: request.scenario,
+          idempotencyKey: key }, signal)
+      case 'verdict': return this.remote.verdict(scope.projectId, scope.sessionId, request.slug, request.run, request.verdict, key, signal)
+      case 'publish': return this.remote.publish(scope.projectId, scope.sessionId, request.slug, request.revision, key, signal)
+      case 'authorization': return this.remote.authorization(scope.projectId, scope.sessionId, request.slug,
+        request.authorized, key, signal)
+      case 'version': return this.remote.version(scope.projectId, scope.sessionId, request.slug, request.version, key, signal)
+      case 'retire': return this.remote.retire(scope.projectId, scope.sessionId, request.slug, key, signal)
+    }
+  }
+
+  private uncertain(request: BusinessSkillMutation, key: string): void {
+    this.retry = { request, key }
+    this.snapshot.patch({ action: 'uncertain', error: '服务响应中断，结果尚未确认；请使用原请求重试' })
+  }
+
+  private perform(
+    operation: (signal: AbortSignal, live: () => boolean, scope: BusinessSkillScope) => Promise<void>,
+    detail = false,
+    controller = new AbortController(),
+  ): Promise<void> {
+    const scope = this.scope as BusinessSkillScope
+    if (detail) this.detailRequest = controller
+    const live = (): boolean => !this.disposed && !controller.signal.aborted && this.scope === scope
+    const task = operation(controller.signal, live, scope).catch(() => {
+      if (!live()) return
+      const state = this.snapshot.getSnapshot()
+      if (state.phase === 'loading') this.snapshot.replace({ phase: 'error', error: '无法加载业务 Skill，请重新加载' })
+      else this.snapshot.patch({ detailLoading: false, error: '无法加载 Skill，请重新加载' })
+    }).finally(() => { this.requests.delete(controller) })
+    this.requests.set(controller, task)
+    return task
+  }
+}

@@ -104,7 +104,7 @@ describe('governed Business Skill provider', () => {
     const { ctx, service, calls } = await setup()
     await ctx.plugin(TypertRegistry)
     await ctx.plugin(TypertGateway)
-    const invoke = () => ctx.typertGateway.invoke({ namespace: 'xagentBusinessSkill', method: 'list', args: { input: { limit: 3 } } })
+    const invoke = () => ctx.typertGateway.invoke({ namespace: 'xagentBusinessSkill', method: 'list', args: { projectId, sessionId: `session-${sessionId}`, input: { limit: 3 } } })
     await expect(invoke()).rejects.toThrow()
     expect(calls).toEqual([])
     await expect(service.withRequest(request(), invoke)).resolves.toEqual({ items: [] })
@@ -156,7 +156,7 @@ describe('governed Business Skill provider', () => {
     const { ctx, service, state } = await setup()
     const release = Promise.withResolvers<undefined>()
     state.wait = release.promise
-    const pending = service.withRequest(request(), () => service.list({}))
+    const pending = service.withRequest(request(), () => service.list(projectId, `session-${sessionId}`, {}))
     const rejection = expect(pending).rejects.toThrow()
     let disposed = false
     const closing = Promise.resolve(ctx.fiber.dispose()).then(() => { disposed = true })
@@ -325,10 +325,10 @@ describe('Business Skill governance Remote', () => {
     expect(() => service.registerTestRunner({ run: async () => testRecord })).toThrow(/already registered/)
     const input = { expectedDraftRevision: 1, toolPolicyDigest: 'b'.repeat(64), scenario: 'Read', idempotencyKey: 'test' }
     await service.withRequest(request(), async () => {
-      expect(await service.test('review', input)).toEqual(testRecord)
-      expect(await service.transcript('review', 1, { limit: 10, afterSequence: 0 })).toMatchObject({ test: testRecord, events: [], nextSequence: 0 })
+      expect(await service.test(projectId, `session-${sessionId}`, 'review', input)).toEqual(testRecord)
+      expect(await service.transcript(projectId, `session-${sessionId}`, 'review', 1, { limit: 10, afterSequence: 0 })).toMatchObject({ test: testRecord, events: [], nextSequence: 0 })
       dispose()
-      await expect(service.test('review', input)).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+      await expect(service.test(projectId, `session-${sessionId}`, 'review', input)).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
     })
     expect(seen).toEqual([{ slug: 'review', scenario: 'Read', cancelled: false }])
     expect(calls.map(call => call.path.split(`${projectId}/`)[1])).toEqual(['review/tests/1/transcript'])
@@ -339,16 +339,16 @@ describe('Business Skill governance Remote', () => {
   test('maps every governance method through only the physical token and project', async () => {
     const { ctx, service, calls } = await setup()
     await service.withRequest(request(), async () => {
-      await service.list({})
-      await service.detail('review', {})
-      await service.create({ slug: 'review', displayName: 'Review', description: 'Review evidence', instructions: 'Read it', primaryTools: [], idempotencyKey: 'create' })
-      await service.draft('review', { expectedDraftRevision: 1, instructions: 'Read again', idempotencyKey: 'draft' })
-      await service.publish('review', 1, 'publish')
-      await service.authorization('review', true, 'authorize')
-      await service.version('review', 1, 'version')
-      await service.verdict('review', 1, 'pass', 'verdict')
-      await service.retire('review', 'retire')
-      await expect(service.test('review', { expectedDraftRevision: 1, toolPolicyDigest: 'a'.repeat(64), scenario: 'Read', idempotencyKey: 'test' })).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+      await service.list(projectId, `session-${sessionId}`, {})
+      await service.detail(projectId, `session-${sessionId}`, 'review', {})
+      await service.create(projectId, `session-${sessionId}`, { slug: 'review', displayName: 'Review', description: 'Review evidence', instructions: 'Read it', primaryTools: [], idempotencyKey: 'create' })
+      await service.draft(projectId, `session-${sessionId}`, 'review', { expectedDraftRevision: 1, instructions: 'Read again', idempotencyKey: 'draft' })
+      await service.publish(projectId, `session-${sessionId}`, 'review', 1, 'publish')
+      await service.authorization(projectId, `session-${sessionId}`, 'review', true, 'authorize')
+      await service.version(projectId, `session-${sessionId}`, 'review', 1, 'version')
+      await service.verdict(projectId, `session-${sessionId}`, 'review', 1, 'pass', 'verdict')
+      await service.retire(projectId, `session-${sessionId}`, 'review', 'retire')
+      await expect(service.test(projectId, `session-${sessionId}`, 'review', { expectedDraftRevision: 1, toolPolicyDigest: 'a'.repeat(64), scenario: 'Read', idempotencyKey: 'test' })).rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
     })
     expect(calls.map(call => call.path.split(`${projectId}/`)[1])).toEqual([
       'list', 'review/detail', 'create', 'review/draft', 'review/publish', 'review/authorization',
@@ -365,15 +365,15 @@ describe('Business Skill governance Remote', () => {
     const { ctx, service, calls } = await setup()
     const release = Promise.withResolvers<undefined>()
     let late!: Promise<unknown>
-    await service.withRequest(request(), async () => { late = release.promise.then(() => service.list({})) })
+    await service.withRequest(request(), async () => { late = release.promise.then(() => service.list(projectId, `session-${sessionId}`, {})) })
     release.resolve(undefined)
     await expect(late).rejects.toThrow()
     await Promise.all([
-      service.withRequest(request(), () => service.list({})),
-      service.withRequest(request({ userToken: 'bob-token' }), () => service.list({})),
+      service.withRequest(request(), () => service.list(projectId, `session-${sessionId}`, {})),
+      service.withRequest(request({ userToken: 'bob-token' }), () => service.list(projectId, `session-${sessionId}`, {})),
     ])
     expect(calls.map(call => call.token)).toEqual(['alice-token', 'bob-token'])
-    await expect(service.list({})).rejects.toThrow()
+    await expect(service.list(projectId, `session-${sessionId}`, {})).rejects.toThrow()
     await expect(service.withRequest(request(), () => service.withRequest(request(), async () => undefined))).rejects.toThrow()
     await ctx.fiber.dispose()
   })
@@ -381,12 +381,12 @@ describe('Business Skill governance Remote', () => {
   test('stable errors reveal no backend details and cancellation discards a late response', async () => {
     const { ctx, service, state } = await setup()
     state.failure = 'business-skill-retired'
-    await expect(service.withRequest(request(), () => service.list({}))).rejects.toMatchObject({ failure: { code: 'business-skill-retired', details: {} } })
+    await expect(service.withRequest(request(), () => service.list(projectId, `session-${sessionId}`, {}))).rejects.toMatchObject({ failure: { code: 'business-skill-retired', details: {} } })
     state.failure = undefined
     const release = Promise.withResolvers<undefined>()
     state.wait = release.promise
     const controller = new AbortController()
-    const pending = service.withRequest(request({ requestSignal: controller.signal }), () => service.list({}))
+    const pending = service.withRequest(request({ requestSignal: controller.signal }), () => service.list(projectId, `session-${sessionId}`, {}))
     controller.abort()
     release.resolve(undefined)
     await expect(pending).rejects.toThrow()

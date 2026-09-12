@@ -1,0 +1,33 @@
+# @xagent/dsh-ui-business-skill
+
+[English](README.md) | 中文
+
+通过工作台的单 occupant Slot `xagent.workbench.skills` 提供可选项目业务技能治理。插件挂载生成的 `xagentBusinessSkill` Remote，等待父 Slot 声明，并在声明或插件释放时移除 occupant 和请求。不变量伴随插件检查真实 Remote 身份、Slot 组件及注入快照的归属关系。
+
+紧凑技能列表打开详情，顶部 Draft / Test / Publish / Authorize 进度由实际数据驱动。Specialist 可创建和编辑 Markdown 草稿、选择闭合主工具目录中的工具、运行场景、查看隔离测试记录并给出人工判定。Manager 还可发布、授权、取消授权、选择不可变版本和退役技能。服务器授权始终是权威。发布确认列出确切修订、合格测试与生产写权限；退役确认说明不可恢复及立即取消授权。历史测试报告展示不可变的 `unexecutedWriteTools`，不随当前草稿编辑变化。
+
+控制器仅在内存保留当前账号、项目、普通 Session、角色和物理连接代次。账号、项目、Session、页签或连接变化会中止请求并丢弃旧响应。释放时移除订阅、取消请求并等待其结束。目录按 slug 去重并确定排序；版本和测试历史独立翻页，切换测试记录会取消前一次选择。技能内容和重试身份均不进入浏览器存储。
+
+每个新变更使用新的幂等键。仅 transport 结果不确定时提供显式重试，沿用原键和不可变请求。修订或策略冲突会重新加载权威详情；编辑器不猜测修订，也不重试过期覆盖。空、加载、错误、阻塞和就绪状态均明确展示。键盘页签导航、带标签控件、可见焦点及减少动态效果设置支持响应式列表与详情布局。
+
+## Model Experience
+
+### Human governance（人工治理）
+
+#### What the model sees
+
+本包不添加模型输入。`@xagent/dsh-business-skill` 拥有隔离草稿执行及生产指令加载；本包渲染它们的公开记录。
+
+#### Token effect
+
+浏览器包不增加提示词或输出 token。
+
+#### KV Cache effect
+
+本包不读写模型 KV Cache。
+
+## Known Limitations and Deferred Work
+
+- 界面提供有界列表与历史，不支持批量编辑或搜索。
+- 刷新和重连从已授权 Remote 恢复记录；没有离线模式。
+- Business Profile 组合与真实服务浏览器验收属于独立集成范围。

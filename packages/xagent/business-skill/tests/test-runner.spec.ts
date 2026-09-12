@@ -18,7 +18,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import { BusinessSkillTestRunner } from '../src/test-runner.ts'
 import * as businessSkill from '../src/index.ts'
-import { request } from './fixtures.ts'
+import { request, projectId, sessionId } from './fixtures.ts'
 
 const roots: Context[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await root.fiber.dispose() })
@@ -114,7 +114,7 @@ test('the configured capability installs a real runner with only the deployment 
     const plugin = await h.ctx.plugin(businessSkill, { backendOrigin: 'https://backend.example', serviceToken: 'host',
       maxCatalogEntries: 5, testProvider: 'mock', testModel: 'test-model' })
     await h.ctx.xagentBusinessSkill.withRequest(request(), async () => {
-      await expect(h.ctx.xagentBusinessSkill.test('review', h.input)).resolves.toMatchObject({ status: 'completed' })
+      await expect(h.ctx.xagentBusinessSkill.test(projectId, `session-${sessionId}`, 'review', h.input)).resolves.toMatchObject({ status: 'completed' })
     })
     expect(h.adapter.requests[0]).toMatchObject({ provider: 'mock', model: 'test-model' })
     expect(h.agent?.options).toEqual({ provider: 'mock', model: 'test-model' })

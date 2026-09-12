@@ -12,7 +12,7 @@ prompt 在 edit 预检后从同一用户令牌的可见会话列表解析唯一�
 
 `xagentFact/*` 只接受七个固定认证方法。Authorizer 从同一用户令牌的权威会话列表解析唯一项目会话，拒绝匿名、私有、缺失、重复或不一致的记录，并以 Fact 服务自己的请求上下文包围完整 Remote 操作。浏览器请求不能提供项目、身份或权限字段。
 
-`xagentBusinessSkill/*` 只接受 list、detail、create、draft、test、verdict、publish、authorization、version 和 retire。Authorizer 要求 Browser 提供 opaque Project ID 与普通 Session ID，再从物理 Connection 的 Principal 和用户令牌解析唯一 `conversation` Project Session；私有、测试用途、项目不匹配、未知方法或未装配服务均在业务方法前失败关闭。内部技能、版本、测试运行、授权和审计 UUID 不进入 Browser 或模型 payload。
+`xagentBusinessSkill/*` 只接受 list、detail、create、draft、test、transcript、verdict、publish、authorization、version 和 retire。专用测试记录与其余治理方法使用相同请求校验。Authorizer 要求 Browser 提供 opaque Project ID 与普通 Session ID，再从物理 Connection 的 Principal 和用户令牌解析唯一 `conversation` Project Session；私有、测试用途、项目不匹配、未知方法或未装配服务均在业务方法前失败关闭。内部技能、版本、测试运行、授权和审计 UUID 不进入 Browser 或模型 payload。
 
 ## Model Experience
 

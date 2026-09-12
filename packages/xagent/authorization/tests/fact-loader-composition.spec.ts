@@ -109,6 +109,7 @@ function sessionList(): unknown {
       id: SESSION,
       visibility: sessionVisibility,
       project_id: sessionVisibility === 'project' ? PROJECT : null,
+      purpose: 'conversation',
       runtime_header: { id: RUNTIME_SESSION },
     }],
   }

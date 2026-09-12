@@ -10,7 +10,7 @@ Host 插件依赖 `agents`、`skills`、`tools` 和 `systemPrompt`。`backendOri
 
 ## 请求与提供方生命周期
 
-Host 授权器使用已认证的 `conversation` Project Session 和存活的物理请求、连接信号调用 `withRequest`。Private、测试用途、畸形、取消、嵌套或已释放的请求均被拒绝。Browser 方法仅接收公开技能名、版本或测试序号、变更字段及分页参数；用户令牌、项目及 Session 均来自已认证请求。
+Host 授权器使用已认证的 `conversation` Project Session 和存活的物理请求、连接信号调用 `withRequest`。Private、测试用途、畸形、取消、嵌套或已释放的请求均被拒绝。每个 Browser 方法先传入选中的不透明 `projectId` 和普通运行时 `sessionId`，再传公开技能名、版本或测试序号、变更字段及分页参数。授权器使用物理用户令牌加载并匹配 Session；服务独立将两个 ID 与后端确认的活跃请求比较。Browser 参数不能提供 Principal、令牌或技能记录的内部 ID。
 
 消费方在收件箱插入消息时捕获该消息的物理请求，并在消息被领取时仅向 Session 与请求匹配的精确 Agent 安装提供方。无归属或混合请求的领取会关闭该轮次的已绑定工具执行。`attach` 也支持 Host 显式发现；没有属于该请求的领取记录就不能激活技能。同一 Agent 和请求重复安装是幂等的；其他请求或重名提供方不能替换归属。请求结算、取消、Agent 释放和服务释放都会移除提供方注册。提供方和调用方的取消信号共同传递给后端 transport。请求清理立即关闭授权并结算进行中的操作，不等待后续分发或无人答复的审批。即使 transport 忽略取消，延迟响应也会被丢弃。
 

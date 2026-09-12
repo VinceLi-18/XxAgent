@@ -6,6 +6,8 @@
 
 工作台还声明可选 root-scope 单 occupant Slot `xagent.workbench.facts`。只有 Fact occupant 存活时，“事实”页签才插入“资料”和“协作收件箱”之间；没有 occupant 时，页签数量、顺序和无调用行为保持不变。
 
+可选 root-scope 单 occupant Slot `xagent.workbench.skills` 在项目上下文中提供“Skills”页签，位于协作收件箱之前。仅当 occupant 存活时显示；卸载或离开项目会恢复概览。业务技能状态和 Remote 调用由 occupant 拥有，页签仍使用工作台的键盘导航与响应式详情栏。
+
 工作台服务拥有响应式第三栏页签状态。人工点击使用同一状态；已验证 citation 的资料 handoff 可以选择“资料”并打开通用详情栏，因此宽屏第三栏和窄屏抽屉共享一条导航路径。
 
 项目、能力、上下文和会话范围全部来自 `xagentProject` Remote 的服务器 Bootstrap。浏览器不使用本地存储推断账号数据；账号退出或切换时，工作台会取消在途请求并清空项目、上下文和当前 Session 选择。

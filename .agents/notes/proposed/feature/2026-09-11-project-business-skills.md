@@ -48,6 +48,8 @@ Approval waits occur between pre-execution policy and tool dispatch, outside eit
 
 ## Alternatives considered
 
+Browser governance retains only one live account/project/Session/connection generation in memory. Project and ordinary Session IDs select the request scope, not Skill records; omitting them would prevent the authorizer from validating the requested conversation. The physical token remains the authority, and a second service check prevents a differently scoped invocation inside an authenticated request. Exact draft revision, qualifying run and excluded production writes remain visible at publication. Only an uncertain mutation may retain its original idempotency key and immutable intent; a revision conflict reloads authoritative content instead of overwriting it.
+
 **Own governance in Session events.** Project-wide concurrent publication and authorization must survive individual Sessions and enforce PostgreSQL project access; the Session log owns execution evidence instead.
 
 **Store Skills as workspace files.** File permissions cannot express project membership, exact tested publication, current-version selection, and formal audit without granting business users server access.
