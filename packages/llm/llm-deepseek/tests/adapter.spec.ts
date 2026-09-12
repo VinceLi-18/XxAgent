@@ -565,6 +565,42 @@ describe('DeepSeekAdapter against a mock server', () => {
     }
   })
 
+  it('times out even when the underlying body does not settle after abort', async () => {
+    vi.useFakeTimers()
+    let body: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { body = controller },
+      })
+      return Promise.resolve(new Response(stream, { status: 200 }))
+    })
+    const adapter = adapterOf({ baseURL: 'https://example.invalid', streamIdleTimeoutMs: 100 })
+    const outcome = (async () => {
+      try {
+        for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'm', messages: [] })) { /* drain */ }
+        return { kind: 'resolved' as const }
+      } catch (error: unknown) {
+        return { kind: 'rejected' as const, error }
+      }
+    })()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(100)
+      const pending = Symbol('pending')
+      const result = await Promise.race([outcome, Promise.resolve(pending)])
+      expect(result).not.toBe(pending)
+      expect(result).toMatchObject({ kind: 'rejected', error: { code: 'TIMEOUT' } })
+    } finally {
+      try {
+        body?.error(new Error('release non-cooperative test body'))
+      } catch (_alreadyClosed) {
+        // A completed timeout may already have closed the synthetic body.
+      }
+      await outcome
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('keeps an idle provider read alive through SSE comments', async () => {
     vi.useFakeTimers()
     const encoder = new TextEncoder()
