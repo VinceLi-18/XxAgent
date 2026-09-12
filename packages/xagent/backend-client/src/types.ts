@@ -288,9 +288,15 @@ export interface XAgentRetrievalOperationInput {
   readonly permissionRevision: number
 }
 
-/** Project discovery request for a Private Session. */
+/** Host-only immutable authorization pin for discovery within one fixed Project Session. */
+export type XAgentBusinessSkillDiscovery =
+  | { readonly kind: 'published'; readonly slug: string; readonly versionKey: string; readonly toolPolicyDigest: string }
+  | { readonly kind: 'test'; readonly slug: string; readonly runNumber: number; readonly toolPolicyDigest: string }
+
+/** Private discovery or one fixed Project with its active Business Skill pin. */
 export interface XAgentProjectDiscoveryInput extends XAgentRetrievalOperationInput {
   readonly query?: string
+  readonly businessSkill?: XAgentBusinessSkillDiscovery
 }
 
 /** Explicit Artifact search request with a mandatory local digest for Private Session scope. */

@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto'
+import { createHash, generateKeyPairSync } from 'node:crypto'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -11,6 +11,56 @@ import { MockAdapter, toolCallResponse, textResponse } from '../../../core/agent
 import { setup, request, entry, loaded, sessionId } from './fixtures.ts'
 
 const { privateKey } = generateKeyPairSync('ed25519')
+
+test.each(['user-explicit', 'model-tool'])('Project discovery stays scoped through real retrieval after %s activation', async (invocation) => {
+  const discoveries: unknown[] = []
+  const backend: XAgentRetrievalBackend = {
+    projects: async (_token, _delegation, input) => {
+      discoveries.push(input)
+      return { projects: [{ projectId: request().projectId!, name: 'Project' }], receipt: 'project-receipt', payloadHash: 'a'.repeat(64) }
+    },
+    search: async () => { throw new Error('unexpected search') },
+    authorizeCitations: async () => { throw new Error('unexpected citation') },
+    resolveCitation: async () => { throw new Error('unexpected citation') },
+  }
+  const h = await setup(10, undefined, async (ctx) => {
+    await ctx.plugin(SessionStore)
+    new XAgentRetrievalService(ctx, backend, new XAgentReceiptRegistry(), {
+      issuer: 'xagent-host', audience: 'xagent-api', privateKey,
+      tokenizer: { modelId: BGE_M3_MODEL_ID, revision: BGE_M3_REVISION, count: async () => 1 },
+    })
+    await ctx.plugin(retrievalTools)
+  })
+  const complete = ['list_accessible_projects', 'skill']
+  const digest = createHash('sha256').update(JSON.stringify({ complete_tools: complete, version: 1 })).digest('hex')
+  h.state.catalog = [entry()]
+  h.state.load = { ...loaded(), complete_tools: complete, tool_policy_digest: digest }
+  const adapter = new MockAdapter([
+    textResponse('Ordinary request.'),
+    ...(invocation === 'model-tool' ? [toolCallResponse('load-review', 'skill', { name: 'review' })] : []),
+    toolCallResponse('project-discovery', 'list_accessible_projects', {}), textResponse('Skill complete.'),
+    textResponse('Later request.'),
+  ])
+  await h.ctx.plugin(LlmRuntime)
+  await h.ctx.plugin(AgentLoop, { agents: [] })
+  h.ctx.llm.registerAdapter(['mock'], adapter)
+  const { agent } = await h.ctx.agents.create({ sessionId: SessionId(`session-${sessionId}`), agentOptions: { provider: 'mock', model: 'mock' } })
+  try {
+    for (const text of ['Ordinary request', invocation === 'user-explicit' ? '/review' : 'Load the review Skill.', 'Later request']) {
+      await h.service.withRequest(request(), async () => {
+        agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }))
+        await agent.whenIdle()
+      })
+    }
+    expect(adapter.requests[0]!.tools?.map(tool => tool.name)).not.toContain('list_accessible_projects')
+    expect(adapter.requests[invocation === 'user-explicit' ? 1 : 2]!.tools?.map(tool => tool.name)).toEqual(['list_accessible_projects', 'skill'])
+    expect(adapter.requests.at(-1)!.tools?.map(tool => tool.name)).not.toContain('list_accessible_projects')
+    expect(discoveries).toEqual([expect.objectContaining({ businessSkill: {
+      kind: 'published', slug: 'review', versionKey: loaded().version_key, toolPolicyDigest: digest,
+    } })])
+    expect(agent.session.events.filter(event => event.type === 'tool/result').every(event => !event.data.message.content[0].isError)).toBe(true)
+  } finally { await h.ctx.fiber.dispose() }
+})
 
 test.each([false, true])('fresh retrieval companion admission requires the real search registration (fake=%s)', async (fake) => {
   const backend = {

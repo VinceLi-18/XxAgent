@@ -14,7 +14,7 @@ Host policy can identify the exact live Artifact search registration through `SE
 
 #### What the model sees
 
-In Native mode, the model sees closed schemas for `list_accessible_projects` and `search_artifacts`, scope-disambiguation instructions, and successful project lists or evidence with short citation IDs. Code SDKs never declare these tools. An empty search uses a fixed Chinese message.
+In Native mode, the model sees closed `list_accessible_projects` and `search_artifacts` schemas, scope-disambiguation instructions, and successful project lists or evidence with short citation IDs. Project discovery is visible in Private conversations or a permitting active Business Skill; Project and test discoveries return only their Session-fixed project. Code SDKs never declare these tools. An empty search uses a fixed Chinese message.
 
 #### Token effect
 

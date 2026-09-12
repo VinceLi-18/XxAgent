@@ -80,7 +80,6 @@
   - `docs/superpowers/plans/2026-09-01-xagent-structured-citation-output.md`
   - `docs/upstream/dsh-baseline.md`
   - `docs/upstream/jiaxin-api-baseline.md`
-  - `packages/bundle/xagent-business/README.md`
   - `packages/bundle/xagent-developer/README.md`
   - `packages/xagent/artifact/README.md`
   - `packages/xagent/artifact/architecture.md`

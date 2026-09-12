@@ -121,7 +121,7 @@ export class BusinessSkillTestRunner implements XAgentBusinessSkillTestRunner {
             policy.activate(definition, { slug, description: start.draft.description, instructions: start.draft.instructions,
               versionNumber: start.draft.revision, versionKey: start.sessionId, contentDigest: start.draft.contentDigest,
               toolPolicyDigest: start.draft.toolPolicyDigest,
-              completeTools: [...start.testTools, ...start.unexecutedWriteTools] }, invocation, true)
+              completeTools: [...start.testTools, ...start.unexecutedWriteTools] }, invocation, { runNumber: start.test.runNumber })
             state.activated = true
           })
           agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {

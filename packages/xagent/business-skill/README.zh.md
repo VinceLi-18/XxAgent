@@ -8,6 +8,8 @@
 
 Host 插件依赖 `agents`、`skills`、`tools` 和 `systemPrompt`。`backendOrigin` 指定 FastAPI origin，`serviceToken` 指定内部 Host 凭证，`maxCatalogEntries` 必须是限制完整目录条目数的正安全整数。必填且非空白的 `testProvider` 和 `testModel` 选择草稿测试实际调用的模型；Browser 输入不能覆盖这些值。缺失或无效配置在安装时失败；后端目录超限时拒绝，而不截断授权结果。
 
+Business 组合包通过 [Profile 配置](../../bundle/xagent-business/README.md#deployment)提供部署默认值；它启用通用 Skill 工具，但继续禁用文件系统提供方与任意执行。
+
 ## 请求与提供方生命周期
 
 Host 授权器使用已认证的 `conversation` Project Session 和存活的物理请求、连接信号调用 `withRequest`。Private、测试用途、畸形、取消、嵌套或已释放的请求均被拒绝。每个 Browser 方法先传入选中的不透明 `projectId` 和普通运行时 `sessionId`，再传公开技能名、版本或测试序号、变更字段及分页参数。授权器使用物理用户令牌加载并匹配 Session；服务独立将两个 ID 与后端确认的活跃请求比较。Browser 参数不能提供 Principal、令牌或技能记录的内部 ID。
@@ -43,6 +45,8 @@ Agent 作用域审批监听器委托正常答复链，并将答复与物理请�
 测试目录和执行前策略只允许 `skill`、所选只读工具及其必要配套只读工具。即使生产权限声明了 `propose_fact`，测试仍排除它；不可变测试报告以 `unexecutedWriteTools` 单独记录该权限，与执行结果和人工结论分离。每次工具调用使用后端专用测试授权操作，重新检查当前账号、项目、确切的已挂载运行中 Session、活跃技能及不可变测试工具集合。读取 transcript 不授予执行权限。草稿编辑保留既有固定策略；退役拒绝挂载和下一次工具调用，但保留历史读取。
 
 一个 owner 在循环和持久化收敛后结算，覆盖模型或工具失败、取消及销毁。取消观察持续到最终事件 flush 完成，并在结算前决定结果。挂载前取消只会原子终结空的未领取运行，不能取消其他 owner 已挂载的运行。分配和清理保留原始认证令牌，但不复用已中止的 transport 信号。后端失败不会允许执行或改变已有终态。
+
+接纳的 `list_accessible_projects` 调用将 Host 专用发布版本或隔离运行证明绑定到该 Agent 的精确执行上下文。检索在后端事务中重新校验，并只返回 Session 固定项目；证明不进入模型或 Browser。直接且未绑定的 Project 调用仍被拒绝，Private 发现保留既有范围。
 
 ## 模型体验
 

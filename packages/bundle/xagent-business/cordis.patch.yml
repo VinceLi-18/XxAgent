@@ -16,6 +16,12 @@
     root: !!js dshProfileDataPath('storages')
 - id: bash-sandbox
   disabled: true
+- id: subprocess
+  disabled: true
+- id: shell-env
+  disabled: true
+- id: code-runtime
+  disabled: true
 - id: pwsh-sandbox
   disabled: true
 - id: tool-bash
@@ -55,7 +61,7 @@
 - id: tool-workflow
   disabled: true
 - id: tool-skill
-  disabled: true
+  disabled: false
 - id: skill-filesystem
   disabled: true
 - id: permission
@@ -120,6 +126,15 @@
     - id: xagent-tool-retrieval
       name: '@xagent/dsh-tool-retrieval'
 
+    - id: xagent-business-skill
+      name: '@xagent/dsh-business-skill'
+      config:
+        backendOrigin: !!js process.env.XAGENT_API_ORIGIN
+        serviceToken: !!js process.env.XAGENT_SERVICE_TOKEN
+        maxCatalogEntries: 100
+        testProvider: deepseek-official
+        testModel: deepseek-v4-flash
+
     - id: xagent-project
       name: '@xagent/dsh-project'
       config:
@@ -140,3 +155,6 @@
 
     - id: xagent-ui-fact
       name: '@xagent/dsh-ui-fact'
+
+    - id: xagent-ui-business-skill
+      name: '@xagent/dsh-ui-business-skill'

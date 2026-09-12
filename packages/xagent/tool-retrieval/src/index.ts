@@ -20,7 +20,7 @@ export function isArtifactSearchTool(definition: ToolDefinition): boolean {
   return artifactSearchTools.has(definition)
 }
 
-const PROJECT_DESCRIPTION = 'List up to 20 projects accessible to the current private session. '
+const PROJECT_DESCRIPTION = 'List up to 20 accessible projects in a private session, or the current project when an active Business Skill permits discovery. '
   + 'Use the optional name query to narrow ambiguous names. Ask the user when names are ambiguous; never choose the first match automatically.'
 const SEARCH_DESCRIPTION = 'Search authorized Artifact evidence for the current session. Private sessions require explicit project_ids and/or include_private=true; '
   + 'there is no implicit all-project scope. Ask the user when the intended projects or private scope are ambiguous.'

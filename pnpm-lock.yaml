@@ -306,6 +306,9 @@ importers:
       '@xagent/dsh-business':
         specifier: workspace:^
         version: link:../../packages/bundle/xagent-business
+      '@xagent/dsh-business-skill':
+        specifier: workspace:^
+        version: link:../../packages/xagent/business-skill
       '@xagent/dsh-delegation-token':
         specifier: workspace:^
         version: link:../../packages/xagent/delegation-token
@@ -336,6 +339,9 @@ importers:
       '@xagent/dsh-ui-artifact':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-artifact
+      '@xagent/dsh-ui-business-skill':
+        specifier: workspace:^
+        version: link:../../packages/xagent/ui-business-skill
       '@xagent/dsh-ui-citation':
         specifier: workspace:^
         version: link:../../packages/xagent/ui-citation
@@ -797,6 +803,9 @@ importers:
       '@deepseek-ai/dsh-workflow-worker-thread':
         specifier: workspace:*
         version: link:../packages/workflow/workflow-worker-thread
+      '@xagent/dsh-business-skill':
+        specifier: workspace:*
+        version: link:../packages/xagent/business-skill
       '@xagent/dsh-fact':
         specifier: workspace:*
         version: link:../packages/xagent/fact
@@ -1538,6 +1547,9 @@ importers:
 
   packages/bundle/xagent-business:
     dependencies:
+      '@deepseek-ai/dsh-tool-skill':
+        specifier: workspace:^
+        version: link:../../skill/tool-skill
       '@xagent/dsh-artifact':
         specifier: workspace:^
         version: link:../../xagent/artifact
@@ -1547,6 +1559,9 @@ importers:
       '@xagent/dsh-backend-client':
         specifier: workspace:^
         version: link:../../xagent/backend-client
+      '@xagent/dsh-business-skill':
+        specifier: workspace:^
+        version: link:../../xagent/business-skill
       '@xagent/dsh-connection-auth':
         specifier: workspace:^
         version: link:../../xagent/connection-auth
@@ -1580,6 +1595,9 @@ importers:
       '@xagent/dsh-ui-artifact':
         specifier: workspace:^
         version: link:../../xagent/ui-artifact
+      '@xagent/dsh-ui-business-skill':
+        specifier: workspace:^
+        version: link:../../xagent/ui-business-skill
       '@xagent/dsh-ui-citation':
         specifier: workspace:^
         version: link:../../xagent/ui-citation
@@ -1593,6 +1611,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
@@ -8780,6 +8801,9 @@ importers:
       '@deepseek-ai/dsh-session':
         specifier: workspace:^
         version: link:../../core/session
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: workspace:^
+        version: link:../../core/system-prompt
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../core/tools

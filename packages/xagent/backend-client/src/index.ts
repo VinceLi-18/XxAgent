@@ -116,6 +116,7 @@ export type {
   XAgentIssuedLogin,
   XAgentProjectDetail,
   XAgentProjectDiscoveryInput,
+  XAgentBusinessSkillDiscovery,
   XAgentProjectDiscoveryResult,
   XAgentProjectSummary,
   XAgentResolveCitationInput,
@@ -1835,6 +1836,13 @@ export class XAgentBackendClient implements XAgentBackend {
             schema_version: 1,
             ...retrievalOperation(input),
             ...(input.query === undefined ? {} : { query: input.query }),
+            ...(input.businessSkill === undefined ? {} : { business_skill: {
+              kind: input.businessSkill.kind, slug: input.businessSkill.slug,
+              tool_policy_digest: input.businessSkill.toolPolicyDigest,
+              ...(input.businessSkill.kind === 'published'
+                ? { version_key: input.businessSkill.versionKey }
+                : { run_number: input.businessSkill.runNumber }),
+            } }),
           },
           PROJECT_DISCOVERY_ERRORS,
           signal,

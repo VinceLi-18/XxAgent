@@ -76,6 +76,8 @@
     "@deepseek-ai/dsh-workflow-worker-thread": "workspace:^",
     "@deepseek-ai/dsh-agent-instructions": "workspace:^",
     "@xagent/dsh-business": "workspace:^",
+    "@xagent/dsh-business-skill": "workspace:^",
+    "@xagent/dsh-ui-business-skill": "workspace:^",
     "@xagent/dsh-developer": "workspace:^",
     "@xagent/dsh-artifact": "workspace:^",
     "@xagent/dsh-delegation-token": "workspace:^",

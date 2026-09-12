@@ -182,7 +182,7 @@ Native-only and registered only for the exact authenticated Project Session Agen
 
 ### `list_accessible_projects`
 
-List up to 20 projects accessible to the current private session. Use the optional name query to narrow ambiguous names. Ask the user when names are ambiguous; never choose the first match automatically.
+List up to 20 accessible projects in a private session, or the current project when an active Business Skill permits discovery. Use the optional name query to narrow ambiguous names. Ask the user when names are ambiguous; never choose the first match automatically.
 
 ```json
 {

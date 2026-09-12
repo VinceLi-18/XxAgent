@@ -14,7 +14,7 @@ Host 策略可通过 `SEARCH_ARTIFACTS_TOOL` 和 `isArtifactSearchTool` 识别�
 
 #### What the model sees
 
-在 Native mode 中，模型看到 `list_accessible_projects` 和 `search_artifacts` 的封闭 schema、范围消歧说明，以及成功调用后的项目列表或带短引用标识的资料证据。Code SDK 不会声明这两个工具。空检索结果使用固定中文说明。
+在 Native mode 中，模型看到封闭的 `list_accessible_projects` 和 `search_artifacts` schema、范围消歧说明，以及成功调用后的项目列表或带短引用标识的资料证据。项目发现在 Private 对话或允许该工具的活跃 Business Skill 中可见；Project 和测试发现只返回 Session 固定项目。Code SDK 不会声明这两个工具。空检索结果使用固定中文说明。
 
 #### Token effect
 

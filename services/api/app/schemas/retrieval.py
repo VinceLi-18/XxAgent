@@ -1,6 +1,6 @@
 """Strict request and response models for the internal retrieval API."""
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
@@ -17,8 +17,27 @@ class _OperationRequest(_ClosedModel):
     permission_revision: StrictInt = Field(ge=1)
 
 
+class PublishedSkillDiscovery(_ClosedModel):
+    """Host-only immutable production pin; the retrieval transaction reauthorizes it."""
+
+    kind: Literal["published"]
+    slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=128)
+    version_key: UUID
+    tool_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class TestSkillDiscovery(_ClosedModel):
+    """Host-only mounted run whose immutable read policy authorizes discovery."""
+
+    kind: Literal["test"]
+    slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=128)
+    run_number: StrictInt = Field(ge=1)
+    tool_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ProjectDiscoveryRequest(_OperationRequest):
     query: str | None = Field(default=None, min_length=1, max_length=255)
+    business_skill: Annotated[PublishedSkillDiscovery | TestSkillDiscovery, Field(discriminator="kind")] | None = None
 
 
 class SearchRequest(_OperationRequest):

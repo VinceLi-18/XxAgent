@@ -5,6 +5,7 @@ import { createPrivateKey, randomUUID, type KeyObject } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
@@ -27,6 +28,7 @@ import {
   type XAgentAuthenticatedSessionRequestScope,
 } from '@xagent/dsh-principal'
 import { XAgentReceiptRegistry } from './receipt-registry.ts'
+import { currentBusinessSkillDiscovery, hasBusinessSkillDiscovery } from './business-skill-discovery.ts'
 import {
   installXAgentCitedAnswerPolicy,
   openCitedAnswerRequest,
@@ -54,6 +56,7 @@ export * from './cited-answer.ts'
 export * from './cited-answer-policy.ts'
 export { XAgentReceiptRegistry } from './receipt-registry.ts'
 export * from './tokenizer.ts'
+export { bindBusinessSkillDiscovery } from './business-skill-discovery.ts'
 
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/iu
 const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u
@@ -551,9 +554,18 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         : runWithXAgentAuthenticatedRequestScope(scope, next)
     })
     const closeCitationPolicy = installXAgentCitedAnswerPolicy(ctx, options => this.citedAnswerRequest(options))
+    const closeDiscoveryCatalog = ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      const assembly = await next()
+      const agent = context.scope as Agent | undefined
+      const scope = agent === undefined ? undefined : this.activeScopes.get(agent)?.scope
+      if (scope?.visibility !== 'private' && (agent === undefined || !hasBusinessSkillDiscovery(agent))) {
+        assembly.tools.splice(0, assembly.tools.length, ...assembly.tools.filter(tool => tool.name !== 'list_accessible_projects'))
+      }
+      return assembly
+    })
     this.closeScopeObservers = [
       closeInserted, closeDiscarded, closeClaimed, closeDisposed, closeAgentError, closeSessionDisposed, closePreStep,
-      closeToolExecution, closeCitationPolicy,
+      closeToolExecution, closeCitationPolicy, closeDiscoveryCatalog,
     ]
     this.closeSessionObserver = ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/end') {
@@ -595,10 +607,14 @@ export class XAgentRetrievalService extends XAgentRetrieval {
     ctx.effect(() => () => this.dispose(), 'xagent retrieval service')
   }
 
-  /** Discover at most twenty accessible projects for a Private Session. */
+  /** Discover Private-accessible projects or the reauthorized Skill's fixed Project only. */
   async listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promise<XAgentAccessibleProjects> {
     const scope = this.requireScope(input.sessionId)
-    if (scope.visibility !== 'private') throw new XAgentRetrievalError('invalid-retrieval-scope')
+    const businessSkill = currentBusinessSkillDiscovery(String(input.sessionId))
+    if (scope.visibility === 'private' ? businessSkill !== undefined || scope.purpose !== 'conversation'
+      : businessSkill === undefined || (scope.purpose === 'conversation' ? businessSkill.kind !== 'published' : businessSkill.kind !== 'test')) {
+      throw new XAgentRetrievalError('invalid-retrieval-scope')
+    }
     const query = discoveryQuery(input.query)
     const result = await this.call(input.signal, async signal => this.backend.projects(
       scope.userToken,
@@ -608,6 +624,7 @@ export class XAgentRetrievalService extends XAgentRetrieval {
         toolCallId: input.toolCallId,
         permissionRevision: scope.principal.permissionRevision,
         ...query === undefined ? {} : { query },
+        ...businessSkill === undefined ? {} : { businessSkill },
       },
       signal,
     ))

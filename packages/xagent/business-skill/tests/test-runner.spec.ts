@@ -324,6 +324,26 @@ test('the real retrieval provider adds only its read companion and completes the
   expect(h.stored.filter(event => event.type === 'turn/start')).toHaveLength(1)
 })
 
+test('the isolated test runner injects its run proof into real read-only Project discovery', async () => {
+  const h = await harness([toolCallResponse('projects', 'list_accessible_projects', {}), textResponse('Reviewed.')], ['list_accessible_projects', 'propose_fact'])
+  const projects = vi.fn<XAgentRetrievalBackend['projects']>(async () => ({
+    projects: [{ projectId, name: 'Current project' }], receipt: 'discovery-receipt', payloadHash: 'a'.repeat(64),
+  }))
+  const backend: XAgentRetrievalBackend = { projects, search: vi.fn(), authorizeCitations: vi.fn(), resolveCitation: vi.fn() }
+  new XAgentRetrievalService(h.ctx, backend, new XAgentReceiptRegistry(), {
+    issuer: 'xagent-host', audience: 'xagent-api', privateKey: generateKeyPairSync('ed25519').privateKey,
+    tokenizer: { modelId: BGE_M3_MODEL_ID, revision: BGE_M3_REVISION, count: async () => 1 },
+  })
+  await h.ctx.plugin(retrievalTools)
+  await expect(h.run()).resolves.toMatchObject({ status: 'completed', unexecutedWriteTools: ['propose_fact'] })
+  expect(h.adapter.requests.every(item => item.tools?.map(tool => tool.name).join() === 'list_accessible_projects,skill')).toBe(true)
+  expect(projects).toHaveBeenCalledOnce()
+  expect(projects.mock.calls[0]![2]).toMatchObject({ sessionId: testSession, businessSkill: {
+    kind: 'test', slug: 'review', runNumber: 1, toolPolicyDigest: h.input.toolPolicyDigest,
+  } })
+  expect(JSON.stringify(h.adapter.requests)).not.toContain('businessSkill')
+})
+
 test('one factory mounts the exact hidden Session and logs explicit draft before the scenario exactly once', async () => {
   const h = await harness()
   const result = await h.run()

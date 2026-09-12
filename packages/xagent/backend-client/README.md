@@ -36,6 +36,8 @@ Fact 路径共同接受 401 `unauthenticated`、404 `not-found` 和 503 `service
 
 四个检索 endpoint 只接受 `200`。401 `unauthenticated`、404 `session-not-found` 和 503 `service-unavailable` 是共同失败；项目发现额外接受 400 `invalid-retrieval-scope`，搜索额外接受 400 `invalid-retrieval-scope` 与 503 `retrieval-unavailable`，引用授权和解析额外接受 422 `citation-invalid`。项目发现和搜索会按 FastAPI 的递归 key 排序、紧凑 UTF-8 JSON 规则重新计算模型可见 payload SHA-256，摘要不一致时拒绝返回。错误状态、code 或 endpoint 配对不匹配时统一返回 `service-unavailable`；响应中的未知字段、敏感内部字段、畸形 hash、receipt、UUID、引用、整数和文本上限同样失败关闭。
 
+项目发现可携带 Host 专用 `businessSkill` 证明：普通 Project Session 使用 `published`、slug、versionKey 和 toolPolicyDigest，隔离测试使用 `test`、slug、runNumber 和 toolPolicyDigest；客户端将其显式编码为关闭的 snake_case 字段。该证明仅来自活跃 Agent 的执行上下文，不能由工具参数或 Browser 提供。FastAPI 在检索事务中重新授权对应固定版本或运行，并将 Project 发现限制为 Session 当前项目。Private 发现不携带证明，保持当前可访问项目查询；它不因 Project 证明而取得跨项目权限。
+
 ## Model Experience
 
 ### Remote session boundary（远端会话边界）

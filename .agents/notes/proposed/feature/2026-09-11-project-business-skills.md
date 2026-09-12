@@ -46,7 +46,11 @@ The declared retrieval pair remains complete even before evidence dynamically re
 
 Approval waits occur between pre-execution policy and tool dispatch, outside either callback. A prepended Agent-scoped approval listener always delegates and races the result against the physical lifetime. Teardown waits only for this cancellable callback, not an unresponsive answerer; the race consumes late rejection and preserves the cancelled decision. This protects the approval interval without extending the generic execution API or changing readonly approval requests.
 
+Project discovery is a fixed-project read under an active Skill, not permission to enumerate unrelated projects. Its Host-only published-version or run proof lives inside the exact Agent tool execution and expires with that binding. FastAPI repeats the corresponding production or test authorization in the retrieval transaction, so direct backend calls and retirement races cannot rely on a prior Host check. Private discovery retains its existing no-proof accessible-project behavior. Query results may be empty without changing the receipt's fixed authorization scope.
+
 ## Alternatives considered
+
+**Use a public discovery selector or widen all Project Sessions.** Either would let an unbound conversation bypass the active Skill policy and confuse project discovery with cross-project permission. A private execution proof plus same-transaction reauthorization preserves both the Project restriction and Private discovery semantics.
 
 Browser governance retains only one live account/project/Session/connection generation in memory. Project and ordinary Session IDs select the request scope, not Skill records; omitting them would prevent the authorizer from validating the requested conversation. The physical token remains the authority, and a second service check prevents a differently scoped invocation inside an authenticated request. Exact draft revision, qualifying run and excluded production writes remain visible at publication. Only an uncertain mutation may retain its original idempotency key and immutable intent; a revision conflict reloads authoritative content instead of overwriting it.
 

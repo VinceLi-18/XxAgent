@@ -9,7 +9,7 @@ import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval'
 import { TypertRemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
 import type { XAgentBusinessSkillLoad } from '@xagent/dsh-backend-client'
-import { CITED_ANSWER_TOOL, XAgentRetrievalService } from '@xagent/dsh-retrieval'
+import { bindBusinessSkillDiscovery, CITED_ANSWER_TOOL, XAgentRetrievalService } from '@xagent/dsh-retrieval'
 import { isArtifactSearchTool, SEARCH_ARTIFACTS_TOOL } from '@xagent/dsh-tool-retrieval'
 import { replaceCompletedInstructions, TurnBinding } from './turn-binding.ts'
 
@@ -29,6 +29,7 @@ export class BusinessSkillRuntimePolicy {
   private denied = false
   private schemas: ToolSchema[] | undefined
   private lift: (() => void) | undefined
+  private closeDiscovery: (() => void) | undefined
   private readonly closeListeners: (() => void)[]
   private permitted = new WeakSet<object>()
   private readonly executing = new Set<Promise<void>>()
@@ -148,9 +149,9 @@ export class BusinessSkillRuntimePolicy {
    * @param definition - exact provider-owned definition.
    * @param version - private immutable backend response.
    * @param invocation - invocation form recorded for the first activation.
-   * @param readOnly - exclude declared production writes for an isolated draft test while checking the production digest.
+   * @param test - Isolated run identity; excludes production writes while checking the production digest.
    */
-  activate(definition: SkillDefinition, version: XAgentBusinessSkillLoad, invocation: 'model-tool' | 'user-explicit', readOnly = false): void {
+  activate(definition: SkillDefinition, version: XAgentBusinessSkillLoad, invocation: 'model-tool' | 'user-explicit', test?: { readonly runNumber: number }): void {
     if (this.turn === undefined || this.denied) throw failure('business-skill-not-authorized')
     if (this.pin !== undefined) {
       if (this.pin.version.versionKey !== version.versionKey) throw failure('business-skill-conflict')
@@ -158,7 +159,7 @@ export class BusinessSkillRuntimePolicy {
     }
     const tools = new Set(version.completeTools)
     const digest = createHash('sha256').update(JSON.stringify({ complete_tools: [...tools].sort(), version: 1 })).digest('hex')
-    if (readOnly) tools.delete('propose_fact')
+    if (test !== undefined) tools.delete('propose_fact')
     const runtime = this.runtime
     const search = runtime.get(SEARCH_ARTIFACTS_TOOL, this.agent)
     const deferredCompanion = tools.has(SEARCH_ARTIFACTS_TOOL) && search !== undefined && isArtifactSearchTool(search)
@@ -177,6 +178,18 @@ export class BusinessSkillRuntimePolicy {
     } catch (error) { lift(); throw error }
     this.pin = pin
     this.lift = lift
+    if (tools.has('list_accessible_projects')) {
+      this.closeDiscovery = bindBusinessSkillDiscovery(this.agent, test === undefined
+        ? { kind: 'published', slug: version.slug, versionKey: version.versionKey, toolPolicyDigest: version.toolPolicyDigest }
+        : { kind: 'test', slug: version.slug, runNumber: test.runNumber, toolPolicyDigest: version.toolPolicyDigest },
+      () => this.isLivePin(pin))
+      if (invocation === 'user-explicit') {
+        const schema = runtime.schemas(this.agent).find(tool => tool.name === 'list_accessible_projects')
+        if (schema !== undefined && this.schemas !== undefined && !this.schemas.some(tool => tool.name === schema.name)) {
+          this.schemas.unshift(schema)
+        }
+      }
+    }
     if (invocation === 'user-explicit') this.filterSchemas(this.schemas)
     else this.schemas = undefined
   }
@@ -230,6 +243,8 @@ export class BusinessSkillRuntimePolicy {
   private clear(): void {
     replaceCompletedInstructions(this.agent.session)
     this.releaseCatalog()
+    this.closeDiscovery?.()
+    this.closeDiscovery = undefined
     this.pin = undefined
     this.turn = undefined
     this.denied = false

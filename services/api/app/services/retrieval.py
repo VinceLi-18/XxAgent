@@ -302,8 +302,11 @@ async def list_accessible_projects(
     session: AsyncSession,
     *,
     query: str | None,
+    project_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     statement = select(Project.id, Project.name)
+    if project_id is not None:
+        statement = statement.where(Project.id == project_id)
     if query is not None:
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         statement = statement.where(Project.name.ilike(f"%{escaped}%", escape="\\"))

@@ -8,6 +8,8 @@ Authenticated project Business Skills backed by FastAPI governance. The abstract
 
 The Host plugin requires `agents`, `skills`, `tools` and `systemPrompt`. Configure `backendOrigin` as the FastAPI origin, `serviceToken` as the internal Host credential, and `maxCatalogEntries` as a positive safe integer bounding the complete catalog. Required nonblank `testProvider` and `testModel` select the real model calls made by draft tests; Browser input cannot override them. Missing or invalid configuration fails at installation; oversized backend catalogs fail closed rather than truncating authorized results.
 
+The Business bundle supplies its deployment defaults through the [profile configuration](../../bundle/xagent-business/README.md#deployment); it enables the generic Skill tool but keeps filesystem providers and arbitrary execution disabled.
+
 ## Request and provider lifetime
 
 The Host authorizer invokes `withRequest` with an authenticated `conversation` Project Session and live physical request and connection signals. Private, test-purpose, malformed, cancelled, nested and disposed requests are rejected. Every Browser method supplies the selected opaque `projectId` and ordinary runtime `sessionId` before public Skill names, version/run numbers, mutation fields and pagination. The authorizer loads and matches that Session using the physical user's token; the service independently compares both IDs with its backend-derived active request. Browser arguments cannot supply a Principal, token or internal Skill record ID.
@@ -43,6 +45,8 @@ The executor mounts the empty `business_skill_test` Session allocated by `tests/
 The test catalog and pre-execution policy permit only `skill`, selected read tools and their required read companions. `propose_fact` is excluded even when declared for production; the immutable test report retains `unexecutedWriteTools` separately from its outcome and human verdict. Every tool uses the dedicated backend test authorization operation to recheck the current actor, project, exact mounted running Session, active Skill and immutable test tool set. Transcript access grants no execution permission. Draft edits preserve the existing pin; retirement denies mounting and the next tool call while retaining history access.
 
 One owner drains the loop and persistence before settlement, including model/tool failure, cancellation and disposal. Cancellation remains observed through the final event flush and determines the outcome immediately before settlement. Cancellation before mounting atomically closes only an empty unclaimed run; it cannot cancel another owner's mounted run. Allocation and cleanup retain the original authenticated token but do not reuse an aborted transport signal. Backend failures never permit execution or change an existing terminal outcome.
+
+An admitted `list_accessible_projects` call binds a Host-only published version or isolated run proof to that Agent's exact execution context. Retrieval rechecks it in the backend transaction and returns only the Session-fixed project; no proof enters the model or Browser. Direct unbound Project calls remain denied, and Private discovery retains its existing scope.
 
 ## Model Experience
 

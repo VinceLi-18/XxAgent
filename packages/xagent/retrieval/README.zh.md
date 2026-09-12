@@ -4,7 +4,9 @@
 
 `@xagent/dsh-retrieval` 是 XAgent Host 的只读资料检索服务。模型检索调用只接受当前认证 prompt 建立的物理请求作用域，从中读取 Principal、用户令牌、连接、Session 可见性、固定项目和 tool call 标识。服务为每次调用签发委托令牌，并只调用一次 FastAPI；它不缓存授权、项目或证据，也不在后端失败时返回部分结果。
 
-Private Session 的检索必须显式提供规范 Project UUID 和／或 `includePrivate`。Project Session 只使用 Session 固定项目，并拒绝调用方选择器。`listAccessibleProjects` 只用于 Private Session，接受可选且有界的项目名称查询，返回最多 20 个可访问项目。缺少认证作用域、Session、签名器或服务时失败关闭；已知后端失败映射为固定错误码，其他失败映射为 `service-unavailable`。
+Private Session 的检索必须显式提供规范 Project UUID 和／或 `includePrivate`。Project Session 只使用 Session 固定项目，并拒绝调用方选择器。Private `listAccessibleProjects` 接受可选且有界的项目名称查询，无需 Business Skill 证明即可返回最多 20 个可访问项目。Project 对话和隔离测试仅在活跃 Skill 策略允许时开放发现，否则隐藏并拒绝；它们只返回 Session 固定项目，查询不匹配时返回空列表。缺少认证作用域、Session、签名器或服务时失败关闭；已知后端失败映射为固定错误码，其他失败映射为 `service-unavailable`。
+
+活跃的 Agent 作用域发现执行将 Host 专用的发布版本或测试运行证明注入后端请求。工具参数、结果和 Browser 对象不携带证明。证明随绑定失效，不能授权其他 Agent、Session 或工具正文。FastAPI 在检索事务中重复生产或专用测试授权；携带证明的 Private 请求，以及缺少正确证明的 Project 请求均失败关闭。即使查询未匹配项目，发现收据仍保留固定项目范围。
 
 请求作用域内的 Browser Remote `xagentCitation/resolve` 只接受当前 Session ID 与一个已持久化的 `[资料N]` ID。Typert gateway 提供认证 actor、账号、权限 revision、用户令牌、物理连接和请求取消；匿名、嵌套、不匹配、被替换、已取消和已释放的作用域都会关闭式失败。Remote 只把短 ID 与新的精确委托发送给 FastAPI。FastAPI 通过随 Session 提交的 cited-answer provenance 解析该 ID，再为当前 actor 重新授权精确的不可变 Artifact Version 与 Chunk。该流程不依赖 Host 的 live message 投影，也不依赖 admission 时绑定原 actor 的 receipt，因此重新加载、恢复、compaction、保留范围的 fork 以及另一名仍获授权的 Project 成员都能继续打开引用，撤权则会关闭访问。响应只包含不可变的 Artifact、Version、Chunk 和行身份，绝不包含存储 URL；两端都不缓存 locator 或 URL。公开失败只包括 `unauthenticated`、`session-not-found`、`citation-invalid` 和 `service-unavailable`；集合外的后端错误码统一收敛为 `service-unavailable`。
 

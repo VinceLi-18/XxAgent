@@ -1588,6 +1588,25 @@ describe('XAgent 后端客户端', () => {
     expect(signals.every(signal => signal.aborted)).toBe(true)
   })
 
+  test.each([
+    [{ kind: 'published', slug: 'review', versionKey: '00000000-0000-0000-0000-000000000901', toolPolicyDigest: 'a'.repeat(64) },
+      { kind: 'published', slug: 'review', version_key: '00000000-0000-0000-0000-000000000901', tool_policy_digest: 'a'.repeat(64) }],
+    [{ kind: 'test', slug: 'review', runNumber: 2, toolPolicyDigest: 'a'.repeat(64) },
+      { kind: 'test', slug: 'review', run_number: 2, tool_policy_digest: 'a'.repeat(64) }],
+  ] as const)('project discovery transmits its Host-only %s authorization pin', async (businessSkill, expected) => {
+    let actual: unknown
+    const client = new XAgentBackendClient({ origin: 'https://api.example.test', serviceToken: 'service-secret',
+      fetch: async (_input, init) => {
+        if (typeof init?.body !== 'string') throw new Error('Expected a JSON request body')
+        actual = JSON.parse(init.body)
+        const payload = { schema_version: 1, projects: [] }
+        return Response.json({ ...payload, receipt: 'receipt', payload_sha256: retrievalPayloadHash(payload) })
+      },
+    })
+    await client.retrieval.projects('user', 'delegation', { ...retrievalOperation, businessSkill })
+    expect(actual).toEqual({ schema_version: 1, ...snakeOperation(retrievalOperation), business_skill: expected })
+  })
+
   test('检索方法发送三重身份、闭合 wire body 并严格转换四类响应', async () => {
     const calls: Array<{ path: string; headers: Headers; body: unknown }> = []
     const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {

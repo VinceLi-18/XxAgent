@@ -112,6 +112,8 @@ Fact proposal admission 不信任客户端展示元数据。服务端先严格�
 
 检索 receipt admission 会在 `xagent_admitted_evidence` 保存短 citation ID、admission sequence 及精确 Artifact、Version、Index generation 与 Chunk。规范 `xagent-cited-answer` append 只把首次使用的 citation ID 绑定到该 Session 中更早的已入账关系，并在 `xagent_cited_answer_evidence` 保存 answer 与证据关系；复合外键要求全部不可变身份精确一致。没有 cited answer 的批次不查询 provenance 或历史事件；有 cited answer 的批次仅以当前引用 ID 经主键索引和显式行上限读取已入账证据，工作量不随日志长度增加。这两张不可变关系表不读取表层消息投影，也不把原 actor 的私有 receipt 当作后续读取授权。Citation resolve 只接受短 ID，先通过 Session RLS 读取持久 provenance，再以当前 actor 的 Artifact RLS 和权限 finalizer 重新授权精确不可变版本；reload、resume、compaction、有效 fork 和仍获授权的 Project 成员可继续打开，撤权后失败关闭。
 
+`/internal/xagent/retrieval/projects` 的 Private Session 发现不接受 Business Skill 证明，继续返回最多 20 个当前可访问项目。普通 Project Session 必须携带 Host 专用 `business_skill` 发布证明（`kind: published`、`slug`、`version_key`、`tool_policy_digest`），并在同一检索事务复用运行时 `list_accessible_projects` 授权；测试 Session 必须携带 `kind: test`、`slug`、`run_number` 与摘要，复用已挂载运行的专用工具授权。Project 与测试发现只查询 Session 固定项目，查询不匹配可返回空；receipt 的 scope 始终保留该固定项目。缺少或错误的证明、用途、Session、委托工具身份以及当前撤权或退役均失败关闭。证明不来自 Browser 或模型参数，也不授予跨项目权限。
+
 ### 资料读取 URL
 
 资料 preview 和 download 内部 POST 接口完成 service token 与当前账号授权后，返回最长 60 秒的 opaque signed-bearer GET URL。该 GET 不要求账号 Bearer token；调用方必须把 URL 作为短期秘密，不得持久化、记录或转发。

@@ -10,11 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.business_skills import BusinessSkill, BusinessSkillTestRun
 from app.models.xagent_session import XAgentSession
+from app.services.business_skill_policy import resolve_business_skill_policy
 
 from test_business_skill_governance import body, creation, skill_api
 
 
 async def seed_test(engine, project_session, actor_id, draft, *, status="completed", verdict="pass", slug="research", **overrides):
+    policy = resolve_business_skill_policy(draft["primary_tools"])
     async with AsyncSession(engine) as session:
         async with session.begin():
             skill = await session.scalar(select(BusinessSkill).where(BusinessSkill.slug == slug))
@@ -28,6 +30,7 @@ async def seed_test(engine, project_session, actor_id, draft, *, status="complet
                 run_number=number, draft_revision=overrides.get("revision", draft["revision"]),
                 content_digest=overrides.get("content", draft["content_digest"]),
                 tool_policy_digest=overrides.get("policy", draft["tool_policy_digest"]),
+                test_tools=list(policy.test_tools), unexecuted_write_tools=list(policy.unexecuted_write_tools),
                 session_id=test_session.id, started_by_id=actor_id, status=status,
                 settled_at=datetime.now(UTC) if status != "running" else None,
                 termination_reason=status if status != "running" else None, verdict=verdict,
