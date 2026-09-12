@@ -73,11 +73,15 @@ describe('Business Skill release dossier', () => {
     const { store, actions } = mount()
     const state = store.getSnapshot() as Extract<BusinessSkillState, { phase: 'ready' }>
     const { terminationReason: _reason, verdict: _verdict, ...running } = detail.tests[0]!
-    act(() => { store.replace({ ...state, items: [{ ...detail, status: 'retired', currentVersion: 1, latestTest: detail.tests[0]! }], detail: { ...detail, draft: { ...detail.draft!, contentDigest: 'changed' }, tests: [{ ...detail.tests[0]!, status: 'failed', verdict: 'reject', unexecutedWriteTools: [] }, { ...running, runNumber: 4, status: 'running' }, { ...running, runNumber: 5, status: 'cancelled' }] } }) })
+    act(() => { store.replace({ ...state, items: [{ ...detail, status: 'retired', currentVersion: 1, latestTest: detail.tests[0]! }], detail: { ...detail, draft: { ...detail.draft!, contentDigest: 'changed' }, tests: [{ ...detail.tests[0]!, status: 'failed', terminationReason: 'tool-denied', verdict: 'reject', unexecutedWriteTools: [] }, { ...running, runNumber: 4, status: 'running' }, { ...running, runNumber: 5, status: 'cancelled', terminationReason: 'cancelled' }] } }) })
     expect(screen.getByRole('button', { name: '发布版本' }).matches(':disabled')).toBe(true)
     expect(screen.getByText('需要当前草稿的完成测试与人工通过')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '人工通过 run 3' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '人工通过 run 5' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '人工拒绝 run 3' }))
     expect(actions.mutate).toHaveBeenCalledWith({ kind: 'verdict', slug: 'review-facts', run: 3, verdict: 'reject' }, 0)
+    fireEvent.click(screen.getByRole('button', { name: '人工拒绝 run 5' }))
+    expect(actions.mutate).toHaveBeenCalledWith({ kind: 'verdict', slug: 'review-facts', run: 5, verdict: 'reject' }, 0)
     fireEvent.click(screen.getByRole('button', { name: /审核项目事实.*review-facts/ }))
     expect(actions.select).toHaveBeenCalledWith('review-facts')
   })

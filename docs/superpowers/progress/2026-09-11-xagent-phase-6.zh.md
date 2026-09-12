@@ -18,13 +18,13 @@ Phase 6 为 XAgent Business 增加受治理、可复用的项目 Business Skill�
 
 ## 产品界面
 
-项目详情面板提供 Business Skill 页签，包含 Draft → Test → Publish → Authorize 档案、不可变版本历史、测试记录入口、审计摘要、回滚、撤权及带确认的终止退役操作。控件依据当前项目角色显示，并在冲突变更进行期间禁用。账号、项目、Session、角色或连接变化会使内存状态失效并拒绝旧命令。可见的测试状态、终止原因、人工判定及审计操作／结果均已本地化，不会暴露协议值。Browser 不会收到凭据、内部记录身份、不透明版本键、策略摘要或测试 Session 身份。
+项目详情面板提供 Business Skill 页签，包含 Draft → Test → Publish → Authorize 档案、不可变版本历史、测试记录入口、审计摘要、回滚、撤权及带确认的终止退役操作。控件依据当前项目角色显示，并在冲突变更进行期间禁用。账号、项目、Session、角色或连接变化会使内存状态失效并拒绝旧命令。可见的测试状态、终止原因、人工判定及审计操作／结果均已本地化，不会暴露协议值。Browser 会收到用于精确匹配草稿、测试和发布的公开策略摘要，但不会收到凭据、内部记录身份、不透明版本键或测试 Session 身份。
 
 ## 验收证据
 
 真实 FastAPI/PostgreSQL 验收贯通 Specialist 测试／通过和 Manager 发布／授权流程，随后覆盖运行时目录、加载及工具授权、对项目索引证据的真实检索、仍需独立人工审批的生产 Fact 提案、第二个通过测试的发布、历史固定版本授权、回滚、立即撤权拒绝、隐藏测试 Session、持久化测试记录读取、不可变版本重放及终止退役。并发验收证明乐观草稿只有一个写入获胜、完全相同的发布请求精确重放，且退役后不会残留授权。聚焦真实循环测试覆盖两种调用形式、同轮次版本固定、后续轮次版本变化、检索工具执行、持久化激活、崩溃修复及不含指令的历史投影。TypeScript 与 Python SDK fixture 均接纳并保留激活事件。
 
-仓库内的无密钥 Headless 快照使用真实 Agent loop 组装 Business Profile，并通过现有 Retrieval 与 Fact 能力接缝执行已发布 Skill。修复后的必要 Browser/GIF 验证尚未完成：本地固定 BGE-M3 缓存不完整，导致构建后的 XAgent Business Profile 无法进入登录界面；当次补全缓存也未能访问 Hugging Face。因此没有生成修复后的真实模型请求、Browser 帧或 GIF。后续运行必须使用真实 FastAPI/PostgreSQL 状态、两个已认证项目角色、已配置的真实模型及全新浏览器上下文；仍不得使用测试 transport、合成界面状态或采集凭据。
+仓库内的无密钥 Loader 快照使用真实 Agent loop、生产 Business Skill 提供方、Retrieval、Fact 和隔离草稿 TestRunner 启动可运行夹具。生产调用留下一个 `propose_fact` 待审批结果；草稿测试尝试同一写入，记录拒绝，以 `tool-denied`／失败结算，并且不会创建第二个提案。夹具从 XAgent Business Profile 读取部署使用的测试提供方和模型路由，但不会启动完整 Profile。修复后的必要 Browser/GIF 验证尚未完成：本地固定 BGE-M3 缓存不完整，导致构建后的 XAgent Business Profile 无法进入登录界面；当次补全缓存也未能访问 Hugging Face。因此没有生成修复后的真实模型请求、Browser 帧或 GIF。后续运行必须使用真实 FastAPI/PostgreSQL 状态、两个已认证项目角色、已配置的真实模型及全新浏览器上下文；仍不得使用测试 transport、合成界面状态或采集凭据。
 
 ## 尚余发布工作
 

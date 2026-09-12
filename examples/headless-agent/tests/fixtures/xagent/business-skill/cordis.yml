@@ -39,6 +39,16 @@
     delegationAudience: xagent-api
 - id: tool-retrieval
   name: '@xagent/dsh-tool-retrieval'
+- id: fact
+  name: '@xagent/dsh-fact'
+  config:
+    backendOrigin: 'http://xagent.snapshot'
+    serviceToken: snapshot-service-token
+    delegationPrivateKey: !!js process.env.XAGENT_SNAPSHOT_PRIVATE_KEY
+    delegationIssuer: xagent-host
+    delegationAudience: xagent-api
+- id: tool-fact
+  name: '@xagent/dsh-tool-fact'
 - id: business-skill
   name: '@xagent/dsh-business-skill'
   config:

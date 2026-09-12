@@ -162,8 +162,8 @@ function Dossier({ state, detail, actions, scenario, setScenario }: {
         {test.unexecutedWriteTools.length > 0 && <p className={css.warning}>测试未执行的生产写权限：{test.unexecutedWriteTools.join('、')}</p>}
         <time>{test.startedAt}</time>
         <div className={css.actions}><button type="button" onClick={() => { void actions.openTranscript(test.runNumber) }}>查看测试 run {test.runNumber}</button>
-          {test.status !== 'running' && !retired && <><button type="button" disabled={locked} onClick={() => { void actions.mutate({ kind: 'verdict', slug: detail.slug, run: test.runNumber, verdict: 'pass' }) }}>人工通过 run {test.runNumber}</button>
-            <button type="button" disabled={locked} onClick={() => { void actions.mutate({ kind: 'verdict', slug: detail.slug, run: test.runNumber, verdict: 'reject' }) }}>人工拒绝 run {test.runNumber}</button></>}
+          {test.status === 'completed' && !retired && <button type="button" disabled={locked} onClick={() => { void actions.mutate({ kind: 'verdict', slug: detail.slug, run: test.runNumber, verdict: 'pass' }) }}>人工通过 run {test.runNumber}</button>}
+          {test.status !== 'running' && !retired && <button type="button" disabled={locked} onClick={() => { void actions.mutate({ kind: 'verdict', slug: detail.slug, run: test.runNumber, verdict: 'reject' }) }}>人工拒绝 run {test.runNumber}</button>}
         </div>
       </li>)}</ol>
       {detail.nextRunCursor !== undefined && <button type="button" onClick={() => { void actions.loadHistory('tests') }}>更多测试</button>}

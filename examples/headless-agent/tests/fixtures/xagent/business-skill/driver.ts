@@ -7,7 +7,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { runWithXAgentAuthenticatedRequestScope } from '@xagent/dsh-principal'
 import { XAgentSessionPersistence } from '@xagent/dsh-session-persistence-api'
-import { BODY, PROJECT, SESSION } from './backend.ts'
+import { BODY, PROJECT, SESSION, TEST_POLICY_DIGEST } from './backend.ts'
 
 const [configPath] = process.argv.slice(2)
 if (configPath === undefined) throw new Error('Expected snapshot Cordis config')
@@ -31,17 +31,26 @@ try {
   const persistence = ctx.sessionPersistence
   assert(persistence instanceof XAgentSessionPersistence)
   const handle = await persistence.withUserToken(scope.userToken, () => runWithXAgentAuthenticatedRequestScope(scope,
-    () => ctx!.agents.create({ sessionId: SessionId(`session-${SESSION}`), agentOptions: route })))
+    () => ctx!.agents.create({ sessionId: SessionId(`session-${SESSION}`), meta: { cwd: process.cwd() }, agentOptions: route })))
   const agent = handle.agent
   const errors: unknown[] = []
   ctx.on('agent/error', ({ error }) => { errors.push(error) })
-  const revoked = process.env.XAGENT_SKILL_SCENARIO === 'revoked'
-  for (const text of [revoked ? 'Load the review Skill.' : '/review', 'Continue without loading a Skill.']) {
+  const scenario = process.env.XAGENT_SKILL_SCENARIO
+  const revoked = scenario === 'revoked'
+  const prompts = scenario === 'write-and-test'
+    ? ['/review']
+    : [revoked ? 'Load the review Skill.' : '/review', 'Continue without loading a Skill.']
+  for (const text of prompts) {
     await ctx.xagentBusinessSkill.withRequest(scope, async () => {
       agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }))
       await agent.whenIdle()
     })
   }
+  const test = scenario === 'write-and-test' ? await ctx.xagentBusinessSkill.withRequest(scope,
+    () => ctx!.xagentBusinessSkill.test(PROJECT, `session-${SESSION}`, 'review', {
+      expectedDraftRevision: 2, toolPolicyDigest: TEST_POLICY_DIGEST,
+      scenario: 'Attempt to propose a Fact from the reviewed project.', idempotencyKey: 'snapshot-test-1',
+    })) : undefined
   assert.deepEqual(errors, [])
   await ctx.sessions.flush(agent.session)
   const original = [...agent.session.events]
@@ -55,15 +64,29 @@ try {
   })
   await handle.dispose()
   const loaded = await persistence.withUserToken(scope.userToken, () => persistence.load(agent.session.id))
-  assert.deepEqual(loaded.events, original)
+  const expectedReload = structuredClone(original)
+  if (scenario === 'write-and-test') {
+    for (const event of expectedReload) {
+      if (event.type !== 'tool/result') continue
+      const meta = event.data.meta
+      if (typeof meta === 'object' && meta !== null && !Array.isArray(meta) && meta.kind === 'xagent-fact') delete event.data.meta
+    }
+  }
+  assert.deepEqual(loaded.events, expectedReload)
   const replay = Session.fromRestore(agent.session.id, loaded.events, loaded.meta)
   assert(!JSON.stringify(replay.deriveMessages()).includes(BODY))
   assert(JSON.stringify(replay.deriveMessages()).includes('Business Skill review v1 was used in turn 1.'))
   const report = ctx.xagentBusinessSkillSnapshot.result()
-  process.stdout.write(`${JSON.stringify({ type: 'session', events: projected, replayEqual: true, ...report })}\n`)
-  assert.equal(report.discoveryBodies, revoked ? 0 : 1)
-  assert.equal(report.searchBodies, revoked ? 0 : 1)
+  const { proposalCount, testWriteDenied, ...sessionReport } = report
+  process.stdout.write(`${JSON.stringify({ type: 'session', events: projected, replayEqual: true, ...sessionReport })}\n`)
+  assert.equal(report.discoveryBodies, revoked || scenario === 'write-and-test' ? 0 : 1)
+  assert.equal(report.searchBodies, revoked || scenario === 'write-and-test' ? 0 : 1)
   if (revoked) assert.deepEqual(report.authorizations, [{ tool: 'list_accessible_projects', allowed: false }])
+  if (test !== undefined) {
+    const productionProposalStatus = JSON.stringify(original).includes('"status":"pending"') ? 'pending' : undefined
+    process.stdout.write(`${JSON.stringify({ type: 'business_skill_acceptance', productionProposalStatus, proposalCount,
+      testStatus: test.status, testTerminationReason: test.terminationReason, testWriteDenied })}\n`)
+  }
 } catch (error: unknown) {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
   process.exitCode = 1
