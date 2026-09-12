@@ -277,16 +277,14 @@ export class DeepSeekAdapter extends LlmAdapter {
       if (error instanceof LlmError) throw error
       throw new LlmError(`DeepSeek API stream from ${connection.baseURL} failed`, 'TRANSPORT', { cause: error })
     } finally {
-      consumer.abort('DeepSeek stream consumer stopped')
-      if (!exhausted && iterator.return !== undefined) {
-        if (!watchdog.signal.aborted) {
-          try {
-            await iterator.return()
-          } catch (_failedTransportTeardown) {
-            // The stream failure already owns the outcome; return-time cleanup cannot replace it.
-          }
+      if (!exhausted && !watchdog.signal.aborted && iterator.return !== undefined) {
+        try {
+          await iterator.return()
+        } catch (_failedTransportTeardown) {
+          // The stream failure already owns the outcome; return-time cleanup cannot replace it.
         }
       }
+      consumer.abort('DeepSeek stream consumer stopped')
     }
   }
 

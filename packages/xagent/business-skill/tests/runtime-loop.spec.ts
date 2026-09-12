@@ -246,6 +246,54 @@ test('Stop steering preserves the first Skill until the durable turn end', async
   } finally { await h.ctx.fiber.dispose() }
 })
 
+test('separately admitted steering releases both prompt scopes before the next Skill turn', async () => {
+  const h = await setup()
+  h.state.catalog = [entry()]
+  const adapter = new MockAdapter([textResponse('first'), textResponse('steered'), textResponse('next')])
+  await h.ctx.plugin(LlmRuntime)
+  await h.ctx.plugin(SessionStore)
+  await h.ctx.plugin(AgentLoop, { agents: [] })
+  h.ctx.llm.registerAdapter(['mock'], adapter)
+  const { agent } = await h.ctx.agents.create({ sessionId: SessionId(`session-${sessionId}`), agentOptions: { provider: 'mock', model: 'mock' } })
+  const firstRequest = Promise.withResolvers<undefined>()
+  const release = Promise.withResolvers<undefined>()
+  let paused = false
+  agent.ctx.on('agent/request', async ({ agent: subject }, next) => {
+    if (subject === agent && !paused) {
+      paused = true
+      firstRequest.resolve(undefined)
+      await release.promise
+    }
+    return await next()
+  })
+  const internals = h.service as unknown as {
+    requestStates: Set<unknown>
+    registrations: Map<unknown, unknown>
+  }
+  try {
+    await h.service.withPrompt(request(), async () => {
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '/review' }] }))
+    })
+    await firstRequest.promise
+    await h.service.withPrompt(request(), async () => {
+      agent.steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Continue reviewing.' }] }))
+    })
+    release.resolve(undefined)
+    await agent.whenIdle()
+    await vi.waitFor(() => {
+      expect(internals.requestStates.size).toBe(0)
+      expect(internals.registrations.size).toBe(0)
+    })
+
+    await h.service.withPrompt(request(), async () => {
+      agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '/review' }] }))
+    })
+    await agent.whenIdle()
+    expect(agent.session.events.filter(event => event.type === 'business-skill/activated').map(event => event.data.turn)).toEqual([1, 2])
+    expect(adapter.requests).toHaveLength(3)
+  } finally { release.resolve(undefined); await h.ctx.fiber.dispose() }
+})
+
 test.each(['user-explicit', 'model-tool'] as const)('real loop logs the %s narrowed catalog and removes instructions before the following turn', async (invocation) => {
   const h = await setup()
   h.state.catalog = [entry()]

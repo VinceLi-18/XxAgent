@@ -514,6 +514,24 @@ describe('DeepSeekAdapter against a mock server', () => {
     }
   })
 
+  it('preserves an initial fetch abort for the outer caller-abort classification', async () => {
+    const controller = new AbortController()
+    const cause = new Error('caller stopped initial fetch')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      controller.abort(cause)
+      return Promise.reject(cause)
+    })
+    const adapter = adapterOf({ baseURL: 'https://example.invalid' })
+    try {
+      const drain = async (): Promise<void> => {
+        for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'm', messages: [], signal: controller.signal })) { /* drain */ }
+      }
+      await expect(drain()).rejects.toMatchObject({ code: 'ABORTED', cause })
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('renders a non-Error transport rejection without losing its cause', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
       const failed = Promise.withResolvers<Response>()
@@ -597,6 +615,39 @@ describe('DeepSeekAdapter against a mock server', () => {
         // A completed timeout may already have closed the synthetic body.
       }
       await outcome
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each([
+    { mode: 'consumer exits early', expectedCancels: 1 },
+    { mode: 'provider completes', expectedCancels: 0 },
+  ] as const)('releases the response body when $mode', async ({ mode, expectedCancels }) => {
+    const encoder = new TextEncoder()
+    let cancels = 0
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (mode === 'consumer exits early') {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'))
+          return
+        }
+        controller.enqueue(encoder.encode([
+          ...textEvents.map(event => `data: ${event}\n\n`),
+          'data: [DONE]\n\n',
+        ].join('')))
+        controller.close()
+      },
+      cancel() { cancels += 1 },
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }))
+    const adapter = adapterOf({ baseURL: 'https://example.invalid' })
+    try {
+      for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'm', messages: [] })) {
+        if (mode === 'consumer exits early') break
+      }
+      expect(body.locked).toBe(false)
+      expect(cancels).toBe(expectedCancels)
+    } finally {
       fetchSpy.mockRestore()
     }
   })

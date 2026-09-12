@@ -48,7 +48,7 @@ const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   'business_skill.retire': '退役 Skill',
 }
 const AUDIT_RESULT_LABELS: Readonly<Record<string, string>> = {
-  created: '已创建', updated: '已更新', started: '已开始', mounted: '已挂载', settled: '已结束',
+  created: '已创建', updated: '已更新', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
   reviewed: '已记录', published: '已发布', authorized: '已授权', unauthorized: '已取消授权',
   selected: '已切换', retired: '已退役', forbidden: '权限不足', 'not-found': '不可见或不存在',
   'business-skill-tool-denied': '工具不在允许范围',

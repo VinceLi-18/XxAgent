@@ -326,8 +326,11 @@ export class FastApiBusinessSkillService extends XAgentBusinessSkillService {
       if (this.invalidTurns.get(agent) === turn || owner?.agent !== agent || owner.state.lifetime.signal.aborted
         || (previous?.turn === turn && previous.state !== owner.state)) {
         this.invalidTurns.set(agent, turn)
-        this.claimed.delete(agent)
+        if (previous?.turn !== turn) this.claimed.delete(agent)
         this.registrations.get(agent)?.policy.invalidate()
+        if (owner?.state.prompt === true && owner.state !== previous?.state && !this.ownsPromptWork(owner.state)) {
+          void this.closeRequestState(owner.state)
+        }
         return
       }
       this.claimed.set(agent, { state: owner.state, turn })
