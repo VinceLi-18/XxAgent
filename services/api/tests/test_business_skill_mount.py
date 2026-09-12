@@ -13,9 +13,40 @@ from test_business_skill_test_runs import existing_actor_headers, started_test
 def mount_body(started):
     return body(session_id=started["session_id"], runtime_header={
         "version": 0, "id": f"session-{started['session_id']}", "createdAt": 1,
+        "cwd": "/workspace/project",
     }, events=[{"schema_version": 1, "event_type": "config", "payload": {
         "seq": 0, "time": 1, "type": "config", "data": {"provider": "mock", "model": "mock"},
     }}])
+
+
+@pytest.mark.anyio
+async def test_mount_accepts_the_source_project_workspace(skill_api, started_test, seeded_database):
+    request = mount_body(started_test[0])
+    response = await skill_api("/research/tests/1/mount", request)
+    assert response.status_code == 200, response.text
+    async with seeded_database.connect() as connection:
+        runtime_header = await connection.scalar(text(
+            "SELECT runtime_header FROM xagent_sessions WHERE id=:id"),
+            {"id": UUID(request["session_id"])})
+    assert runtime_header["cwd"] == "/workspace/project"
+
+
+@pytest.mark.anyio
+async def test_mount_accepts_a_windows_source_project_workspace(skill_api, started_test):
+    request = mount_body(started_test[0])
+    request["runtime_header"]["cwd"] = "C:\\workspace\\project"
+    response = await skill_api("/research/tests/1/mount", request)
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cwd", [None, "", "relative/project", 1, True])
+async def test_mount_rejects_an_invalid_source_project_workspace(skill_api, started_test, cwd):
+    request = mount_body(started_test[0])
+    request["runtime_header"]["cwd"] = cwd
+    response = await skill_api("/research/tests/1/mount", request)
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"code": "business-skill-input-invalid"}}
 
 
 @pytest.mark.anyio

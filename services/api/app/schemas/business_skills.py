@@ -1,5 +1,6 @@
 """Closed Business Skill wire inputs; database identities remain private."""
 
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -233,10 +234,13 @@ class BusinessSkillTestMountRequest(BusinessSkillMutationRequest):
     @model_validator(mode="after")
     def initial_log(self):
         header = self.runtime_header
-        if (set(header) != {"id", "version", "createdAt"}
+        cwd = header.get("cwd")
+        if (set(header) != {"id", "version", "createdAt", "cwd"}
                 or header["id"] != f"session-{self.session_id}" or type(header["version"]) is not int
                 or header["version"] != 0 or type(header["createdAt"]) is not int or header["createdAt"] < 0):
             raise ValueError("invalid test runtime header")
+        if type(cwd) is not str or not (PurePosixPath(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute()):
+            raise ValueError("invalid test runtime cwd")
         for seq, event in enumerate(self.events):
             payload = event.payload
             if (payload.get("seq") != seq or type(payload.get("seq")) is not int

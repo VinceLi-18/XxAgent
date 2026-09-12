@@ -90,7 +90,7 @@ Business Skill 治理入口位于 `/internal/xagent/business-skills/projects/{pr
 
 `/{slug}/tests/start` 接受确切的 `expected_draft_revision`、`tool_policy_digest` 和一个 `scenario`，原子创建空的测试 Session 与运行记录。Host 收到固定的草稿正文、摘要、场景、只读工具集合和未执行写权限；这些输入保存在幂等响应中，后续编辑不改变重放结果。Host 通过真实 Skill 注入和场景提交追加事件；API 不预写模型可见事件。`/{slug}/tests/{run_number}/settle` 仅允许当前起始账号凭确切 `session_id` 和幂等键提交终止原因；完成、失败、取消相互独立于人工结论，终态不能被迟到响应覆盖。普通列表、工作台计数、打开、事件读取、授权、分叉和归档均排除测试用途；运行期间仅起始账号可追加，专用 `transcript` 按序分页读取持久化事件并重新校验项目成员关系，不返回持久化账号、Session 或审计键。
 
-Host 专用的 `/{slug}/tests/{run_number}/mount` 在当前权限事务中锁定 Session、技能和运行，核对起始账号、项目、用途、运行状态以及空 header 和事件日志，再原子写入真实 Agent factory 的 runtime header 与启动事件。仅首次调用返回执行归属；相同发布内容的重放不取得归属，冲突内容拒绝。`cancel-unmounted` 使用相同锁顺序，仅取消尚未挂载的空运行并记录正式审计；挂载与取消只能一方成功。已挂载运行由拥有它的 Host 等待模型、工具和持久化结束后结算。这两个入口不向 Browser 暴露内部 Session 键或归属字段。
+Host 专用的 `/{slug}/tests/{run_number}/mount` 在当前权限事务中锁定 Session、技能和运行，核对起始账号、项目、用途、运行状态以及空 header 和事件日志，并要求真实 Agent factory 的 runtime header 只包含匹配的测试 Session 标识、格式版本、创建时间和 POSIX 或 Windows 绝对工作区，再原子写入该 header 与启动事件。仅首次调用返回执行归属；相同发布内容的重放不取得归属，冲突内容拒绝。`cancel-unmounted` 使用相同锁顺序，仅取消尚未挂载的空运行并记录正式审计；挂载与取消只能一方成功。已挂载运行由拥有它的 Host 等待模型、工具和持久化结束后结算。这两个入口不向 Browser 暴露内部 Session 键或归属字段。
 
 测试记录的 `unexecuted_write_tools` 在启动时由工具策略写入，之后不可修改；所有测试报告返回该历史字段，目前只允许空数组或 `propose_fact`。它不随草稿编辑、其他运行或人工结论变化。revision `019_skill_test_permissions` 只允许空测试表升级或降级，在 DDL 前拒绝非空表；旧格式未保存的历史写权限不能从当前草稿可靠恢复，因此迁移不猜测或回填。
 
