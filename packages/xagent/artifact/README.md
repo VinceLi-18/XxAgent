@@ -6,7 +6,9 @@ Authorizer 从已认证物理连接建立不可变请求 scope，服务用独立
 
 配置要求 `backendOrigin` 和 `serviceToken`。FastAPI 为 clean 版本签发 `/api/v1/xagent/artifact-content/{version_id}` 短期读取地址；Host 在同一路径注册固定代理，因此浏览器不会接触后端 origin。代理只接受该路径下的 UUID 和 GET，请求 query 原样交给 FastAPI 验证，不跟随重定向，也不接受目标 URL、bucket 或对象 Key。响应正文逐块回传，只转发状态、`Content-Type`、`Content-Disposition` 和 `Content-Length`，并为成功与失败响应固定设置 `Cache-Control: private, no-store`；浏览器断开会取消上游请求。插件释放时先注销路由，再取消并等待全部在飞 fetch 与正文流。代理不延长签名期限，也不记录读取地址、签名或正文。
 
-FastAPI 会按当前 Principal 与服务端工作台上下文执行私人或项目权限，负责 50 MiB 上限、十分钟暂存 PUT、不可变递增版本、`pending`／`scanning`／`clean`／`quarantined`／`failed` 五态，以及仅允许 clean Version 读取。Host 不推导 owner、project、扫描结果或可用版本；不可见与不存在均保持 `not-found`，短期读取地址也不会进入缓存。
+FastAPI 会按当前 Principal 与服务端工作台上下文执行私人或项目权限，负责 50 MiB 上限、十分钟暂存 PUT、不可变递增版本、`pending`／`scanning`／`clean`／`quarantined`／`failed` 五态，以及仅允许 clean Version 读取。后端客户端从已授权的版本历史派生公开 latest 摘要；Host 不决定 owner、project、扫描结果或读取授权。不可见与不存在均保持 `not-found`，短期读取地址也不会进入缓存。
+
+`detail`、`complete-upload` 和 `retry` 的内部请求与详情响应使用版本 2，公开 Remote 参数和字段保持不变。完成与重试按原业务幂等键返回保存的详情；worker 已完成扫描也不改变该次重放的 pending 摘要，界面通过独立 `detail` 查询获取当前状态。每次重放仍受当前授权约束。Host/API 配套升级和回滚，持久快照必须按 [API 维护窗口流程](../../../services/api/README.md#资料协议维护窗口与回滚)转换。
 
 已知资料错误通过无 detail 的 `TypertRemoteFailure` 返回固定 code；其他后端错误收敛为 `service-unavailable`，内部异常由 Typert 载体返回稳定 `internal`。日志和 Remote payload 不包含用户令牌。
 

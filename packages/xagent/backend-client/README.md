@@ -8,6 +8,8 @@ Bootstrap 内部请求与响应使用 `schema_version: 2`。FastAPI 返回经过
 
 资料接口覆盖列表、详情、新资料上传、新版本上传、上传完成、失败重试、预览和下载。详情、上传完成和失败重试使用 `schema_version: 2` 请求与响应；FastAPI 只返回授权元数据及版本历史，客户端验证完整响应后派生公开 latest 摘要，保持 Browser Remote 类型不变。缺失、旧版、未知版本或旧摘要字段均失败关闭。上传创建只返回短期 PUT 授权；预览与下载只返回服务端授权后的 opaque URL，客户端不跟随该 URL，也不读取资料正文。
 
+资料完成与重试的重放继续使用原业务幂等键；传输版本不参与业务请求 hash。客户端投影的是 API 返回的持久快照，不能按当前 worker 状态重算或以新详情查询替代该响应。当前详情另经 `detail` 获取，重放仍由 API 检查当前权限。此协议涉及持久快照转换，升级及回滚须遵循 [API 维护窗口流程](../../../services/api/README.md#资料协议维护窗口与回滚)，运行时不支持旧格式。
+
 检索接口覆盖个人 Session 项目发现、资料搜索、回答释放前的批量引用授权和单条引用解析。单条解析请求只发送 Session 与短引用 ID；Artifact、Version 与 Chunk 身份只接受 FastAPI 从持久 cited-answer provenance 返回的关闭响应。个人 Session 搜索只接受已经转为小写、排序和去重的 canonical Project UUID 数组，最多 20 项；数组与本地 scope hash 不一致时不会发送请求。单次搜索最多接受 8 条唯一引用，完整模型可见 citations JSON 不超过 32 KiB；终态回答可从多次已入账搜索累计授权最多 64 条唯一引用。项目、资料、版本、分片和 Session 标识必须是 UUID；引用 ID 的 ordinal 必须是安全正整数，单次搜索响应中的 ID 必须按返回顺序连续递增；行号和版本号必须是安全正整数。项目发现和搜索返回的 receipt 只作为 opaque 值交给后续持久化，不进入模型正文。
 
 Fact 接口覆盖 proposal 准备、项目当前 Fact 与 proposal 分页、proposal 和修订详情、approve、reject、withdraw 及 Session Outbox 拉取。Host 准备请求提交固定 Session、tool call、permission revision 和委托；Browser 可调方法只接受查询选择器或决定内容，不接受也不序列化 actor、role、membership、ownership、permission revision、project authority 或 evidence authority。公开类型使用 camelCase，每个字段都从 FastAPI v1 snake_case 显式转换。

@@ -176,6 +176,7 @@ def _upload(api: AuthenticatedApi, filename: str, content: bytes) -> ArtifactUpl
         f"/internal/xagent/artifacts/uploads/{upload['upload_id']}/complete",
         headers=api.headers,
         json={
+            "schema_version": 2,
             "actual_size": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
             "idempotency_key": f"complete-{request_id}",
@@ -183,6 +184,8 @@ def _upload(api: AuthenticatedApi, filename: str, content: bytes) -> ArtifactUpl
     )
     assert completed.status_code == 201, completed.text
     detail = completed.json()
+    assert set(detail) == {"schema_version", "id", "display_name", "scope", "can_edit", "versions"}
+    assert detail["schema_version"] == 2
     return ArtifactUpload(
         artifact_id=detail["id"],
         version_id=detail["versions"][0]["id"],
@@ -202,7 +205,7 @@ def _wait_for_status(
         response = api.client.post(
             f"/internal/xagent/artifacts/{upload.artifact_id}",
             headers=api.headers,
-            json={},
+            json={"schema_version": 2},
         )
         last_response = f"{response.status_code} {response.text}"
         if response.status_code == 200:
@@ -308,3 +311,56 @@ def test_restarted_worker_reclaims_an_expired_lease(
     _docker_compose("start", "worker")
     detail = _wait_for_status(authenticated_api, upload, "clean")
     assert detail["versions"][0]["sha256"] == hashlib.sha256(content).hexdigest()
+
+
+def test_explicit_retry_scans_retained_content_and_replays_the_pending_snapshot(
+    e2e_session: ArtifactE2eSession,
+) -> None:
+    api = e2e_session.authenticate()
+    content = b"retry retained staging content\n"
+    _docker_compose("stop", "worker")
+    try:
+        upload = _upload(api, "retry.txt", content)
+        # A terminal transient scan failure retains the staging identity for retry.
+        _docker_compose(
+            "exec", "-T", "postgres", "psql", "--set=ON_ERROR_STOP=1",
+            "--username", "postgres", "--dbname", "xagent_api_test", "--command",
+            (
+                "BEGIN; "
+                f"UPDATE artifact_versions SET scan_status = 'scanning' WHERE id = '{upload.version_id}'; "
+                f"UPDATE artifact_versions SET scan_status = 'failed' WHERE id = '{upload.version_id}'; "
+                "UPDATE artifact_processing_jobs SET status = 'dead', attempts = 5, "
+                "failure_code = 'inspection-unavailable' "
+                f"WHERE version_id = '{upload.version_id}'; COMMIT;"
+            ),
+        )
+        path = f"/internal/xagent/artifact-versions/{upload.version_id}/retry"
+        payload = {"schema_version": 2, "idempotency_key": f"retry-{uuid4()}"}
+        response = api.client.post(path, headers=api.headers, json=payload)
+        assert response.status_code == 200, response.text
+        pending = response.json()
+        assert pending["schema_version"] == 2
+        assert pending["versions"][0]["status"] == "pending"
+    finally:
+        _docker_compose("start", "worker")
+    detail = _wait_for_status(api, upload, "clean")
+    assert detail["versions"][0]["sha256"] == hashlib.sha256(content).hexdigest()
+    replayed = api.client.post(path, headers=api.headers, json=payload)
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json() == pending
+    counts = _docker_compose(
+        "exec", "-T", "postgres", "psql", "--set=ON_ERROR_STOP=1",
+        "--username", "postgres", "--dbname", "xagent_api_test", "--tuples-only", "--no-align",
+        "--command", (
+            f"SELECT (SELECT count(*) FROM artifact_versions WHERE artifact_id = '{upload.artifact_id}'), "
+            f"(SELECT count(*) FROM artifact_processing_jobs WHERE version_id = '{upload.version_id}');"
+        ),
+    )
+    assert counts.stdout.strip() == "1|1"
+    download = api.client.post(
+        f"/internal/xagent/artifact-versions/{upload.version_id}/download", headers=api.headers, json={},
+    )
+    assert download.status_code == 200, download.text
+    read = api.client.get(urljoin(str(_BASE_URL), download.json()["url"]))
+    assert read.status_code == 200, read.text
+    assert read.content == content

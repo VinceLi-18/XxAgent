@@ -24,6 +24,10 @@ PostgreSQL 拥有持久 `ArtifactProcessingJob` 队列、资料版本扫描状�
 
 FastAPI 与 PostgreSQL 继续拥有资料范围、权限、不可变版本、扫描状态、审计和签名读取。Host 服务与浏览器资料栏通过已认证操作访问这些能力。Phase 3B 只公开人工上传、详情、预览、下载与重试入口：它不注册模型可调用的资料工具，也不把资料正文或状态加入模型请求或 Session 事件。
 
+详情查询、上传完成和扫描重试交换版本 2 的已授权元数据与版本历史。TypeScript 后端客户端校验完整历史，派生公开的最新版本、最新状态和最新 clean 版本，浏览器字段保持不变。列表保留服务端拥有的摘要，不携带历史。投影不能授予读取权限或推断扫描结果；较新的非 clean 版本会在公开摘要中保留较旧的 clean 版本。
+
+完成与重试在幂等结果中保存相同的版本 2 详情。重放先检查当前授权并校验保存的详情，再返回该快照，即使 worker 已推进或已有后续上传。这样既能跨进程重启保留已接受的结果，也不会在撤权后继续授予访问。操作名、业务请求 hash、actor ID、键、外层结果 ID、时间与到期日保持原有身份；传输版本不参与业务 hash。无效快照以 `service-unavailable` 失败关闭，不产生新写入。迁移 `021_artifact_detail_snapshots` 只在同一事务中转换保存的详情，包括过期行；反向转换从保存历史重建旧摘要，也接受版本 2 新写入的结果。
+
 ## Alternatives considered
 
 **在上传完成请求中同步扫描。** 外部存储与病毒服务延迟会延长请求事务，API 进程退出后也没有持久 owner 接管未完成工作。
@@ -36,8 +40,12 @@ FastAPI 与 PostgreSQL 继续拥有资料范围、权限、不可变版本、扫
 
 **只在 worker 栈帧中保存 cleanup 所有权。** 精确版本删除失败后若进程退出，MinIO version ID 会永久丢失。持久 cleanup 队列会保留精确删除身份与重试状态。
 
+**从当前版本状态重建幂等响应。** worker 进度与后续上传会改变已经接受的操作结果。转换保存历史可以保留重放语义；当前授权仍是独立的前提，因此保存的 `can_edit` 值不能授予访问权限。
+
 ## Consequences
 
 上传请求会在短数据库事务后返回，而扫描与 cleanup 工作可以跨 API 和 worker 重启恢复。租约 token 会阻止陈旧 worker 发布状态或删除其他 worker 创建的对象版本。版本化对象所有权与持久 cleanup 为每个晋级对象保留可恢复身份，独立 worker 角色则限制数据库暴露范围。
 
 部署必须运行 PostgreSQL、启用版本化的私有 MinIO bucket、ClamAV、独立 worker 角色与 worker 进程。任何新增 worker 输入或结果列都必须同步演进 schema grant。dead cleanup Job 需要运维使用其保留的 object key 与 MinIO version ID 处置。浏览器通过轮询观察扫描进度。[RAG 检索决策](2026-08-28-xagent-rag-retrieval.md)持有文本索引、检索、收据、结构化引用与模型工具；OCR 不在已交付范围内。
+
+版本 2 详情协议要求配套的 Host/API 发布与维护窗口；只恢复旧二进制不能还原旧快照。[API 流程](../../../../services/api/README.md#资料协议维护窗口与回滚)拥有入口接纳、排空、受保护备份、数据迁移、已认证 smoke 与数据感知回滚的操作步骤。PostgreSQL 验收通过构建后的生产 TypeScript 客户端跨迁移与已终止的 API 进程比较保存的公开结果，检查副作用计数，并拒绝撤权后的访问。真实 Loader 覆盖三条公开 Remote 路径；Docker 验收覆盖真实存储、扫描、显式重试、快照重放与读取。

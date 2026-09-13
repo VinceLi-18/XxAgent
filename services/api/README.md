@@ -12,7 +12,11 @@
 
 ```bash
 pnpm run api:sync
+pnpm install --frozen-lockfile
+pnpm run build:lib:host
 ```
+
+完整 API 测试包含跨 API 进程重启的资料重放验收，要求仓库支持的 Node 与 pnpm 环境；它通过普通 Node 导入已构建的 Host 后端客户端，以生产 TypeScript 投影比较公开响应。修改 Host 源码后须重新构建。该测试只替换外部对象元数据，真实对象存储与扫描由下方 Docker 验收负责。
 
 启动只监听回环地址的可销毁测试数据库后运行完整测试：
 
@@ -126,6 +130,32 @@ Fact proposal admission 不信任客户端展示元数据。服务端先严格�
 
 完成和重试在 `result.detail` 保存相同的版本 2 详情。重放先检查当前编辑权限，再严格验证原始 UUID/ISO 时间表示、安全整数范围及完整详情后返回保存的快照；worker 进度和后续版本不改变该响应。无效持久化详情返回固定 503 `service-unavailable`，不泄露验证输入，不产生版本、任务或幂等记录变更。操作名及业务请求 hash 不包含传输版本，Host/API 必须配套部署；历史快照转换由数据迁移负责。
 
+### 资料协议维护窗口与回滚
+
+revision `021_artifact_detail_snapshots` 的父版本为 `020_skill_test_policy`。它只转换 `xagent_idempotency_keys` 中上传完成与扫描重试的 `result.detail`，包括过期记录；操作名、actor、业务幂等键、请求 hash、外层结果 ID、时间和到期日均不变。升级校验旧摘要与保存历史一致，降级从保存历史重建旧摘要，且同样适用于版本 2 新写入的记录。转换不读取当前资料状态。任何无效目标记录都会使整个事务回滚，Alembic revision 保持不变；不得删除记录、猜测修复或跳过过期行。
+
+以下流程要求已配置迁移管理角色、可验证恢复的受保护备份，以及相互匹配的新旧 Host/API 发布包。生产流量不得混用两版实例。
+
+1. 在入口停止详情查询、上传完成和扫描重试的接纳；确认两个写操作的所有在飞请求与事务排空。排空失败时保持关闭，不执行迁移。
+2. 停止旧 Host/API 实例并确认全部退出。按部署的受保护备份流程保存受影响数据与 Alembic revision，限制访问并验证恢复能力；保存用于重放比较的响应及业务请求身份，不把凭据或快照正文放进日志。
+3. 使用新发布的迁移工具和管理连接执行升级，核对 revision。备份或迁移失败时保持关闭，确认数据库 revision 与备份状态后再决定恢复旧配套实例或排障。
+
+   ```bash
+   uv run --python 3.11 --directory services/api alembic upgrade 021_artifact_detail_snapshots
+   uv run --python 3.11 --directory services/api alembic current
+   ```
+
+4. 部署匹配的版本 2 Host/API。使用有效账号及服务身份检查详情、完成、重试和相同业务键的重放；worker 推进后重放仍须等于保存响应，版本与任务不能重复创建，撤权后必须拒绝。所有 smoke 通过后才重新接纳流量；任一失败时保持关闭并排障或回滚。
+
+回滚同样先停止接纳、排空写入并停止版本 2 Host/API，再完成受保护备份。必须使用新发布的迁移工具先降级数据并确认 revision，之后才能启动匹配的旧 Host/API；仅恢复旧二进制不够。
+
+```bash
+uv run --python 3.11 --directory services/api alembic downgrade 020_skill_test_policy
+uv run --python 3.11 --directory services/api alembic current
+```
+
+降级失败时整个转换回滚，保持入口和实例关闭。成功后通过旧配套实例验证原始业务键的重放与保存的旧公开响应一致，并检查当前授权；全部通过后才重新接纳流量。两个方向均不修改不可变资料版本、处理任务或权限策略。
+
 ### 资料读取 URL
 
 资料 preview 和 download 内部 POST 接口完成 service token 与当前账号授权后，返回最长 60 秒的 opaque signed-bearer GET URL。该 GET 不要求账号 Bearer token；调用方必须把 URL 作为短期秘密，不得持久化、记录或转发。
@@ -148,6 +178,28 @@ pnpm run api:dev:down
 ```
 
 停止命令默认保留本地开发数据卷。只有确认其中数据可以删除时，才应单独执行带 `--volumes` 的 Compose 停止命令。
+
+## 真实资料流水线验收
+
+此验收使用独立 Compose 项目的可销毁 PostgreSQL、MinIO、ClamAV、worker 与真实 embedding。先按下方真实检索验收的缓存规则准备并验证固定 BGE-M3 缓存，并构建当前 API 与 embedding 镜像。不要与会重置同一数据库 schema 的 API pytest 同时运行；pytest 的角色与 Compose 角色不同，切换到完整 Docker 流水线前须重建该测试项目的数据卷。
+
+在仓库根目录执行；示例固定项目名，清理只能针对这个项目。已有共享模型缓存只供读取或模型服务使用，不随项目数据卷清理。
+
+```bash
+export COMPOSE_PROJECT_NAME=xagent-phase7b-test
+export XAGENT_EMBEDDING_CACHE_DIR=${XAGENT_EMBEDDING_CACHE_DIR:-$PWD/services/api/.cache/huggingface}
+python3 services/embedding/verify_model_snapshot.py --cache-dir "$XAGENT_EMBEDDING_CACHE_DIR"
+export HF_HUB_OFFLINE=true
+docker compose -f services/api/compose.test.yml build api embedding
+docker compose -f services/api/compose.test.yml up -d --wait
+JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test \
+  XAGENT_ARTIFACT_E2E_URL=http://127.0.0.1:58000 \
+  XAGENT_ARTIFACT_E2E_SERVICE_TOKEN=xagent-e2e-service-token-test-only-0001 \
+  uv run --python 3.11 --directory services/api --extra dev pytest tests/e2e/test_artifact_pipeline.py
+docker compose -f services/api/compose.test.yml down --volumes --remove-orphans
+```
+
+无论验收成功或失败，最后都执行该项目的清理命令。测试服务身份只用于此可销毁编排；测试通过正式账号命令设置随机账号密码并经真实登录取得用户令牌。验收覆盖上传扫描、EICAR 隔离、worker 租约恢复、显式失败重试、扫描完成后的原始 pending 快照重放，以及 opaque URL 正文读取；显式重试的初始失败状态由测试数据库设置，后续扫描与读取使用真实服务。
 
 ## 真实检索验收
 
