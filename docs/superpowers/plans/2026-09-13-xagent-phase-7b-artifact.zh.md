@@ -35,7 +35,7 @@ git diff --check
 
 ## 任务 2：实现事务型快照升级与降级
 
-创建 `services/api/alembic/versions/021_artifact_detail_snapshots.py`，revision 为 `021_artifact_detail_snapshots`，父版本为 `020_skill_test_policy`（已在 `020_business_skill_test_policy.py` 确认）。创建 `services/api/tests/security/test_artifact_snapshot_migration.py`；复用 `services/api/tests/conftest.py` 和已有 schema 测试中的可丢弃数据库与 Alembic 配置模式。不修改任务 1 的运行时 API。
+创建 `services/api/alembic/versions/021_artifact_detail_snapshots.py`，revision 为 `021_artifact_detail_snapshots`，父版本为 `020_skill_test_policy`（已在 `020_business_skill_test_policy.py` 确认）。创建 `services/api/tests/security/test_artifact_snapshot_migration.py`；复用 `services/api/tests/conftest.py` 和已有 schema 测试中的可丢弃数据库与 Alembic 配置模式。更新 `services/api/tests/security/test_business_skill_schema.py` 中当前 head 断言，保留历史 revision 目标。不修改任务 1 的运行时 API。
 
 - [ ] 先写 PostgreSQL 测试，再创建 revision。准备两种操作、多 actor、private/project scope、过期记录、有 clean 与无 clean 历史、可选字段省略以及无关操作。在迁移前记录所有列。预期 RED：Alembic 无法解析新 revision。
 - [ ] 自包含地验证实际输出的旧详情与已保存版本 2 详情。验证精确字段、类型、安全披露、降序且唯一的非空有界版本列表和旧摘要一致性。不导入可变应用辅助函数，也不读取实时 Artifact 表。
@@ -46,6 +46,7 @@ git diff --check
 
 ```sh
 JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test tests/security/test_artifact_snapshot_migration.py --tb=short
+JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test tests/security/test_business_skill_schema.py -k 'revision_018 or empty_schema_round_trip' --tb=short
 git diff --check
 ```
 

@@ -35,7 +35,7 @@ git diff --check
 
 ## Task 2: Implement transactional snapshot upgrade and downgrade
 
-Create `services/api/alembic/versions/021_artifact_detail_snapshots.py` with revision `021_artifact_detail_snapshots` and parent `020_skill_test_policy` (confirmed in `020_business_skill_test_policy.py`). Create `services/api/tests/security/test_artifact_snapshot_migration.py`; reuse disposable database and Alembic configuration patterns from `services/api/tests/conftest.py` and existing schema tests. Do not change Task 1's runtime API.
+Create `services/api/alembic/versions/021_artifact_detail_snapshots.py` with revision `021_artifact_detail_snapshots` and parent `020_skill_test_policy` (confirmed in `020_business_skill_test_policy.py`). Create `services/api/tests/security/test_artifact_snapshot_migration.py`; reuse disposable database and Alembic configuration patterns from `services/api/tests/conftest.py` and existing schema tests. Update current-head assertions in `services/api/tests/security/test_business_skill_schema.py`, preserving historical revision targets. Do not change Task 1's runtime API.
 
 - [ ] Write PostgreSQL tests before the revision. Seed both operations, multiple actors, private/project scopes, expired records, clean and no-clean histories, optional-field omissions, and an unrelated operation. Capture all columns before migration. Expected RED: Alembic cannot resolve the new revision.
 - [ ] Implement self-contained validation of the actual legacy emitted detail and version 2 saved detail. Validate exact fields, types, safe disclosure, ordered unique nonempty bounded versions, and legacy summary agreement. Do not import mutable application helpers or read live Artifact tables.
@@ -46,6 +46,7 @@ Create `services/api/alembic/versions/021_artifact_detail_snapshots.py` with rev
 
 ```sh
 JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test tests/security/test_artifact_snapshot_migration.py --tb=short
+JX_TEST_DATABASE_URL=postgresql+asyncpg://postgres:xagent-api-test@127.0.0.1:55432/xagent_api_test JX_ALLOW_SCHEMA_DROP=yes pnpm run api:test tests/security/test_business_skill_schema.py -k 'revision_018 or empty_schema_round_trip' --tb=short
 git diff --check
 ```
 
