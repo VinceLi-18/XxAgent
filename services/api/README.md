@@ -28,6 +28,8 @@ pnpm run api:migrate
 
 ## 本地容器服务
 
+生产与测试编排从官方 `quay.io/minio/minio` 获取 MinIO，使用相同的发布版本和固定镜像摘要。
+
 从环境模板创建本地配置并替换所有密码和 JWT 密钥占位值：
 
 ```bash

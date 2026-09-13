@@ -220,6 +220,16 @@ test('missing, private and test-purpose request scopes cannot allocate a run', a
   expect(h.calls).toEqual([])
 })
 
+test('a source Project Session without a workspace cannot allocate a run', async () => {
+  const h = await harness()
+  const workspaceLessSession = '00000000-0000-0000-0000-000000000302'
+  h.ctx.sessions.create(SessionId(`session-${workspaceLessSession}`))
+  await expect(runWithXAgentAuthenticatedRequestScope(request({ sessionId: workspaceLessSession }),
+    () => h.runner.run('review', h.input, new AbortController().signal)))
+    .rejects.toMatchObject({ failure: { code: 'service-unavailable' } })
+  expect(h.calls).toEqual([])
+})
+
 test('a removed Skill registry fails factory setup before the test is claimed', async () => {
   const h = await harness()
   await h.skillPlugin.dispose()
