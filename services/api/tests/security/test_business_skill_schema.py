@@ -256,7 +256,7 @@ async def test_nonempty_downgrade_preserves_revision_and_data(seeded_database, f
     with pytest.raises(DBAPIError, match="cannot downgrade business skills with stored data"):
         await to_thread.run_sync(command.downgrade, config, "017_fact_tool_call_identity")
     async with seeded_database.connect() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "020_skill_test_policy"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "021_artifact_detail_snapshots"
         table = {"skill": "business_skills", "test_session": "xagent_sessions", "audit": "audit_events"}[source]
         assert await connection.scalar(text(f"SELECT id FROM {table} WHERE id = :id"), {"id": identifier}) == identifier
 
