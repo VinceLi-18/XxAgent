@@ -30,6 +30,8 @@ await withFileLock('/home/u/.dsh/settings.yaml', async () => {
 
 `withFileLock` serializes the writers of one file across processes, for the read-render-commit cycles a bare atomic commit cannot make safe on its own. The lock is a `wx`-created `<filename>.lock` sibling, so readers never contend; waiters back off exponentially and fail with a timeout rather than block forever. A contender never removes the existing lock: age cannot distinguish a crashed owner from a paused live writer.
 
+On Windows, acquisition also retries `EPERM` within the same deadline because a lock pending deletion can deny exclusive creation. Persistent `EPERM` is rethrown with its original code; other non-contention errors fail immediately. Retrying never grants lock ownership or removes another writer's lock.
+
 ## Model Experience
 
 None, as this is a pure filesystem primitive; nothing here reaches a model request.
