@@ -120,6 +120,12 @@ Fact proposal admission 不信任客户端展示元数据。服务端先严格�
 
 `/internal/xagent/retrieval/projects` 的 Private Session 发现不接受 Business Skill 证明，继续返回最多 20 个当前可访问项目。普通 Project Session 必须携带 Host 专用 `business_skill` 发布证明（`kind: published`、`slug`、`version_key`、`tool_policy_digest`），并在同一检索事务复用运行时 `list_accessible_projects` 授权；测试 Session 必须携带 `kind: test`、`slug`、`run_number` 与摘要，复用已挂载运行的专用工具授权。Project 与测试发现只查询 Session 固定项目，查询不匹配可返回空；receipt 的 scope 始终保留该固定项目。缺少或错误的证明、用途、Session、委托工具身份以及当前撤权或退役均失败关闭。证明不来自 Browser 或模型参数，也不授予跨项目权限。
 
+### 资料详情内部协议
+
+详情查询、上传完成和扫描重试的请求必须携带 `schema_version: 2`，完成和重试还须提供原有业务字段；缺失或不支持的版本在写入或幂等重放前返回 422。响应只包含 `schema_version`、`id`、`display_name`、`scope`、`can_edit` 和 `versions`。FastAPI 负责当前授权、版本状态和安全字段披露，仅 clean/quarantined 版本可包含 hash；Host 从完整历史派生公开 latest 摘要。列表保留空请求及服务端摘要，不传递完整历史。
+
+完成和重试在 `result.detail` 保存相同的版本 2 详情。重放先检查当前编辑权限，再严格验证并返回保存的详情；worker 进度和后续版本不改变该响应。无效持久化详情返回固定 503 `service-unavailable`，不泄露验证输入，不产生版本、任务或幂等记录变更。操作名及业务请求 hash 不包含传输版本，Host/API 必须配套部署；历史快照转换由数据迁移负责。
+
 ### 资料读取 URL
 
 资料 preview 和 download 内部 POST 接口完成 service token 与当前账号授权后，返回最长 60 秒的 opaque signed-bearer GET URL。该 GET 不要求账号 Bearer token；调用方必须把 URL 作为短期秘密，不得持久化、记录或转发。

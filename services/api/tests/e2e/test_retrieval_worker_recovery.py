@@ -227,6 +227,7 @@ def _upload(
         f"/internal/xagent/artifacts/uploads/{upload['upload_id']}/complete",
         headers=api.headers,
         json={
+            "schema_version": 2,
             "actual_size": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
             "idempotency_key": f"complete-{request_id}",
@@ -420,7 +421,7 @@ def test_invalid_utf8_unsupported_and_quarantined_inputs_never_publish_heads(
         detail = authenticated_api.client.post(
             f"/internal/xagent/artifacts/{upload.artifact_id}",
             headers=authenticated_api.headers,
-            json={},
+            json={"schema_version": 2},
         )
         assert detail.status_code == 200, detail.text
         assert detail.json()["versions"][0]["status"] in expected

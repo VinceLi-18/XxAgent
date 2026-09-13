@@ -17,6 +17,7 @@ from app.schemas.artifacts import (
     CreateArtifactUploadRequest,
     CreateArtifactUploadResponse,
     ArtifactDetailResponse,
+    ArtifactDetailRequest,
     ArtifactReadResponse,
     ArtifactSummaryResponse,
     EmptyArtifactRequest,
@@ -238,7 +239,7 @@ async def complete_upload_route(
             result=code,
         )
         return _error_response(status.HTTP_422_UNPROCESSABLE_CONTENT, code)
-    except artifacts.ArtifactStorageError:
+    except (artifacts.ArtifactStorageError, artifacts.ArtifactSnapshotError):
         code = "service-unavailable"
         await _audit_account_operation(
             context,
@@ -292,7 +293,7 @@ async def list_artifacts_route(
 )
 async def artifact_detail_route(
     artifact_id: UUID,
-    _request: EmptyArtifactRequest,
+    _request: ArtifactDetailRequest,
     context: SessionContext = Depends(get_session_context),
 ) -> ArtifactDetailResponse | JSONResponse:
     request_id = uuid4()
@@ -353,7 +354,7 @@ async def retry_artifact_version_route(
     except artifacts.UploadRejectedError:
         code = "upload-rejected"
         status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
-    except artifacts.ArtifactStorageError:
+    except (artifacts.ArtifactStorageError, artifacts.ArtifactSnapshotError):
         code = "service-unavailable"
         status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     except artifacts.ArtifactNotFound:

@@ -83,7 +83,10 @@ const projectArtifactSummary = {
 }
 
 const artifactDetailResponse = {
-  ...privateArtifactSummary,
+  schema_version: 2,
+  id: artifactIds.private,
+  display_name: '合同.txt',
+  scope: { kind: 'private' },
   can_edit: true,
   versions: [
     {
@@ -2999,12 +3002,12 @@ describe('XAgent 后端客户端', () => {
     ])
     expect(calls.map(call => call.body)).toEqual([
       {},
-      {},
+      { schema_version: 2 },
       { filename: '合同.txt', size: 10, idempotency_key: 'create-1' },
       { filename: '合同-修订.txt', size: 12, idempotency_key: 'version-1' },
-      { actual_size: 12, sha256: 'b'.repeat(64), idempotency_key: 'complete-1' },
-      { idempotency_key: 'retry-1' },
-      {},
+      { schema_version: 2, actual_size: 12, sha256: 'b'.repeat(64), idempotency_key: 'complete-1' },
+      { schema_version: 2, idempotency_key: 'retry-1' },
+      { schema_version: 2 },
       {},
       {},
     ])
@@ -3132,12 +3135,16 @@ describe('XAgent 后端客户端', () => {
     [{ ...artifactDetailResponse, latest_status: 'quarantined' }],
     [{ ...artifactDetailResponse, latest_status: 'clean' }],
     [{ ...artifactDetailResponse, latest_clean_version: 2 }],
-    [(({ latest_clean_version: _removed, ...value }) => value)(artifactDetailResponse)],
-    [{
-      ...artifactDetailResponse,
-      versions: artifactDetailResponse.versions.map(version => ({ ...version, status: 'failed' })),
-    }],
-    [{ ...artifactDetailResponse, versions: Array.from({ length: 1_001 }, () => artifactDetailResponse.versions[0]) }],
+    [(({ schema_version: _removed, ...value }) => value)(artifactDetailResponse)],
+    [{ ...artifactDetailResponse, schema_version: 1 }],
+    [{ ...artifactDetailResponse, schema_version: 3 }],
+    [{ ...artifactDetailResponse, scope: { kind: 'private', project_id: projectResponse.project.id } }],
+    [{ ...artifactDetailResponse, scope: { kind: 'project', project_id: 'invalid' } }],
+    [{ ...artifactDetailResponse, versions: Array.from({ length: 1_001 }, (_, index) => ({
+      ...artifactDetailResponse.versions[0],
+      id: `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`,
+      version: 1_001 - index,
+    })) }],
   ])('拒绝不一致或超限 Artifact Detail %#', async (value) => {
     const client = new XAgentBackendClient({
       origin: 'https://api.example.test',
@@ -3146,6 +3153,42 @@ describe('XAgent 后端客户端', () => {
     })
     await expect(client.artifacts.detail('token', artifactIds.private))
       .rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test.each(['pending', 'scanning', 'failed', 'quarantined'])('projects v2 %s details identically across all operations', async (status) => {
+    for (const hasClean of [true, false]) {
+      const latest = { ...artifactDetailResponse.versions[0]!, status }
+      const versions = hasClean ? [latest, artifactDetailResponse.versions[1]!] : [latest]
+      const client = new XAgentBackendClient({
+        origin: 'https://api.example.test',
+        serviceToken: 'service-secret',
+        fetch: async input => Response.json({ ...artifactDetailResponse, versions }, {
+          status: requestUrl(input).endsWith('/complete') ? 201 : 200,
+        }),
+      })
+      const expected = {
+        id: artifactIds.private, displayName: '合同.txt', scope: { kind: 'private' },
+        latestVersion: 2, latestStatus: status, ...(hasClean ? { latestCleanVersion: 1 } : {}),
+        canEdit: true,
+        versions: [
+          {
+            id: artifactIds.failedVersion, version: 2, originalFilename: '合同-修订.txt',
+            uploadedBy: artifactIds.uploader, size: 12, contentType: 'text/plain', status,
+            createdAt: '2026-08-25T09:00:00+00:00',
+          },
+          ...(hasClean ? [{
+            id: artifactIds.cleanVersion, version: 1, originalFilename: '合同.txt',
+            uploadedBy: artifactIds.uploader, size: 10, contentType: 'text/plain',
+            sha256: 'a'.repeat(64), status: 'clean', createdAt: '2026-08-25T08:00:00Z',
+          }] : []),
+        ],
+      }
+      await expect(client.artifacts.detail('token', artifactIds.private)).resolves.toEqual(expected)
+      await expect(client.artifacts.completeUpload('token', artifactIds.upload, {
+        size: 12, sha256: 'b'.repeat(64), idempotencyKey: 'complete',
+      })).resolves.toEqual(expected)
+      await expect(client.artifacts.retry('token', artifactIds.failedVersion, 'retry')).resolves.toEqual(expected)
+    }
   })
 
   test('接受 Artifact Version 省略可选正文元数据', async () => {

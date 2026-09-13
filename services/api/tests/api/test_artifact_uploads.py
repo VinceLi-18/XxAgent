@@ -138,6 +138,7 @@ async def _complete_upload(
         f"/internal/xagent/artifacts/uploads/{upload_id}/complete",
         headers=_headers(token),
         json={
+            "schema_version": 2,
             "actual_size": actual_size,
             "sha256": sha256,
             "idempotency_key": key,
@@ -868,9 +869,11 @@ async def test_complete_upload_enqueues_pending_work_without_synchronous_process
     assert len(versions) == len(jobs) == 1
     version = versions[0]
     detail = completed.json()
+    assert set(detail) == {"schema_version", "id", "display_name", "scope", "can_edit", "versions"}
+    assert detail["schema_version"] == 2
     assert detail["id"] == str(version.artifact_id)
-    assert detail["latest_status"] == "pending"
-    assert detail["latest_version"] == 1
+    assert detail["versions"][0]["status"] == "pending"
+    assert detail["versions"][0]["version"] == 1
     assert "latest_clean_version" not in detail
     assert detail["versions"][0]["id"] == str(version.id)
     assert detail["versions"][0]["status"] == "pending"
@@ -1050,6 +1053,7 @@ async def test_complete_upload_rejects_fields_outside_the_fixed_interface(
             "actual_size": 1,
             "sha256": "a" * 64,
             "idempotency_key": "fixed-complete",
+            "schema_version": 2,
             **changes,
         },
     )
@@ -1091,9 +1095,8 @@ async def test_complete_upload_replays_same_request_and_rejects_same_key_with_ne
         key="same-complete-key",
     )
     assert first.status_code == 201
-    assert first.json()["latest_status"] == "pending"
-    assert first.json()["latest_version"] == 1
     assert first.json()["versions"][0]["status"] == "pending"
+    assert first.json()["versions"][0]["version"] == 1
     assert "artifact_id" not in first.json()
     async with seeded_database.begin() as connection:
         await connection.execute(

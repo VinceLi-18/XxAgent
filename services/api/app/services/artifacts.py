@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import re
 import time
 import unicodedata
@@ -11,6 +12,7 @@ from uuid import UUID, uuid4
 
 from fastapi.encoders import jsonable_encoder
 from minio.error import S3Error
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +25,7 @@ from app.models.artifact import (
 )
 from app.models.project import ProjectAction
 from app.models.xagent_session import XAgentIdempotencyKey
+from app.schemas.artifacts import ArtifactDetailResponse
 from app.services.authorization import ForbiddenError, authorize_project
 from app.services.auth import Principal
 from app.services.workbench import normalize_context
@@ -36,6 +39,10 @@ class UploadRejectedError(Exception):
 
 class ArtifactStorageError(Exception):
     """私有对象存储无法完成操作。"""
+
+
+class ArtifactSnapshotError(Exception):
+    """持久化详情不符合内部协议，无法安全重放。"""
 
 
 class ArtifactIdempotencyConflict(Exception):
@@ -279,10 +286,7 @@ async def complete_upload(
         )
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        detail = stored.result.get("detail")
-        if not isinstance(detail, dict):
-            raise ArtifactNotFound
-        return detail, version.id
+        return _saved_detail(stored.result.get("detail")), version.id
 
     upload = await session.scalar(
         select(StagingUpload).where(
@@ -427,6 +431,21 @@ async def complete_upload(
     return detail, version.id
 
 
+def _saved_detail(value: Any) -> dict[str, Any]:
+    """Validate durable JSON without coercing or replacing the saved snapshot."""
+    try:
+        detail = ArtifactDetailResponse.model_validate_json(json.dumps(value), strict=True)
+    except ValidationError:
+        raise ArtifactSnapshotError from None
+    for version in detail.versions:
+        for field in ("size", "content_type", "sha256"):
+            if field in version.model_fields_set and getattr(version, field) is None:
+                raise ArtifactSnapshotError
+        if version.sha256 is not None and version.status not in {"clean", "quarantined"}:
+            raise ArtifactSnapshotError
+    return value
+
+
 def _version_projection(version: ArtifactVersion) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": version.id,
@@ -547,7 +566,14 @@ async def artifact_detail(
     if not versions:
         raise ArtifactNotFound
     return {
-        **_summary_projection(artifact, versions),
+        "schema_version": 2,
+        "id": artifact.id,
+        "display_name": artifact.filename,
+        "scope": (
+            {"kind": "private"}
+            if artifact.owner_id is not None
+            else {"kind": "project", "project_id": artifact.project_id}
+        ),
         "can_edit": await _can_edit_artifact(session, principal, artifact),
         "versions": [_version_projection(version) for version in versions],
     }
@@ -691,10 +717,7 @@ async def retry_version(
     if stored is not None and stored.expires_at > now:
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        detail = stored.result.get("detail")
-        if not isinstance(detail, dict):
-            raise ArtifactNotFound
-        return detail
+        return _saved_detail(stored.result.get("detail"))
 
     if visible.scan_status != "failed":
         raise ArtifactNotFound

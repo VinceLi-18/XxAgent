@@ -521,14 +521,15 @@ function parseArtifactVersion(value: unknown): XAgentArtifactVersionSummary {
 }
 
 function parseArtifactDetail(value: unknown): XAgentArtifactDetail {
-  const row = exactRecordWithOptional(value, [
-    'id', 'display_name', 'scope', 'latest_version', 'latest_status', 'can_edit', 'versions',
-  ], ['latest_clean_version'])
+  const row = exactRecord(value, [
+    'schema_version', 'id', 'display_name', 'scope', 'can_edit', 'versions',
+  ])
+  if (row.schema_version !== 2) failSchema()
   if (typeof row.can_edit !== 'boolean' || !Array.isArray(row.versions)) failSchema()
   if (row.versions.length < 1 || row.versions.length > MAX_ARTIFACT_ITEMS) failSchema()
-  const summary = parseArtifactSummary(Object.fromEntries(
-    Object.entries(row).filter(([key]) => key !== 'can_edit' && key !== 'versions'),
-  ))
+  const id = requiredUuid(row.id)
+  const displayName = boundedString(row.display_name, 255)
+  const scope = parseArtifactScope(row.scope)
   const versions = row.versions.map(parseArtifactVersion)
   const versionIds = new Set<string>()
   const versionNumbers = new Set<number>()
@@ -544,10 +545,17 @@ function parseArtifactDetail(value: unknown): XAgentArtifactDetail {
     previousVersion = version.version
   }
   const latest = versions[0] as XAgentArtifactVersionSummary
-  if (summary.latestVersion !== latest.version || summary.latestStatus !== latest.status) failSchema()
   const latestClean = versions.find(version => version.status === 'clean')
-  if (summary.latestCleanVersion !== latestClean?.version) failSchema()
-  return { ...summary, canEdit: row.can_edit, versions }
+  return {
+    id,
+    displayName,
+    scope,
+    latestVersion: latest.version,
+    latestStatus: latest.status,
+    ...(latestClean === undefined ? {} : { latestCleanVersion: latestClean.version }),
+    canEdit: row.can_edit,
+    versions,
+  }
 }
 
 function validateHttpUrl(value: string, allowRelative: boolean): URL {
@@ -1774,7 +1782,7 @@ export class XAgentBackendClient implements XAgentBackend {
       detail: async (token, artifactId, signal) => parseArtifactDetail(await this.artifactRequest(
         token,
         `/internal/xagent/artifacts/${encodeURIComponent(artifactId)}`,
-        {},
+        { schema_version: 2 },
         200,
         ARTIFACT_DETAIL_ERROR_CODES,
         signal,
@@ -1798,7 +1806,7 @@ export class XAgentBackendClient implements XAgentBackend {
       completeUpload: async (token, uploadId, input, signal) => parseArtifactDetail(await this.artifactRequest(
         token,
         `/internal/xagent/artifacts/uploads/${encodeURIComponent(uploadId)}/complete`,
-        { actual_size: input.size, sha256: input.sha256, idempotency_key: input.idempotencyKey },
+        { schema_version: 2, actual_size: input.size, sha256: input.sha256, idempotency_key: input.idempotencyKey },
         201,
         ARTIFACT_COMPLETE_ERROR_CODES,
         signal,
@@ -1806,7 +1814,7 @@ export class XAgentBackendClient implements XAgentBackend {
       retry: async (token, versionId, idempotencyKey, signal) => parseArtifactDetail(await this.artifactRequest(
         token,
         `/internal/xagent/artifact-versions/${encodeURIComponent(versionId)}/retry`,
-        { idempotency_key: idempotencyKey },
+        { schema_version: 2, idempotency_key: idempotencyKey },
         200,
         ARTIFACT_RETRY_ERROR_CODES,
         signal,
