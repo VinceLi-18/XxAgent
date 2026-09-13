@@ -21,6 +21,21 @@ const authSessionId = '00000000-0000-0000-0000-000000000101'
 const serviceToken = 'xagent-artifact-loader-service-token'
 const userToken = 'xagent-artifact-loader-user-token'
 const csrfToken = 'xagent-artifact-loader-csrf-token'
+const artifactId = '00000000-0000-0000-0000-000000000201'
+const versionId = '00000000-0000-0000-0000-000000000202'
+const cleanVersionId = '00000000-0000-0000-0000-000000000203'
+const uploadId = '00000000-0000-0000-0000-000000000204'
+const detail = {
+  schema_version: 2,
+  id: artifactId,
+  display_name: 'loader.txt',
+  scope: { kind: 'private' },
+  can_edit: true,
+  versions: [
+    { id: versionId, version: 2, original_filename: 'new.txt', uploaded_by: actorId, size: 7, status: 'pending', created_at: '2026-08-26T12:00:00Z' },
+    { id: cleanVersionId, version: 1, original_filename: 'clean.txt', uploaded_by: actorId, size: 5, status: 'clean', sha256: 'a'.repeat(64), created_at: '2026-08-25T12:00:00Z' },
+  ],
+}
 
 interface BackendObservation {
   readonly path: string
@@ -99,6 +114,17 @@ function backend(observations: BackendObservation[]): Server {
       if (path === '/internal/xagent/artifacts/list') {
         expect(await body(request)).toEqual({})
         response.end('[]')
+        return
+      }
+      const detailRequests = new Map([
+        [`/internal/xagent/artifacts/${artifactId}`, { schema_version: 2 }],
+        [`/internal/xagent/artifacts/uploads/${uploadId}/complete`, { schema_version: 2, actual_size: 7, sha256: 'b'.repeat(64), idempotency_key: 'loader-complete' }],
+        [`/internal/xagent/artifact-versions/${versionId}/retry`, { schema_version: 2, idempotency_key: 'loader-retry' }],
+      ])
+      if (detailRequests.has(path)) {
+        expect(await body(request)).toEqual(detailRequests.get(path))
+        response.statusCode = path.endsWith('/complete') ? 201 : 200
+        response.end(JSON.stringify(detail))
         return
       }
       response.statusCode = 404
@@ -230,11 +256,45 @@ describe('XAgent Business 资料真实 Loader 闭包', () => {
     ])
   })
 
-  it('保持 Business 的运行时工具闭包只含结构化检索入口', () => {
+  it('保持 Business 的运行时工具闭包只含结构化检索与 Skill 入口', () => {
     if (ctx === undefined) throw new Error('Business Loader 未启动')
     expect(ctx.tools.schemas().map(tool => tool.name).sort()).toEqual([
       'list_accessible_projects',
       'search_artifacts',
+      'skill',
     ])
+  })
+
+  it('详情、完成与重试经真实 Remote 使用 v2 并保留公开摘要及历史', async () => {
+    const login = await fetch(`${origin}/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin },
+      body: JSON.stringify({ email: 'alice@example.test', password: 'loader-password' }),
+    })
+    expect(login.status).toBe(200)
+    const auth = cookies(login)
+    for (const [method, args] of [
+      ['detail', { artifactId }],
+      ['complete-upload', { uploadId, input: { size: 7, sha256: 'b'.repeat(64), idempotencyKey: 'loader-complete' } }],
+      ['retry', { versionId, idempotencyKey: 'loader-retry' }],
+    ] as const) {
+      const response = await fetch(`${origin}/api/xagentArtifact/${method}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin, cookie: auth.cookie, 'x-xagent-csrf': auth.csrf },
+        body: JSON.stringify({ type: 'client-request', rpcId: `loader-${method}`, method: `xagentArtifact/${method}`, payload: { args } }),
+      })
+      expect(response.status).toBe(200)
+      expect((await response.json() as RpcResponse<unknown>).result).toEqual({
+        ok: true,
+        value: {
+          id: artifactId, displayName: 'loader.txt', scope: { kind: 'private' }, canEdit: true,
+          latestVersion: 2, latestStatus: 'pending', latestCleanVersion: 1,
+          versions: [
+            { id: versionId, version: 2, originalFilename: 'new.txt', uploadedBy: actorId, size: 7, status: 'pending', createdAt: '2026-08-26T12:00:00Z' },
+            { id: cleanVersionId, version: 1, originalFilename: 'clean.txt', uploadedBy: actorId, size: 5, status: 'clean', sha256: 'a'.repeat(64), createdAt: '2026-08-25T12:00:00Z' },
+          ],
+        },
+      })
+    }
   })
 })

@@ -76,5 +76,5 @@ async def test_nonempty_downgrade_preserves_permission_reports(seeded_database, 
     with pytest.raises(DBAPIError, match="cannot migrate nonempty Business Skill test tool policy"):
         await to_thread.run_sync(command.downgrade, config, "018_xagent_business_skills")
     async with seeded_database.connect() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "020_skill_test_policy"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "021_artifact_detail_snapshots"
         assert await connection.scalar(text("SELECT unexecuted_write_tools FROM business_skill_test_runs")) == []

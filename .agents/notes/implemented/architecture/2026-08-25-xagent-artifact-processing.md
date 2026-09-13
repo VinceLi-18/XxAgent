@@ -24,6 +24,10 @@ The `xagent_worker` database role is `NOINHERIT NOBYPASSRLS`. It receives only t
 
 FastAPI and PostgreSQL remain the authority for artifact scope, permission, immutable versions, scan state, audit, and signed reads. The Host service and browser panel access them through authenticated operations. Phase 3B exposes only the human upload, detail, preview, download, and retry paths: it registers no model-callable artifact tool and adds no artifact content or state to model requests or Session events.
 
+Detail queries, upload completion, and scan retry exchange version 2 authorized metadata and version histories. The TypeScript backend client validates the complete history and derives the public latest version, latest status, and latest clean version without changing browser fields. Lists retain their server-owned summaries and do not carry histories. Projection cannot authorize reads or infer scanning outcomes; a newer non-clean version preserves an older clean version in the public summary.
+
+Completion and retry persist the same version 2 detail in their idempotency results. A replay checks current authorization and validates the saved detail, then returns that snapshot even after worker progress or later uploads. This preserves the accepted result across process restart without granting continued access after revocation. Operation names, business request hashes, actor IDs, keys, outer result IDs, timestamps, and expiry retain their identity; the transport version is outside the business hash. Invalid snapshots fail closed as `service-unavailable` without a new write. Migration `021_artifact_detail_snapshots` converts only saved details transactionally, including expired rows; its reverse conversion reconstructs legacy summaries from the saved history and also accepts newly written version 2 results.
+
 ## Alternatives considered
 
 **Scan synchronously in the upload-completion request.** External storage and malware-service latency would extend the request transaction, and API process loss would leave no durable owner for unfinished work.
@@ -36,8 +40,12 @@ FastAPI and PostgreSQL remain the authority for artifact scope, permission, immu
 
 **Keep cleanup ownership only in the worker stack frame.** A process exit after failed exact-version deletion would permanently lose the MinIO version ID. The persistent cleanup queue retains the exact deletion identity and retry state.
 
+**Rebuild idempotent responses from live version state.** Worker progress and later uploads would change an already accepted operation's result. Saved-history conversion preserves replay semantics; current authorization remains a separate prerequisite, so a saved `can_edit` value cannot grant access.
+
 ## Consequences
 
 Upload requests return after a short database transaction, while scan and cleanup work survives API and worker restarts. Lease tokens prevent stale workers from publishing state or deleting another worker's object version. Versioned object ownership and persistent cleanup preserve a recoverable identity for every promoted object, and the dedicated worker role limits database exposure.
 
 The deployment must operate PostgreSQL, a versioned private MinIO bucket, ClamAV, the independent worker role, and the worker process. Schema grants must evolve with any new worker input or result column. Dead cleanup jobs require an operational procedure using their retained object key and MinIO version ID. The browser observes scan progress by polling. The [RAG retrieval decision](2026-08-28-xagent-rag-retrieval.md) owns text indexing, retrieval, receipts, structured citations, and model tools; OCR remains outside the delivered scope.
+
+The version 2 detail protocol requires matching Host/API releases and a maintenance window; restoring old binaries alone cannot restore legacy snapshots. The [API procedure](../../../../services/api/README.md#资料协议维护窗口与回滚) owns admission, drain, protected backup, data migration, authenticated smokes, and data-aware rollback. PostgreSQL acceptance compares saved public results through the built production TypeScript client across migration and terminated API processes, checks side-effect counts, and denies revoked access. The real Loader covers all three public Remote paths; Docker acceptance covers real storage, scanning, explicit retry, snapshot replay, and reads.

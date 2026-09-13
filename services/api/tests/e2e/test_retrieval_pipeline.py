@@ -198,6 +198,7 @@ def _upload(
         f"/internal/xagent/artifacts/uploads/{upload['upload_id']}/complete",
         headers=session.headers,
         json={
+            "schema_version": 2,
             "actual_size": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
             "idempotency_key": f"complete-{request_id}",

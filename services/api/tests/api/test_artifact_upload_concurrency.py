@@ -13,8 +13,10 @@ from tests.api.test_artifact_uploads import (
     _complete_upload,
     _create_upload,
     _login,
+    _headers,
     artifact_gateway,
 )
+from tests.api.test_artifact_retry_concurrency import _assert_corrupt_replays
 
 
 async def _install_version_insert_overlap_trigger(engine) -> None:
@@ -86,6 +88,33 @@ async def test_concurrent_same_completion_key_creates_one_version_and_one_job(
         version_count = await session.scalar(select(func.count()).select_from(ArtifactVersion))
         job_count = await session.scalar(select(func.count()).select_from(ArtifactProcessingJob))
     assert (version_count, job_count) == (1, 1)
+
+
+@pytest.mark.anyio
+async def test_completion_requires_version_and_rejects_corrupt_replay_without_mutation(
+    client, seeded_database, alice, artifact_gateway: UploadUrlGateway,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    created = await _create_upload(client, token, filename="saved.txt", size=10, key="saved-create")
+    upload_id = UUID(created.json()["upload_id"])
+    artifact_gateway.objects[f"staging/{upload_id}"] = ObjectMetadata(10, "text/plain", "saved-etag")
+    path = f"/internal/xagent/artifacts/uploads/{upload_id}/complete"
+    body = {"actual_size": 10, "sha256": "a" * 64, "idempotency_key": "saved-complete"}
+    for replay in (False, True):
+        for transport in ({}, {"schema_version": 1}, {"schema_version": 3}):
+            response = await client.post(path, headers=_headers(token), json={**body, **transport})
+            assert response.status_code == 422
+        async with AsyncSession(seeded_database) as session:
+            versions = await session.scalar(select(func.count()).select_from(ArtifactVersion))
+            jobs = await session.scalar(select(func.count()).select_from(ArtifactProcessingJob))
+            assert (versions, jobs) == (int(replay), int(replay))
+        if not replay:
+            first = await client.post(path, headers=_headers(token), json={**body, "schema_version": 2})
+            assert first.status_code == 201
+    await _assert_corrupt_replays(
+        client, seeded_database, alice.id, token, "artifact.upload.complete", "saved-complete",
+        path, {**body, "schema_version": 2},
+    )
 
 
 @pytest.mark.anyio

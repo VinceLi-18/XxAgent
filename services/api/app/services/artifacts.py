@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import re
 import time
 import unicodedata
@@ -11,6 +12,7 @@ from uuid import UUID, uuid4
 
 from fastapi.encoders import jsonable_encoder
 from minio.error import S3Error
+from pydantic import ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +25,7 @@ from app.models.artifact import (
 )
 from app.models.project import ProjectAction
 from app.models.xagent_session import XAgentIdempotencyKey
+from app.schemas.artifacts import ArtifactDetailResponse
 from app.services.authorization import ForbiddenError, authorize_project
 from app.services.auth import Principal
 from app.services.workbench import normalize_context
@@ -36,6 +39,10 @@ class UploadRejectedError(Exception):
 
 class ArtifactStorageError(Exception):
     """私有对象存储无法完成操作。"""
+
+
+class ArtifactSnapshotError(Exception):
+    """持久化详情不符合内部协议，无法安全重放。"""
 
 
 class ArtifactIdempotencyConflict(Exception):
@@ -53,6 +60,12 @@ class ArtifactUploadExpired(Exception):
 class ArtifactForbidden(Exception):
     pass
 
+
+ARTIFACT_UUID_PATTERN = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+ARTIFACT_INSTANT_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
 
 INLINE_TYPES = frozenset(
     {
@@ -279,10 +292,12 @@ async def complete_upload(
         )
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        detail = stored.result.get("detail")
-        if not isinstance(detail, dict):
-            raise ArtifactNotFound
-        return detail, version.id
+        return _saved_detail(
+            stored.result.get("detail"),
+            artifact_id=version.artifact_id,
+            version_id=version.id,
+            version_id_must_be_first=True,
+        ), version.id
 
     upload = await session.scalar(
         select(StagingUpload).where(
@@ -427,6 +442,49 @@ async def complete_upload(
     return detail, version.id
 
 
+def _saved_detail(
+    value: Any,
+    *,
+    artifact_id: UUID,
+    version_id: UUID,
+    version_id_must_be_first: bool,
+) -> dict[str, Any]:
+    """Validate durable JSON without coercing or replacing the saved snapshot."""
+    try:
+        detail = ArtifactDetailResponse.model_validate_json(json.dumps(value), strict=True)
+    except ValidationError:
+        raise ArtifactSnapshotError from None
+    if type(value["schema_version"]) is not int or value["schema_version"] != 2:
+        raise ArtifactSnapshotError
+    # Pydantic's JSON mode also accepts timestamp/UUID spellings outside the Host protocol.
+    identifiers = [value["id"]]
+    if value["scope"]["kind"] == "project":
+        identifiers.append(value["scope"]["project_id"])
+    for raw_version, version in zip(value["versions"], detail.versions, strict=True):
+        identifiers.extend((raw_version["id"], raw_version["uploaded_by"]))
+        created_at = raw_version["created_at"]
+        if not isinstance(created_at, str) or ARTIFACT_INSTANT_PATTERN.fullmatch(created_at) is None:
+            raise ArtifactSnapshotError
+        for field in ("size", "content_type", "sha256"):
+            if field in version.model_fields_set and getattr(version, field) is None:
+                raise ArtifactSnapshotError
+        if version.sha256 is not None and version.status not in {"clean", "quarantined"}:
+            raise ArtifactSnapshotError
+    if any(
+        not isinstance(identifier, str) or ARTIFACT_UUID_PATTERN.fullmatch(identifier) is None
+        for identifier in identifiers
+    ):
+        raise ArtifactSnapshotError
+    saved_version_ids = [version.id for version in detail.versions]
+    if (
+        detail.id != artifact_id
+        or version_id_must_be_first and saved_version_ids[0] != version_id
+        or not version_id_must_be_first and version_id not in saved_version_ids
+    ):
+        raise ArtifactSnapshotError
+    return value
+
+
 def _version_projection(version: ArtifactVersion) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": version.id,
@@ -547,7 +605,14 @@ async def artifact_detail(
     if not versions:
         raise ArtifactNotFound
     return {
-        **_summary_projection(artifact, versions),
+        "schema_version": 2,
+        "id": artifact.id,
+        "display_name": artifact.filename,
+        "scope": (
+            {"kind": "private"}
+            if artifact.owner_id is not None
+            else {"kind": "project", "project_id": artifact.project_id}
+        ),
         "can_edit": await _can_edit_artifact(session, principal, artifact),
         "versions": [_version_projection(version) for version in versions],
     }
@@ -691,10 +756,12 @@ async def retry_version(
     if stored is not None and stored.expires_at > now:
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        detail = stored.result.get("detail")
-        if not isinstance(detail, dict):
-            raise ArtifactNotFound
-        return detail
+        return _saved_detail(
+            stored.result.get("detail"),
+            artifact_id=visible.artifact_id,
+            version_id=version_id,
+            version_id_must_be_first=False,
+        )
 
     if visible.scan_status != "failed":
         raise ArtifactNotFound

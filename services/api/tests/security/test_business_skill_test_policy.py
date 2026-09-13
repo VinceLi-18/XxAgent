@@ -46,7 +46,7 @@ async def test_empty_test_policy_migration_round_trip(seeded_database):
     await to_thread.run_sync(command.downgrade, config, "019_skill_test_permissions")
     await to_thread.run_sync(command.upgrade, config, "head")
     async with seeded_database.connect() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "020_skill_test_policy"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "021_artifact_detail_snapshots"
 
 
 @pytest.mark.anyio
@@ -79,5 +79,5 @@ async def test_nonempty_test_policy_downgrade_preserves_history(seeded_database,
     with pytest.raises(DBAPIError, match="cannot migrate nonempty Business Skill test tool policy"):
         await to_thread.run_sync(command.downgrade, config, "019_skill_test_permissions")
     async with seeded_database.connect() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "020_skill_test_policy"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "021_artifact_detail_snapshots"
         assert await connection.scalar(text("SELECT test_tools FROM business_skill_test_runs")) == ["search_artifacts", "skill", "submit_cited_answer"]

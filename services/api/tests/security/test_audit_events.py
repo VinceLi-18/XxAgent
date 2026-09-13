@@ -201,6 +201,7 @@ async def test_upload_create_complete_new_version_and_rejection_write_account_au
         f"/internal/xagent/artifacts/uploads/{upload_id}/complete",
         headers=_headers(token),
         json={
+            "schema_version": 2,
             "actual_size": 5,
             "sha256": "a" * 64,
             "idempotency_key": "complete",
@@ -287,7 +288,7 @@ async def test_query_and_read_successes_and_not_found_rejections_commit_account_
         await client.post(
             f"/internal/xagent/artifacts/{artifact.id}",
             headers=_headers(token),
-            json={},
+            json={"schema_version": 2},
         ),
         await client.post(
             f"/internal/xagent/artifact-versions/{version.id}/preview",
@@ -302,7 +303,7 @@ async def test_query_and_read_successes_and_not_found_rejections_commit_account_
         await client.post(
             f"/internal/xagent/artifacts/{missing_id}",
             headers=_headers(token),
-            json={},
+            json={"schema_version": 2},
         ),
     )
     assert [response.status_code for response in responses] == [200, 200, 200, 200, 404]

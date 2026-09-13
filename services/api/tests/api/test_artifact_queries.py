@@ -176,10 +176,12 @@ async def test_list_uses_only_the_server_selected_workbench_scope_and_projects_f
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("latest_status", ["pending", "scanning", "failed", "quarantined"])
 async def test_detail_keeps_latest_failed_distinct_from_clean_fallback_and_orders_history_descending(
     client,
     seeded_database,
     alice,
+    latest_status: str,
 ) -> None:
     alice_token = await _login(
         client, seeded_database, alice, "alice@example.test"
@@ -191,7 +193,7 @@ async def test_detail_keeps_latest_failed_distinct_from_clean_fallback_and_order
         owner_id=alice.id,
     )
     clean = _version(artifact, alice.id, number=1, status="clean", filename="safe.txt")
-    failed = _version(artifact, alice.id, number=2, status="failed", filename="new.txt")
+    failed = _version(artifact, alice.id, number=2, status=latest_status, filename="new.txt")
     async with AsyncSession(seeded_database, expire_on_commit=False) as session:
         async with session.begin():
             session.add(artifact)
@@ -201,15 +203,19 @@ async def test_detail_keeps_latest_failed_distinct_from_clean_fallback_and_order
     response = await client.post(
         f"/internal/xagent/artifacts/{artifact.id}",
         headers=_headers(alice_token),
-        json={},
+        json={"schema_version": 2},
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["latest_version"] == 2
-    assert payload["latest_status"] == "failed"
-    assert payload["latest_clean_version"] == 1
+    assert set(payload) == {"schema_version", "id", "display_name", "scope", "can_edit", "versions"}
+    assert payload["schema_version"] == 2
     assert payload["can_edit"] is True
+    assert payload["scope"] == {"kind": "private"}
+    assert payload["versions"][0]["status"] == latest_status
+    assert ("sha256" in payload["versions"][0]) == (latest_status == "quarantined")
+    assert payload["versions"][1]["sha256"] == "1" * 64
+    assert ("content_type" in payload["versions"][0]) == (latest_status != "pending")
     assert [version["version"] for version in payload["versions"]] == [2, 1]
     assert [version["id"] for version in payload["versions"]] == [
         str(failed.id),
@@ -274,7 +280,7 @@ async def test_retry_resets_one_failed_job_idempotently_and_rejects_quarantine_o
             await session.flush()
             session.add(job)
 
-    body = {"idempotency_key": "retry-once"}
+    body = {"schema_version": 2, "idempotency_key": "retry-once"}
     first = await client.post(
         f"/internal/xagent/artifact-versions/{retryable.id}/retry",
         headers=_headers(alice_token),
@@ -288,17 +294,19 @@ async def test_retry_resets_one_failed_job_idempotently_and_rejects_quarantine_o
     quarantine_response = await client.post(
         f"/internal/xagent/artifact-versions/{quarantined.id}/retry",
         headers=_headers(alice_token),
-        json={"idempotency_key": "quarantine"},
+        json={"schema_version": 2, "idempotency_key": "quarantine"},
     )
     expired_response = await client.post(
         f"/internal/xagent/artifact-versions/{expired.id}/retry",
         headers=_headers(alice_token),
-        json={"idempotency_key": "expired"},
+        json={"schema_version": 2, "idempotency_key": "expired"},
     )
 
     assert first.status_code == replay.status_code == 200
     assert replay.json() == first.json()
-    assert first.json()["latest_status"] == "pending"
+    assert first.json()["versions"][0]["status"] == "pending"
+    assert set(first.json()) == {"schema_version", "id", "display_name", "scope", "can_edit", "versions"}
+    assert first.json()["schema_version"] == 2
     assert quarantine_response.status_code == 404
     assert quarantine_response.json() == {"detail": {"code": "not-found"}}
     assert expired_response.status_code == 410
