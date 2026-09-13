@@ -93,7 +93,7 @@ export function apply(ctx: Context): void {
       persistedThrough = events.length - 1
       return json({
         schema_version: 1,
-        session: { id: SESSION, visibility: 'project', project_id: PROJECT },
+        session: { id: SESSION, visibility: 'project', project_id: PROJECT, purpose: 'conversation' },
       })
     }
     const append = /^\/internal\/xagent\/sessions\/([^/]+)\/append$/u.exec(path)
