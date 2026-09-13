@@ -47,6 +47,8 @@ The registry is host+per-scope layered over [`@deepseek-ai/dsh-scope`](../../cor
 
 ## Provider Contract
 
+A provider may return `{ candidates, complete: true, cacheable: false }` when each lookup requires fresh authority. The complete catalog remains publishable, but no aggregate containing it is reused by a later lookup. Omitting `cacheable` preserves ordinary caching of complete observations; `complete: false` always disables caching regardless of that option.
+
 A provider factory runs synchronously and receives one registration-scoped control. `control.signal` aborts when registration fails or is disposed; `control.invalidate()` clears completed catalogs only while that exact registration remains active, so late callbacks cannot affect a replacement with the same name. Immutable providers may ignore the control. Remote setup, authentication, and discovery belong in the provider's awaited `list(options)` call. An array return is shorthand for complete discovery; a provider that collected usable candidates but could not establish an authoritative observation returns `{ candidates, complete: false }`. Provider objects, lookup options, candidates, and definitions are borrowed readonly rather than cloned or rebound. Providers should honor `options.signal`; the registry also stops awaiting uncooperative discovery or loading after cancellation.
 
 The registry validates candidates before caching and definitions before returning them. The winning provider receives the same candidate and opaque `locator` it returned from `list()`, allowing backend-specific file, URL, id, or version handles. Callers and providers must preserve the readonly contract.
@@ -73,7 +75,7 @@ No direct prompt effect. The named consumer owns the durable initial catalog and
 
 ## Known Limitations and Deferred Work
 
-- **Invalidation is provider-driven** — the registry has no TTL and cannot infer that an arbitrary remote source changed; each mutable provider must retain and call its registration-scoped `invalidate()` capability from its own observation mechanism.
+- **Invalidation is provider-driven** — the registry has no TTL and cannot infer that an arbitrary remote source changed; mutable providers either disable caching for each observation or call their registration-scoped `invalidate()` capability when their source changes.
 - **Providers are queried sequentially** — one slow cooperative provider delays every provider registered after it; cancellation stops the caller's wait but cannot terminate work an uncooperative provider keeps running.
 - **Incomplete observations are not retained** — rejected providers are omitted and explicitly supplied candidates remain available only to the current lookup; the registry owns neither a last-good catalog nor per-provider diagnostics.
 - **Duplicate resolution is first-wins** — later lower-priority candidates within a layer are logged and hidden, and a nearer layer shadows a farther one silently; there is no API to inspect all shadowed definitions.

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import {
   projectCordisCatalog,
@@ -59,5 +60,20 @@ describe('Typert-backed Cordis catalog', () => {
     expect(byKey.has('headlessIo')).toBe(false)
     expect(byKey.has('dshHomePath')).toBe(false)
     expect(byKey.has('launcherEnvironment')).toBe(false)
+  })
+
+  it('renders every event signature as a parseable TypeScript interface member', { timeout: 480_000 }, () => {
+    const source = [
+      'interface GeneratedEvents {',
+      ...projection().model.events.map(event => `${event.signature};`),
+      '}',
+    ].join('\n')
+    const diagnostics = ts.transpileModule(source, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      fileName: 'generated-events.ts',
+      reportDiagnostics: true,
+    }).diagnostics?.map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')) ?? []
+
+    expect(diagnostics).toEqual([])
   })
 })

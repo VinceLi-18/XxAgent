@@ -37,7 +37,7 @@ interface Config {
 | 配套入口 | 检查 |
 |---|---|
 | `dsh-session`、`dsh-agent`、`dsh-scope`、`dsh-agent-loop` | 会话包含关系和调用/结果跟踪、agent（智能体）状态转换、inbox FIFO 守恒、作用域 subject 和模型请求重建。 |
-| `dsh-llm`、`dsh-llm-retry`、`dsh-tools`、`dsh-system-prompt` | 流语法、持久重试位置和边界、工具流水线阶段与冻结结果，以及权威提示词组装数据。 |
+| `dsh-llm`、`dsh-llm-retry`、`dsh-tools`、`dsh-system-prompt`、`dsh-tool-skill` | 流语法、持久重试位置和边界、工具流水线阶段与冻结结果、权威提示词组装数据，以及已解析技能的加载准入。 |
 | `dsh-compaction`、`dsh-hook-protocol`、`dsh-sandbox-policy` | 持久压缩（compaction）与钩子配对、压缩元数据和沙箱 mode 词汇。 |
 | `dsh-fs`、`dsh-subagent`、`dsh-workflow` | 文件系统事件身份、提供方/子级配对和工作流/agent 生命周期身份。 |
 | `dsh-goal`、`dsh-goal-round-driver` | 持久 goal 来源/内容一致性、修订和生命周期转换、时间戳、依次获准的 Round 和重建的继续提示词。 |

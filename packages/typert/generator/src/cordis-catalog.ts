@@ -222,7 +222,7 @@ export class CordisCatalogProjector {
           entries.push({
             name: event.name,
             scope: event.name.split('/')[0] ?? event.name,
-            signature: event.text,
+            signature: `${quote(event.name)}${this.renderer.renderSignature(node.signature)}`.replaceAll('; }', ' }'),
             jsDoc: event.jsDoc ?? '',
             mode,
             doc: parsed.doc,

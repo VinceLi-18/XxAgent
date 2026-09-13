@@ -1861,7 +1861,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/skill/skill/src/index.ts:279`](../packages/skill/skill/src/index.ts)
+来源：[`packages/skill/skill/src/index.ts:281`](../packages/skill/skill/src/index.ts)
 
 <a id="deepseek-aidsh-skill-filesystem"></a>
 
@@ -2571,7 +2571,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/skill/tool-skill/src/index.ts:61`](../packages/skill/tool-skill/src/index.ts)
+来源：[`packages/skill/tool-skill/src/index.ts:84`](../packages/skill/tool-skill/src/index.ts)
 
 <a id="deepseek-aidsh-tool-str-replace-editor"></a>
 
@@ -3059,6 +3059,30 @@ export interface Config {
 
 来源：[`packages/xagent/authorization/src/index.ts:53`](../packages/xagent/authorization/src/index.ts)
 
+<a id="xagentdsh-business-skill"></a>
+
+## `@xagent/dsh-business-skill`
+
+依赖： `agents` · `sessions` · `skills` · `tools` · `systemPrompt`
+
+```ts config-catalog
+/** FastAPI transport and catalog resource limits for the Host plugin. */
+export interface Config {
+  /** Absolute FastAPI origin. */
+  backendOrigin: string
+  /** Host service credential; never sent to Browser or model. */
+  serviceToken: string
+  /** Maximum complete catalog entries; oversized responses fail closed. */
+  maxCatalogEntries: number
+  /** Registered provider used for real draft-test model calls. */
+  testProvider: string
+  /** Provider model used for real draft-test model calls. */
+  testModel: string
+}
+```
+
+源码： [`packages/xagent/business-skill/src/index.ts:34`](../packages/xagent/business-skill/src/index.ts)
+
 <a id="xagentdsh-connection-auth"></a>
 
 ## `@xagent/dsh-connection-auth`
@@ -3145,7 +3169,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/retrieval/src/index.ts:91`](../packages/xagent/retrieval/src/index.ts)
+来源：[`packages/xagent/retrieval/src/index.ts:94`](../packages/xagent/retrieval/src/index.ts)
 
 <a id="xagentdsh-session-persistence-api"></a>
 
@@ -3163,7 +3187,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/xagent/session-persistence-api/src/index.ts:31`](../packages/xagent/session-persistence-api/src/index.ts)
+来源：[`packages/xagent/session-persistence-api/src/index.ts:34`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## 无配置的可加载插件
 
@@ -3238,6 +3262,7 @@ export interface Config {
 - `@xagent/dsh-tool-retrieval` — 需要 `tools`（[`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts)）
 - `@xagent/dsh-ui-account`（[`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts)）
 - `@xagent/dsh-ui-artifact`（[`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts)）
+- `@xagent/dsh-ui-business-skill`（[`packages/xagent/ui-business-skill/src/index.ts`](../packages/xagent/ui-business-skill/src/index.ts)）
 - `@xagent/dsh-ui-citation`（[`packages/xagent/ui-citation/src/index.ts`](../packages/xagent/ui-citation/src/index.ts)）
 - `@xagent/dsh-ui-fact`（[`packages/xagent/ui-fact/src/index.ts`](../packages/xagent/ui-fact/src/index.ts)）
 - `@xagent/dsh-ui-project`（[`packages/xagent/ui-project/src/index.ts`](../packages/xagent/ui-project/src/index.ts)）

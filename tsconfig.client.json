@@ -66,6 +66,7 @@
     { "path": "./packages/client/ui-sidebar" },
     { "path": "./packages/xagent/ui-account" },
     { "path": "./packages/xagent/ui-project" },
+    { "path": "./packages/xagent/ui-business-skill" },
     { "path": "./packages/xagent/ui-artifact" },
     { "path": "./packages/xagent/ui-citation" },
     { "path": "./packages/xagent/ui-fact" },

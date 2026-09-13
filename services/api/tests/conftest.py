@@ -446,6 +446,40 @@ async def fact_project_session(seeded_database: AsyncEngine):
 
 
 @pytest.fixture
+async def business_skill_rows(seeded_database: AsyncEngine, fact_project_session, alice):
+    """A published, authorized Skill with an independent running draft test."""
+    ids = {key: uuid4() for key in ("skill", "version", "run", "session", "authorization")}
+    ids.update(project=fact_project_session.project_id, actor=alice.id)
+    async with seeded_database.begin() as connection:
+        await connection.execute(text(
+            "INSERT INTO business_skills (id, project_id, slug, display_name, created_by_id) "
+            "VALUES (:skill, :project, 'account-research', 'Account research', :actor)"
+        ), ids)
+        await connection.execute(text(
+            "INSERT INTO business_skill_drafts (skill_id, project_id, revision, description, instructions, primary_tools, content_digest, edited_by_id) "
+            "VALUES (:skill, :project, 1, 'Research accounts', 'Read cited evidence.', '[\"search_artifacts\"]', repeat('a',64), :actor)"
+        ), ids)
+        await connection.execute(text(
+            "INSERT INTO business_skill_versions (id, skill_id, project_id, version_number, description, instructions, primary_tools, complete_tools, content_digest, tool_policy_digest, source_draft_revision, published_by_id) "
+            "VALUES (:version, :skill, :project, 1, 'Research accounts', 'Read cited evidence.', '[\"search_artifacts\"]', '[\"search_artifacts\",\"skill\",\"submit_cited_answer\"]', repeat('a',64), repeat('b',64), 1, :actor)"
+        ), ids)
+        await connection.execute(text("UPDATE business_skills SET current_version_id = :version WHERE id = :skill"), ids)
+        await connection.execute(text(
+            "INSERT INTO xagent_sessions (id, owner_id, project_id, visibility, permission_revision_created, title, purpose, next_citation_ordinal) "
+            "VALUES (:session, :actor, :project, 'project', 1, 'Skill test', 'business_skill_test', 1)"
+        ), ids)
+        await connection.execute(text(
+            "INSERT INTO business_skill_test_runs (id, skill_id, project_id, run_number, draft_revision, content_digest, tool_policy_digest, session_id, started_by_id, unexecuted_write_tools, test_tools) "
+            "VALUES (:run, :skill, :project, 1, 1, repeat('a',64), repeat('b',64), :session, :actor, '[]', '[\"search_artifacts\",\"skill\",\"submit_cited_answer\"]')"
+        ), ids)
+        await connection.execute(text(
+            "INSERT INTO business_skill_authorizations (id, skill_id, project_id, authorized_by_id) "
+            "VALUES (:authorization, :skill, :project, :actor)"
+        ), ids)
+    return ids
+
+
+@pytest.fixture
 async def fact_admitted_evidence(seeded_database: AsyncEngine, alice, fact_project_session):
     artifact_id = uuid4()
     version_id = uuid4()

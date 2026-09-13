@@ -6,6 +6,8 @@
 
 封闭参数 schema 接受字段键、显示标签、一项精确的 `text`／`number`／`boolean`／`date` tagged value、最多 64 个按 JSON 结构互异的已入账 citation ID，以及可选的依据说明。共享 JSON 值 schema 校验器强制执行字符串 `pattern`、数组 `maxItems` 和数组 `uniqueItems`。该 Consumer 还强制执行与 FastAPI 一致的 UTF-8 字节上限、字段键与 citation 格式、公历日期、安全整数规则，以及没有 citation 证据时必须提供非空依据说明的要求。
 
+注册要求认证用途为 `purpose: conversation`。`business_skill_test` Session 无法注册 `propose_fact`，包括服务替换或插件重载之后；缺失、过期及跨 Session 领取不能复用更早的注册。这项排除独立于[草稿执行器的只读策略](../business-skill/README.md)。
+
 执行过程只从 `ToolRunContext` 派生运行时 Session ID、精确工具调用 ID 和取消信号；模型参数不能提供 Principal、项目、角色、成员关系、permission revision、delegation、token、receipt 或内部状态。Fact 服务私下保留准备 receipt。成功结果仅返回 `{ proposalId, status: 'pending' }`，使用通用工具展示，并精确持久化 `{ kind: 'xagent-fact', status: 'pending', proposalId }` 结果元数据，使 provider 能在 Session 入账时绑定私人 receipt。
 
 `propose_fact` 不会结束 Turn。检索证据激活 cited-answer policy 后，模型仍必须通过 `submit_cited_answer` 发布最终回答；无证据提案的依据说明不构成资料 citation。取消流程等待被调用服务完成收敛，并抑制任何迟到的公开成功结果。

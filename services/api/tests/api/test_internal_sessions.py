@@ -5,8 +5,26 @@ from argon2 import PasswordHasher
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from test_business_skill_governance import skill_api
+from test_business_skill_test_runs import started_test, existing_actor_headers
+
 PASSWORD = "correct horse battery staple"
 SERVICE_TOKEN = "xagent-test-service-token-00000001"
+
+
+@pytest.mark.anyio
+async def test_ordinary_session_paths_exclude_business_skill_tests(client, started_test, existing_actor_headers):
+    session_id = started_test[0]["session_id"]
+    assert started_test[0]["purpose"] == "business_skill_test"
+    listed = await client.post("/internal/xagent/sessions/list", headers=existing_actor_headers, json={"schema_version": 1})
+    assert session_id not in [item["id"] for item in listed.json()["sessions"]]
+    for operation, values in [("open", {}), ("events", {}),
+        ("authorize", {"operation": "read"}), ("authorize", {"operation": "edit"}),
+        ("authorize", {"operation": "owner"}), ("fork", {"idempotency_key": "fork-test", "through_sequence": 0}),
+        ("archive", {"expected_version": 1})]:
+        response = await client.post(f"/internal/xagent/sessions/{session_id}/{operation}", headers=existing_actor_headers,
+                                     json={"schema_version": 1, **values})
+        assert response.status_code == 404, (operation, response.text)
 
 
 async def _login(client, engine, account, email: str) -> str:
@@ -80,6 +98,7 @@ async def test_create_list_open_append_and_archive_are_actor_isolated(
         },
     )
     assert created.status_code == 201
+    assert created.json()["session"]["purpose"] == "conversation"
     session_id = UUID(created.json()["session"]["id"])
 
     listed = await client.post(
@@ -99,6 +118,7 @@ async def test_create_list_open_append_and_archive_are_actor_isolated(
     )
 
     assert [item["id"] for item in listed.json()["sessions"]] == [str(session_id)]
+    assert listed.json()["sessions"][0]["purpose"] == "conversation"
     assert hidden_list.json() == {"schema_version": 1, "sessions": []}
     assert hidden_open.status_code == 404
     assert hidden_open.json() == {"detail": {"code": "not-found"}}
@@ -133,6 +153,7 @@ async def test_create_list_open_append_and_archive_are_actor_isolated(
     assert appended.status_code == 200
     assert appended.json()["last_event_sequence"] == 0
     assert opened.json()["events"][0]["payload"] == {"text": "hello"}
+    assert opened.json()["session"]["purpose"] == "conversation"
     assert archived.status_code == 200
     assert archived.json()["session"]["archived"] is True
 

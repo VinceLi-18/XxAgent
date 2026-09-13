@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -19,9 +20,18 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
 
+class XAgentSessionPurpose(str, Enum):
+    """Immutable routing purpose chosen when a Session is created."""
+
+    CONVERSATION = "conversation"
+    BUSINESS_SKILL_TEST = "business_skill_test"
+
+
 class XAgentSession(Base):
     __tablename__ = "xagent_sessions"
     __table_args__ = (
+        CheckConstraint("purpose IN ('conversation', 'business_skill_test')", name="ck_xagent_session_purpose"),
+        CheckConstraint("purpose <> 'business_skill_test' OR visibility = 'project'", name="ck_xagent_session_test_project"),
         CheckConstraint(
             "(visibility = 'private' AND project_id IS NULL) "
             "OR (visibility = 'project' AND project_id IS NOT NULL)",
@@ -38,6 +48,7 @@ class XAgentSession(Base):
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
     project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     visibility: Mapped[str] = mapped_column(String(16), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False, server_default="conversation")
     permission_revision_created: Mapped[int] = mapped_column(BigInteger, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     runtime_header: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

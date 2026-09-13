@@ -97,6 +97,28 @@ const FACT_METHODS = new Set([
   'reject',
   'withdraw',
 ])
+const BUSINESS_SKILL_METHODS = new Set([
+  'list', 'detail', 'create', 'draft', 'test', 'transcript', 'verdict', 'publish',
+  'authorization', 'version', 'retire',
+])
+
+/** Request-scope bridge implemented by the Business Skill capability provider. */
+export interface XAgentBusinessSkillScopeRunner {
+  /**
+   * Run one complete Remote operation inside its authenticated ordinary Project Session scope.
+   * @param scope - physical connection identity and FastAPI-owned Session facts.
+   * @param operation - complete Business Skill Remote operation.
+   * @returns the operation result while descendants inherit the same scope.
+   */
+  withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+  /**
+   * Admit one Project Session prompt while retaining its authority for the accepted Agent turn.
+   * @param scope - physical connection identity and FastAPI-owned Session facts.
+   * @param operation - prompt admission operation; its response does not wait for model execution.
+   * @returns the prompt admission result while the accepted turn retains an owned scope.
+   */
+  withPrompt<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+}
 
 function projectNamespace(endpoint: string): boolean {
   return endpoint.startsWith('xagentProject/') || endpoint.startsWith('xagentProject.')
@@ -131,6 +153,15 @@ function factNamespace(endpoint: string): boolean {
 function factMethod(endpoint: string): string | undefined {
   const method = endpoint.slice('xagentFact'.length + 1)
   return FACT_METHODS.has(method) ? method : undefined
+}
+
+function businessSkillNamespace(endpoint: string): boolean {
+  return endpoint.startsWith('xagentBusinessSkill/') || endpoint.startsWith('xagentBusinessSkill.')
+}
+
+function businessSkillMethod(endpoint: string): string | undefined {
+  const method = endpoint.slice('xagentBusinessSkill'.length + 1)
+  return BUSINESS_SKILL_METHODS.has(method) ? method : undefined
 }
 
 function sessionPermission(
@@ -189,7 +220,12 @@ function visibleSessionIds(value: unknown): ReadonlySet<string> {
   const ids = new Set<string>()
   for (const item of sessions) {
     if (typeof item !== 'object' || item === null) throw new TypeError('invalid session visibility response')
-    const header = (item as Record<string, unknown>).runtime_header
+    const row = item as Record<string, unknown>
+    if (row.purpose !== 'conversation' && row.purpose !== 'business_skill_test') {
+      throw new TypeError('invalid session visibility response')
+    }
+    if (row.purpose !== 'conversation') continue
+    const header = row.runtime_header
     if (header === null || header === undefined) continue
     if (typeof header !== 'object') throw new TypeError('invalid session visibility response')
     const id = (header as Record<string, unknown>).id
@@ -221,13 +257,23 @@ function authenticatedSessionScope(
   const id = row.id
   const visibility = row.visibility
   const projectId = row.project_id
+  const purpose = row.purpose
   if (typeof id !== 'string' || !UUID_PATTERN.test(id)) throw new TypeError('invalid session scope response')
   if (`session-${id.toLowerCase()}` !== canonicalRuntimeId) throw new TypeError('invalid session scope response')
-  if (visibility === 'private' && projectId === null) {
-    return Object.freeze({ ...scope, sessionId: id.toLowerCase(), visibility, projectId })
+  if (purpose !== 'conversation' && purpose !== 'business_skill_test') {
+    throw new TypeError('invalid session scope response')
+  }
+  if (visibility === 'private' && projectId === null && purpose === 'conversation') {
+    return Object.freeze({ ...scope, sessionId: id.toLowerCase(), visibility, projectId, purpose })
   }
   if (visibility === 'project' && typeof projectId === 'string' && UUID_PATTERN.test(projectId)) {
-    return Object.freeze({ ...scope, sessionId: id.toLowerCase(), visibility, projectId: projectId.toLowerCase() })
+    return Object.freeze({
+      ...scope,
+      sessionId: id.toLowerCase(),
+      visibility,
+      projectId: projectId.toLowerCase(),
+      purpose,
+    })
   }
   throw new TypeError('invalid session scope response')
 }
@@ -253,6 +299,7 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     private readonly artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
     private readonly citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
     private readonly fact?: XAgentFactScopeRunner | (() => XAgentFactScopeRunner | undefined),
+    private readonly businessSkill?: XAgentBusinessSkillScopeRunner | (() => XAgentBusinessSkillScopeRunner | undefined),
   ) {}
 
   private async runInSessionScope<T>(
@@ -289,6 +336,31 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
     signal: AbortSignal,
     operation: () => Promise<RpcResult<T>>,
   ): Promise<RpcResult<T>> {
+    if (businessSkillNamespace(endpoint)) {
+      if (!authenticated(request)) return unauthenticated()
+      if (businessSkillMethod(endpoint) === undefined) return unauthenticated()
+      const values = args(payload)
+      const projectId = values?.projectId
+      const sessionId = values?.sessionId
+      if (
+        typeof projectId !== 'string'
+        || !UUID_PATTERN.test(projectId)
+        || typeof sessionId !== 'string'
+        || !SESSION_ID_PATTERN.test(sessionId)
+      ) return unauthenticated()
+      const businessSkill = typeof this.businessSkill === 'function' ? this.businessSkill() : this.businessSkill
+      if (businessSkill === undefined) {
+        return { ok: false, error: { code: 'internal', message: 'Business Skill service unavailable', details: {} } }
+      }
+      return this.runInSessionScope(request, signal, sessionId, (scoped) => {
+        if (
+          scoped.visibility !== 'project'
+          || scoped.purpose !== 'conversation'
+          || scoped.projectId !== projectId.toLowerCase()
+        ) throw new XAgentBackendError('not-found')
+        return businessSkill.withRequest(scoped, operation)
+      }, 'Business Skill operation unavailable')
+    }
     if (factNamespace(endpoint)) {
       if (!authenticated(request)) return unauthenticated()
       if (factMethod(endpoint) === undefined) return unauthenticated()
@@ -384,7 +456,13 @@ export class XAgentAuthorization implements ConnectionRequestAuthorizer {
           const scoped = authenticatedSessionScope(
             await this.backend.sessions.list(request.userToken, signal), values?.sessionId as string, requestScope,
           )
-          result = await runWithXAgentAuthenticatedRequestScope(scoped, operation)
+          result = await runWithXAgentAuthenticatedRequestScope(scoped, () => {
+            if (method !== 'prompt' || scoped.visibility !== 'project' || scoped.purpose !== 'conversation') {
+              return operation()
+            }
+            const businessSkill = typeof this.businessSkill === 'function' ? this.businessSkill() : this.businessSkill
+            return businessSkill === undefined ? operation() : businessSkill.withPrompt(scoped, operation)
+          })
         } else {
           result = await operation()
         }
@@ -477,9 +555,10 @@ export class XAgentAuthorizationService extends Service implements ConnectionReq
     artifact?: XAgentArtifactScopeRunner | (() => XAgentArtifactScopeRunner | undefined),
     citation?: XAgentCitationScopeRunner | (() => XAgentCitationScopeRunner | undefined),
     fact?: XAgentFactScopeRunner | (() => XAgentFactScopeRunner | undefined),
+    businessSkill?: XAgentBusinessSkillScopeRunner | (() => XAgentBusinessSkillScopeRunner | undefined),
   ) {
     super(ctx, 'connectionRequestAuthorizer')
-    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact, citation, fact)
+    this.implementation = new XAgentAuthorization(backend, persistence, project, artifact, citation, fact, businessSkill)
   }
 
   /**
@@ -533,5 +612,6 @@ export function apply(ctx: Context, config: Config): void {
     () => ctx.get('xagentArtifact'),
     () => ctx.get('xagentCitation'),
     () => ctx.get('xagentFact'),
+    () => ctx.get('xagentBusinessSkill') as XAgentBusinessSkillScopeRunner | undefined,
   )
 }

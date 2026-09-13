@@ -237,6 +237,19 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 来源：[`packages/core/session/src/types.ts:273`](../packages/core/session/src/types.ts)
 
+### `business-skill/*`
+
+<a id="business-skillactivated--log-only"></a>
+
+#### `business-skill/activated` — 仅日志
+
+```ts persistence-catalog
+/** Informational activation; writers mark the envelope ignorable for older readers. */
+'business-skill/activated': BusinessSkillActivatedEvent['data']
+```
+
+来源：[`packages/xagent/business-skill/src/types.ts:36`](../packages/xagent/business-skill/src/types.ts)
+
 ### `command/*`
 
 <a id="commanddone--log-only"></a>

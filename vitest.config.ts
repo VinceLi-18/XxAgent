@@ -22,6 +22,7 @@ const pathsPlugin = (): ReturnType<typeof tsconfigPaths> => tsconfigPaths({ proj
 // Source-only Client lifecycle tests mount inert contributions; Typert generation
 // and the built application smokes validate the generated descriptors themselves.
 const generatedRemoteTestAliases = {
+  '@xagent/dsh-business-skill/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-business-skill-remote.ts', import.meta.url)),
   '@xagent/dsh-artifact/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-artifact-remote.ts', import.meta.url)),
   '@xagent/dsh-fact/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-fact-remote.ts', import.meta.url)),
   '@xagent/dsh-project/remote': fileURLToPath(new URL('./scripts/fixtures/xagent-project-remote.ts', import.meta.url)),

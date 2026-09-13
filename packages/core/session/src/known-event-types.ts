@@ -24,6 +24,7 @@ export const KNOWN_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   'approval/policy',
   'assistant/chunk',
   'assistant/message',
+  'business-skill/activated',
   'command/done',
   'command/run',
   'compaction/end',

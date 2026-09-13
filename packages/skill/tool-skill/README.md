@@ -30,6 +30,10 @@ An unresolved name reports that the skill is unknown or no longer available. Inv
 
 Tool execution does not add a synthetic context message. Its freshly loaded result is already recorded as the tool result and becomes available to the next model step without duplicating the body. Only the catalog projection adds replacement summaries.
 
+## Load observation
+
+After `ctx.skills.get()` returns a complete definition and the applicable invocation policy passes, each agent-bound load dispatches the scoped serial `skill/loaded` event exactly once. Its payload carries the exact receiving `Agent`, resolved `SkillDefinition`, and `model-tool` or `user-explicit` form; only `model-tool` carries the model call ID. Dispatch finishes before the tool returns its canonical value or the pre-step listener adds the injected message, so a listener failure prevents the skill body from entering model context. Catalog `list()` and `snapshot()` reads, unresolved names, and policy-rejected definitions emit nothing.
+
 ## Model Experience
 
 ### Session catalog

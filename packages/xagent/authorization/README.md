@@ -4,13 +4,15 @@
 
 list 和 search 通过 FastAPI 可见列表预检；history、models、fork 和 attachment 要求 read；selectModel、rename、prompt、updateQueue 和 cancel 要求 edit。未知 Session 方法默认拒绝。不可见与不存在统一返回 `session-not-found`，认证失效返回 `unauthenticated`，后端细节不会进入响应。
 
-prompt 在 edit 预检后从同一用户令牌的可见会话列表解析唯一会话 ID、可见性和固定项目，再把这些事实与物理连接 Principal 一起包围消息准入操作。带显式会话 ID 的 `session/create` 恢复路径使用相同上下文包围整个打开操作，使 `session/created` 消费方取得同一权威会话范围。下游在 inbox 插入时捕获该冻结值，并在消息被认领时重新激活；长寿命 Agent 驱动器的继承值不作为后续排队 prompt 的身份。缺失、重复或不一致的会话记录均失败关闭。
+prompt 在 edit 预检后从同一用户令牌的可见会话列表解析唯一会话 ID、可见性和固定项目，再把这些事实与物理连接 Principal 一起包围消息准入操作。普通 Project 对话还通过 Business Skill 的 prompt 入口捕获该消息；RPC 在持久准入后立即返回，而专用作用域保留到对应轮次结束、消息丢弃、请求取消、连接失效或 Agent 释放。带显式会话 ID 的 `session/create` 恢复路径使用相同上下文包围整个打开操作，使 `session/created` 消费方取得同一权威会话范围。下游在 inbox 插入时捕获该冻结值，并在消息被认领时重新激活；长寿命 Agent 驱动器的继承值不作为后续排队 prompt 的身份。缺失、重复或不一致的会话记录均失败关闭。
 
 `xagentProject/*` 只接受四个固定认证方法。Authorizer 从连接 Principal 建立项目请求 scope 并包围完整 Remote operation；缺少项目服务、缺少认证、未知方法或 scope 异常都失败关闭。非 XAgent 项目 endpoint 不进入该 scope。
 
 `xagentArtifact/*` 只接受八个固定认证方法。Authorizer 使用同一物理连接 Principal 建立共享只读 scope，但让 Artifact Service 使用独立作用域存储。Artifact Service 未装配、已 dispose、未知方法、缺少认证或 operation 异常都返回稳定失败，不保留旧 Service 引用。
 
 `xagentFact/*` 只接受七个固定认证方法。Authorizer 从同一用户令牌的权威会话列表解析唯一项目会话，拒绝匿名、私有、缺失、重复或不一致的记录，并以 Fact 服务自己的请求上下文包围完整 Remote 操作。浏览器请求不能提供项目、身份或权限字段。
+
+`xagentBusinessSkill/*` 只接受 list、detail、create、draft、test、transcript、verdict、publish、authorization、version 和 retire。专用测试记录与其余治理方法使用相同请求校验。Authorizer 要求 Browser 提供 opaque Project ID 与普通 Session ID，再从物理 Connection 的 Principal 和用户令牌解析唯一 `conversation` Project Session；私有、测试用途、项目不匹配、未知方法或未装配服务均在业务方法前失败关闭。内部技能、版本、测试运行、授权和审计 UUID 不进入 Browser 或模型 payload。
 
 ## Model Experience
 
@@ -30,5 +32,5 @@ prompt 在 edit 预检后从同一用户令牌的可见会话列表解析唯一�
 
 ## Known Limitations and Deferred Work
 
-- 本包只拥有会话 RPC 权限表以及项目、资料和 Fact Remote 请求绑定；它们的业务权限和数据可见性仍由 FastAPI 拥有。
+- 本包只拥有会话 RPC 权限表以及项目、资料、Fact 和 Business Skill Remote 请求绑定；它们的业务权限和数据可见性仍由 FastAPI 拥有。
 - read 与 edit 的最终判定由同一 FastAPI 事务中的当前登录态、权限版本和 RLS 完成，Host 不缓存授权结果。

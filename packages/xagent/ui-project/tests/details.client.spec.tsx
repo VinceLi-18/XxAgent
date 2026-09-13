@@ -60,6 +60,7 @@ const standard = {
   useDetailsTab: ((selector: (value: 'overview') => unknown) => selector('overview')) as never,
   selectDetailsTab: vi.fn(),
   useFactsAvailable: ((selector: (value: false) => unknown) => selector(false)) as never,
+  useSkillsAvailable: ((selector: (value: false) => unknown) => selector(false)) as never,
   renderSlot: vi.fn((name: string) => name === 'xagent.workbench.artifacts' ? renderArtifacts() : null) as never,
 }
 
@@ -69,6 +70,18 @@ afterEach(() => {
 })
 
 describe('XAgent 工作台上下文与详情', () => {
+  it('Skills occupant 进入项目页签键盘顺序', () => {
+    const store = new XAgentWorkbenchStore()
+    store.replace(ready({ kind: 'project', projectId: PROJECT_ID }))
+    render(<WorkbenchDetails {...standard} useSkillsAvailable={((select: (value: boolean) => unknown) => select(true)) as never}
+      useWorkbench={hook(store)} loadProject={vi.fn(async () => {})} />)
+    fireEvent.keyDown(screen.getByRole('tab', { name: '资料' }), { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: 'Skills' })).toBe(document.activeElement)
+    expect(standard.renderSlot).toHaveBeenCalledWith('xagent.workbench.skills', {})
+    act(() => { store.replace(ready({ kind: 'workbench' })) })
+    expect(screen.queryByRole('tab', { name: 'Skills' })).toBeNull()
+    expect(screen.getByRole('tab', { name: '概览' }).getAttribute('aria-selected')).toBe('true')
+  })
   it('未就绪时详情显示加载状态，上下文标识不发布猜测值', () => {
     const store = new XAgentWorkbenchStore()
     render(<>

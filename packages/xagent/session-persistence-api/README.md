@@ -2,6 +2,8 @@
 
 `@xagent/dsh-session-persistence-api` 是 XAgent Business 的唯一 Session Persistence。Header 和 append-only 事件只读写 FastAPI；`locate()` 返回 `undefined`，`supportsRawArtifacts` 为 `false`，远端失败不会回退 JSONL、SQLite 或本地目录。
 
+FastAPI Session 行必须携带不可变 `purpose`。普通读取、列表和快照列表只接受 `conversation`，并防御性排除 `business_skill_test`；测试 Session 不进入普通恢复、工作台计数或 fork。`bindBusinessSkillTestPublication()` 将真实 factory 尚未发布的 Session 绑定到 `tests/start` 创建的同一测试身份。绑定要求已认证的 Project 测试用途、匹配的 Session ID 与有效物理生命周期；正常 publication 通过现有 codec 把真实 header 与启动事件交给后端原子 mount，只有成功领取的 owner 才建立追加令牌租约，不调用普通 create。`flushSession()` 也等待已卸载 Session 的持久化尾部，避免结算早于最后一批事件。
+
 每个认证 RPC 在串行令牌作用域内执行。成功创建或读取 Session 后，Host 为该 Session 保存内部用户令牌租约，使模型轮次产生的后台 append 继续通过 FastAPI 复核登录记录、权限版本与 RLS。租约不进入事件、模型上下文、浏览器响应或日志。
 
 新 Agent 在注册表发布前，把 Header 与完整 seed 作为一次 FastAPI 创建事务提交。创建请求不接受最终 `visibility` 或 `project_id`；FastAPI 在同一事务内锁定并重新验证账号已保存的工作上下文，决定 private 工作台范围或当前 project 范围。Host 只在响应 Session ID 与范围组合通过校验后建立写入租约；远端失败时 Agent 和 Session 均保持不可见。冷加载会为完整但中断的最终回合生成确定性的关闭事件，先追加到 FastAPI，再返回平衡日志；`inspect()` 只在内存中展示同一逻辑视图。恢复 preparation 按精确 Session 保留构造器生成但未经过 `session/event` 的 `session/end-seed`，并缓冲发布期间的实时事件；只有 Session 创建、Agent 创建与 session start 全部成功且未取消后，Agent Loop 才提交并按序入队。此前任何取消或回滚都会丢弃该后缀且不调用 FastAPI append，已以 marker 结束的下一次恢复不会重复写入。
@@ -12,7 +14,7 @@
 
 可选 `xagentFact` 服务通过独立 `receipts` 和 `outbox` 注册表提供 Fact proposal receipt 与 Outbox 事件附件。provider 按同一首尾 sequence 窗口同时收集 retrieval、Fact receipt 和 Fact Outbox sidecar，将它们放入一次 append，只在关闭响应确认精确末 sequence 后才以该 sequence 分别 commit 三个注册表。成功的 pending Fact `tool/result` 在写入 FastAPI 时删除仅供 Host 展示和私有 receipt 绑定使用的 `data.meta`；该元数据必须包含且只能包含合法 proposal ID、`xagent-fact` kind 和 pending 状态，错误结果或无效元数据会在远端请求前失败。FastAPI 不接收客户端展示元数据，而是在 receipt、结果正文与数据库 admission 全部成功后，用规范 proposal ID 重建完全相同的公开 `data.meta`，使 reload 后的 ToolView 保留 pending 身份和状态。其他事件的 meta 保持原样。部分确认、取消、超时、请求失败或响应校验失败都不 commit 任何注册表。`xagentFact` 缺失时，provider 不访问这两个注册表，也不添加空 Fact 数组，普通 append 正文字节保持不变。
 
-`fact/proposal-decided` 使用持久化层的单一严格 codec。写入把关闭的 camelCase DSH data 转成 FastAPI v1 snake_case，读取执行反向转换；两端都拒绝未知事件或 data 字段、bool 整数、非 `append` placement，以及与终态不一致的 revision 或 reason。其他 Session 事件原样复制，receipt 与 Outbox 身份只存在于 append sidecar。
+`fact/proposal-decided` 使用持久化层的单一严格 codec。写入把关闭的 camelCase DSH data 转成 FastAPI v1 snake_case，读取执行反向转换；两端都拒绝未知事件或 data 字段、bool 整数、非 `append` placement，以及与终态不一致的 revision 或 reason。`business-skill/activated` 使用独立严格 codec 转换摘要字段，要求 `ignorable: true`，仅接受公开 slug、版本、调用形式、轮次及策略摘要；正文、内部版本标识和额外信封字段均拒绝。其他 Session 事件原样复制，receipt 与 Outbox 身份只存在于 append sidecar。
 
 每个 Session 的后台写入只在确有 pending 或 retry 批次时建立 flush owner。空队列 flush 立即返回，不会留下已结算 owner 覆盖同步到达的新事件；并发入队因此仍会安排下一次远端 append。
 
@@ -38,4 +40,5 @@ provider 不增加提示词或工具 token。
 - 本后端不提供逐 Session 原始文件导出；产品导出需要使用受授权的结构化事件接口。
 - 请求令牌作用域为保证多用户隔离而串行执行；后台 append 按 Session 独立使用已认证租约。
 - 工作上下文切换不会迁移既有 Session；fork 由 FastAPI 从已授权源 Session 派生范围和子身份。
+- Business Skill 测试 Session 只能通过专用 factory publication 绑定进入 Host，普通 Session 列表和恢复路径始终排除该用途。
 - Fact sidecar 只在 `xagentFact` 服务已装配时参与 append；provider 不持有也不重建其私有注册表。

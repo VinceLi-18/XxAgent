@@ -8,6 +8,12 @@
     "src"
   ],
   "references": [
+    { "path": "../../core/agent" },
+    { "path": "../../skill/tool-skill" },
+    { "path": "../../skill/skill" },
+    { "path": "../../xagent/business-skill" },
+    { "path": "../../xagent/retrieval" },
+    { "path": "../../xagent/tool-retrieval" },
     {
       "path": "../../../vendor/cordis"
     },

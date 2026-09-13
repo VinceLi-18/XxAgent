@@ -37,7 +37,7 @@ The current executable companions protect these relationships:
 | Companion | Checks |
 |---|---|
 | `dsh-session`, `dsh-agent`, `dsh-scope`, `dsh-agent-loop` | Session enclosure and call/result trace, agent-status transitions, inbox FIFO conservation, scoped subjects, and model-request reconstruction. |
-| `dsh-llm`, `dsh-llm-retry`, `dsh-tools`, `dsh-system-prompt` | Stream grammar, durable retry position and bounds, tool-pipeline stages and frozen results, and authoritative prompt-assembly data. |
+| `dsh-llm`, `dsh-llm-retry`, `dsh-tools`, `dsh-system-prompt`, `dsh-tool-skill` | Stream grammar, durable retry position and bounds, tool-pipeline stages and frozen results, authoritative prompt-assembly data, and resolved skill-load admission. |
 | `dsh-compaction`, `dsh-hook-protocol`, `dsh-sandbox-policy` | Durable compaction and hook pairing, compaction metadata, and sandbox-mode vocabulary. |
 | `dsh-fs`, `dsh-subagent`, `dsh-workflow` | Filesystem event identity, provider/child pairing, and workflow/agent lifecycle identity. |
 | `dsh-goal`, `dsh-goal-round-driver` | Durable goal source/content agreement, revision and lifecycle transitions, timestamps, sequential admitted rounds, and reconstructed continuation prompts. |

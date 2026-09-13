@@ -28,7 +28,7 @@ class FakeFact extends Service {
   }
 }
 
-function scope(): XAgentAuthenticatedSessionRequestScope {
+function scope(purpose: 'conversation' | 'business_skill_test' = 'conversation'): XAgentAuthenticatedSessionRequestScope {
   return Object.freeze({
     principal: Object.freeze({
       actorId: '00000000-0000-0000-0000-000000000101',
@@ -44,10 +44,11 @@ function scope(): XAgentAuthenticatedSessionRequestScope {
     sessionId: SESSION,
     visibility: 'project' as const,
     projectId: '00000000-0000-0000-0000-000000000301',
+    purpose,
   })
 }
 
-async function liveConsumer(): Promise<{
+async function liveConsumer(purpose: 'conversation' | 'business_skill_test' = 'conversation'): Promise<{
   readonly ctx: Context
   readonly agent: ReturnType<Context['agentLoop']['create']>
   readonly admitted: XAgentAuthenticatedSessionRequestScope
@@ -65,7 +66,7 @@ async function liveConsumer(): Promise<{
   await ctx.plugin(invariant)
   const agent = ctx.agentLoop.create(SessionId(`session-${SESSION}`), { provider: 'mock', model: 'mock' })
   const message = createUserMessage({ content: [{ type: 'text', text: 'fact' }], source: { kind: 'user' } })
-  const admitted = scope()
+  const admitted = scope(purpose)
   runWithXAgentAuthenticatedRequestScope(admitted, () => {
     agentEvents(ctx, agent).emit('agent/inbox/inserted', { message })
   })
@@ -80,6 +81,13 @@ async function liveConsumer(): Promise<{
 
 describe('XAgent Fact tool invariant', () => {
   const throwFailure = (message: string): never => { throw new Error(message) }
+
+  test('accepts a test-purpose Agent only without a Fact registration', async () => {
+    const { ctx, agent } = await liveConsumer('business_skill_test')
+    expect(ctx.tools.get('propose_fact', agent)).toBeUndefined()
+    expect(() => { invariant.validateXAgentFactToolRelationships(ctx, throwFailure) }).not.toThrow()
+    await ctx.fiber.dispose()
+  })
 
   test('installs when the optional Consumer and Fact provider are absent', async () => {
     const ctx = new Context()

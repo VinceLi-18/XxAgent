@@ -1,0 +1,29 @@
+# XAgent 运行时包
+
+[English](README.md) | 中文
+
+本组包含 XAgent 多用户运行时的 Host 安全边界和浏览器产品面。包名使用私有 `@xagent` scope，不进入上游 dsh 默认组合。
+
+| 包 | 职责 |
+| --- | --- |
+| `@xagent/dsh-principal` | 严格解析 FastAPI introspection 结果，并绑定 Host 生成的连接标识 |
+| `@xagent/dsh-backend-client` | 通过固定内部路径、服务身份和用户 JWT 访问 FastAPI |
+| `@xagent/dsh-delegation-token` | 签发和验证最长 60 秒的 Ed25519 限域单次委托令牌 |
+| `@xagent/dsh-connection-auth` | 将浏览器 Cookie 登录态绑定为每个 Connection 请求和物理 WebSocket 的 Principal |
+| `@xagent/dsh-authorization` | 在 Session RPC 执行前通过 FastAPI 与 RLS 统一判定 read 或 edit 权限 |
+| `@xagent/dsh-session-persistence-api` | 以 FastAPI/PostgreSQL 作为 Business Session Header 与事件的唯一权威来源 |
+| `@xagent/dsh-project` | 在物理连接绑定的 Principal 请求作用域内代理项目工作台接口 |
+| `@xagent/dsh-artifact` | 在同一认证作用域内代理资料操作，并通过固定同源路由流式转发短期签名正文 |
+| `@xagent/dsh-retrieval` | 在认证 prompt 作用域内签发逐次委托、调用混合检索并管理不透明收据的生命周期 |
+| `@xagent/dsh-tool-retrieval` | 提供显式范围的项目发现与只读资料检索模型工具 |
+| `@xagent/dsh-fact` | 提供项目 Fact 提案、审批 Remote、私有收据／Outbox sidecar 和一次性后续轮次决策投影 |
+| `@xagent/dsh-tool-fact` | 只为认证项目请求提供 Native `propose_fact` 工具 |
+| `@xagent/dsh-business-skill` | 把受治理项目 Skill 发现、不可变版本激活、逐次工具授权及隔离草稿测试绑定到认证请求 |
+| `@xagent/dsh-ui-account` | 提供正式登录、账号状态与退出界面 |
+| `@xagent/dsh-ui-project` | 提供项目导航、上下文标识与第三栏项目概览 |
+| `@xagent/dsh-ui-artifact` | 在项目详情 Slot 中提供资料上传、扫描状态、不可变版本、预览与下载 |
+| `@xagent/dsh-ui-citation` | 渲染结构化引用回答，并把已验证资料导航到精确不可变版本 |
+| `@xagent/dsh-ui-fact` | 在项目详情中提供当前 Fact、待审提案、不可变历史和按权限开放的决策操作 |
+| `@xagent/dsh-ui-business-skill` | 提供按角色开放的 Draft → Test → Publish → Authorize 工作流，以及版本、测试和审计历史 |
+
+这些包本身不接管通用 dsh Profile。只有 XAgent Business 组合显式装载后才生效；Developer 和上游 Profile 不会启用这些服务，也不会获得服务凭据或委托私钥。资料管理能力只服务人工界面；独立检索工具包显式装载后，才会把当前授权范围内的只读证据加入 Session 与模型上下文。Fact 写入只在认证项目请求中注册；异步人工审批通过 Outbox 进入来源 Session，但不启动轮次，并在下一次用户发起的模型请求中按日志顺序显示一次。Business Skill 是受治理的项目内容：只读测试排除生产 Fact 写入，发布后的调用在每个轮次使用一个不可变版本，且每次工具调用都通过 FastAPI 重新授权。

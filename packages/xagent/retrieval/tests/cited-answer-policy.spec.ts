@@ -124,6 +124,7 @@ function projectScope(sessionId: string): XAgentAuthenticatedSessionRequestScope
     sessionId,
     visibility: 'project' as const,
     projectId: '00000000-0000-0000-0000-000000000301',
+    purpose: 'conversation' as const,
   })
 }
 

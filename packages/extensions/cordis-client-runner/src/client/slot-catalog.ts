@@ -1809,5 +1809,29 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'xagent.workbench.facts\', () => ctx.slots.register(\n      { name: \'xagent.workbench.facts\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
     source: 'packages/xagent/ui-project/src/client/index.ts:23',
   },
+  {
+    key: 'xagent.workbench.skills',
+    kind: 'single',
+    scope: 'root',
+    summary: '当前项目的业务 Skill 发布和授权。',
+    doc: '当前项目的业务 Skill 发布和授权。',
+    registerOptions: [],
+    ownerProps: [],
+    ownerPropsReferences: [],
+    standardProps: [
+      'useSessions: SnapshotSelectorHook<SessionListState>',
+      'useWorkspaces: SnapshotSelectorHook<import(\'./workspaces/service.ts\').WorkspaceListState>',
+    ],
+    keyDomain: '',
+    hookContext: '',
+    slotInject: '',
+    declaredBy: 'an entry in \'shell.details\' (@xagent/dsh-ui-project), so it exists while that entry is mounted',
+    occupants: [
+      '@xagent/dsh-ui-business-skill BusinessSkillPanel',
+    ],
+    replaceRisk: 'shadows-shipped-ui',
+    example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'xagent.workbench.skills\', () => ctx.slots.register(\n      { name: \'xagent.workbench.skills\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+    source: 'packages/xagent/ui-project/src/client/index.ts:25',
+  },
 ]
 /* jscpd:ignore-end */

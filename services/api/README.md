@@ -28,6 +28,8 @@ pnpm run api:migrate
 
 ## 本地容器服务
 
+生产与测试编排从官方 `quay.io/minio/minio` 获取 MinIO，使用相同的发布版本和固定镜像摘要。
+
 从环境模板创建本地配置并替换所有密码和 JWT 密钥占位值：
 
 ```bash
@@ -42,7 +44,7 @@ API 进程同时接收最低权限业务连接 `DATABASE_URL` 和受信管理连
 
 `xagent-api worker` 使用独立的 `DATABASE_WORKER_URL`、MinIO 和 ClamAV 配置处理资料。完成上传只记录服务端观察到的暂存对象 ETag 和大小；worker 在一次对象流中完成 ClamAV 扫描、SHA-256 复核和 MIME 采样，并在复制到 `artifacts/{artifact_id}/{version_id}` 后通过租约 token 与未过期时间原子发布。ClamAV 或对象流暂不可用时有限重试；对象身份漂移直接失败，感染正文隔离且不创建最终对象。
 
-检索栈使用固定镜像摘要的 PostgreSQL 16 + pgvector 和 CPU embedding 容器。embedding 的 Python 与 uv 基础镜像也按摘要固定，依赖来自冻结的 `services/embedding/uv.lock`。embedding 不发布主机端口，只接收 API 和 worker 通过 Compose 服务网络发送的请求；健康检查必须真实加载 `BAAI/bge-m3` 的固定修订并返回 1024 维向量。`services/embedding/bge-m3-snapshot.json` 记录官方 Hugging Face 不可变修订 API 和精确 snapshot 文件集的大小、SHA-256 与 blob ID；`verify_model_snapshot.py` 在真实验收前检查该清单。缺失、部分存在、损坏、元数据漂移，或精确 revision snapshot 内出现未列出的常规文件与符号链接（包括替代权重、索引和 adapter）都会失败关闭；snapshot 外的 Hugging Face 缓存元数据不参与该文件集比较。
+检索栈使用固定镜像摘要的 PostgreSQL 16 + pgvector 和 CPU embedding 容器。embedding 的 Python 与 uv 基础镜像也按摘要固定，依赖来自冻结的 `services/embedding/uv.lock`。embedding 不发布主机端口，只接收 API 和 worker 通过 Compose 服务网络发送的请求；健康检查必须真实加载 `BAAI/bge-m3` 的固定修订并返回 1024 维向量。worker 接受起点与终点分别单调的重叠 tokenizer 区间，并只允许被遗漏的连续输入经同一 tokenizer 规范化后完全成为空白；其他空隙、截断、逆序、空或越界区间均失败关闭。分片边界不会切开重叠区间组，且每段最终正文都经固定 tokenizer 独立重新编码，只有真实计数不超过 512 token 且正文不超过 8 KiB 时才发送给 embedding。`services/embedding/bge-m3-snapshot.json` 记录官方 Hugging Face 不可变修订 API 和精确 snapshot 文件集的大小、SHA-256 与 blob ID；`verify_model_snapshot.py` 在真实验收前检查该清单。缺失、部分存在、损坏、元数据漂移，或精确 revision snapshot 内出现未列出的常规文件与符号链接（包括替代权重、索引和 adapter）都会失败关闭；snapshot 外的 Hugging Face 缓存元数据不参与该文件集比较。
 
 `XAGENT_EMBEDDING_CACHE_DIR` 指向 embedding 可写且 API 和 worker 只读的共享模型与 tokenizer 缓存。Linux CI 或部署主机以 embedding 的 UID/GID `65532:65532` 持有该目录，并只给组和其他用户读取与遍历权限：
 
@@ -84,6 +86,22 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 
 ## 工作台与 Session 内部接口
 
+Business Skill 的 PostgreSQL 存储以项目内唯一且不可变的 slug 标识稳定技能，分别保存一个可变草稿、不可变发布版本、独立测试记录和稳定技能授权。版本号与运行编号跨整个项目递增，调用方必须先锁项目行再锁技能行；复合外键禁止跨技能选择当前版本或跨项目关联测试 Session。`xagent_sessions.purpose` 创建时可选 `conversation` 或 `business_skill_test`，此后不可变；测试用途只允许 Project Session，返回给 Host 的 Session 行始终包含该用途。API 数据库角色仅获得必要列的写权限，worker 无权访问技能关系。存在技能记录、测试 Session 或技能审计时，revision `018_xagent_business_skills` 在执行 DDL 前拒绝降级。[治理决策](../../.agents/notes/implemented/feature/2026-09-11-project-business-skills.zh.md)定义完整发布、授权和执行流程。
+
+Business Skill 治理入口位于 `/internal/xagent/business-skills/projects/{project_id}`：`list`、`create` 和 `/{slug}/detail|draft|publish|authorization|current-version|retire`，人工测试结论使用 `/{slug}/tests/{run_number}/verdict`。请求只接受声明字段及 `schema_version: 1`，写入还要求 `idempotency_key`；草稿和发布要求正整数 `expected_draft_revision`。当前 Specialist、Manager 项目成员均可编辑和记录结论，发布、授权、选择历史版本与退役仅限 Manager；失效登录、权限版本、成员关系和未知资源统一返回 `not-found`。服务在 serializable 事务中锁定当前权限与项目，再切换到应用角色执行 RLS 写入；成功重放先重验当前权限，并返回原始响应，键与请求不匹配则返回 `idempotency-conflict`。
+
+`/{slug}/tests/start` 接受确切的 `expected_draft_revision`、`tool_policy_digest` 和一个 `scenario`，原子创建空的测试 Session 与运行记录。Host 收到固定的草稿正文、摘要、场景、只读工具集合和未执行写权限；这些输入保存在幂等响应中，后续编辑不改变重放结果。Host 通过真实 Skill 注入和场景提交追加事件；API 不预写模型可见事件。`/{slug}/tests/{run_number}/settle` 仅允许当前起始账号凭确切 `session_id` 和幂等键提交终止原因；完成、失败、取消相互独立于人工结论，终态不能被迟到响应覆盖。普通列表、工作台计数、打开、事件读取、授权、分叉和归档均排除测试用途；运行期间仅起始账号可追加，专用 `transcript` 按序分页读取持久化事件并重新校验项目成员关系，不返回持久化账号、Session 或审计键。
+
+Host 专用的 `/{slug}/tests/{run_number}/mount` 在当前权限事务中锁定 Session、技能和运行，核对起始账号、项目、用途、运行状态以及空 header 和事件日志，并要求真实 Agent factory 的 runtime header 只包含匹配的测试 Session 标识、格式版本、创建时间和 POSIX 或 Windows 绝对工作区，再原子写入该 header 与启动事件。仅首次调用返回执行归属；相同发布内容的重放不取得归属，冲突内容拒绝。`cancel-unmounted` 使用相同锁顺序，仅取消尚未挂载的空运行并记录正式审计；挂载与取消只能一方成功。已挂载运行由拥有它的 Host 等待模型、工具和持久化结束后结算。这两个入口不向 Browser 暴露内部 Session 键或归属字段。
+
+测试记录的 `unexecuted_write_tools` 在启动时由工具策略写入，之后不可修改；所有测试报告返回该历史字段，目前只允许空数组或 `propose_fact`。它不随草稿编辑、其他运行或人工结论变化。revision `019_skill_test_permissions` 只允许空测试表升级或降级，在 DDL 前拒绝非空表；旧格式未保存的历史写权限不能从当前草稿可靠恢复，因此迁移不猜测或回填。
+
+`/{slug}/tests/{run_number}/authorize-tool` 是 Host 专用执行授权；事务内重新检查当前登录、权限版本和项目成员关系，并锁定测试 Session、技能和运行。仅起始账号可为确切的已挂载运行中 Session 调用其固定 `test_tools`，策略摘要必须匹配，技能必须活跃且请求未取消。已识别运行的执行策略拒绝记录不含正文或工具参数的正式审计。草稿编辑不改变既有运行策略；退役阻止挂载和下一次工具执行，但不阻止历史 transcript 读取。revision `020_skill_test_policy` 增加排序、闭合、不可变、非 null 且无默认值的 `test_tools`；升级和降级均在 DDL 前拒绝非空测试表。该集合通过既有 Host 启动响应返回，公开报告字段保持不变。
+
+`/runtime/catalog`、`/runtime/load` 和 `/runtime/authorize-tool` 要求 Host 服务身份、当前账号令牌及项目普通 Session。目录仅包含已发布、已授权且有效的当前版本；加载请求携带 `slug` 与 `version_key`，版本切换返回 `business-skill-version-changed`。每次工具授权携带固定版本键、`tool_policy_digest`、`tool_name` 和 `cancelled`；允许仍有稳定技能授权的历史发布版本，撤权、退役、成员失效、摘要不符、未许可工具、取消或后端失败均拒绝执行。内部版本键和测试 Session 键仅供 Host 使用，不能进入 Browser、模型目录或工具结果；拒绝审计仅保存关联身份和封闭结果，不保存正文、场景或工具参数。
+
+草稿正文最多 64 KiB、描述最多 2 KiB UTF-8；主要工具必须是排序且无重复的封闭集合。显示名称不计入内容摘要，因此仅重命名不会推进草稿修订。`source_version_number` 可把同一技能的历史发布内容复制到草稿，复制和编辑都受预期修订保护。发布必须匹配正常完成且人工通过的测试所记录的修订、内容摘要和当前工具策略摘要；发布不会自动授权，既有授权则跟随稳定技能的当前版本。退役在同一事务清除授权且不可恢复。列表与版本、测试历史每页默认 50 条，最多 100 条；详情中的审计摘要同样有界，并保留现有 AuditEvent 的当前账号读取限制。浏览器响应仅使用公开 slug、版本号与运行编号，不含数据库 UUID、权限版本或审计详情；审计写入仅保留内部关联 ID、摘要与封闭结果。
+
 `/internal/xagent/*` 业务路由同时要求 `X-XAgent-Service-Token` 服务身份和当前账号的 Bearer token。服务端 introspection 生成 Principal，并在同一数据库事务设置 actor context；浏览器不得提交 actor、role、owner 或权限版本。固定的 `/internal/xagent/retrieval/token-count` 是纯内部 tokenizer relay，只接受服务令牌，不接收用户 JWT 或委托令牌；它在解析前把最坏 JSON 转义正文限制为 49,163 bytes，把合法原始查询限制为 8 KiB UTF-8，只向 `EMBEDDING_URL` 的 `/token-count` 转发，并把 embedding 响应限制为 512 bytes。relay 手动处理重定向，并对重定向、超时、请求取消、超限或畸形响应失败关闭。该路径不写检索审计，API 与 embedding 日志均不得记录原始查询。
 
 检索入口在同一 serializable 事务中完成登录、权限 revision、项目授权、RLS 搜索、ordinal 预留和 receipt 签发。该路径的 introspection 仍完整验证 token、账号状态、登录撤销、角色与 revision，但不锁定认证记录，也不更新 `last_verified_at`；普通登录校验路径继续锁定并更新时间。这样检索事务不会因无关的认证审计写入产生 serializable 写冲突。
@@ -95,6 +113,8 @@ uv run --python 3.11 --project services/api xagent-api account deactivate \
 Fact proposal admission 不信任客户端展示元数据。服务端先严格验证 receipt、公开工具结果与数据库 admission，再从规范 proposal ID 重建只含 `kind: xagent-fact`、`status: pending` 和 `proposalId` 的公开事件元数据，因此重开 Session 仍能精确识别同一 pending proposal。Fact 审计保留 Session 工具提供方给出的不透明 tool-call ID，并与 Session wire 一致要求其为一至 255 个字符，不假设提供方专属前缀。Fact Outbox admission 只接受字段严格为 `seq`、`time`、`type`、`data` 的 `fact/proposal-decided` 日志事件；`surfaceOp` 或任何其他附加字段都会失败关闭。服务端在同一事务核对 Outbox 身份与摘要、写入规范事件并消费对应 Outbox 行。
 
 检索 receipt admission 会在 `xagent_admitted_evidence` 保存短 citation ID、admission sequence 及精确 Artifact、Version、Index generation 与 Chunk。规范 `xagent-cited-answer` append 只把首次使用的 citation ID 绑定到该 Session 中更早的已入账关系，并在 `xagent_cited_answer_evidence` 保存 answer 与证据关系；复合外键要求全部不可变身份精确一致。没有 cited answer 的批次不查询 provenance 或历史事件；有 cited answer 的批次仅以当前引用 ID 经主键索引和显式行上限读取已入账证据，工作量不随日志长度增加。这两张不可变关系表不读取表层消息投影，也不把原 actor 的私有 receipt 当作后续读取授权。Citation resolve 只接受短 ID，先通过 Session RLS 读取持久 provenance，再以当前 actor 的 Artifact RLS 和权限 finalizer 重新授权精确不可变版本；reload、resume、compaction、有效 fork 和仍获授权的 Project 成员可继续打开，撤权后失败关闭。
+
+`/internal/xagent/retrieval/projects` 的 Private Session 发现不接受 Business Skill 证明，继续返回最多 20 个当前可访问项目。普通 Project Session 必须携带 Host 专用 `business_skill` 发布证明（`kind: published`、`slug`、`version_key`、`tool_policy_digest`），并在同一检索事务复用运行时 `list_accessible_projects` 授权；测试 Session 必须携带 `kind: test`、`slug`、`run_number` 与摘要，复用已挂载运行的专用工具授权。Project 与测试发现只查询 Session 固定项目，查询不匹配可返回空；receipt 的 scope 始终保留该固定项目。缺少或错误的证明、用途、Session、委托工具身份以及当前撤权或退役均失败关闭。证明不来自 Browser 或模型参数，也不授予跨项目权限。
 
 ### 资料读取 URL
 

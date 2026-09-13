@@ -36,6 +36,8 @@ function readJsExpressionConfig(config: Record<string, unknown>): Record<string,
 }
 
 const prohibitedRows = [
+  'subprocess',
+  'shell-env',
   'bash-sandbox',
   'pwsh-sandbox',
   'tool-bash',
@@ -56,7 +58,6 @@ const prohibitedRows = [
   'tool-subagent-report',
   'workflow-worker-thread',
   'tool-workflow',
-  'tool-skill',
   'skill-filesystem',
 ] as const
 
@@ -65,6 +66,8 @@ const disabledHostRows = ['permission', 'ui-permission'] as const
 const disabledPresetRows = ['agent-presets', 'ui-agent-preset'] as const
 
 const forbiddenBrowserFields = [
+  'testProvider',
+  'testModel',
   'serviceToken',
   'userToken',
   'receipt',
@@ -167,6 +170,26 @@ function readXagentStatePatches(patch: EntryPatch[]): Record<string, Record<stri
 }
 
 describe('xagent business bundle', () => {
+  it('disables the web worker arbitrary-code provider in the assembled profile', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'business-code-runtime-'))
+    try {
+      const profile = loadProfile('dsh-test', 'xagent-business', resolve(process.cwd(), 'apps/cli/package.json'), home)
+      const rows = composeEntries(profile.layers.map(layer => layer.patches))
+      expect(rows.find(row => row.id === 'code-runtime')).toMatchObject({ disabled: true })
+    } finally { rmSync(home, { recursive: true, force: true }) }
+  })
+  it('enables governed Skill loading with deployment-owned test model selection', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const rows = new Map(loadPatch(resolve(root, 'cordis.patch.yml')).flatMap(row => row.insert ?? [row]).map(row => [row.id, row]))
+    expect(rows.get('tool-skill')).toMatchObject({ disabled: false })
+    expect(rows.get('xagent-business-skill')).toEqual({
+      id: 'xagent-business-skill', name: '@xagent/dsh-business-skill',
+      config: { backendOrigin: { __jsExpr: 'process.env.XAGENT_API_ORIGIN' },
+        serviceToken: { __jsExpr: 'process.env.XAGENT_SERVICE_TOKEN' }, maxCatalogEntries: 100,
+        testProvider: 'deepseek-official', testModel: 'deepseek-v4-flash' },
+    })
+    expect(rows.get('xagent-ui-business-skill')).toEqual({ id: 'xagent-ui-business-skill', name: '@xagent/dsh-ui-business-skill' })
+  })
   it('declares a private bundle patch without the web application layer', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
@@ -372,6 +395,7 @@ describe('xagent business bundle', () => {
       }))
       expect(browserRows.map(({ row }) => row.id)).toContain('xagent-ui-citation')
       expect(browserRows.map(({ row }) => row.id)).toContain('xagent-ui-fact')
+      expect(browserRows.filter(({ row }) => row.id === 'xagent-ui-business-skill')).toHaveLength(1)
       expect(() => { assertNoForbiddenBrowserData({ rows: browserRows.map(item => item.row), graph }) }).not.toThrow()
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -394,6 +418,16 @@ describe('xagent business bundle', () => {
     }
   })
 
+  it.each(['testProvider', 'testModel'])('rejects Host-only %s in the effective Skills Browser row', (field) => {
+    const home = mkdtempSync(resolve(tmpdir(), 'business-skill-browser-route-'))
+    try {
+      const rows = structuredClone(effectiveBusinessBrowserRows(home).map(item => item.row))
+      const skill = rows.find(row => row.id === 'xagent-ui-business-skill')!
+      skill.config = { [field]: 'browser-override' }
+      expect(() => { assertNoForbiddenBrowserData(rows) }).toThrow(field)
+    } finally { rmSync(home, { recursive: true, force: true }) }
+  })
+
   it('keeps Artifact, retrieval, and Fact packages out of every shipped non-Business Profile dump', () => {
     const home = mkdtempSync(resolve(tmpdir(), 'xagent-artifact-profile-dumps-'))
     const anchor = fileURLToPath(new URL('../../../../apps/cli/package.json', import.meta.url))
@@ -411,6 +445,8 @@ describe('xagent business bundle', () => {
         expect(names, `${profileName} Fact provider dump`).not.toContain('@xagent/dsh-fact')
         expect(names, `${profileName} Fact tool dump`).not.toContain('@xagent/dsh-tool-fact')
         expect(names, `${profileName} Fact Browser dump`).not.toContain('@xagent/dsh-ui-fact')
+        expect(names, `${profileName} Business Skill provider dump`).not.toContain('@xagent/dsh-business-skill')
+        expect(names, `${profileName} Business Skill Browser dump`).not.toContain('@xagent/dsh-ui-business-skill')
         expect(warnings, `${profileName} dump warnings`).toEqual([])
       }
     } finally {
@@ -425,6 +461,9 @@ describe('xagent business bundle', () => {
     }
 
     expect(manifest.dependencies).toMatchObject({
+      '@deepseek-ai/dsh-tool-skill': 'workspace:^',
+      '@xagent/dsh-business-skill': 'workspace:^',
+      '@xagent/dsh-ui-business-skill': 'workspace:^',
       '@xagent/dsh-authorization': 'workspace:^',
       '@xagent/dsh-artifact': 'workspace:^',
       '@xagent/dsh-backend-client': 'workspace:^',
@@ -452,6 +491,8 @@ describe('xagent business bundle', () => {
     )) as { dependencies?: Record<string, string> }
 
     expect(manifest.dependencies).toMatchObject({
+      '@xagent/dsh-business-skill': 'workspace:^',
+      '@xagent/dsh-ui-business-skill': 'workspace:^',
       '@xagent/dsh-artifact': 'workspace:^',
       '@xagent/dsh-delegation-token': 'workspace:^',
       '@xagent/dsh-fact': 'workspace:^',

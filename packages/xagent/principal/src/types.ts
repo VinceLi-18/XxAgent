@@ -1,6 +1,9 @@
 /** XAgent 当前支持的账号角色。 */
 export type XAgentRole = 'manager' | 'specialist'
 
+/** Immutable FastAPI routing purpose for one persisted Session. */
+export type XAgentSessionPurpose = 'conversation' | 'business_skill_test'
+
 /** FastAPI 认证后绑定到一条 Host 物理连接的不可变身份。 */
 export interface XAgentPrincipal {
   readonly actorId: string
@@ -32,10 +35,12 @@ export type XAgentAuthenticatedSessionRequestScope = XAgentAuthenticatedRequestS
     readonly sessionId: string
     readonly visibility: 'private'
     readonly projectId: null
+    readonly purpose: XAgentSessionPurpose
   }
   | {
     readonly sessionId: string
     readonly visibility: 'project'
     readonly projectId: string
+    readonly purpose: XAgentSessionPurpose
   }
 )

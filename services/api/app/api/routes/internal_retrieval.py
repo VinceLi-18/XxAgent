@@ -36,6 +36,10 @@ from app.schemas.retrieval import (
 )
 from app.services.audit import retrieval_audit_details, write_audit_event
 from app.services.auth import AuthenticationRejected, introspect
+from app.schemas.business_skills import BusinessSkillToolRequest, BusinessSkillTestToolRequest
+from app.services.business_skills import (
+    BusinessSkillServiceError, business_skill_runtime_decision, authorize_business_skill_test_tool,
+)
 from app.services.retrieval import (
     RetrievalCandidate,
     RetrievalError,
@@ -341,9 +345,32 @@ async def projects_route(
             session_id=request.session_id, tool_call_id=request.tool_call_id,
             tool_name="list_accessible_projects",
         )
-        if session_item.visibility != "private":
-            raise RetrievalError("invalid-retrieval-scope")
-        projects = await list_accessible_projects(context.session, query=request.query)
+        proof = request.business_skill
+        fixed_project = session_item.project_id
+        if session_item.visibility == "private":
+            if proof is not None or session_item.purpose != "conversation":
+                raise RetrievalError("invalid-retrieval-scope")
+        else:
+            if proof is None or fixed_project is None:
+                raise RetrievalError("invalid-retrieval-scope")
+            authorization = dict(schema_version=1, session_id=request.session_id,
+                tool_policy_digest=proof.tool_policy_digest, tool_name="list_accessible_projects", cancelled=False)
+            try:
+                if session_item.purpose == "conversation" and proof.kind == "published":
+                    await business_skill_runtime_decision(context.session, context.principal, fixed_project,
+                        BusinessSkillToolRequest(**authorization, slug=proof.slug, version_key=proof.version_key))
+                elif session_item.purpose == "business_skill_test" and proof.kind == "test":
+                    await authorize_business_skill_test_tool(context.session, context.principal, fixed_project,
+                        proof.slug, proof.run_number, BusinessSkillTestToolRequest(**authorization))
+                else:
+                    raise RetrievalError("invalid-retrieval-scope")
+            except BusinessSkillServiceError:
+                raise RetrievalError("invalid-retrieval-scope") from None
+        projects = await list_accessible_projects(context.session, query=request.query, project_id=fixed_project)
+        discovery_scope = {"kind": session_item.visibility, "project_ids": [] if fixed_project is None else [str(fixed_project)],
+                           "include_private": False}
+        scope_digest = (hashlib.sha256(b"private-project-discovery").hexdigest() if fixed_project is None
+                        else payload_sha256(discovery_scope))
         await finalize_retrieval_authorization(
             context.session,
             session_id=request.session_id,
@@ -364,10 +391,7 @@ async def projects_route(
                 session_id=request.session_id,
                 tool_call_id=request.tool_call_id,
                 query_sha256=hashlib.sha256((request.query or "").encode()).hexdigest(),
-                scope={
-                    "kind": "private", "project_ids": [], "include_private": False,
-                    "sha256": hashlib.sha256(b"private-project-discovery").hexdigest(),
-                },
+                scope={**discovery_scope, "sha256": scope_digest},
                 permission_revision=context.principal.permission_revision,
                 project_ids=tuple(item["project_id"] for item in projects),
                 index_generations=(),
@@ -382,7 +406,7 @@ async def projects_route(
         await _write_retrieval_audit(
             context, action="retrieval.project_discovery", session_id=request.session_id,
             tool_call_id=request.tool_call_id, result="allowed",
-            project_scope_sha256=hashlib.sha256(b"private-project-discovery").hexdigest(),
+            project_scope_sha256=scope_digest,
             query_sha256=hashlib.sha256((request.query or "").encode()).hexdigest(),
             candidate_count=len(projects), returned_count=len(projects),
             latency_ms=max(0, int((time.monotonic() - started) * 1000)),

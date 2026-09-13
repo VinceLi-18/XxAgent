@@ -98,7 +98,7 @@ class _ContentIdentityMismatch(RuntimeError):
 
 
 class _BgeTokenizer:
-    """Pinned fast tokenizer used only for deterministic source offsets."""
+    """Pinned fast tokenizer used for deterministic source offsets and counts."""
 
     def __init__(self) -> None:
         from tokenizers import Tokenizer as FastTokenizer
@@ -107,11 +107,24 @@ class _BgeTokenizer:
 
         self._tokenizer = FastTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
 
+    def count_tokens(self, text: str) -> int:
+        """Return the token count for text encoded without special tokens."""
+
+        return len(self._tokenizer.encode(text, add_special_tokens=False).ids)
+
     def encode_with_offsets(self, text: str) -> Sequence[tuple[int, int]]:
         """Return BGE token character offsets without special tokens."""
 
         encoding = self._tokenizer.encode(text, add_special_tokens=False)
         return encoding.offsets
+
+    def normalize(self, text: str) -> str:
+        """Return text after the pinned tokenizer's normalization."""
+
+        normalizer = self._tokenizer.normalizer
+        if normalizer is None:
+            return text
+        return normalizer.normalize_str(text)
 
 
 async def _load_work(

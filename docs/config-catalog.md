@@ -1859,7 +1859,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/skill/skill/src/index.ts:279`](../packages/skill/skill/src/index.ts)
+Source: [`packages/skill/skill/src/index.ts:281`](../packages/skill/skill/src/index.ts)
 
 <a id="deepseek-aidsh-skill-filesystem"></a>
 
@@ -2569,7 +2569,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/skill/tool-skill/src/index.ts:61`](../packages/skill/tool-skill/src/index.ts)
+Source: [`packages/skill/tool-skill/src/index.ts:84`](../packages/skill/tool-skill/src/index.ts)
 
 <a id="deepseek-aidsh-tool-str-replace-editor"></a>
 
@@ -3057,6 +3057,30 @@ export interface Config {
 
 Source: [`packages/xagent/authorization/src/index.ts:53`](../packages/xagent/authorization/src/index.ts)
 
+<a id="xagentdsh-business-skill"></a>
+
+## `@xagent/dsh-business-skill`
+
+Requires: `agents` · `sessions` · `skills` · `tools` · `systemPrompt`
+
+```ts config-catalog
+/** FastAPI transport and catalog resource limits for the Host plugin. */
+export interface Config {
+  /** Absolute FastAPI origin. */
+  backendOrigin: string
+  /** Host service credential; never sent to Browser or model. */
+  serviceToken: string
+  /** Maximum complete catalog entries; oversized responses fail closed. */
+  maxCatalogEntries: number
+  /** Registered provider used for real draft-test model calls. */
+  testProvider: string
+  /** Provider model used for real draft-test model calls. */
+  testModel: string
+}
+```
+
+Source: [`packages/xagent/business-skill/src/index.ts:34`](../packages/xagent/business-skill/src/index.ts)
+
 <a id="xagentdsh-connection-auth"></a>
 
 ## `@xagent/dsh-connection-auth`
@@ -3143,7 +3167,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:91`](../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:94`](../packages/xagent/retrieval/src/index.ts)
 
 <a id="xagentdsh-session-persistence-api"></a>
 
@@ -3161,7 +3185,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/xagent/session-persistence-api/src/index.ts:31`](../packages/xagent/session-persistence-api/src/index.ts)
+Source: [`packages/xagent/session-persistence-api/src/index.ts:34`](../packages/xagent/session-persistence-api/src/index.ts)
 
 ## Loadable plugins with no config
 
@@ -3236,6 +3260,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@xagent/dsh-tool-retrieval` — requires `tools` ([`packages/xagent/tool-retrieval/src/index.ts`](../packages/xagent/tool-retrieval/src/index.ts))
 - `@xagent/dsh-ui-account` ([`packages/xagent/ui-account/src/index.ts`](../packages/xagent/ui-account/src/index.ts))
 - `@xagent/dsh-ui-artifact` ([`packages/xagent/ui-artifact/src/index.ts`](../packages/xagent/ui-artifact/src/index.ts))
+- `@xagent/dsh-ui-business-skill` ([`packages/xagent/ui-business-skill/src/index.ts`](../packages/xagent/ui-business-skill/src/index.ts))
 - `@xagent/dsh-ui-citation` ([`packages/xagent/ui-citation/src/index.ts`](../packages/xagent/ui-citation/src/index.ts))
 - `@xagent/dsh-ui-fact` ([`packages/xagent/ui-fact/src/index.ts`](../packages/xagent/ui-fact/src/index.ts))
 - `@xagent/dsh-ui-project` ([`packages/xagent/ui-project/src/index.ts`](../packages/xagent/ui-project/src/index.ts))

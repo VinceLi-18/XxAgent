@@ -17,6 +17,7 @@ import * as authorizationModule from '../src/index.ts'
 import {
   XAgentAuthorization,
   XAgentAuthorizationService,
+  type XAgentBusinessSkillScopeRunner,
   type TokenScopedPersistence,
 } from '../src/index.ts'
 
@@ -40,6 +41,7 @@ function backend(authorize: XAgentSessionBackend['authorize'] = vi.fn(async () =
         id: '00000000-0000-0000-0000-000000000701',
         visibility: 'private',
         project_id: null,
+        purpose: 'conversation',
         runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
       }] })),
       create: vi.fn(), open: vi.fn(), events: vi.fn(), append: vi.fn(), fork: vi.fn(), archive: vi.fn(),
@@ -135,6 +137,28 @@ function factScope(onScope?: (scope: XAgentAuthenticatedRequestScope) => void): 
   }
 }
 
+function businessSkillScope(onScope?: (scope: XAgentAuthenticatedSessionRequestScope) => void): XAgentBusinessSkillScopeRunner & {
+  readonly active: () => XAgentAuthenticatedSessionRequestScope | undefined
+  readonly withPrompt: <T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>) => Promise<T>
+} {
+  let active: XAgentAuthenticatedSessionRequestScope | undefined
+  const run = async <T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T> => {
+    if (active !== undefined) throw new Error('nested Business Skill request scope')
+    active = scope
+    onScope?.(scope)
+    try {
+      return await operation()
+    } finally {
+      active = undefined
+    }
+  }
+  return {
+    active: () => active,
+    withRequest: run,
+    withPrompt: run,
+  }
+}
+
 describe('XAgent Session 授权', () => {
   test('prompt admission propagates one immutable physical and Session scope into detached agent work', async () => {
     const value = backend()
@@ -144,16 +168,20 @@ describe('XAgent Session 授权', () => {
         id: '00000000-0000-0000-0000-000000000701',
         visibility: 'project',
         project_id: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
         runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
       }],
     }))
-    const auth = new XAgentAuthorization(value, persistence())
+    const businessSkill = businessSkillScope()
+    const auth = new XAgentAuthorization(
+      value, persistence(), undefined, undefined, undefined, undefined, () => businessSkill,
+    )
     const request = new AbortController()
     const connection = new AbortController()
     let resolveDetached!: (scope: unknown) => void
     const detached = new Promise<unknown>((resolve) => { resolveDetached = resolve })
 
-    await auth.run(
+    const result = await auth.run(
       'session/prompt',
       { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
       { ...context, requestId: 'rpc-1', lifetime: connection.signal },
@@ -161,10 +189,17 @@ describe('XAgent Session 授权', () => {
       async () => {
         void new Promise<void>(resolve => setImmediate(resolve))
           .then(() => { resolveDetached(currentXAgentAuthenticatedRequestScope()) })
+        expect(businessSkill.active()).toMatchObject({
+          sessionId: '00000000-0000-0000-0000-000000000701',
+          visibility: 'project',
+          projectId: '00000000-0000-0000-0000-000000000401',
+          purpose: 'conversation',
+        })
         return { ok: true, value: 'ok' }
       },
     )
 
+    expect(result).toEqual({ ok: true, value: 'ok' })
     await expect(detached).resolves.toMatchObject({
       principal: context.principal,
       userToken: 'alice-token',
@@ -175,6 +210,15 @@ describe('XAgent Session 授权', () => {
       requestSignal: request.signal,
       connectionSignal: connection.signal,
     })
+
+    const withoutBusinessSkill = new XAgentAuthorization(value, persistence())
+    await expect(withoutBusinessSkill.run(
+      'session/prompt',
+      { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } },
+      { ...context, requestId: 'rpc-2', lifetime: connection.signal },
+      request.signal,
+      async () => ({ ok: true, value: 'without-business-skill' }),
+    )).resolves.toEqual({ ok: true, value: 'without-business-skill' })
   })
   test('模块插件入口只暴露带配置的安装函数', () => {
     expect('default' in authorizationModule).toBe(false)
@@ -335,7 +379,7 @@ describe('XAgent Session 授权', () => {
     const value = backend()
     value.sessions.list = vi.fn(async () => ({
       schema_version: 1,
-      sessions: [{ runtime_header: { id: 'session-alice' } }],
+      sessions: [{ purpose: 'conversation', runtime_header: { id: 'session-alice' } }],
     }))
     const auth = new XAgentAuthorization(value, persistence())
 
@@ -517,6 +561,109 @@ describe('XAgent Session 授权', () => {
   })
 
   test.each([
+    'list', 'detail', 'create', 'draft', 'test', 'transcript', 'verdict', 'publish', 'authorization', 'version', 'retire',
+  ])('xagentBusinessSkill/%s 在匹配的普通 Project Session 和用户令牌范围内执行', async (method) => {
+    const scopes: XAgentAuthenticatedSessionRequestScope[] = []
+    const scope = businessSkillScope(value => scopes.push(value))
+    const scopedTokens: string[] = []
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        project_id: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const operation = vi.fn(async (): Promise<RpcResult<string>> => {
+      expect(scope.active()).toMatchObject({
+        principal: context.principal,
+        userToken: 'alice-token',
+        connectionId: 'connection-1',
+        sessionId: '00000000-0000-0000-0000-000000000701',
+        visibility: 'project',
+        projectId: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
+      })
+      return { ok: true, value: 'ok' }
+    })
+    const auth = new XAgentAuthorization(
+      remote, persistence(token => scopedTokens.push(token)), undefined, undefined, undefined, undefined, scope,
+    )
+
+    await expect(auth.run(
+      `xagentBusinessSkill/${method}`,
+      { args: {
+        projectId: '00000000-0000-0000-0000-000000000401',
+        sessionId: 'session-00000000-0000-0000-0000-000000000701',
+      } },
+      context,
+      new AbortController().signal,
+      operation,
+    )).resolves.toEqual({ ok: true, value: 'ok' })
+    expect(operation).toHaveBeenCalledOnce()
+    expect(scopedTokens).toEqual(['alice-token'])
+    expect(scopes).toHaveLength(1)
+    expect(scope.active()).toBeUndefined()
+  })
+
+  test('Business Skill Remote 对未知方法、缺少标识和未装配 provider 失败关闭', async () => {
+    const operation = vi.fn(success)
+    const scope = businessSkillScope()
+    const auth = new XAgentAuthorization(backend(), persistence(), undefined, undefined, undefined, undefined, scope)
+    const signal = new AbortController().signal
+    for (const [endpoint, payload] of [
+      ['xagentBusinessSkill/unknown', { args: { projectId: '00000000-0000-0000-0000-000000000401', sessionId: 'session-00000000-0000-0000-0000-000000000701' } }],
+      ['xagentBusinessSkill/list', { args: { sessionId: 'session-00000000-0000-0000-0000-000000000701' } }],
+      ['xagentBusinessSkill/list', { args: { projectId: '00000000-0000-0000-0000-000000000401' } }],
+    ] as const) {
+      await expect(auth.run(endpoint, payload, context, signal, operation))
+        .resolves.toMatchObject({ ok: false, error: { code: 'unauthenticated' } })
+    }
+    const missing = new XAgentAuthorization(backend(), persistence())
+    await expect(missing.run('xagentBusinessSkill/list', { args: {
+      projectId: '00000000-0000-0000-0000-000000000401',
+      sessionId: 'session-00000000-0000-0000-0000-000000000701',
+    } }, context, signal, operation)).resolves.toEqual({
+      ok: false,
+      error: { code: 'internal', message: 'Business Skill service unavailable', details: {} },
+    })
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['00000000-0000-0000-0000-000000000402', 'project', 'conversation'],
+    [null, 'private', 'conversation'],
+    ['00000000-0000-0000-0000-000000000401', 'project', 'business_skill_test'],
+  ] as const)('Business Skill Remote 拒绝不匹配项目、Private 或测试 Session %#', async (rowProjectId, visibility, purpose) => {
+    const remote = backend()
+    remote.sessions.list = vi.fn(async () => ({
+      schema_version: 1,
+      sessions: [{
+        id: '00000000-0000-0000-0000-000000000701',
+        visibility,
+        project_id: rowProjectId,
+        purpose,
+        runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+      }],
+    }))
+    const operation = vi.fn(success)
+    const auth = new XAgentAuthorization(
+      remote, persistence(), undefined, undefined, undefined, undefined, businessSkillScope(),
+    )
+    await expect(auth.run('xagentBusinessSkill/detail', { args: {
+      projectId: '00000000-0000-0000-0000-000000000401',
+      sessionId: 'session-00000000-0000-0000-0000-000000000701',
+    } }, context, new AbortController().signal, operation)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'session-not-found' },
+    })
+    expect(operation).not.toHaveBeenCalled()
+  })
+
+  test.each([
     'xagentArtifact/list',
     'xagentArtifact/detail',
     'xagentArtifact/create-upload',
@@ -602,6 +749,7 @@ describe('XAgent Session 授权', () => {
         id: '00000000-0000-0000-0000-000000000701',
         visibility: 'project',
         project_id: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
         runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
       }],
     }))
@@ -692,21 +840,29 @@ describe('XAgent Session 授权', () => {
     ['session-00000000-0000-0000-0000-000000000701', { sessions: null }, 'internal'],
     ['session-00000000-0000-0000-0000-000000000701', { sessions: [null] }, 'session-not-found'],
     ['session-00000000-0000-0000-0000-000000000701', { sessions: [{
+      id: '00000000-0000-0000-0000-000000000701', visibility: 'project',
+      project_id: '00000000-0000-0000-0000-000000000401', purpose: 'unknown',
+      runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
+    }] }, 'internal'],
+    ['session-00000000-0000-0000-0000-000000000701', { sessions: [{
       id: 1,
       visibility: 'private',
       project_id: null,
+      purpose: 'conversation',
       runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
     }] }, 'internal'],
     ['session-00000000-0000-0000-0000-000000000701', { sessions: [{
       id: '00000000-0000-0000-0000-000000000702',
       visibility: 'private',
       project_id: null,
+      purpose: 'conversation',
       runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
     }] }, 'internal'],
     ['session-00000000-0000-0000-0000-000000000701', { sessions: [{
       id: '00000000-0000-0000-0000-000000000701',
       visibility: 'private',
       project_id: '00000000-0000-0000-0000-000000000401',
+      purpose: 'conversation',
       runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
     }] }, 'internal'],
   ])('citation 拒绝畸形 Session scope 响应 %#', async (sessionId, response, code) => {
@@ -776,6 +932,7 @@ describe('XAgent Session 授权', () => {
         id: '00000000-0000-0000-0000-000000000701',
         visibility: 'project',
         project_id: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
         runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
       }],
     }))
@@ -861,6 +1018,7 @@ describe('XAgent Session 授权', () => {
         id: '00000000-0000-0000-0000-000000000701',
         visibility: 'project',
         project_id: '00000000-0000-0000-0000-000000000401',
+        purpose: 'conversation',
         runtime_header: { id: 'session-00000000-0000-0000-0000-000000000701' },
       }],
     }))
@@ -945,8 +1103,9 @@ describe('XAgent Session 授权', () => {
     [{}],
     [{ sessions: null }],
     [{ sessions: [null] }],
-    [{ sessions: [{ runtime_header: 'bad' }] }],
-    [{ sessions: [{ runtime_header: {} }] }],
+    [{ sessions: [{ runtime_header: 'bad', purpose: 'conversation' }] }],
+    [{ sessions: [{ runtime_header: {}, purpose: 'conversation' }] }],
+    [{ sessions: [{ runtime_header: {}, purpose: 'unknown' }] }],
   ])('拒绝畸形可见 Session 响应 %#', async (value) => {
     const remote = backend()
     remote.sessions.list = vi.fn(async () => value as never)
@@ -958,7 +1117,11 @@ describe('XAgent Session 授权', () => {
   test('列表过滤保留失败或非 items 响应，并丢弃畸形内存项', async () => {
     const remote = backend()
     remote.sessions.list = vi.fn(async () => ({
-      schema_version: 1, sessions: [{ runtime_header: null }, { runtime_header: { id: 'visible' } }],
+      schema_version: 1, sessions: [
+        { purpose: 'conversation', runtime_header: null },
+        { purpose: 'conversation', runtime_header: { id: 'visible' } },
+        { purpose: 'business_skill_test', runtime_header: { id: 'hidden-test' } },
+      ],
     }))
     const auth = new XAgentAuthorization(remote, persistence())
     const signal = new AbortController().signal
@@ -1032,6 +1195,12 @@ describe('XAgent Session 授权', () => {
     authorizationModule.apply(mounted, { backendOrigin: 'https://api.example.test', serviceToken: 'service' })
     const mountedAuthorizer = mounted.get('connectionRequestAuthorizer')
     expect(mountedAuthorizer).toBeDefined()
+    await expect(mountedAuthorizer?.run(
+      'xagentBusinessSkill/list', { args: {
+        projectId: '00000000-0000-0000-0000-000000000401',
+        sessionId: 'session-00000000-0000-0000-0000-000000000701',
+      } }, context, new AbortController().signal, success,
+    )).resolves.toMatchObject({ ok: false, error: { message: 'Business Skill service unavailable' } })
     await expect(mountedAuthorizer?.run(
       'xagentProject/bootstrap', {}, context, new AbortController().signal, success,
     )).resolves.toMatchObject({ ok: false, error: { message: 'project service unavailable' } })

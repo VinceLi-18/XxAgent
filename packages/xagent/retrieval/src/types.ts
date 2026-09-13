@@ -51,7 +51,7 @@ export interface XAgentRetrievalCall {
   readonly signal?: AbortSignal
 }
 
-/** Optional bounded project name discovery in a Private Session. */
+/** Optional name query; Project Sessions require the Host's active Skill pin and return only their fixed project. */
 export interface XAgentListAccessibleProjectsInput extends XAgentRetrievalCall {
   readonly query?: string
 }

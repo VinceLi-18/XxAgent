@@ -184,7 +184,7 @@
 
 ### `list_accessible_projects`
 
-列出当前 Private Session 可访问的最多 20 个项目。使用可选名称查询缩小同名范围。名称不明确时询问用户，绝不自动选择第一个匹配项。
+列出 Private Session 可访问的最多 20 个项目，或在活跃 Business Skill 允许发现时列出当前项目。使用可选名称查询缩小同名范围。名称不明确时询问用户，绝不自动选择第一个匹配项。
 
 ```json
 {

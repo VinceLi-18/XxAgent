@@ -20,6 +20,7 @@ import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent
 import * as retrievalTools from '../../tool-retrieval/src/index.ts'
 import { BGE_M3_TOKEN_VECTORS } from './bge-m3-token-vectors.ts'
 import { XAgentReceiptRegistry } from '../src/receipt-registry.ts'
+import { bindBusinessSkillDiscovery, currentBusinessSkillDiscovery, hasBusinessSkillDiscovery } from '../src/business-skill-discovery.ts'
 import {
   BGE_M3_MODEL_ID,
   BGE_M3_REVISION,
@@ -80,8 +81,8 @@ function scope(visibility: 'private' | 'project' = 'private'): XAgentAuthenticat
     requestSignal: LIVE_REQUEST_SIGNAL, connectionSignal: LIVE_CONNECTION_SIGNAL,
   }
   return visibility === 'project'
-    ? Object.freeze({ ...base, visibility, projectId: PROJECT })
-    : Object.freeze({ ...base, visibility, projectId: null })
+    ? Object.freeze({ ...base, visibility, projectId: PROJECT, purpose: 'conversation' as const })
+    : Object.freeze({ ...base, visibility, projectId: null, purpose: 'conversation' as const })
 }
 
 function backend() {
@@ -191,6 +192,31 @@ function terminalThenToolResponse(): StreamChunk[] {
 
 
 describe('XAgentRetrievalService', () => {
+  test('scope-free assembly never advertises Project discovery', async () => {
+    const h = await agentHarness(new MockAdapter([]))
+    expect((await h.ctx.systemPrompt.assemble()).tools.map(tool => tool.name)).not.toContain('list_accessible_projects')
+    await h.ctx.fiber.dispose()
+  })
+
+  test('discovery proof replacement preserves its new owner and cannot leak into unrelated tools', async () => {
+    const h = await agentHarness(new MockAdapter([]))
+    const proof = { kind: 'test' as const, slug: 'review', runNumber: 2, toolPolicyDigest: 'b'.repeat(64) }
+    const first = bindBusinessSkillDiscovery(h.owner, proof, () => true)
+    const second = bindBusinessSkillDiscovery(h.owner, proof, () => true)
+    first()
+    expect(hasBusinessSkillDiscovery(h.owner)).toBe(true)
+    expect(currentBusinessSkillDiscovery(String(h.owner.session.id))).toBeUndefined()
+    h.owner.ctx.get('tools')!.register({ name: 'unrelated', description: 'Other operation', parameters: {},
+      output: { schema: { type: 'null' }, render: () => [] }, execute: async () => {
+        expect(currentBusinessSkillDiscovery(String(h.owner.session.id))).toBeUndefined()
+        return null
+      } })
+    await expect(h.ctx.tools.execute({ name: 'unrelated', arguments: {}, callId: CallId('other'),
+      agent: h.owner, signal: new AbortController().signal })).resolves.toMatchObject({ isError: false })
+    second()
+    expect(hasBusinessSkillDiscovery(h.owner)).toBe(false)
+    await h.ctx.fiber.dispose()
+  })
   test('publishes one canonical cited-answer result through the real Agent loop', async () => {
     const value = backend()
     const adapter = new MockAdapter([
@@ -1260,7 +1286,7 @@ describe('XAgentRetrievalService', () => {
         permissionRevision: 4, authSessionId: '00000000-0000-0000-0000-000000000102', connectionId: 'connection-bob',
       }),
       userToken: 'bob-token', connectionId: 'connection-bob', sessionId: secondSession,
-      visibility: 'private' as const, projectId: null,
+      visibility: 'private' as const, projectId: null, purpose: 'conversation' as const,
     })
     const created = service()
     await Promise.all([

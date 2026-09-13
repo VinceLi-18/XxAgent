@@ -21,6 +21,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     'xagent.workbench.artifacts': { kind: 'single'; scope: 'root' }
     /** 当前 XAgent Project Session 的受治理 Fact 工作台。 */
     'xagent.workbench.facts': { kind: 'single'; scope: 'root' }
+    /** 当前项目的业务 Skill 发布和授权。 */
+    'xagent.workbench.skills': { kind: 'single'; scope: 'root' }
   }
 }
 
@@ -64,6 +66,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
           getSnapshot: () => scope.slots.entriesOfSlot('xagent.workbench.facts').length > 0,
           subscribe: listener => scope.slots.subscribe('xagent.workbench.facts', listener),
         },
+        skillsAvailable: {
+          getSnapshot: () => scope.slots.entriesOfSlot('xagent.workbench.skills').length > 0,
+          subscribe: listener => scope.slots.subscribe('xagent.workbench.skills', listener),
+        },
       },
       loadProject: projectId => workbench.loadProject(projectId),
       selectDetailsTab: (tab) => { workbench.selectDetailsTab(tab) },
@@ -80,6 +86,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       children: {
         'xagent.workbench.artifacts': { kind: 'single', scope: 'root' },
         'xagent.workbench.facts': { kind: 'single', scope: 'root' },
+        'xagent.workbench.skills': { kind: 'single', scope: 'root' },
       },
     }, WorkbenchDetails))
     scope.slots.inject('shell.overlay', () => scope.slots.register({

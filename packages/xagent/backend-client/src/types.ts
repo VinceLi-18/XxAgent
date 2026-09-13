@@ -64,6 +64,15 @@ export type XAgentBackendErrorCode =
   | 'fact-receipt-expired'
   | 'fact-revision-conflict'
   | 'fact-already-decided'
+  | 'business-skill-input-invalid'
+  | 'business-skill-revision-conflict'
+  | 'business-skill-test-required'
+  | 'business-skill-policy-changed'
+  | 'business-skill-retired'
+  | 'business-skill-conflict'
+  | 'business-skill-version-changed'
+  | 'business-skill-tool-denied'
+  | 'business-skill-cancelled'
   | 'stale-permission'
   | 'unsupported-version'
   | 'service-unavailable'
@@ -279,9 +288,15 @@ export interface XAgentRetrievalOperationInput {
   readonly permissionRevision: number
 }
 
-/** Project discovery request for a Private Session. */
+/** Host-only immutable authorization pin for discovery within one fixed Project Session. */
+export type XAgentBusinessSkillDiscovery =
+  | { readonly kind: 'published'; readonly slug: string; readonly versionKey: string; readonly toolPolicyDigest: string }
+  | { readonly kind: 'test'; readonly slug: string; readonly runNumber: number; readonly toolPolicyDigest: string }
+
+/** Private discovery or one fixed Project with its active Business Skill pin. */
 export interface XAgentProjectDiscoveryInput extends XAgentRetrievalOperationInput {
   readonly query?: string
+  readonly businessSkill?: XAgentBusinessSkillDiscovery
 }
 
 /** Explicit Artifact search request with a mandatory local digest for Private Session scope. */
@@ -617,7 +632,440 @@ export interface XAgentFactBackend {
   ): Promise<XAgentFactPage<XAgentFactOutboxItem>>
 }
 
-/** Authentication, Session, workbench, and Artifact operations implemented by the XAgent FastAPI client. */
+/** Published lifecycle state of a stable Business Skill. */
+export type XAgentBusinessSkillStatus = 'active' | 'retired'
+
+/** Durable execution state of one isolated draft test. */
+export type XAgentBusinessSkillTestStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+
+/** Closed terminal reason reported by the Host test runner. */
+export type XAgentBusinessSkillTerminationReason =
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'tool-denied'
+  | 'authorization-denied'
+  | 'skill-not-loaded'
+  | 'service-unavailable'
+
+/** Human verdict recorded separately from test execution state. */
+export type XAgentBusinessSkillVerdict = 'pass' | 'reject'
+
+/** Public test history row identified by its project-wide run number. */
+export interface XAgentBusinessSkillTest {
+  readonly runNumber: number
+  readonly draftRevision: number
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+  /** Immutable production write permissions excluded from this read-only execution. */
+  readonly unexecutedWriteTools: readonly string[]
+  readonly status: XAgentBusinessSkillTestStatus
+  readonly terminationReason?: XAgentBusinessSkillTerminationReason
+  readonly verdict?: XAgentBusinessSkillVerdict
+  readonly startedAt: string
+  readonly settledAt?: string
+  readonly verdictAt?: string
+}
+
+/** Public Business Skill row for project governance lists. */
+export interface XAgentBusinessSkillSummary {
+  readonly slug: string
+  readonly displayName: string
+  readonly status: XAgentBusinessSkillStatus
+  readonly authorized: boolean
+  readonly currentVersion?: number
+  readonly draftRevision?: number
+  readonly latestTest?: XAgentBusinessSkillTest
+  readonly updatedAt: string
+}
+
+/** Mutable draft fields returned only to the authenticated governance UI and test runner. */
+export interface XAgentBusinessSkillDraft {
+  readonly revision: number
+  readonly description: string
+  readonly instructions: string
+  readonly primaryTools: readonly string[]
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+}
+
+/** Immutable published version identified by its project-visible version number. */
+export interface XAgentBusinessSkillVersion {
+  readonly versionNumber: number
+  readonly description: string
+  readonly instructions: string
+  readonly primaryTools: readonly string[]
+  readonly completeTools: readonly string[]
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+  readonly sourceDraftRevision: number
+  readonly publishedAt: string
+}
+
+/** Content-free audit row returned by Business Skill detail reads. */
+export interface XAgentBusinessSkillAuditSummary {
+  readonly action: string
+  readonly result: string
+  readonly versionNumber?: number
+  readonly createdAt: string
+}
+
+/** Complete public governance detail for one stable slug. */
+export interface XAgentBusinessSkillDetail extends XAgentBusinessSkillSummary {
+  readonly draft?: XAgentBusinessSkillDraft
+  readonly versions: readonly XAgentBusinessSkillVersion[]
+  readonly tests: readonly XAgentBusinessSkillTest[]
+  readonly nextVersionCursor?: number
+  readonly nextRunCursor?: number
+  readonly auditSummary: readonly XAgentBusinessSkillAuditSummary[]
+}
+
+/** Bounded Business Skill governance page. */
+export interface XAgentBusinessSkillPage {
+  readonly items: readonly XAgentBusinessSkillSummary[]
+  readonly nextCursor?: string
+}
+
+/** Shared exact content fields for Business Skill creation and draft updates. */
+export interface XAgentBusinessSkillContentInput {
+  readonly displayName: string
+  readonly description: string
+  readonly instructions: string
+  readonly primaryTools: readonly string[]
+}
+
+/** Input for creating one stable Business Skill and its first draft. */
+export interface XAgentBusinessSkillCreateInput extends XAgentBusinessSkillContentInput {
+  readonly slug: string
+  readonly idempotencyKey: string
+}
+
+/** Optimistic draft edit; every supplied field is serialized explicitly. */
+export interface XAgentBusinessSkillDraftInput {
+  readonly expectedDraftRevision: number
+  readonly idempotencyKey: string
+  readonly sourceVersionNumber?: number
+  readonly displayName?: string
+  readonly description?: string
+  readonly instructions?: string
+  readonly primaryTools?: readonly string[]
+}
+
+/** Exact draft test input and current Host policy digest. */
+export interface XAgentBusinessSkillTestInput {
+  readonly expectedDraftRevision: number
+  readonly toolPolicyDigest: string
+  readonly scenario: string
+  readonly idempotencyKey: string
+}
+
+/** Host-only test start response used to create one isolated test Agent. */
+export interface XAgentBusinessSkillTestStart {
+  readonly test: XAgentBusinessSkillTest
+  readonly sessionId: string
+  readonly purpose: 'business_skill_test'
+  readonly draft: XAgentBusinessSkillDraft
+  readonly scenario: string
+  readonly testTools: readonly string[]
+  readonly unexecutedWriteTools: readonly string[]
+}
+
+/** Host factory publication for an already allocated, empty test Session. */
+export interface XAgentBusinessSkillTestMountInput {
+  readonly sessionId: string
+  readonly runtimeHeader: Readonly<Record<string, unknown>>
+  readonly events: XAgentSessionAppendInput['events']
+  readonly idempotencyKey: string
+}
+
+/** Only the first committed mount grants execution; retries report false. */
+export interface XAgentBusinessSkillTestMount {
+  readonly claimed: boolean
+  readonly test: XAgentBusinessSkillTest
+}
+
+/** Public transcript event from one isolated Business Skill test Session. */
+export interface XAgentBusinessSkillTranscriptEvent {
+  readonly sequence: number
+  readonly eventType: string
+  readonly payload: Readonly<Record<string, unknown>>
+  readonly createdAt: string
+}
+
+/** Bounded transcript page plus current public test state. */
+export interface XAgentBusinessSkillTranscript {
+  readonly test: XAgentBusinessSkillTest
+  readonly events: readonly XAgentBusinessSkillTranscriptEvent[]
+  readonly nextSequence: number
+}
+
+/** Host-private catalog entry; versionKey must not enter Browser or model payloads. */
+export interface XAgentBusinessSkillCatalogEntry {
+  readonly slug: string
+  readonly description: string
+  readonly versionNumber: number
+  readonly versionKey: string
+}
+
+/** Exact immutable Skill definition returned after runtime reauthorization. */
+export interface XAgentBusinessSkillLoad extends XAgentBusinessSkillCatalogEntry {
+  readonly instructions: string
+  readonly contentDigest: string
+  readonly toolPolicyDigest: string
+  readonly completeTools: readonly string[]
+}
+
+/** Closed FastAPI operations for Business Skill governance, testing, and runtime policy. */
+export interface XAgentBusinessSkillBackend {
+  /**
+   * List the bounded public Skill catalog for one authenticated Project.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param input - pagination limit and opaque cursor.
+   * @param signal - optional transport cancellation.
+   * @returns public summaries and the next opaque cursor.
+   */
+  list(
+    userToken: string, projectId: string,
+    input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillPage>
+  /**
+   * Create one project-local mutable draft.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param input - validated public content, tool selection and idempotency key.
+   * @param signal - optional transport cancellation.
+   * @returns the created public Skill dossier.
+   */
+  create(
+    userToken: string, projectId: string, input: XAgentBusinessSkillCreateInput, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Read bounded governance history for one public Skill name.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param input - independent version, run and audit pagination cursors.
+   * @param signal - optional transport cancellation.
+   * @returns the current draft, immutable versions, tests and audit summary.
+   */
+  detail(
+    userToken: string, projectId: string, slug: string,
+    input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number },
+    signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Update the caller's exact optimistic draft revision.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param input - expected revision, changed public fields and idempotency key.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
+  draft(
+    userToken: string, projectId: string, slug: string,
+    input: XAgentBusinessSkillDraftInput, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Publish an exact draft revision after a qualifying human-pass test.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param expectedDraftRevision - positive revision read by the caller.
+   * @param idempotencyKey - stable identity for this publication intent.
+   * @param signal - optional transport cancellation.
+   * @returns the dossier containing the new immutable version.
+   */
+  publish(
+    userToken: string, projectId: string, slug: string, expectedDraftRevision: number,
+    idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Change whether the current published version may start new invocations.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param authorized - requested production authorization state.
+   * @param idempotencyKey - stable identity for this authorization intent.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
+  authorization(
+    userToken: string, projectId: string, slug: string, authorized: boolean,
+    idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Select one immutable historical version for later invocations.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param versionNumber - positive public version number.
+   * @param idempotencyKey - stable identity for this selection intent.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
+  version(
+    userToken: string, projectId: string, slug: string, versionNumber: number,
+    idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Permanently retire a Skill while preserving its history.
+   * @param userToken - current Manager credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param idempotencyKey - stable identity for this retirement intent.
+   * @param signal - optional transport cancellation.
+   * @returns the terminal public Skill dossier.
+   */
+  retire(
+    userToken: string, projectId: string, slug: string, idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Record a human verdict for one completed public test run.
+   * @param userToken - current starting actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param runNumber - positive public test-run number.
+   * @param verdict - human pass or reject decision.
+   * @param idempotencyKey - stable identity for this verdict intent.
+   * @param signal - optional transport cancellation.
+   * @returns the updated public Skill dossier.
+   */
+  verdict(
+    userToken: string, projectId: string, slug: string, runNumber: number,
+    verdict: XAgentBusinessSkillVerdict, idempotencyKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillDetail>
+  /**
+   * Allocate an isolated test Session for an exact draft and policy.
+   * @param userToken - current starting actor credential retained for the run.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param input - exact draft revision, scenario, policy digest and idempotency key.
+   * @param signal - optional transport cancellation.
+   * @returns Host-only Session identity and immutable test inputs.
+   */
+  startTest(
+    userToken: string, projectId: string, slug: string,
+    input: XAgentBusinessSkillTestInput, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillTestStart>
+  /**
+   * Atomically publish the factory header and startup events before execution.
+   * @param userToken - authenticated starting actor's token.
+   * @param projectId - authenticated Project identity.
+   * @param slug - public Skill name.
+   * @param runNumber - public run number allocated by startTest.
+   * @param input - exact Session, factory publication and one mount-attempt key.
+   * @param signal - optional transport cancellation.
+   * @returns exclusive ownership only for the first commit; exact replay never grants execution again.
+   */
+  mountTest(userToken: string, projectId: string, slug: string, runNumber: number,
+    input: XAgentBusinessSkillTestMountInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTestMount>
+  /**
+   * Cancel an unmounted empty test, without interfering with a claimed runner.
+   * @param userToken - original starting actor's token, reauthenticated by the backend.
+   * @param projectId - authenticated Project identity.
+   * @param slug - public Skill name.
+   * @param runNumber - public run number.
+   * @param sessionId - exact Host-only Session allocated by startTest.
+   * @param idempotencyKey - stable cleanup key.
+   * @returns current report; a mounted running test is left unchanged.
+   */
+  cancelUnmountedTest(userToken: string, projectId: string, slug: string, runNumber: number,
+    sessionId: string, idempotencyKey: string): Promise<XAgentBusinessSkillTest>
+  /**
+   * Authorize one test tool against its immutable run policy and current execution state.
+   * @param userToken - original starting actor's current credential.
+   * @param projectId - authenticated Project identity.
+   * @param sessionId - exact test Session identity.
+   * @param slug - public Skill name.
+   * @param runNumber - exact test run number.
+   * @param toolPolicyDigest - policy digest pinned at test start.
+   * @param toolName - tool about to execute.
+   * @param cancelled - current physical cancellation state.
+   * @param signal - physical execution lifetime.
+   * @returns after fresh authorization; rejects retired, terminal, unauthorized or unavailable execution.
+   */
+  authorizeTestTool(userToken: string, projectId: string, sessionId: string, slug: string, runNumber: number,
+    toolPolicyDigest: string, toolName: string, cancelled: boolean, signal?: AbortSignal): Promise<void>
+  /**
+   * Settle one mounted test Session exactly once.
+   * @param userToken - original starting actor's current credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param runNumber - positive public test-run number.
+   * @param sessionId - exact Host-only test Session identity.
+   * @param terminationReason - normalized terminal execution outcome.
+   * @param idempotencyKey - stable identity for this settlement intent.
+   * @param signal - optional transport cancellation.
+   * @returns the immutable terminal public test report.
+   */
+  settleTest(
+    userToken: string, projectId: string, slug: string, runNumber: number, sessionId: string,
+    terminationReason: XAgentBusinessSkillTerminationReason, idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillTest>
+  /**
+   * Read a bounded page from one isolated test transcript.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param slug - project-local public Skill name.
+   * @param runNumber - positive public test-run number.
+   * @param input - exclusive event sequence cursor and page limit; omit the cursor for the first page.
+   * @param signal - optional transport cancellation.
+   * @returns public events and the next exclusive sequence cursor.
+   */
+  transcript(
+    userToken: string, projectId: string, slug: string, runNumber: number,
+    input: { readonly afterSequence?: number; readonly limit?: number }, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillTranscript>
+  /**
+   * Discover authorized versions for one ordinary Project Session.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param sessionId - opaque ordinary conversation Session identity.
+   * @param signal - optional transport cancellation.
+   * @returns current public entries whose versionKey values remain Host-only.
+   */
+  catalog(
+    userToken: string, projectId: string, sessionId: string, signal?: AbortSignal,
+  ): Promise<readonly XAgentBusinessSkillCatalogEntry[]>
+  /**
+   * Load one exact current immutable version after fresh authorization.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param sessionId - opaque ordinary conversation Session identity.
+   * @param slug - project-local public Skill name.
+   * @param versionKey - Host-only opaque version identity from catalog.
+   * @param signal - optional transport cancellation.
+   * @returns immutable instructions and the complete tool policy.
+   */
+  load(
+    userToken: string, projectId: string, sessionId: string, slug: string,
+    versionKey: string, signal?: AbortSignal,
+  ): Promise<XAgentBusinessSkillLoad>
+  /**
+   * Reauthorize one imminent tool call against a pinned immutable version.
+   * @param userToken - current actor credential.
+   * @param projectId - opaque Project identity selected by the Host.
+   * @param sessionId - opaque ordinary conversation Session identity.
+   * @param slug - project-local public Skill name.
+   * @param versionKey - Host-only opaque pinned version identity.
+   * @param toolPolicyDigest - complete policy digest pinned on activation.
+   * @param toolName - exact tool about to execute.
+   * @param cancelled - current physical cancellation state.
+   * @param signal - physical execution lifetime.
+   * @returns after fresh authorization; rejection prevents execution.
+   */
+  authorizeTool(
+    userToken: string, projectId: string, sessionId: string, slug: string,
+    versionKey: string, toolPolicyDigest: string, toolName: string, cancelled: boolean,
+    signal?: AbortSignal,
+  ): Promise<void>
+}
+
+/** Authentication and product capabilities implemented by the XAgent FastAPI client. */
 export interface XAgentBackend {
   login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin>
   introspect(userToken: string, signal?: AbortSignal): Promise<XAgentPrincipal>
@@ -627,4 +1075,5 @@ export interface XAgentBackend {
   readonly artifacts?: XAgentArtifactBackend
   readonly retrieval?: XAgentRetrievalBackend
   readonly facts?: XAgentFactBackend
+  readonly businessSkills?: XAgentBusinessSkillBackend
 }

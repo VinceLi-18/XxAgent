@@ -444,14 +444,13 @@ declare class Session {
    *
    * @param type - The event type (key of {@link SessionEventMap}).
    * @param data - The event payload; must be JSON-serializable.
-   * @param opts - Surface metadata: `surfaceOp` controls how the event enters
+   * @param opts - Envelope metadata: `ignorable: true` permits readers that do
+   *   not recognize this event type to skip it. `surfaceOp` controls how the event enters
    *   the ordered surface; `sourceEventSeqs` lists the seq numbers of earlier
    *   events this one derives from. REQUIRED for
    *   {@link SurfaceEventType} events (every message-producing event must
    *   declare how it joins the surface, the sole source of derived model
-   *   history) and
-   *   rejected by the compiler for non-surface types like `turn/start` or
-   *   `assistant/chunk`.
+   *   history). Non-surface events accept only the optional `ignorable` marker.
    * @returns the logged event — its assigned `seq`/`time` plus the SNAPSHOT of
    *   `data` that entered the log, so reading `event.data` back sees the logged
    *   value, never the caller's still-mutable input.
@@ -472,7 +471,7 @@ declare class Session {
   append<T extends SessionEventType>(
     type: T,
     data: SessionEventMap[T],
-    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : []
+    ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent & { ignorable?: true }] : [opts?: { ignorable?: true }]
   ): SessionEvent<T>;
   /**
    * The {@link EpochHeader} in force after the log's last header event — the
@@ -643,7 +642,7 @@ run<T>( endpoint: string, payload: unknown, request: ConnectionRequestContext, s
 filterEvent( endpoint: 'events.mux' | 'events.host', frame: unknown, request: ConnectionRequestContext, signal: AbortSignal, ): Promise<unknown>
 ```
 
-Source: [`packages/xagent/authorization/src/index.ts:469`](../../packages/xagent/authorization/src/index.ts)
+Source: [`packages/xagent/authorization/src/index.ts:547`](../../packages/xagent/authorization/src/index.ts)
 
 <a id="ctxsessions--sessionstore"></a>
 

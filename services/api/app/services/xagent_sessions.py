@@ -25,6 +25,7 @@ from app.models.retrieval import (
     XAgentRetrievalReceipt,
 )
 from app.models.workbench import XAgentSessionProjectRef
+from app.models.business_skills import BusinessSkillTestRun
 from app.models.xagent_session import XAgentIdempotencyKey, XAgentSession, XAgentSessionEvent
 from app.schemas.facts import FactProposalDecidedEvent
 from app.services.audit import fact_audit_details, retrieval_audit_details, write_audit_event
@@ -90,6 +91,7 @@ def session_payload(item: XAgentSession) -> dict[str, Any]:
         "owner_id": str(item.owner_id),
         "project_id": str(item.project_id) if item.project_id is not None else None,
         "visibility": item.visibility,
+        "purpose": item.purpose,
         "permission_revision_created": item.permission_revision_created,
         "title": item.title,
         "runtime_header": item.runtime_header,
@@ -182,7 +184,7 @@ async def _store_idempotent_result(
 async def list_sessions(session: AsyncSession) -> list[dict[str, Any]]:
     rows = (
         await session.scalars(
-            select(XAgentSession).order_by(XAgentSession.updated_at.desc(), XAgentSession.id)
+            select(XAgentSession).where(XAgentSession.purpose == "conversation").order_by(XAgentSession.updated_at.desc(), XAgentSession.id)
         )
     ).all()
     inaccessible_session_ids = await _private_session_ids_with_inaccessible_refs(
@@ -268,6 +270,7 @@ async def authorize_session(
         visible = await session.scalar(
             select(XAgentSession).where(
                 XAgentSession.id == session_id,
+                XAgentSession.purpose == "conversation",
                 text(
                     f"((visibility = 'private' AND owner_id = {actor_id}) OR "
                     "(visibility = 'project' AND project_id IN "
@@ -282,6 +285,7 @@ async def authorize_session(
         visible = await session.scalar(
             select(XAgentSession).where(
                 XAgentSession.id == session_id,
+                XAgentSession.purpose == "conversation",
                 text(f"owner_id = {actor_id}"),
             )
         )
@@ -348,13 +352,25 @@ async def _visible_session(
     session_id: UUID,
     *,
     lock: bool = False,
+    allow_test_append: bool = False,
 ) -> XAgentSession:
     statement = select(XAgentSession).where(XAgentSession.id == session_id)
+    if not allow_test_append:
+        statement = statement.where(XAgentSession.purpose == "conversation")
     if lock:
         statement = statement.with_for_update()
     item = await session.scalar(statement)
     if item is None:
         raise SessionServiceError(SessionErrorCode.NOT_FOUND)
+    if item.purpose == "business_skill_test":
+        run = await session.scalar(select(BusinessSkillTestRun.id).where(
+            BusinessSkillTestRun.session_id == item.id,
+            BusinessSkillTestRun.status == "running",
+            BusinessSkillTestRun.started_by_id == item.owner_id,
+            text("started_by_id = NULLIF(current_setting('app.actor_id', true), '')::uuid"),
+        ))
+        if run is None:
+            raise SessionServiceError(SessionErrorCode.NOT_FOUND)
     await _require_private_session_ref_access(session, item)
     return item
 
@@ -1302,7 +1318,7 @@ async def _finalize_append_authorization(
         raise SessionServiceError(SessionErrorCode.SERVICE_UNAVAILABLE) from None
     if authorized is not True:
         raise SessionServiceError(SessionErrorCode.SESSION_NOT_FOUND)
-    refreshed = await _visible_session(session, item.id, lock=True)
+    refreshed = await _visible_session(session, item.id, lock=True, allow_test_append=True)
     refreshed_refs = await _session_ref_project_ids(session, item.id)
     if set(refreshed_refs) != set(existing_project_ids):
         raise SessionServiceError(SessionErrorCode.SESSION_NOT_FOUND)
@@ -2266,7 +2282,7 @@ async def append_events(
     digest: str,
 ) -> dict[str, Any]:
     operation = f"session.append:{session_id}"
-    item = await _visible_session(session, session_id, lock=True)
+    item = await _visible_session(session, session_id, lock=True, allow_test_append=True)
     replay = await _idempotent_result(
         session,
         actor_id=principal.actor_id,

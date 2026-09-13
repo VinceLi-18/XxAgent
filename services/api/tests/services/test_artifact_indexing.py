@@ -21,6 +21,9 @@ from app.worker import _run_worker_loop
 
 
 class WordTokenizer:
+    def count_tokens(self, text: str) -> int:
+        return len(text.split())
+
     def encode_with_offsets(self, text: str) -> list[tuple[int, int]]:
         offsets: list[tuple[int, int]] = []
         position = 0
@@ -29,6 +32,48 @@ class WordTokenizer:
             offsets.append((start, start + len(word)))
             position = start + len(word)
         return offsets
+
+    def normalize(self, text: str) -> str:
+        return text
+
+
+class _TokenizerEncoding:
+    ids = [1, 2, 3]
+    offsets = [(0, 1), (1, 2), (2, 3)]
+
+
+class _TokenizerBackend:
+    class _Normalizer:
+        def normalize_str(self, text: str) -> str:
+            assert text == "abc"
+            return "ABC"
+
+    normalizer = _Normalizer()
+
+    def encode(self, text: str, *, add_special_tokens: bool) -> _TokenizerEncoding:
+        assert text == "abc"
+        assert not add_special_tokens
+        return _TokenizerEncoding()
+
+
+class _TokenizerBackendWithoutNormalizer(_TokenizerBackend):
+    normalizer = None
+
+
+def test_bge_tokenizer_counts_and_offsets_the_same_independent_encoding() -> None:
+    tokenizer = object.__new__(artifact_indexing._BgeTokenizer)
+    tokenizer._tokenizer = _TokenizerBackend()
+
+    assert tokenizer.count_tokens("abc") == 3
+    assert tokenizer.encode_with_offsets("abc") == [(0, 1), (1, 2), (2, 3)]
+    assert tokenizer.normalize("abc") == "ABC"
+
+
+def test_bge_tokenizer_preserves_text_when_the_backend_has_no_normalizer() -> None:
+    tokenizer = object.__new__(artifact_indexing._BgeTokenizer)
+    tokenizer._tokenizer = _TokenizerBackendWithoutNormalizer()
+
+    assert tokenizer.normalize("abc") == "abc"
 
 
 class MemoryGateway:
@@ -125,7 +170,7 @@ async def test_index_worker_streams_validates_embeds_and_publishes_atomically(
     assert chunks
     assert job is not None and job.status == "succeeded"
     assert head is not None and head.index_id == index.id and head.version_id == version.id
-    assert chunks[-1].text == body.decode().rstrip()
+    assert chunks[-1].text == body.decode()
     assert all(chunk.text_sha256 == hashlib.sha256(chunk.text.encode()).hexdigest() for chunk in chunks)
     assert {(audit.action, audit.result) for audit in audits} == {
         ("artifact.index.created", "created"),

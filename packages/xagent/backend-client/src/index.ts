@@ -5,6 +5,19 @@ import { parseXAgentPrincipal, type XAgentPrincipal } from '@xagent/dsh-principa
 import type {
   XAgentBackend,
   XAgentBackendErrorCode,
+  XAgentBusinessSkillAuditSummary,
+  XAgentBusinessSkillBackend,
+  XAgentBusinessSkillCatalogEntry,
+  XAgentBusinessSkillDetail,
+  XAgentBusinessSkillDraft,
+  XAgentBusinessSkillLoad,
+  XAgentBusinessSkillPage,
+  XAgentBusinessSkillSummary,
+  XAgentBusinessSkillTerminationReason,
+  XAgentBusinessSkillTest,
+  XAgentBusinessSkillTestStart,
+  XAgentBusinessSkillTranscript,
+  XAgentBusinessSkillVersion,
   XAgentArtifactBackend,
   XAgentArtifactDetail,
   XAgentArtifactScope,
@@ -41,8 +54,31 @@ import type {
 } from './types.ts'
 
 export type {
+  XAgentBusinessSkillTestMountInput,
+  XAgentBusinessSkillTestMount,
   XAgentBackend,
   XAgentBackendErrorCode,
+  XAgentBusinessSkillAuditSummary,
+  XAgentBusinessSkillBackend,
+  XAgentBusinessSkillCatalogEntry,
+  XAgentBusinessSkillContentInput,
+  XAgentBusinessSkillCreateInput,
+  XAgentBusinessSkillDetail,
+  XAgentBusinessSkillDraft,
+  XAgentBusinessSkillDraftInput,
+  XAgentBusinessSkillLoad,
+  XAgentBusinessSkillPage,
+  XAgentBusinessSkillStatus,
+  XAgentBusinessSkillSummary,
+  XAgentBusinessSkillTerminationReason,
+  XAgentBusinessSkillTest,
+  XAgentBusinessSkillTestInput,
+  XAgentBusinessSkillTestStart,
+  XAgentBusinessSkillTestStatus,
+  XAgentBusinessSkillTranscript,
+  XAgentBusinessSkillTranscriptEvent,
+  XAgentBusinessSkillVerdict,
+  XAgentBusinessSkillVersion,
   XAgentArtifactBackend,
   XAgentArtifactCompleteInput,
   XAgentArtifactDetail,
@@ -80,6 +116,7 @@ export type {
   XAgentIssuedLogin,
   XAgentProjectDetail,
   XAgentProjectDiscoveryInput,
+  XAgentBusinessSkillDiscovery,
   XAgentProjectDiscoveryResult,
   XAgentProjectSummary,
   XAgentResolveCitationInput,
@@ -126,6 +163,15 @@ const STABLE_CODES = new Set<XAgentBackendErrorCode>([
   'fact-receipt-expired',
   'fact-revision-conflict',
   'fact-already-decided',
+  'business-skill-input-invalid',
+  'business-skill-revision-conflict',
+  'business-skill-test-required',
+  'business-skill-policy-changed',
+  'business-skill-retired',
+  'business-skill-conflict',
+  'business-skill-version-changed',
+  'business-skill-tool-denied',
+  'business-skill-cancelled',
   'stale-permission',
   'unsupported-version',
   'service-unavailable',
@@ -1305,6 +1351,294 @@ function artifactErrorCode(
   return expected !== undefined && code === expected ? expected : 'service-unavailable'
 }
 
+const BUSINESS_SKILL_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const SHA256_PATTERN_BUSINESS_SKILL = /^[0-9a-f]{64}$/
+const BUSINESS_SKILL_PRIMARY_TOOLS = new Set(['list_accessible_projects', 'search_artifacts', 'propose_fact'])
+const BUSINESS_SKILL_COMPLETE_TOOLS = new Set([
+  ...BUSINESS_SKILL_PRIMARY_TOOLS, 'skill', 'submit_cited_answer',
+])
+const BUSINESS_SKILL_TEST_TOOLS = new Set([
+  'list_accessible_projects', 'search_artifacts', 'skill', 'submit_cited_answer',
+])
+const BUSINESS_SKILL_TERMINATION_REASONS = new Set<XAgentBusinessSkillTerminationReason>([
+  'completed', 'failed', 'cancelled', 'tool-denied', 'authorization-denied',
+  'skill-not-loaded', 'service-unavailable',
+])
+
+function businessSkillSlug(value: unknown): string {
+  const slug = boundedUtf8String(value, 128)
+  if (!BUSINESS_SKILL_SLUG_PATTERN.test(slug)) failSchema()
+  return slug
+}
+
+function businessSkillDigest(value: unknown): string {
+  if (typeof value !== 'string' || !SHA256_PATTERN_BUSINESS_SKILL.test(value)) failSchema()
+  return value
+}
+
+function businessSkillText(value: unknown, maximum: number): string {
+  const result = boundedUtf8String(value, maximum)
+  if (result.trim().length === 0) failSchema()
+  return result
+}
+
+function closedStringArray(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  maximum = allowed.size,
+): readonly string[] {
+  const values = boundedArray(value, maximum).map(requiredString)
+  const sorted = [...new Set(values)].sort()
+  if (
+    values.some(item => !allowed.has(item))
+    || values.length !== sorted.length
+    || values.some((item, index) => item !== sorted[index])
+  ) failSchema()
+  return Object.freeze(values)
+}
+
+function businessSkillCompleteTools(primaryTools: readonly string[]): readonly string[] {
+  const tools = new Set([...primaryTools, 'skill'])
+  if (tools.has('search_artifacts')) tools.add('submit_cited_answer')
+  return [...tools].sort()
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function parseBusinessSkillTest(value: unknown): XAgentBusinessSkillTest {
+  const row = exactRecord(value, [
+    'run_number', 'draft_revision', 'content_digest', 'tool_policy_digest', 'status',
+    'termination_reason', 'verdict', 'started_at', 'settled_at', 'verdict_at',
+    'unexecuted_write_tools',
+  ])
+  if (!['running', 'completed', 'failed', 'cancelled'].includes(row.status as string)) failSchema()
+  if (row.termination_reason !== null && !BUSINESS_SKILL_TERMINATION_REASONS.has(row.termination_reason as never)) failSchema()
+  if (row.verdict !== null && row.verdict !== 'pass' && row.verdict !== 'reject') failSchema()
+  const settledAt = row.settled_at === null ? undefined : instant(row.settled_at)
+  const verdictAt = row.verdict_at === null ? undefined : instant(row.verdict_at)
+  const running = row.status === 'running'
+  if (
+    (running && (row.termination_reason !== null || settledAt !== undefined || row.verdict !== null))
+    || (!running && (row.termination_reason === null || settledAt === undefined))
+    || (row.status === 'completed' && row.termination_reason !== 'completed')
+    || (row.status === 'cancelled' && row.termination_reason !== 'cancelled')
+    || (row.status === 'failed' && (row.termination_reason === 'completed' || row.termination_reason === 'cancelled'))
+    || (row.verdict === null) !== (verdictAt === undefined)
+    || (row.verdict === 'pass' && row.status !== 'completed')
+  ) failSchema()
+  return {
+    runNumber: positiveInteger(row.run_number),
+    draftRevision: positiveInteger(row.draft_revision),
+    contentDigest: businessSkillDigest(row.content_digest),
+    toolPolicyDigest: businessSkillDigest(row.tool_policy_digest),
+    unexecutedWriteTools: closedStringArray(row.unexecuted_write_tools, new Set(['propose_fact'])),
+    status: row.status as XAgentBusinessSkillTest['status'],
+    ...(row.termination_reason === null ? {} : { terminationReason: row.termination_reason as XAgentBusinessSkillTerminationReason }),
+    ...(row.verdict === null ? {} : { verdict: row.verdict }),
+    startedAt: instant(row.started_at),
+    ...(settledAt === undefined ? {} : { settledAt }),
+    ...(verdictAt === undefined ? {} : { verdictAt }),
+  }
+}
+
+function parseBusinessSkillSummary(value: unknown): XAgentBusinessSkillSummary {
+  const row = exactRecord(value, [
+    'slug', 'display_name', 'status', 'authorized', 'current_version', 'draft_revision',
+    'latest_test', 'updated_at',
+  ])
+  if ((row.status !== 'active' && row.status !== 'retired') || typeof row.authorized !== 'boolean') failSchema()
+  return {
+    slug: businessSkillSlug(row.slug),
+    displayName: businessSkillText(row.display_name, 255),
+    status: row.status,
+    authorized: row.authorized,
+    ...(row.current_version === null ? {} : { currentVersion: positiveInteger(row.current_version) }),
+    ...(row.draft_revision === null ? {} : { draftRevision: positiveInteger(row.draft_revision) }),
+    ...(row.latest_test === null ? {} : { latestTest: parseBusinessSkillTest(row.latest_test) }),
+    updatedAt: instant(row.updated_at),
+  }
+}
+
+function parseBusinessSkillDraft(value: unknown): XAgentBusinessSkillDraft {
+  const row = exactRecord(value, [
+    'revision', 'description', 'instructions', 'primary_tools', 'content_digest', 'tool_policy_digest',
+  ])
+  return {
+    revision: positiveInteger(row.revision),
+    description: businessSkillText(row.description, 2 * 1024),
+    instructions: businessSkillText(row.instructions, 64 * 1024),
+    primaryTools: closedStringArray(row.primary_tools, BUSINESS_SKILL_PRIMARY_TOOLS),
+    contentDigest: businessSkillDigest(row.content_digest),
+    toolPolicyDigest: businessSkillDigest(row.tool_policy_digest),
+  }
+}
+
+function parseBusinessSkillVersion(value: unknown): XAgentBusinessSkillVersion {
+  const row = exactRecord(value, [
+    'version_number', 'description', 'instructions', 'primary_tools', 'complete_tools',
+    'content_digest', 'tool_policy_digest', 'source_draft_revision', 'published_at',
+  ])
+  const primaryTools = closedStringArray(row.primary_tools, BUSINESS_SKILL_PRIMARY_TOOLS)
+  const completeTools = closedStringArray(row.complete_tools, BUSINESS_SKILL_COMPLETE_TOOLS)
+  if (!sameStrings(completeTools, businessSkillCompleteTools(primaryTools))) failSchema()
+  return {
+    versionNumber: positiveInteger(row.version_number),
+    description: businessSkillText(row.description, 2 * 1024),
+    instructions: businessSkillText(row.instructions, 64 * 1024),
+    primaryTools,
+    completeTools,
+    contentDigest: businessSkillDigest(row.content_digest),
+    toolPolicyDigest: businessSkillDigest(row.tool_policy_digest),
+    sourceDraftRevision: positiveInteger(row.source_draft_revision),
+    publishedAt: instant(row.published_at),
+  }
+}
+
+function parseBusinessSkillAuditSummary(value: unknown): XAgentBusinessSkillAuditSummary {
+  const row = exactRecord(value, ['action', 'result', 'version_number', 'created_at'])
+  return {
+    action: boundedUtf8String(row.action, 255),
+    result: boundedUtf8String(row.result, 255),
+    ...(row.version_number === null ? {} : { versionNumber: positiveInteger(row.version_number) }),
+    createdAt: instant(row.created_at),
+  }
+}
+
+function parseBusinessSkillDetail(value: unknown): XAgentBusinessSkillDetail {
+  const row = exactRecord(value, [
+    'schema_version', 'slug', 'display_name', 'status', 'authorized', 'current_version',
+    'draft_revision', 'latest_test', 'updated_at', 'draft', 'versions', 'tests',
+    'next_version_cursor', 'next_run_cursor', 'audit_summary',
+  ])
+  if (row.schema_version !== 1) failSchema()
+  const summary = parseBusinessSkillSummary({
+    slug: row.slug,
+    display_name: row.display_name,
+    status: row.status,
+    authorized: row.authorized,
+    current_version: row.current_version,
+    draft_revision: row.draft_revision,
+    latest_test: row.latest_test,
+    updated_at: row.updated_at,
+  })
+  return {
+    ...summary,
+    ...(row.draft === null ? {} : { draft: parseBusinessSkillDraft(row.draft) }),
+    versions: boundedArray(row.versions, 100).map(parseBusinessSkillVersion),
+    tests: boundedArray(row.tests, 100).map(parseBusinessSkillTest),
+    ...(row.next_version_cursor === null ? {} : { nextVersionCursor: positiveInteger(row.next_version_cursor) }),
+    ...(row.next_run_cursor === null ? {} : { nextRunCursor: positiveInteger(row.next_run_cursor) }),
+    auditSummary: boundedArray(row.audit_summary, 100).map(parseBusinessSkillAuditSummary),
+  }
+}
+
+function parseBusinessSkillPage(value: unknown): XAgentBusinessSkillPage {
+  const row = exactRecord(value, ['schema_version', 'items', 'next_cursor'])
+  if (row.schema_version !== 1) failSchema()
+  return {
+    items: boundedArray(row.items, 100).map(parseBusinessSkillSummary),
+    ...(row.next_cursor === null ? {} : { nextCursor: businessSkillSlug(row.next_cursor) }),
+  }
+}
+
+function parseBusinessSkillCatalogEntry(value: unknown): XAgentBusinessSkillCatalogEntry {
+  const row = exactRecord(value, ['schema_version', 'slug', 'description', 'version_number', 'version_key'])
+  if (row.schema_version !== 1) failSchema()
+  return {
+    slug: businessSkillSlug(row.slug),
+    description: businessSkillText(row.description, 2 * 1024),
+    versionNumber: positiveInteger(row.version_number),
+    versionKey: requiredUuid(row.version_key),
+  }
+}
+
+function parseBusinessSkillLoad(value: unknown): XAgentBusinessSkillLoad {
+  const row = exactRecord(value, [
+    'schema_version', 'slug', 'description', 'version_number', 'version_key', 'instructions',
+    'content_digest', 'tool_policy_digest', 'complete_tools',
+  ])
+  const entry = parseBusinessSkillCatalogEntry({
+    schema_version: row.schema_version,
+    slug: row.slug,
+    description: row.description,
+    version_number: row.version_number,
+    version_key: row.version_key,
+  })
+  return {
+    ...entry,
+    instructions: businessSkillText(row.instructions, 64 * 1024),
+    contentDigest: businessSkillDigest(row.content_digest),
+    toolPolicyDigest: businessSkillDigest(row.tool_policy_digest),
+    completeTools: closedStringArray(row.complete_tools, BUSINESS_SKILL_COMPLETE_TOOLS),
+  }
+}
+
+function parseBusinessSkillStart(value: unknown): XAgentBusinessSkillTestStart {
+  const row = exactRecord(value, [
+    'schema_version', 'test', 'session_id', 'purpose', 'draft', 'scenario',
+    'test_tools', 'unexecuted_write_tools',
+  ])
+  if (row.schema_version !== 1 || row.purpose !== 'business_skill_test') failSchema()
+  const draft = parseBusinessSkillDraft(row.draft)
+  const completeTools = businessSkillCompleteTools(draft.primaryTools)
+  const testTools = closedStringArray(row.test_tools, BUSINESS_SKILL_TEST_TOOLS)
+  const unexecutedWriteTools = closedStringArray(row.unexecuted_write_tools, new Set(['propose_fact']))
+  const test = parseBusinessSkillTest(row.test)
+  if (
+    !sameStrings(testTools, completeTools.filter(tool => tool !== 'propose_fact'))
+    || !sameStrings(unexecutedWriteTools, completeTools.filter(tool => tool === 'propose_fact'))
+    || !sameStrings(unexecutedWriteTools, test.unexecutedWriteTools)
+  ) failSchema()
+  return {
+    test,
+    sessionId: requiredUuid(row.session_id),
+    purpose: 'business_skill_test',
+    draft,
+    scenario: businessSkillText(row.scenario, 64 * 1024),
+    testTools,
+    unexecutedWriteTools,
+  }
+}
+
+function parseBusinessSkillTranscript(value: unknown): XAgentBusinessSkillTranscript {
+  const row = exactRecord(value, ['schema_version', 'test', 'events', 'next_sequence'])
+  if (row.schema_version !== 1 || !Number.isSafeInteger(row.next_sequence) || (row.next_sequence as number) < -1) failSchema()
+  const events = boundedArray(row.events, 500).map((value) => {
+    const event = exactRecord(value, ['schema_version', 'sequence', 'event_type', 'payload', 'created_at'])
+    if (event.schema_version !== 1) failSchema()
+    return Object.freeze({
+      sequence: count(event.sequence),
+      eventType: boundedUtf8String(event.event_type, 100),
+      payload: Object.freeze(structuredClone(record(event.payload))),
+      createdAt: instant(event.created_at),
+    })
+  })
+  return {
+    test: parseBusinessSkillTest(row.test),
+    events,
+    nextSequence: row.next_sequence as number,
+  }
+}
+
+const BUSINESS_SKILL_ERRORS: readonly RetrievalErrorPair[] = [
+  [401, 'unauthenticated'],
+  [403, 'forbidden'],
+  [403, 'business-skill-tool-denied'],
+  [404, 'not-found'],
+  [409, 'idempotency-conflict'],
+  [409, 'business-skill-revision-conflict'],
+  [409, 'business-skill-test-required'],
+  [409, 'business-skill-policy-changed'],
+  [409, 'business-skill-retired'],
+  [409, 'business-skill-conflict'],
+  [409, 'business-skill-version-changed'],
+  [409, 'business-skill-cancelled'],
+  [422, 'business-skill-input-invalid'],
+  [503, 'service-unavailable'],
+]
+
 /** Bounded Host client for XAgent authentication, Session, workbench, Artifact, retrieval, and Fact APIs. */
 export class XAgentBackendClient implements XAgentBackend {
   private readonly origin: URL
@@ -1318,6 +1652,7 @@ export class XAgentBackendClient implements XAgentBackend {
   readonly artifacts: XAgentArtifactBackend
   readonly retrieval: XAgentRetrievalBackend
   readonly facts: XAgentFactBackend
+  readonly businessSkills: XAgentBusinessSkillBackend
 
   constructor(private readonly options: XAgentBackendClientOptions) {
     let origin: URL
@@ -1501,6 +1836,13 @@ export class XAgentBackendClient implements XAgentBackend {
             schema_version: 1,
             ...retrievalOperation(input),
             ...(input.query === undefined ? {} : { query: input.query }),
+            ...(input.businessSkill === undefined ? {} : { business_skill: {
+              kind: input.businessSkill.kind, slug: input.businessSkill.slug,
+              tool_policy_digest: input.businessSkill.toolPolicyDigest,
+              ...(input.businessSkill.kind === 'published'
+                ? { version_key: input.businessSkill.versionKey }
+                : { run_number: input.businessSkill.runNumber }),
+            } }),
           },
           PROJECT_DISCOVERY_ERRORS,
           signal,
@@ -1678,6 +2020,198 @@ export class XAgentBackendClient implements XAgentBackend {
       ),
     }
     this.facts = Object.freeze(facts)
+    const projectPath = (projectId: string): string =>
+      `/internal/xagent/business-skills/projects/${encodeURIComponent(requiredUuid(projectId))}`
+    const skillPath = (projectId: string, slug: string): string =>
+      `${projectPath(projectId)}/${encodeURIComponent(businessSkillSlug(slug))}`
+    const mutationKey = (value: string): string => boundedString(value, 255)
+    const optionalBoundedPositive = (value: number, maximum: number): number => {
+      const result = positiveInteger(value)
+      if (result > maximum) failSchema()
+      return result
+    }
+    const businessSkills: XAgentBusinessSkillBackend = {
+      list: async (token, projectId, input, signal) => parseBusinessSkillPage(await this.businessSkillRequest(
+        token,
+        `${projectPath(projectId)}/list`,
+        {
+          schema_version: 1,
+          ...(input.limit === undefined ? {} : { limit: optionalBoundedPositive(input.limit, 100) }),
+          ...(input.cursor === undefined ? {} : { cursor: businessSkillSlug(input.cursor) }),
+        },
+        signal,
+      )),
+      create: async (token, projectId, input, signal) => parseBusinessSkillDetail(await this.businessSkillRequest(
+        token,
+        `${projectPath(projectId)}/create`,
+        {
+          schema_version: 1,
+          slug: businessSkillSlug(input.slug),
+          display_name: businessSkillText(input.displayName, 255),
+          description: businessSkillText(input.description, 2 * 1024),
+          instructions: businessSkillText(input.instructions, 64 * 1024),
+          primary_tools: closedStringArray(input.primaryTools, BUSINESS_SKILL_PRIMARY_TOOLS),
+          idempotency_key: mutationKey(input.idempotencyKey),
+        },
+        signal,
+      )),
+      detail: async (token, projectId, slug, input, signal) => parseBusinessSkillDetail(await this.businessSkillRequest(
+        token,
+        `${skillPath(projectId, slug)}/detail`,
+        {
+          schema_version: 1,
+          ...(input.limit === undefined ? {} : { limit: optionalBoundedPositive(input.limit, 100) }),
+          ...(input.versionCursor === undefined ? {} : { version_cursor: positiveInteger(input.versionCursor) }),
+          ...(input.runCursor === undefined ? {} : { run_cursor: positiveInteger(input.runCursor) }),
+        },
+        signal,
+      )),
+      draft: async (token, projectId, slug, input, signal) => {
+        if (
+          input.sourceVersionNumber === undefined
+          && input.displayName === undefined
+          && input.description === undefined
+          && input.instructions === undefined
+          && input.primaryTools === undefined
+        ) failSchema()
+        return parseBusinessSkillDetail(await this.businessSkillRequest(token, `${skillPath(projectId, slug)}/draft`, {
+          schema_version: 1,
+          expected_draft_revision: positiveInteger(input.expectedDraftRevision),
+          idempotency_key: mutationKey(input.idempotencyKey),
+          ...(input.sourceVersionNumber === undefined ? {} : { source_version_number: positiveInteger(input.sourceVersionNumber) }),
+          ...(input.displayName === undefined ? {} : { display_name: businessSkillText(input.displayName, 255) }),
+          ...(input.description === undefined ? {} : { description: businessSkillText(input.description, 2 * 1024) }),
+          ...(input.instructions === undefined ? {} : { instructions: businessSkillText(input.instructions, 64 * 1024) }),
+          ...(input.primaryTools === undefined ? {} : {
+            primary_tools: closedStringArray(input.primaryTools, BUSINESS_SKILL_PRIMARY_TOOLS),
+          }),
+        }, signal))
+      },
+      publish: async (token, projectId, slug, revision, idempotencyKey, signal) => parseBusinessSkillDetail(
+        await this.businessSkillRequest(token, `${skillPath(projectId, slug)}/publish`, {
+          schema_version: 1,
+          expected_draft_revision: positiveInteger(revision),
+          idempotency_key: mutationKey(idempotencyKey),
+        }, signal),
+      ),
+      authorization: async (token, projectId, slug, authorized, idempotencyKey, signal) => {
+        if (typeof authorized !== 'boolean') failSchema()
+        return parseBusinessSkillDetail(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/authorization`, {
+            schema_version: 1, authorized, idempotency_key: mutationKey(idempotencyKey),
+          }, signal,
+        ))
+      },
+      version: async (token, projectId, slug, versionNumber, idempotencyKey, signal) => parseBusinessSkillDetail(
+        await this.businessSkillRequest(token, `${skillPath(projectId, slug)}/current-version`, {
+          schema_version: 1,
+          version_number: positiveInteger(versionNumber),
+          idempotency_key: mutationKey(idempotencyKey),
+        }, signal),
+      ),
+      retire: async (token, projectId, slug, idempotencyKey, signal) => parseBusinessSkillDetail(
+        await this.businessSkillRequest(token, `${skillPath(projectId, slug)}/retire`, {
+          schema_version: 1, idempotency_key: mutationKey(idempotencyKey),
+        }, signal),
+      ),
+      verdict: async (token, projectId, slug, runNumber, verdict, idempotencyKey, signal) => {
+        return parseBusinessSkillDetail(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/verdict`, {
+            schema_version: 1, verdict, idempotency_key: mutationKey(idempotencyKey),
+          }, signal,
+        ))
+      },
+      startTest: async (token, projectId, slug, input, signal) => parseBusinessSkillStart(
+        await this.businessSkillRequest(token, `${skillPath(projectId, slug)}/tests/start`, {
+          schema_version: 1,
+          expected_draft_revision: positiveInteger(input.expectedDraftRevision),
+          tool_policy_digest: businessSkillDigest(input.toolPolicyDigest),
+          scenario: businessSkillText(input.scenario, 64 * 1024),
+          idempotency_key: mutationKey(input.idempotencyKey),
+        }, signal),
+      ),
+      authorizeTestTool: async (token, projectId, sessionId, slug, runNumber, policyDigest, toolName, cancelled, signal) => {
+        const value = exactRecord(await this.businessSkillRequest(token,
+          `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/authorize-tool`, {
+            schema_version: 1, session_id: requiredUuid(sessionId), tool_policy_digest: businessSkillDigest(policyDigest),
+            tool_name: boundedUtf8String(toolName, 255), cancelled,
+          }, signal), ['schema_version', 'allowed'])
+        if (value.schema_version !== 1 || value.allowed !== true) failSchema()
+      },
+      mountTest: async (token, projectId, slug, runNumber, input, signal) => {
+        const value = exactRecord(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/mount`, {
+            schema_version: 1, session_id: requiredUuid(input.sessionId), runtime_header: input.runtimeHeader,
+            events: input.events, idempotency_key: mutationKey(input.idempotencyKey),
+          }, signal), ['schema_version', 'claimed', 'test'])
+        if (value.schema_version !== 1 || typeof value.claimed !== 'boolean') failSchema()
+        return { claimed: value.claimed, test: parseBusinessSkillTest(value.test) }
+      },
+      cancelUnmountedTest: async (token, projectId, slug, runNumber, sessionId, idempotencyKey) => {
+        const value = exactRecord(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/cancel-unmounted`, {
+            schema_version: 1, session_id: requiredUuid(sessionId), idempotency_key: mutationKey(idempotencyKey),
+          }), ['schema_version', 'test'])
+        if (value.schema_version !== 1) failSchema()
+        return parseBusinessSkillTest(value.test)
+      },
+      settleTest: async (token, projectId, slug, runNumber, sessionId, reason, idempotencyKey, signal) => {
+        if (!BUSINESS_SKILL_TERMINATION_REASONS.has(reason)) failSchema()
+        const value = exactRecord(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/settle`, {
+            schema_version: 1,
+            session_id: requiredUuid(sessionId),
+            termination_reason: reason,
+            idempotency_key: mutationKey(idempotencyKey),
+          }, signal,
+        ), ['schema_version', 'test'])
+        if (value.schema_version !== 1) failSchema()
+        return parseBusinessSkillTest(value.test)
+      },
+      transcript: async (token, projectId, slug, runNumber, input, signal) => {
+        let afterSequence: number | undefined
+        if (input.afterSequence !== undefined) {
+          if (!Number.isSafeInteger(input.afterSequence) || input.afterSequence < -1) failSchema()
+          afterSequence = input.afterSequence
+        }
+        return parseBusinessSkillTranscript(await this.businessSkillRequest(
+          token, `${skillPath(projectId, slug)}/tests/${String(positiveInteger(runNumber))}/transcript`, {
+            schema_version: 1,
+            ...(afterSequence === undefined ? {} : { after_sequence: afterSequence }),
+            ...(input.limit === undefined ? {} : { limit: optionalBoundedPositive(input.limit, 500) }),
+          }, signal,
+        ))
+      },
+      catalog: async (token, projectId, sessionId, signal) => {
+        const value = exactRecord(await this.businessSkillRequest(token, `${projectPath(projectId)}/runtime/catalog`, {
+          schema_version: 1, session_id: requiredUuid(sessionId),
+        }, signal), ['schema_version', 'items'])
+        if (value.schema_version !== 1 || !Array.isArray(value.items)) failSchema()
+        return value.items.map(parseBusinessSkillCatalogEntry)
+      },
+      load: async (token, projectId, sessionId, slug, versionKey, signal) => parseBusinessSkillLoad(
+        await this.businessSkillRequest(token, `${projectPath(projectId)}/runtime/load`, {
+          schema_version: 1,
+          session_id: requiredUuid(sessionId),
+          slug: businessSkillSlug(slug),
+          version_key: requiredUuid(versionKey),
+        }, signal),
+      ),
+      authorizeTool: async (token, projectId, sessionId, slug, versionKey, policyDigest, toolName, cancelled, signal) => {
+        if (typeof cancelled !== 'boolean') failSchema()
+        const value = exactRecord(await this.businessSkillRequest(token, `${projectPath(projectId)}/runtime/authorize-tool`, {
+          schema_version: 1,
+          session_id: requiredUuid(sessionId),
+          slug: businessSkillSlug(slug),
+          version_key: requiredUuid(versionKey),
+          tool_policy_digest: businessSkillDigest(policyDigest),
+          tool_name: boundedUtf8String(toolName, 255),
+          cancelled,
+        }, signal), ['schema_version', 'allowed'])
+        if (value.schema_version !== 1 || value.allowed !== true) failSchema()
+      },
+    }
+    this.businessSkills = Object.freeze(businessSkills)
   }
 
   async login(email: string, password: string, signal?: AbortSignal): Promise<XAgentIssuedLogin> {
@@ -1787,6 +2321,24 @@ export class XAgentBackendClient implements XAgentBackend {
       200,
       (status, value) => retrievalErrorCode(status, value, allowedErrors),
       delegationToken,
+    )
+  }
+
+  private businessSkillRequest(
+    userToken: string,
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    return this.request(
+      userToken,
+      path,
+      body,
+      signal,
+      false,
+      true,
+      200,
+      (status, value) => retrievalErrorCode(status, value, BUSINESS_SKILL_ERRORS),
     )
   }
 

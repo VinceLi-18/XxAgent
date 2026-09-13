@@ -209,6 +209,181 @@ async withRequest<T>(scope: XAgentAuthenticatedRequestScope, operation: () => Pr
 
 Source: [`packages/xagent/artifact/src/index.ts:196`](../../packages/xagent/artifact/src/index.ts)
 
+<a id="ctxxagentbusinessskill--xagentbusinessskillservice-abstract-seam"></a>
+
+### `ctx.xagentBusinessSkill` — `XAgentBusinessSkillService` (abstract seam)
+
+Service Definition for authenticated discovery and exact-version runtime Consumers.
+
+```ts cordis-catalog
+/**
+ * Bind all provider and Remote work to one physical request.
+ * @param scope - backend-derived conversation Project Session authority.
+ * @param operation - operation whose settlement expires the request.
+ * @returns result or stable failure after owned backend work settles, without retaining request authority.
+ */
+abstract withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * Admit one prompt without delaying its RPC receipt while retaining authority for its accepted turn.
+ * @param scope - backend-derived conversation Project Session authority.
+ * @param operation - prompt admission operation that inserts the exact owned message.
+ * @returns prompt admission result; accepted Agent work continues under the captured scope.
+ */
+abstract withPrompt<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: () => Promise<T>): Promise<T>
+
+/**
+ * Install this request's provider in the exact Agent scope; repeated attachment is idempotent.
+ * @param agent - Agent whose Session must match the current request.
+ * @returns provider or undefined outside eligible requests or after Agent disposal.
+ */
+abstract attach(agent: Agent): SkillProvider | undefined
+
+/**
+ * Recover private version information for an owned immutable loaded definition.
+ * @param agent - exact receiving Agent.
+ * @param definition - exact returned definition, never reconstructed metadata.
+ * @returns Host-private version while its registration is live, otherwise undefined.
+ */
+abstract loadedVersion(agent: Agent, definition: SkillDefinition): XAgentBusinessSkillLoad | undefined
+
+/**
+ * Register the isolated executor before the test Remote may create a backend run.
+ * @param runner - Host-only executor owning admission and settlement.
+ * @returns effect disposer; duplicate registration fails and disposal disables testing.
+ */
+abstract registerTestRunner(runner: XAgentBusinessSkillTestRunner): () => void
+
+/**
+ * List the current project's bounded public catalog.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract list(projectId: string, sessionId: string, input: { readonly limit?: number; readonly cursor?: string }, signal?: AbortSignal): Promise<XAgentBusinessSkillPage>
+
+/**
+ * Read the Skill's bounded draft, version, test and audit records.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract detail( projectId: string, sessionId: string, slug: string, input: { readonly limit?: number; readonly versionCursor?: number; readonly runCursor?: number }, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Create a draft under current backend authorization.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract create(projectId: string, sessionId: string, input: XAgentBusinessSkillCreateInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Update only the expected mutable draft revision.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract draft(projectId: string, sessionId: string, slug: string, input: XAgentBusinessSkillDraftInput, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Execute one isolated test; unavailable without a dedicated runner.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract test(projectId: string, sessionId: string, slug: string, input: XAgentBusinessSkillTestInput, signal?: AbortSignal): Promise<XAgentBusinessSkillTest>
+
+/**
+ * Read a dedicated test transcript through its public run number.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param input - Public pagination or mutation fields.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param runNumber - Positive public test-run number.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract transcript( projectId: string, sessionId: string, slug: string, runNumber: number, input: { readonly afterSequence?: number; readonly limit?: number }, signal?: AbortSignal, ): Promise<BusinessSkillRemoteTranscript>
+
+/**
+ * Record a human verdict for an exact public test run.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param runNumber - Positive public test-run number.
+ * @param verdict - Human pass or reject verdict.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract verdict( projectId: string, sessionId: string, slug: string, runNumber: number, verdict: XAgentBusinessSkillVerdict, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Publish only an exact qualifying draft revision.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @param expectedDraftRevision - Exact positive draft revision read by the caller.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract publish( projectId: string, sessionId: string, slug: string, expectedDraftRevision: number, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Change stable-Skill authorization through backend Manager checks.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @param authorized - Whether production invocation is authorized.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract authorization( projectId: string, sessionId: string, slug: string, authorized: boolean, idempotencyKey: string, signal?: AbortSignal, ): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Select an immutable historical public version as current.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @param versionNumber - Positive immutable public version number.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract version(projectId: string, sessionId: string, slug: string, versionNumber: number, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+
+/**
+ * Retire the stable Skill permanently while preserving its history.
+ * @param projectId - Selected project ID, checked against backend-derived request scope.
+ * @param sessionId - Ordinary runtime Session ID belonging to the selected project.
+ * @param slug - Project-local public Skill name.
+ * @param signal - Optional caller cancellation, combined with the physical request.
+ * @param idempotencyKey - Key identifying this mutation intent.
+ * @returns Public backend records or a stable authorization, input or availability failure.
+ */
+abstract retire(projectId: string, sessionId: string, slug: string, idempotencyKey: string, signal?: AbortSignal): Promise<XAgentBusinessSkillDetail>
+```
+
+Types: [Agent](core.md) · [SkillDefinition](skills.md) · [SkillProvider](skills.md)
+
+Source: [`packages/xagent/business-skill/src/index.ts:102`](../../packages/xagent/business-skill/src/index.ts)
+
 <a id="ctxxagentcitation--xagentcitationremoteservice"></a>
 
 ### `ctx.xagentCitation` — `XAgentCitationRemoteService`
@@ -241,7 +416,7 @@ async withRequest<T>(scope: XAgentAuthenticatedSessionRequestScope, operation: (
 async dispose(): Promise<void>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:270`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:273`](../../packages/xagent/retrieval/src/index.ts)
 
 <a id="ctxxagentfact--xagentfactservice"></a>
 
@@ -360,7 +535,7 @@ XAgent Host 的 Principal 解析服务；实现必须通过 FastAPI introspectio
 abstract resolve(userToken: string, connectionId: string, signal?: AbortSignal): Promise<XAgentPrincipal>
 ```
 
-Source: [`packages/xagent/principal/src/index.ts:115`](../../packages/xagent/principal/src/index.ts)
+Source: [`packages/xagent/principal/src/index.ts:136`](../../packages/xagent/principal/src/index.ts)
 
 <a id="ctxxagentproject--xagentprojectservice"></a>
 
@@ -434,5 +609,5 @@ abstract listAccessibleProjects(input: XAgentListAccessibleProjectsInput): Promi
 abstract searchArtifacts(input: XAgentSearchArtifactsInput): Promise<XAgentArtifactSearch>
 ```
 
-Source: [`packages/xagent/retrieval/src/index.ts:158`](../../packages/xagent/retrieval/src/index.ts)
+Source: [`packages/xagent/retrieval/src/index.ts:161`](../../packages/xagent/retrieval/src/index.ts)
 <!-- END GENERATED cordis-surface -->

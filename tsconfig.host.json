@@ -165,6 +165,7 @@
     { "path": "./packages/xagent/artifact" },
     { "path": "./packages/xagent/delegation-token" },
     { "path": "./packages/xagent/fact" },
+    { "path": "./packages/xagent/business-skill" },
     { "path": "./packages/xagent/connection-auth" },
     { "path": "./packages/xagent/authorization" },
     { "path": "./packages/xagent/session-persistence-api" },

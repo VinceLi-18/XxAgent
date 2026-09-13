@@ -131,6 +131,22 @@ function requestId(headers: Headers): ReturnType<typeof ProviderRequestId> | und
   return value === null || value.length === 0 ? undefined : ProviderRequestId(value)
 }
 
+async function nextUntilAbort<T>(start: () => Promise<IteratorResult<T>>, signal: AbortSignal): Promise<IteratorResult<T>> {
+  signal.throwIfAborted()
+  const operation = start()
+  const aborted = Promise.withResolvers<never>()
+  const onAbort = (): void => {
+    const reason: unknown = signal.reason
+    aborted.reject(reason)
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  try {
+    return await Promise.race([operation, aborted.promise])
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
 /**
  * Map an HTTP status to a stable LlmError code.
  * @param status - status of a non-2xx provider response.
@@ -240,7 +256,7 @@ export class DeepSeekAdapter extends LlmAdapter {
     let exhausted = false
     try {
       while (true) {
-        const result = await watchdog.next(iterator)
+        const result = await nextUntilAbort(() => watchdog.next(iterator), watchdog.signal)
         if (result.done) {
           exhausted = true
           return
@@ -261,14 +277,14 @@ export class DeepSeekAdapter extends LlmAdapter {
       if (error instanceof LlmError) throw error
       throw new LlmError(`DeepSeek API stream from ${connection.baseURL} failed`, 'TRANSPORT', { cause: error })
     } finally {
-      consumer.abort('DeepSeek stream consumer stopped')
-      if (!exhausted && iterator.return !== undefined) {
+      if (!exhausted && !watchdog.signal.aborted && iterator.return !== undefined) {
         try {
           await iterator.return()
-        } catch (_abortedTransportTeardown) {
-          // The consumer controller already owns termination; a return-time abort cannot add a second outcome.
+        } catch (_failedTransportTeardown) {
+          // The stream failure already owns the outcome; return-time cleanup cannot replace it.
         }
       }
+      consumer.abort('DeepSeek stream consumer stopped')
     }
   }
 

@@ -30,6 +30,7 @@ try {
     requestSignal: new AbortController().signal,
     connectionSignal: new AbortController().signal,
     visibility: 'project' as const,
+    purpose: 'conversation' as const,
     projectId: PROJECT,
   })
   const persistence = ctx.sessionPersistence as Context['sessionPersistence'] & {

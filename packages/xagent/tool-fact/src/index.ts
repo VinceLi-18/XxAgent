@@ -218,6 +218,7 @@ function currentProjectScope(agent: Agent): ProjectScope | undefined {
   if (scope === undefined || !isXAgentAuthenticatedRequestScope(scope) || !('sessionId' in scope)) return undefined
   const sessionScope = scope as XAgentAuthenticatedSessionRequestScope
   return sessionScope.visibility === 'project'
+    && sessionScope.purpose === 'conversation'
     && typeof sessionScope.projectId === 'string'
     && UUID.test(sessionScope.projectId)
     && sessionScope.sessionId === sessionId(agent)
@@ -231,6 +232,7 @@ function currentProjectScope(agent: Agent): ProjectScope | undefined {
 
 function sameScope(left: XAgentAuthenticatedSessionRequestScope, right: XAgentAuthenticatedSessionRequestScope): boolean {
   return left.sessionId === right.sessionId
+    && left.purpose === right.purpose
     && left.projectId === right.projectId
     && left.connectionId === right.connectionId
     && left.userToken === right.userToken

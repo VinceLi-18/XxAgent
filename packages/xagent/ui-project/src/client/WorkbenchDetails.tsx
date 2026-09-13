@@ -10,6 +10,7 @@ export interface WorkbenchDetailsInjected {
     workbench: HostObservable<XAgentWorkbenchState>
     detailsTab: HostObservable<XAgentWorkbenchDetailsTab>
     factsAvailable: HostObservable<boolean>
+    skillsAvailable: HostObservable<boolean>
   }
   loadProject(projectId: string): Promise<void>
   selectDetailsTab(tab: XAgentWorkbenchDetailsTab): void
@@ -17,23 +18,26 @@ export interface WorkbenchDetailsInjected {
 
 export type WorkbenchDetailsProps =
   & PropsRuntime<'shell.details'>
-  & PropsRenderSlots<'xagent.workbench.artifacts' | 'xagent.workbench.facts'>
+  & PropsRenderSlots<'xagent.workbench.artifacts' | 'xagent.workbench.facts' | 'xagent.workbench.skills'>
   & InjectFace<WorkbenchDetailsInjected>
 
 const OVERVIEW_TAB = ['overview', text.overview] as const
 const ARTIFACTS_TAB = ['artifacts', text.artifacts] as const
 const INBOX_TAB = ['inbox', text.inbox] as const
-const BASE_DETAILS_TABS: readonly (readonly [XAgentWorkbenchDetailsTab, string])[] = [OVERVIEW_TAB, ARTIFACTS_TAB, INBOX_TAB]
 
 export function WorkbenchDetails({
-  useWorkbench, useDetailsTab, useFactsAvailable, loadProject, selectDetailsTab, renderSlot,
+  useWorkbench, useDetailsTab, useFactsAvailable, useSkillsAvailable, loadProject, selectDetailsTab, renderSlot,
 }: WorkbenchDetailsProps) {
   const state = useWorkbench(value => value)
   const requestedTab = useDetailsTab(value => value)
   const factsAvailable = useFactsAvailable(value => value)
-  const detailsTabs = factsAvailable
-    ? [OVERVIEW_TAB, ARTIFACTS_TAB, ['facts', text.facts] as const, INBOX_TAB]
-    : BASE_DETAILS_TABS
+  const skillsMounted = useSkillsAvailable(value => value)
+  const skillsAvailable = skillsMounted && state.phase === 'ready' && state.context.kind === 'project'
+  const detailsTabs: readonly (readonly [XAgentWorkbenchDetailsTab, string])[] = [
+    OVERVIEW_TAB, ARTIFACTS_TAB,
+    ...(factsAvailable ? [['facts', text.facts] as const] : []),
+    ...(skillsAvailable ? [['skills', 'Skills'] as const] : []), INBOX_TAB,
+  ]
   const [tab, setTab] = useState<XAgentWorkbenchDetailsTab>(requestedTab)
   const tabRefs = useRef(new Map<XAgentWorkbenchDetailsTab, HTMLButtonElement>())
   const projectId = state.phase === 'ready' && state.context.kind === 'project' ? state.context.projectId : undefined
@@ -43,10 +47,10 @@ export function WorkbenchDetails({
   }, [loadProject, loadedProjectId, projectId])
   useEffect(() => { setTab(requestedTab) }, [requestedTab])
   useEffect(() => {
-    if (factsAvailable || tab !== 'facts') return
+    if ((tab !== 'facts' || factsAvailable) && (tab !== 'skills' || skillsAvailable)) return
     setTab('overview')
     selectDetailsTab('overview')
-  }, [factsAvailable, selectDetailsTab, tab])
+  }, [factsAvailable, skillsAvailable, selectDetailsTab, tab])
   if (state.phase !== 'ready') return <p className={css.status}>正在加载详情…</p>
 
   const heading = state.context.kind === 'workbench'
@@ -88,7 +92,7 @@ export function WorkbenchDetails({
 
   return <aside className={css.details}>
     <h2>{heading}</h2>
-    <div className={css.tabs} data-with-facts={factsAvailable} role="tablist" aria-label="工作台详情">
+    <div className={css.tabs} style={{ gridTemplateColumns: `repeat(${detailsTabs.length}, minmax(0, 1fr))` }} role="tablist" aria-label="工作台详情">
       {detailsTabs.map(([id, label], index) => <button
         ref={(node) => {
           if (node === null) tabRefs.current.delete(id)
@@ -115,6 +119,9 @@ export function WorkbenchDetails({
     </section>}
     {tab === 'inbox' && <section id="xagent-workbench-inbox" role="tabpanel" aria-label={text.inbox}>
       <p>{text.emptyInbox}</p>
+    </section>}
+    {tab === 'skills' && skillsAvailable && <section id="xagent-workbench-skills" role="tabpanel" aria-label="Skills">
+      {renderSlot('xagent.workbench.skills', {})}
     </section>}
   </aside>
 }

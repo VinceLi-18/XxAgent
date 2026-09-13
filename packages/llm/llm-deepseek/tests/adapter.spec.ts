@@ -514,6 +514,24 @@ describe('DeepSeekAdapter against a mock server', () => {
     }
   })
 
+  it('preserves an initial fetch abort for the outer caller-abort classification', async () => {
+    const controller = new AbortController()
+    const cause = new Error('caller stopped initial fetch')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      controller.abort(cause)
+      return Promise.reject(cause)
+    })
+    const adapter = adapterOf({ baseURL: 'https://example.invalid' })
+    try {
+      const drain = async (): Promise<void> => {
+        for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'm', messages: [], signal: controller.signal })) { /* drain */ }
+      }
+      await expect(drain()).rejects.toMatchObject({ code: 'ABORTED', cause })
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
   it('renders a non-Error transport rejection without losing its cause', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
       const failed = Promise.withResolvers<Response>()
@@ -560,6 +578,75 @@ describe('DeepSeekAdapter against a mock server', () => {
       await vi.advanceTimersByTimeAsync(100)
       await rejected
       expect(stopped).toBe(true)
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('times out even when the underlying body does not settle after abort', async () => {
+    vi.useFakeTimers()
+    let body: ReadableStreamDefaultController<Uint8Array> | undefined
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { body = controller },
+      })
+      return Promise.resolve(new Response(stream, { status: 200 }))
+    })
+    const adapter = adapterOf({ baseURL: 'https://example.invalid', streamIdleTimeoutMs: 100 })
+    const outcome = (async () => {
+      try {
+        for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'm', messages: [] })) { /* drain */ }
+        return { kind: 'resolved' as const }
+      } catch (error: unknown) {
+        return { kind: 'rejected' as const, error }
+      }
+    })()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(100)
+      const pending = Symbol('pending')
+      const result = await Promise.race([outcome, Promise.resolve(pending)])
+      expect(result).not.toBe(pending)
+      expect(result).toMatchObject({ kind: 'rejected', error: { code: 'TIMEOUT' } })
+    } finally {
+      try {
+        body?.error(new Error('release non-cooperative test body'))
+      } catch (_alreadyClosed) {
+        // A completed timeout may already have closed the synthetic body.
+      }
+      await outcome
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it.each([
+    { mode: 'consumer exits early', expectedCancels: 1 },
+    { mode: 'provider completes', expectedCancels: 0 },
+  ] as const)('releases the response body when $mode', async ({ mode, expectedCancels }) => {
+    const encoder = new TextEncoder()
+    let cancels = 0
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (mode === 'consumer exits early') {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'))
+          return
+        }
+        controller.enqueue(encoder.encode([
+          ...textEvents.map(event => `data: ${event}\n\n`),
+          'data: [DONE]\n\n',
+        ].join('')))
+        controller.close()
+      },
+      cancel() { cancels += 1 },
+    })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body, { status: 200 }))
+    const adapter = adapterOf({ baseURL: 'https://example.invalid' })
+    try {
+      for await (const _chunk of adapter.stream({ provider: 'deepseek-official', model: 'm', messages: [] })) {
+        if (mode === 'consumer exits early') break
+      }
+      expect(body.locked).toBe(false)
+      expect(cancels).toBe(expectedCancels)
     } finally {
       fetchSpy.mockRestore()
     }

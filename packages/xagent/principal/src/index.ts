@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type {
   XAgentAuthenticatedRequestScope,
+  XAgentAuthenticatedSessionRequestScope,
   XAgentPrincipal,
   XAgentPrincipalResolver,
 } from './types.ts'
@@ -17,6 +18,7 @@ export type {
   XAgentPrincipal,
   XAgentPrincipalResolver,
   XAgentRole,
+  XAgentSessionPurpose,
 } from './types.ts'
 
 const authenticatedRequestScope = new AsyncLocalStorage<XAgentAuthenticatedRequestScope | undefined>()
@@ -68,6 +70,25 @@ export function isXAgentAuthenticatedRequestScope(scope: XAgentAuthenticatedRequ
     && scope.principal.connectionId === scope.connectionId
     && scope.userToken.length > 0
     && scope.connectionId.length > 0
+}
+
+/**
+ * Verify authenticated Session identity, purpose, and Project ownership fields.
+ * @param scope - request scope assembled from a FastAPI Session row.
+ * @returns whether the scope contains one closed Session purpose and consistent visibility fields.
+ */
+export function isXAgentAuthenticatedSessionRequestScope(
+  scope: XAgentAuthenticatedSessionRequestScope,
+): boolean {
+  const purpose: unknown = scope.purpose
+  const visibility: unknown = scope.visibility
+  const projectId: unknown = scope.projectId
+  return isXAgentAuthenticatedRequestScope(scope)
+    && UUID_PATTERN.test(scope.sessionId)
+    && (purpose === 'conversation' || purpose === 'business_skill_test')
+    && (visibility === 'private'
+      ? projectId === null && purpose === 'conversation'
+      : visibility === 'project' && typeof projectId === 'string' && UUID_PATTERN.test(projectId))
 }
 
 declare module '@deepseek-ai/cordis' {

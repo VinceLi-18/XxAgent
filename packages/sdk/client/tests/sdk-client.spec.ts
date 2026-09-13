@@ -148,6 +148,17 @@ describe('DeepSeekHarness', () => {
     await harness.close()
   })
 
+  it('preserves the public ignorable Business Skill activation envelope', async () => {
+    const harness = harnessWith({ FAKE_BUSINESS_SKILL: '1' })
+    try {
+      const result = await harness.run('use review')
+      expect(result.events.find(item => item.type === 'business-skill/activated')).toEqual({
+        type: 'business-skill/activated', seq: 4, time: 0, ignorable: true,
+        data: { slug: 'review', version: 2, invocation: 'model-tool', turn: 0, toolPolicyDigest: 'a'.repeat(64) },
+      })
+    } finally { await harness.close() }
+  })
+
   it('keeps events root-scoped while streaming notifications for the session tree', async () => {
     const harness = harnessWith({ FAKE_SUBAGENT: '1' })
     const seen: HarnessNotification[] = []

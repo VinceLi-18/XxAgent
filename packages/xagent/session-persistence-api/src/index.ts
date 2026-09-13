@@ -23,7 +23,10 @@ import {
 } from '@deepseek-ai/dsh-session'
 import { XAgentBackendClient, XAgentBackendError, type XAgentBackend, type XAgentFactPersistenceSidecars } from '@xagent/dsh-backend-client'
 import type { XAgentReceiptRegistryContract } from '@xagent/dsh-retrieval'
+import { isXAgentAuthenticatedSessionRequestScope, type XAgentAuthenticatedSessionRequestScope } from '@xagent/dsh-principal'
+import type { XAgentSessionAppendInput } from '@xagent/dsh-backend-client'
 import { decodeFactSessionEvent, encodeFactSessionEvent } from './fact-event-codec.ts'
+import { decodeBusinessSkillEvent, encodeBusinessSkillEvent } from './business-skill-event-codec.ts'
 const SESSION_ID_PATTERN = /^(?:session-)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -82,6 +85,10 @@ function headerFrom(value: unknown): SessionHeader {
 
 function eventFrom(value: unknown, envelopeType?: unknown): SessionEvent {
   const row = object(value)
+  if (row.type === 'business-skill/activated' || envelopeType === 'business-skill/activated') {
+    if (envelopeType !== row.type) throw new TypeError('invalid XAgent Business Skill session event')
+    return decodeBusinessSkillEvent(row)
+  }
   if (row.type === 'fact/proposal-decided' || envelopeType === 'fact/proposal-decided') {
     if (envelopeType !== row.type) {
       throw new TypeError('invalid XAgent Fact session event')
@@ -130,6 +137,7 @@ function factToolResultPayload(event: SessionEvent): SessionEvent | undefined {
 }
 
 function eventPayload(event: SessionEvent): SessionEvent | Record<string, unknown> {
+  if ((event as { readonly type: string }).type === 'business-skill/activated') return encodeBusinessSkillEvent(event)
   if ((event as { readonly type: string }).type === 'fact/proposal-decided') {
     return encodeFactSessionEvent(event)
   }
@@ -155,13 +163,23 @@ function eventEnvelope(event: SessionEvent): {
 function responseSessions(value: unknown): Record<string, unknown>[] {
   const sessions = object(value).sessions
   if (!Array.isArray(sessions)) throw new TypeError('invalid XAgent session response')
-  return sessions.map(object)
+  return sessions.map((value) => {
+    const row = object(value)
+    if (row.purpose !== 'conversation' && row.purpose !== 'business_skill_test') {
+      throw new TypeError('invalid XAgent session purpose')
+    }
+    return row
+  })
+}
+
+function conversationSessions(value: unknown): Record<string, unknown>[] {
+  return responseSessions(value).filter(row => row.purpose === 'conversation')
 }
 
 function validateCreatedSession(value: unknown, expectedId: string): void {
   const row = object(value)
   const session = object(row.session)
-  if (row.schema_version !== 1 || session.id !== expectedId) {
+  if (row.schema_version !== 1 || session.id !== expectedId || session.purpose !== 'conversation') {
     throw new TypeError('invalid XAgent session create response')
   }
   if (session.visibility === 'private' && session.project_id === null) return
@@ -180,7 +198,7 @@ function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: 
   const id = session.id
   const sessionKeys = new Set([
     'id', 'owner_id', 'project_id', 'visibility', 'permission_revision_created',
-    'title', 'runtime_header', 'archived', 'last_event_sequence', 'version',
+    'purpose', 'title', 'runtime_header', 'archived', 'last_event_sequence', 'version',
     'created_at', 'updated_at',
   ])
   const runtimeHeaderKeys = new Set([
@@ -191,7 +209,8 @@ function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: 
     || !Object.hasOwn(row, 'session')
     || Object.keys(session).some(key => !sessionKeys.has(key))
     || Object.keys(runtimeHeader).some(key => !runtimeHeaderKeys.has(key))
-    || row.schema_version !== 1 || typeof id !== 'string' || !UUID_PATTERN.test(id)
+    || row.schema_version !== 1 || session.purpose !== 'conversation'
+    || typeof id !== 'string' || !UUID_PATTERN.test(id)
     || session.last_event_sequence !== throughSequence) {
     throw new TypeError('invalid XAgent session fork response')
   }
@@ -226,6 +245,7 @@ function validateAppendResult(value: unknown, expectedLastSequence: number): voi
 function responseInspection(value: unknown): SessionInspection {
   const row = object(value)
   const session = object(row.session)
+  if (session.purpose !== 'conversation') throw new TypeError('invalid XAgent session purpose')
   const events = row.events
   if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
   const parsed = events.map((entry, index) => {
@@ -264,6 +284,10 @@ export class XAgentSessionPersistence extends SessionPersistence {
     timer: ReturnType<typeof setTimeout> | undefined
   }>()
   private readonly preparedSuffixes = new WeakMap<Session, SessionEvent[]>()
+  private readonly testPublications = new WeakMap<Session, {
+    readonly token: string
+    readonly publish: (header: SessionHeader, events: XAgentSessionAppendInput['events']) => Promise<void>
+  }>()
   private scopeTail: Promise<void> = Promise.resolve()
   private activeToken: string | undefined
 
@@ -308,6 +332,12 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   override async preparePublication(session: Session): Promise<void> {
+    const test = this.testPublications.get(session)
+    if (test !== undefined) {
+      await test.publish(session.header, session.events.map(eventEnvelope))
+      this.leases.set(session.id, test.token)
+      return
+    }
     const token = this.requireActiveToken()
     const events = session.events.map(event => structuredClone(event))
     const expectedId = backendSessionId(session.id)
@@ -365,13 +395,14 @@ export class XAgentSessionPersistence extends SessionPersistence {
   }
 
   /**
-   * Flush queued events for one live Session before a remote authorization read.
+   * Flush queued events for one Session, including its detached disposal suffix.
    * @param id - Session whose pending append must settle.
-   * @returns after the live Session flush completes or immediately when absent.
+   * @returns after the live checkpoint or detached persistence queue settles.
    */
   async flushSession(id: SessionIdType): Promise<void> {
     const session = this.ctx.get('sessions')?.get(id)
     if (session !== undefined) await this.ctx.sessions.flush(session)
+    else await this.flushWrites(id)
   }
 
   async create(meta: SessionHeader): Promise<void> {
@@ -505,7 +536,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     if (!Number.isSafeInteger(fromSeq) || fromSeq < 0) throw new TypeError('fromSeq must be a non-negative safe integer')
     signal?.throwIfAborted()
     const token = this.tokenFor(id)
-    const rows = responseSessions(await this.backend.sessions.list(token, signal))
+    const rows = conversationSessions(await this.backend.sessions.list(token, signal))
     const meta = rows.map(row => headerFrom(row.runtime_header)).find(header => header.id === id)
     if (meta === undefined) throw new Error('session not found')
     const events: SessionEvent[] = []
@@ -528,7 +559,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
   async list(signal?: AbortSignal): Promise<SessionHeader[]> {
     signal?.throwIfAborted()
     const token = this.requireActiveToken()
-    const rows = responseSessions(await this.backend.sessions.list(token, signal))
+    const rows = conversationSessions(await this.backend.sessions.list(token, signal))
     const headers = rows.map(row => headerFrom(row.runtime_header))
     for (const header of headers) this.leases.set(header.id, token)
     return headers
@@ -540,10 +571,30 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return Promise.resolve([])
   }
 
+  /**
+   * Bind an unpublished factory Session to its dedicated atomic backend publication.
+   * @param session - factory-owned unpublished Session allocated by tests/start.
+   * @param scope - authenticated Project test purpose and matching Session identity.
+   * @param publish - atomic mount operation receiving the actual header and codec-encoded startup events.
+   * @returns disposer for the exact publication binding; no ordinary Session is created remotely.
+   * @throws when purpose, project, identity or physical request lifetime is invalid.
+   */
+  bindBusinessSkillTestPublication(session: Session, scope: XAgentAuthenticatedSessionRequestScope,
+    publish: (header: SessionHeader, events: XAgentSessionAppendInput['events']) => Promise<void>): () => void {
+    if (!isXAgentAuthenticatedSessionRequestScope(scope) || scope.purpose !== 'business_skill_test'
+      || scope.visibility !== 'project' || session.id !== `session-${scope.sessionId}`
+      || scope.requestSignal === undefined || scope.connectionSignal === undefined
+      || scope.requestSignal.aborted || scope.connectionSignal.aborted || this.testPublications.has(session)) {
+      throw new Error('invalid Business Skill test publication')
+    }
+    this.testPublications.set(session, { token: scope.userToken, publish })
+    return () => { this.testPublications.delete(session) }
+  }
+
   async listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]> {
     signal?.throwIfAborted()
     const token = this.requireActiveToken()
-    const rows = responseSessions(await this.backend.sessions.list(token, signal))
+    const rows = conversationSessions(await this.backend.sessions.list(token, signal))
     return rows.map((row) => {
       const header = headerFrom(row.runtime_header)
       if (!Number.isSafeInteger(row.version) || !Number.isSafeInteger(row.last_event_sequence)) {

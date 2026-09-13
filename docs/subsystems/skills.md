@@ -14,15 +14,17 @@ The registry is host+per-scope layered, the shape the [tools registry](tools.md)
 
 Within one layer, duplicate names resolve by rank, provider order, then local order; summaries sort by name. A rejected `list()` is logged and omitted from an incomplete observation, while an explicit incomplete observation contributes usable candidates without making the result cacheable; malformed candidates fail fast. Each provider factory receives a registration-scoped control whose `invalidate()` clears completed catalogs only while that exact registration remains active and whose signal aborts on failed registration or disposal. An in-flight discovery retries once when its provider generation changes; a second change returns the latest candidates incomplete and uncached. Provider and runtime mutations emit the unfiltered `skills/change` invalidation event; it carries no diff, so consumers refetch `snapshot()` with their own lookup options.
 
-An array returned by `SkillProvider.list()` is complete-discovery shorthand. `SkillProviderObservation` lets a provider expose candidates that remain directly loadable while reporting that the observation is not authoritative.
+An array returned by `SkillProvider.list()` is complete, cacheable discovery shorthand. `SkillProviderObservation` separates authority from reuse: `complete: false` reports an incomplete observation; `complete: true, cacheable: false` publishes an authoritative catalog while requiring fresh discovery on every lookup.
 
 ```ts type-equiv
 /** Provider candidates plus whether the current discovery is authoritative. */
 interface SkillProviderObservation {
   /** Candidates available from the current provider discovery. */
   readonly candidates: readonly SkillCandidate[]
-  /** Whether discovery completed and these candidates may be cached. */
+  /** Whether discovery completed authoritatively for this lookup. */
   readonly complete: boolean
+  /** Whether a complete observation may be reused across lookups; omission permits caching. */
+  readonly cacheable?: boolean
 }
 ```
 
@@ -304,7 +306,35 @@ async snapshot(options: SkillViewOptions = {}): Promise<SkillCatalogSnapshot>
 async get(name: string, options: SkillViewOptions = {}): Promise<SkillDefinition | undefined>
 ```
 
-Source: [`packages/skill/skill/src/index.ts:357`](../../packages/skill/skill/src/index.ts)
+Source: [`packages/skill/skill/src/index.ts:361`](../../packages/skill/skill/src/index.ts)
+
+<a id="skill-events"></a>
+
+### `skill/*` events
+
+<a id="skillloaded--serial"></a>
+
+#### `skill/loaded` — serial
+
+A resolved skill is about to become model-visible. Dispatch is awaited before the tool result or injected message is admitted; listener failure prevents the loaded body from entering model context.
+
+```ts cordis-catalog
+/**
+ * A resolved skill is about to become model-visible. Dispatch is awaited
+ * before the tool result or injected message is admitted; listener failure
+ * prevents the loaded body from entering model context.
+ * @param payload - the receiving agent, exact complete provider definition,
+ * model-tool or user-explicit load path, and the model call ID present only
+ * for a model-tool load.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+ * @mode serial
+ */
+'skill/loaded'(this: Scoped<Agent>, payload: { agent: Agent; definition: SkillDefinition; invocation: 'model-tool' | 'user-explicit'; callId?: CallId }): Promise<void> | void
+```
+
+Types: [Agent](core.md) · [CallId](llm-streaming.md) · [Scoped](scope.md)
+
+Source: [`packages/skill/tool-skill/src/index.ts:63`](../../packages/skill/tool-skill/src/index.ts)
 
 <a id="skills-events"></a>
 
@@ -327,5 +357,5 @@ A skill provider, runtime contribution, or provider-backed catalog may have chan
 'skills/change'(): void
 ```
 
-Source: [`packages/skill/skill/src/index.ts:297`](../../packages/skill/skill/src/index.ts)
+Source: [`packages/skill/skill/src/index.ts:299`](../../packages/skill/skill/src/index.ts)
 <!-- END GENERATED cordis-surface -->

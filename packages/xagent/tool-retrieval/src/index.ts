@@ -7,7 +7,20 @@ import { XAgentRetrievalError, type XAgentArtifactSearch, type XAgentAccessibleP
 export const name = 'xagent-tool-retrieval'
 export const inject = ['tools']
 
-const PROJECT_DESCRIPTION = 'List up to 20 projects accessible to the current private session. '
+/** Stable model tool name for the Artifact search consumer. */
+export const SEARCH_ARTIFACTS_TOOL = 'search_artifacts'
+const artifactSearchTools = new WeakSet<ToolDefinition>()
+
+/**
+ * Recognize an exact live registration owned by this consumer, not a copied or same-name tool.
+ * @param definition - Tool runtime's registered definition.
+ * @returns Whether the defining plugin's registration remains live; identity is never serialized.
+ */
+export function isArtifactSearchTool(definition: ToolDefinition): boolean {
+  return artifactSearchTools.has(definition)
+}
+
+const PROJECT_DESCRIPTION = 'List up to 20 accessible projects in a private session, or the current project when an active Business Skill permits discovery. '
   + 'Use the optional name query to narrow ambiguous names. Ask the user when names are ambiguous; never choose the first match automatically.'
 const SEARCH_DESCRIPTION = 'Search authorized Artifact evidence for the current session. Private sessions require explicit project_ids and/or include_private=true; '
   + 'there is no implicit all-project scope. Ask the user when the intended projects or private scope are ambiguous.'
@@ -117,8 +130,8 @@ export function apply(ctx: Context): void {
     },
   })))
 
-  ctx.tools.register(closeParameters(defineTool({
-    name: 'search_artifacts',
+  const search = closeParameters(defineTool({
+    name: SEARCH_ARTIFACTS_TOOL,
     nativeOnly: true,
     description: SEARCH_DESCRIPTION,
     parameters: {
@@ -158,5 +171,10 @@ export function apply(ctx: Context): void {
       })
       return { citations: value.citations.map(citation => ({ ...citation })), payloadHash: value.payloadHash }
     },
-  })))
+  }))
+  ctx.tools.register(search)
+  ctx.effect(() => {
+    artifactSearchTools.add(search)
+    return () => { artifactSearchTools.delete(search) }
+  }, 'Artifact search registration identity')
 }
