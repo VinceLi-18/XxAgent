@@ -10,7 +10,9 @@ XAgent Business Profile 会由同一个 Host 进程服务多个账号。因此�
 
 ## 决策
 
-FastAPI 与 PostgreSQL 拥有账号能力、可见项目、已选择的工作台或项目上下文，以及 Session 作用域索引。Manager 按角色默认获得 `project.create`；Specialist 只有获得服务端授权后才拥有该能力。权限版本变化会撤销既有登录，浏览器必须重新认证后才能取得新的能力集合。
+FastAPI 与 PostgreSQL 拥有账号能力、可见项目、已选择的工作台或项目上下文，以及经过授权的 Session 记录。Manager 按角色默认获得 `project.create`；Specialist 只有获得服务端授权后才拥有该能力。权限版本变化会撤销既有登录，浏览器必须重新认证后才能取得新的能力集合。
+
+Host 后端客户端从一次经过认证的 Bootstrap 响应生成工作台 Session 范围与计数。FastAPI 通过共享 Session 可见性与私有项目引用检查后返回最小普通对话记录；Host 不接收未经授权的记录进行过滤。没有运行时 Header 的普通对话计数但没有可打开范围，隐藏的 Business Skill 测试 Session 则不进入响应。Bootstrap 使用内部 schema 版本 2 并拒绝版本不匹配；其他工作台操作保持版本 1。Host 与 API 配套部署或回滚，无需数据库转换。[Phase 7A 设计](../../../../docs/superpowers/specs/2026-09-13-xagent-phase-7a-workbench-design.md)定义本批迁移。
 
 Host 授权器从已认证连接生成不可变 Principal，并在每个 `xagentProject` 或 `xagentArtifact` Remote 操作外建立由 Principal 包拥有的请求作用域。两个服务分别拥有独立的 `AsyncLocalStorage`，且都只从共享不可变作用域读取用户令牌。八个 Artifact 方法始终转发到 FastAPI，不缓存列表、详情或 URL。后端业务拒绝通过显式 `TypertRemoteFailure` 穿过 Typert；共享 RPC schema 识别稳定的 XAgent 错误码，未知异常仍映射为 `internal`。系统不信任任何类似身份的请求字段。
 
@@ -25,6 +27,8 @@ XAgent 项目客户端挂载生成式 Remote contribution，并发布一个账�
 只有 `xagent-business` 挂载项目 Host、账号 UI 与项目 UI 配置项。`xagent-developer`、普通 Web Profile 以及独立的 JiaxinAgent 仓库保留既有组合与行为。
 
 ## 考虑过的替代方案
+
+**在 Host 分别获取项目与 Session。** 未采用，因为工作台组装会跨越独立授权事务并增加 HTTP 请求。一次后端响应保留现有事务与请求生命周期，由 TypeScript 负责派生计数。
 
 **把项目列表和所选上下文持久化到 localStorage。** 不予采纳，因为浏览器存储不是授权来源，并可能在切换账号后短暂暴露前一账号的项目名称。
 
@@ -41,6 +45,8 @@ XAgent 项目客户端挂载生成式 Remote contribution，并发布一个账�
 **取消 active 正文请求但不等待结算。** 不予采纳，因为路由移除会在旧 fetch 或流仍可能写入响应时报告释放完成。active registry 让静止状态可观察且有序。
 
 ## 后果
+
+客户端测试固定计数与范围投影、畸形记录拒绝及保持不变的公开结果。PostgreSQL API 测试覆盖空运行时 Header、隐藏测试 Session、当前账号隔离及私有引用撤权。项目详情计数继续使用 SQL 聚合，不为计数而传输数据库记录。
 
 账号切换、项目可见性、项目创建与 Session 作用域均以服务端为权威。过期权限版本会强制重新认证，迟到响应不能恢复前一账号。稳定业务错误保持机器可读，同时不暴露 FastAPI 响应正文或凭据。
 

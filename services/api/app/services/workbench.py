@@ -219,31 +219,22 @@ async def bootstrap_workbench(
     ).all()
     context = await normalize_context(session, principal, None)
     visible_sessions = await list_sessions(session)
-    session_scopes = []
-    private_count = 0
-    project_counts = {str(project.id): 0 for project in projects}
+    sessions = []
     for item in visible_sessions:
-        visibility = item["visibility"]
-        project_id = item["project_id"]
-        if visibility == "private":
-            private_count += 1
-        elif project_id is not None and project_id in project_counts:
-            project_counts[project_id] += 1
         runtime_header = item["runtime_header"]
         runtime_session_id = (
             runtime_header.get("id") if isinstance(runtime_header, dict) else None
         )
-        if isinstance(runtime_session_id, str):
-            session_scopes.append(
-                {
-                    "session_id": runtime_session_id,
-                    "visibility": visibility,
-                    "project_id": project_id,
-                }
-            )
+        sessions.append(
+            {
+                "session_id": runtime_session_id if isinstance(runtime_session_id, str) else None,
+                "visibility": item["visibility"],
+                "project_id": item["project_id"],
+            }
+        )
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "account": {
             "id": str(principal.actor_id),
             "email": principal.email,
@@ -263,11 +254,7 @@ async def bootstrap_workbench(
             }
             for project in projects
         ],
-        "session_scopes": session_scopes,
-        "session_summary": {
-            "private_count": private_count,
-            "project_counts": project_counts,
-        },
+        "sessions": sessions,
     }
 
 

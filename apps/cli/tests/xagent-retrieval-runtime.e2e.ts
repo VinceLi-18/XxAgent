@@ -19,9 +19,6 @@ const installAnchor = join(process.cwd(), 'apps/cli/package.json')
 const actorId = '00000000-0000-0000-0000-000000000001'
 const authSessionId = '00000000-0000-0000-0000-000000000101'
 const projectId = '00000000-0000-0000-0000-000000000401'
-const privateSessionId = 'session-00000000-0000-0000-0000-000000000711'
-const projectSessionId = 'session-00000000-0000-0000-0000-000000000712'
-const browserSessionId = 'session-00000000-0000-0000-0000-000000000713'
 const artifactId = '00000000-0000-0000-0000-000000000501'
 const versionId = '00000000-0000-0000-0000-000000000502'
 const chunkId = '00000000-0000-0000-0000-000000000503'
@@ -124,7 +121,7 @@ function backend(
   let selectedProject: string | null = null
   let searchSequence = 0
   const bootstrap = (): Record<string, unknown> => ({
-    schema_version: 1,
+    schema_version: 2,
     account: {
       id: actorId,
       email: 'alice@example.test',
@@ -136,17 +133,11 @@ function backend(
       ? { kind: 'workbench', project_id: null }
       : { kind: 'project', project_id: selectedProject },
     projects: [{ id: projectId, name: 'Alpha', created_at: '2026-09-01T00:00:00Z' }],
-    session_scopes: [...stored.values()].map(session => ({
+    sessions: [...stored.values()].map(session => ({
       session_id: `session-${session.id}`,
       visibility: session.visibility,
       project_id: session.projectId,
     })),
-    session_summary: {
-      private_count: [...stored.values()].filter(session => session.visibility === 'private').length,
-      project_counts: {
-        [projectId]: [...stored.values()].filter(session => session.projectId === projectId).length,
-      },
-    },
   })
 
   return createServer((request, response) => {
@@ -185,6 +176,7 @@ function backend(
           schema_version: 1,
           sessions: [...stored.values()].map(session => ({
             id: session.id,
+            purpose: 'conversation',
             visibility: session.visibility,
             project_id: session.projectId,
             runtime_header: session.runtimeHeader,
@@ -207,7 +199,7 @@ function backend(
         })
         response.end(JSON.stringify({
           schema_version: 1,
-          session: { id: body.session_id, visibility, project_id: selectedProject },
+          session: { id: body.session_id, purpose: 'conversation', visibility, project_id: selectedProject },
         }))
         return
       }
@@ -481,7 +473,7 @@ interface BrowserConnection {
   readonly api: {
     readonly constructor: { readonly name: string }
     readonly sessions: {
-      create(payload: { readonly sessionId: string }): Promise<RpcResponse<{ readonly sessionId: string }>>
+      create(payload: { readonly sessionId?: string }): Promise<RpcResponse<{ readonly sessionId: string }>>
       prompt(payload: {
         readonly sessionId: string
         readonly mode: 'queue'
@@ -845,31 +837,42 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
 
   it('保持认证 Session、Native 工具、Code Mode 与 citation Remote 的完整闭包', { retry: 0 }, async () => {
     if (ctx === undefined || auth === undefined || modelServer === undefined) throw new Error('Business Loader 未启动')
-    expect(await rpc(origin, 'session.create', { sessionId: privateSessionId }, auth)).toMatchObject({
-      result: { ok: true, value: { sessionId: privateSessionId } },
-    })
+    const createdPrivate = await rpc<{ sessionId: string }>(origin, 'session.create', {}, auth)
+    expect(createdPrivate).toMatchObject({ result: { ok: true } })
+    if (!createdPrivate.result?.ok) throw new Error('Private Session 创建失败')
+    const privateSessionId = createdPrivate.result.value.sessionId
     const privateAgent = ctx.agents.get(SessionId(privateSessionId))
     expect(privateAgent).toBeDefined()
     if (privateAgent === undefined) throw new Error('Private Session 未发布')
     expect(ctx.tools.schemas(privateAgent).map(tool => tool.name).sort()).toEqual([
       'list_accessible_projects',
       'search_artifacts',
+      'skill',
     ])
-    expect(codeToolNames(ctx.tools, privateAgent)).toEqual([])
+    expect(codeToolNames(ctx.tools, privateAgent)).toEqual(['skill'])
 
     const selected = await rpc(origin, 'xagentProject/select-context', {
       args: { context: { kind: 'project', projectId } },
     }, auth)
-    expect(selected.result).toMatchObject({ ok: true, value: { context: { kind: 'project', projectId } } })
-    expect(await rpc(origin, 'session.create', { sessionId: projectSessionId }, auth)).toMatchObject({
-      result: { ok: true, value: { sessionId: projectSessionId } },
+    expect(selected.result).toMatchObject({
+      ok: true,
+      value: {
+        context: { kind: 'project', projectId },
+        sessionScopes: [{ sessionId: privateSessionId, visibility: 'private' }],
+        sessionSummary: { privateCount: 1, projectCounts: { [projectId]: 0 } },
+      },
     })
+    const createdProject = await rpc<{ sessionId: string }>(origin, 'session.create', {}, auth)
+    expect(createdProject).toMatchObject({ result: { ok: true } })
+    if (!createdProject.result?.ok) throw new Error('Project Session 创建失败')
+    const projectSessionId = createdProject.result.value.sessionId
     const projectAgent = ctx.agents.get(SessionId(projectSessionId))
     expect(projectAgent).toBeDefined()
     if (projectAgent === undefined) throw new Error('Project Session 未发布')
     expect(ctx.tools.schemas(projectAgent).map(tool => tool.name).sort()).toEqual([
       'list_accessible_projects',
       'search_artifacts',
+      'skill',
     ])
     expect(stored.get(projectSessionId.slice('session-'.length))).toMatchObject({
       visibility: 'project',
@@ -878,6 +881,7 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
     expect(ctx.tools.schemas(ctx.agents.get(SessionId(privateSessionId))).map(tool => tool.name).sort()).toEqual([
       'list_accessible_projects',
       'search_artifacts',
+      'skill',
     ])
     expect(await rpc(origin, 'session.prompt', {
       sessionId: privateSessionId,
@@ -893,20 +897,22 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
     expect(toolNames(toolRequests[0])).toEqual([
       'list_accessible_projects',
       'search_artifacts',
+      'skill',
     ])
     expect(toolNames(toolRequests[1])).toEqual([
       'list_accessible_projects',
       'search_artifacts',
+      'skill',
       'submit_cited_answer',
     ])
     expect(requestSchemas.slice(0, 2)).toEqual([
       {
-        native: ['list_accessible_projects', 'search_artifacts'],
-        code: [],
+        native: ['list_accessible_projects', 'search_artifacts', 'skill'],
+        code: ['skill'],
       },
       {
-        native: ['list_accessible_projects', 'search_artifacts', 'submit_cited_answer'],
-        code: [],
+        native: ['list_accessible_projects', 'search_artifacts', 'skill', 'submit_cited_answer'],
+        code: ['skill'],
       },
     ])
     expect(observations.some(item => item.path === '/internal/xagent/retrieval/citations/authorize')).toBe(true)
@@ -1000,9 +1006,10 @@ describe('XAgent Business 结构化检索真实 Loader 闭包', () => {
           expect(entries).toHaveLength(1)
           expect(entries[0]?.registrant).toBe('xagent-cited-answer')
           if (citation === undefined) throw new Error('Business Browser 缺少 citation Remote')
-          expect(await connection.api.sessions.create({ sessionId: browserSessionId })).toMatchObject({
-            result: { ok: true, value: { sessionId: browserSessionId } },
-          })
+          const createdBrowser = await connection.api.sessions.create({})
+          expect(createdBrowser).toMatchObject({ result: { ok: true } })
+          if (!createdBrowser.result?.ok) throw new Error('Browser Session 创建失败')
+          const browserSessionId = createdBrowser.result.value.sessionId
           const evidenceStart = observations.length
           expect(await connection.api.sessions.prompt({
             sessionId: browserSessionId,

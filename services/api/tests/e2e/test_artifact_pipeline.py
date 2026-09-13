@@ -134,7 +134,7 @@ class ArtifactE2eSession:
         bootstrap_response = client.post(
             "/internal/xagent/workbench/bootstrap",
             headers=headers,
-            json={"schema_version": 1},
+            json={"schema_version": 2},
         )
         assert bootstrap_response.status_code == 200, bootstrap_response.text
         self._api = AuthenticatedApi(

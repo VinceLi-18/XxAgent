@@ -228,7 +228,7 @@ async def test_create_uses_the_saved_server_context_and_ignores_forged_scope(
     bootstrap = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(token),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
     listed = await client.post(
         "/internal/xagent/sessions/list",
@@ -247,7 +247,7 @@ async def test_create_uses_the_saved_server_context_and_ignores_forged_scope(
     assert private_session.status_code == 201
     assert private_session.json()["session"]["visibility"] == "private"
     assert private_session.json()["session"]["project_id"] is None
-    scopes = {item["session_id"]: item for item in bootstrap.json()["session_scopes"]}
+    scopes = {item["session_id"]: item for item in bootstrap.json()["sessions"]}
     fork_runtime_id = forked_project_session.json()["session"]["runtime_header"]["id"]
     assert scopes == {
         "session-00000000-0000-0000-0000-000000000711": {

@@ -8,7 +8,7 @@
 
 项目发现、资料搜索、引用授权和引用解析分别持有独立成功解析器与错误表。解析器拒绝未知字段、重复项目或引用、非 UUID 身份、非规范 SHA-256、越界整数、反向行范围、过长名称或正文，以及 receipt 中不属于 opaque base64url 字符集的值。项目发现和资料搜索从已验证的 exact snake_case 字段重建模型可见 payload，按递归 key 排序的紧凑 UTF-8 JSON 重新计算 SHA-256，并在返回前比较。搜索引用 ordinal 必须是连续递增的安全正整数；批量授权最多接受 64 条唯一引用，并允许同一 Session 中不同搜索调用产生的非连续安全 ordinal。引用解析请求只复制并发送调用方的短 citation ID；Artifact、Version 与 Chunk 身份必须由 FastAPI 的持久 provenance 返回，客户端在关闭响应中验证这些服务端身份。所有 retrieval 方法只接受 `200`，并按 endpoint 校验稳定错误与 HTTP status 的精确组合。
 
-工作台方法使用独立的封闭路径表。Bootstrap、上下文操作、项目创建和项目详情分别执行严格的 snake_case 解码并返回 camelCase 业务对象。Bootstrap 的 `session_scopes` 必须使用唯一 Session ID；private 项不得带项目，project 项必须引用同一响应中的可见项目。上下文选择与项目创建先验证原子操作响应，再读取完整 Bootstrap；两次响应的账号 ID 必须一致。Session 项目引用登记只接受空成功响应。具体客户端始终提供工作台方法，而不使用工作台的认证或 Session 消费者仍可只依赖通用后端接口。
+工作台方法使用独立的封闭路径表。Bootstrap、上下文操作、项目创建和项目详情分别执行严格的 snake_case 解码并返回 camelCase 业务对象。版本 2 Bootstrap 的 `sessions` 使用可空的运行时 Session ID，非空 ID 必须唯一；private 项不得带项目，project 项必须引用同一响应中的可见项目。客户端统计全部记录，仅为非空运行时 ID 生成公开范围索引。上下文选择与项目创建先验证原子操作响应，再读取完整 Bootstrap；两次响应的账号 ID 必须一致。Session 项目引用登记只接受空成功响应。具体客户端始终提供工作台方法，而不使用工作台的认证或 Session 消费者仍可只依赖通用后端接口。
 
 Artifact 方法与认证、Session 和工作台方法共用同一个请求管线。每个响应先执行完整正文上限，再由对应闭合解析器拒绝未知或缺失字段。列表摘要校验 private/project 归属；clean latest 必须同时是 latest clean，非 clean latest 引用的 latest clean 必须更早。详情额外要求版本 ID 与版本号唯一、版本号严格降序、首项与 latest version/status 一致，并要求 latest clean 指向历史中最高的 clean 版本。版本公开字段只允许文件名、上传者、大小、MIME、SHA-256、状态和创建时间，任何对象 Key、暂存 Key、租约、内部失败码或扫描原文都会因未知字段而失败关闭。
 

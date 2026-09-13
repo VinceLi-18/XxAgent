@@ -39,7 +39,7 @@ def _headers(token: str) -> dict[str, str]:
 
 
 @pytest.mark.anyio
-async def test_bootstrap_returns_account_projects_context_and_session_summary(
+async def test_bootstrap_returns_authorized_account_projects_context_and_sessions(
     client,
     seeded_database,
     alice,
@@ -51,12 +51,12 @@ async def test_bootstrap_returns_account_projects_context_and_session_summary(
     response = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(token),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "schema_version": 1,
+        "schema_version": 2,
         "account": {
             "id": str(alice.id),
             "email": "alice@example.test",
@@ -72,12 +72,67 @@ async def test_bootstrap_returns_account_projects_context_and_session_summary(
                 "created_at": alice_project.created_at.isoformat(),
             }
         ],
-        "session_scopes": [],
-        "session_summary": {
-            "private_count": 0,
-            "project_counts": {str(alice_project.id): 0},
-        },
+        "sessions": [],
     }
+
+
+@pytest.mark.anyio
+async def test_bootstrap_keeps_null_runtime_ids_and_rechecks_private_project_refs(
+    client, seeded_database, alice, bob, alice_project,
+) -> None:
+    alice_token = await _login(client, seeded_database, alice, "alice@example.test")
+    bob_token = await _login(client, seeded_database, bob, "bob@example.test")
+    created = []
+    for token in (alice_token, bob_token):
+        response = await client.post(
+            "/internal/xagent/sessions",
+            headers=_headers(token),
+            json={
+                "schema_version": 1,
+                "title": "private without runtime header",
+                "visibility": "private",
+                "project_id": None,
+                "idempotency_key": "null-header",
+            },
+        )
+        assert response.status_code == 201, response.text
+        created.append(response.json()["session"]["id"])
+    registered = await client.post(
+        "/internal/xagent/session-project-refs",
+        headers=_headers(alice_token),
+        json={
+            "schema_version": 1,
+            "session_id": created[0],
+            "project_ids": [str(alice_project.id)],
+            "idempotency_key": "bootstrap-refs",
+        },
+    )
+    assert registered.status_code == 204, registered.text
+    before = await client.post(
+        "/internal/xagent/workbench/bootstrap",
+        headers=_headers(alice_token),
+        json={"schema_version": 2},
+    )
+    assert before.status_code == 200, before.text
+    assert before.json()["sessions"] == [
+        {"session_id": None, "visibility": "private", "project_id": None},
+    ]
+    assert all(session_id not in before.text for session_id in created)
+
+    async with AsyncSession(seeded_database) as session:
+        async with session.begin():
+            await session.execute(
+                text("UPDATE projects SET owner_id = :owner_id WHERE id = :project_id"),
+                {"owner_id": bob.id, "project_id": alice_project.id},
+            )
+    after = await client.post(
+        "/internal/xagent/workbench/bootstrap",
+        headers=_headers(alice_token),
+        json={"schema_version": 2},
+    )
+    assert after.status_code == 200, after.text
+    assert after.json()["sessions"] == []
+    assert after.json()["projects"] == []
 
 
 @pytest.mark.anyio
@@ -101,7 +156,7 @@ async def test_context_selection_persists_an_authorized_project(
     restored = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(token),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
 
     expected_context = {
@@ -202,7 +257,7 @@ async def test_project_create_is_atomic_selects_context_and_replays_same_key(
     bootstrap = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(token),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
     assert bootstrap.json()["context"] == body["context"]
     assert [project["id"] for project in bootstrap.json()["projects"]] == [
@@ -293,7 +348,7 @@ async def test_bootstrap_repairs_a_project_preference_after_access_is_revoked(
     repaired = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(relogin.json()["access_token"]),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
 
     assert relogin.status_code == 200
@@ -334,12 +389,12 @@ async def test_bootstrap_keeps_two_accounts_projects_and_contexts_isolated(
     alice_bootstrap = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(alice_token),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
     bob_bootstrap = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(bob_token),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
 
     assert [project["id"] for project in alice_bootstrap.json()["projects"]] == [
@@ -372,7 +427,7 @@ async def test_bootstrap_rejects_an_inactive_account(
     rejected = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(token),
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
 
     assert rejected.status_code == 401
@@ -418,17 +473,17 @@ async def test_workbench_routes_require_both_identities_and_supported_version(
     without_service = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers={"Authorization": f"Bearer {token}"},
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
     without_user = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers={"X-XAgent-Service-Token": SERVICE_TOKEN},
-        json={"schema_version": 1},
+        json={"schema_version": 2},
     )
     unsupported = await client.post(
         "/internal/xagent/workbench/bootstrap",
         headers=_headers(token),
-        json={"schema_version": 2},
+        json={"schema_version": 1},
     )
 
     assert without_service.status_code == 403
