@@ -290,9 +290,14 @@ function parseProjectSummary(value: unknown): XAgentProjectSummary {
   }
 }
 
-function parseSessionScope(value: unknown): XAgentSessionScopeSummary {
+type WorkbenchSession = { sessionId: string | null } & (
+  | { visibility: 'private' }
+  | { visibility: 'project'; projectId: string }
+)
+
+function parseSessionScope(value: unknown): WorkbenchSession {
   const row = exactRecord(value, ['session_id', 'visibility', 'project_id'])
-  const sessionId = requiredSessionId(row.session_id)
+  const sessionId = row.session_id === null ? null : requiredSessionId(row.session_id)
   if (row.visibility === 'private' && row.project_id === null) {
     return { sessionId, visibility: 'private' }
   }
@@ -306,6 +311,31 @@ function parseSessionScope(value: unknown): XAgentSessionScopeSummary {
   return failSchema()
 }
 
+function projectWorkbenchSessions(
+  value: unknown,
+  projectIds: readonly string[],
+): Pick<XAgentWorkbenchBootstrap, 'sessionScopes' | 'sessionSummary'> {
+  if (!Array.isArray(value)) failSchema()
+  const projectCounts: Record<string, number> = Object.fromEntries(projectIds.map(id => [id, 0]))
+  const sessionScopes: XAgentSessionScopeSummary[] = []
+  const sessionIds = new Set<string>()
+  let privateCount = 0
+  for (const item of value) {
+    const scope = parseSessionScope(item)
+    if (scope.visibility === 'private') privateCount += 1
+    else {
+      const projectCount = projectCounts[scope.projectId]
+      if (projectCount === undefined) failSchema()
+      projectCounts[scope.projectId] = projectCount + 1
+    }
+    if (scope.sessionId === null) continue
+    if (sessionIds.has(scope.sessionId)) failSchema()
+    sessionIds.add(scope.sessionId)
+    sessionScopes.push({ ...scope, sessionId: scope.sessionId })
+  }
+  return { sessionScopes, sessionSummary: { privateCount, projectCounts } }
+}
+
 function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
   const row = exactRecord(value, [
     'schema_version',
@@ -313,10 +343,9 @@ function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
     'capabilities',
     'context',
     'projects',
-    'session_scopes',
-    'session_summary',
+    'sessions',
   ])
-  if (row.schema_version !== 1) failSchema()
+  if (row.schema_version !== 2) failSchema()
   const account = exactRecord(row.account, ['id', 'email', 'role', 'permission_revision'])
   if (
     account.role !== 'manager' && account.role !== 'specialist'
@@ -333,27 +362,6 @@ function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
   const projects = row.projects.map(parseProjectSummary)
   const projectIds = projects.map(project => project.id)
   if (new Set(projectIds).size !== projectIds.length) failSchema()
-  if (!Array.isArray(row.session_scopes)) failSchema()
-  const sessionScopes = row.session_scopes.map(parseSessionScope)
-  const sessionIds = sessionScopes.map(scope => scope.sessionId)
-  if (
-    new Set(sessionIds).size !== sessionIds.length
-    || sessionScopes.some(scope => scope.visibility === 'project'
-      && (scope.projectId === undefined || !projectIds.includes(scope.projectId)))
-  ) failSchema()
-  const summary = exactRecord(row.session_summary, ['private_count', 'project_counts'])
-  const projectCountsRow = record(summary.project_counts)
-  const projectCounts: Record<string, number> = {}
-  for (const [projectId, value] of Object.entries(projectCountsRow)) {
-    requiredUuid(projectId)
-    projectCounts[projectId] = count(value)
-  }
-  const countedProjectIds = Object.keys(projectCounts).sort()
-  const expectedProjectIds = [...projectIds].sort()
-  if (
-    countedProjectIds.length !== expectedProjectIds.length
-    || countedProjectIds.some((projectId, index) => projectId !== expectedProjectIds[index])
-  ) failSchema()
   return {
     account: {
       id: requiredUuid(account.id),
@@ -364,11 +372,7 @@ function parseBootstrap(value: unknown): XAgentWorkbenchBootstrap {
     capabilities,
     context: parseContext(row.context),
     projects,
-    sessionScopes,
-    sessionSummary: {
-      privateCount: count(summary.private_count),
-      projectCounts,
-    },
+    ...projectWorkbenchSessions(row.sessions, projectIds),
   }
 }
 
@@ -1705,7 +1709,7 @@ export class XAgentBackendClient implements XAgentBackend {
       parseBootstrap(await this.request(
         token,
         '/internal/xagent/workbench/bootstrap',
-        { schema_version: 1 },
+        { schema_version: 2 },
         signal,
       ))
     const workbench: XAgentWorkbenchBackend = {

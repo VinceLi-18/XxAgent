@@ -10,7 +10,7 @@ const principal = {
 }
 
 const bootstrapResponse = {
-  schema_version: 1,
+  schema_version: 2,
   account: {
     id: '00000000-0000-0000-0000-000000000001',
     email: 'alice@example.test',
@@ -24,7 +24,7 @@ const bootstrapResponse = {
     name: 'Alpha',
     created_at: '2026-08-25T08:00:00+00:00',
   }],
-  session_scopes: [
+  sessions: [
     {
       session_id: '00000000-0000-0000-0000-000000000301',
       visibility: 'private',
@@ -35,11 +35,13 @@ const bootstrapResponse = {
       visibility: 'project',
       project_id: '00000000-0000-0000-0000-000000000201',
     },
+    { session_id: null, visibility: 'private', project_id: null },
+    ...Array.from({ length: 3 }, () => ({
+      session_id: null,
+      visibility: 'project',
+      project_id: '00000000-0000-0000-0000-000000000201',
+    })),
   ],
-  session_summary: {
-    private_count: 2,
-    project_counts: { '00000000-0000-0000-0000-000000000201': 4 },
-  },
 }
 
 const projectResponse = {
@@ -2648,11 +2650,11 @@ describe('XAgent 后端客户端', () => {
       '/internal/xagent/session-project-refs',
     ])
     expect(calls.map(call => call.body)).toEqual([
-      { schema_version: 1 },
+      { schema_version: 2 },
       { schema_version: 1, kind: 'workbench', project_id: null },
-      { schema_version: 1 },
+      { schema_version: 2 },
       { schema_version: 1, name: 'Alpha', idempotency_key: 'create-1' },
-      { schema_version: 1 },
+      { schema_version: 2 },
       { schema_version: 1 },
       {
         schema_version: 1,
@@ -2668,7 +2670,7 @@ describe('XAgent 后端客户端', () => {
 
   test.each([
     [null],
-    [{ ...bootstrapResponse, schema_version: 2 }],
+    [{ ...bootstrapResponse, schema_version: 1 }],
     [{ ...bootstrapResponse, extra: true }],
     [{ ...bootstrapResponse, account: { ...bootstrapResponse.account, permission_revision: 0 } }],
     [{ ...bootstrapResponse, capabilities: null }],
@@ -2678,12 +2680,17 @@ describe('XAgent 后端客户端', () => {
     [{ ...bootstrapResponse, context: { kind: 'shared', project_id: null } }],
     [{ ...bootstrapResponse, projects: null }],
     [{ ...bootstrapResponse, projects: [{ ...bootstrapResponse.projects[0], created_at: 'not-a-date' }] }],
-    [{ ...bootstrapResponse, session_scopes: null }],
-    [{ ...bootstrapResponse, session_scopes: [{ session_id: 'bad', visibility: 'private', project_id: null }] }],
-    [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: null }] }],
-    [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'shared', project_id: null }] }],
-    [{ ...bootstrapResponse, session_scopes: [...bootstrapResponse.session_scopes, { session_id: '00000000-0000-0000-0000-000000000301', visibility: 'private', project_id: null }] }],
-    [{ ...bootstrapResponse, session_scopes: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: '00000000-0000-0000-0000-000000000999' }] }],
+    [{ ...bootstrapResponse, sessions: null }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: 'bad', visibility: 'private', project_id: null }] }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: null }] }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'shared', project_id: null }] }],
+    [{ ...bootstrapResponse, sessions: [...bootstrapResponse.sessions, bootstrapResponse.sessions[0]] }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: '00000000-0000-0000-0000-000000000301', visibility: 'project', project_id: '00000000-0000-0000-0000-000000000999' }] }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: null, visibility: 'project', project_id: null }] }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: null, visibility: 'private', project_id: projectResponse.project.id }] }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: null, visibility: 'shared', project_id: null }] }],
+    [{ ...bootstrapResponse, sessions: [{ session_id: null, visibility: 'project', project_id: '00000000-0000-0000-0000-000000000999' }] }],
+    [{ ...bootstrapResponse, sessions: [{ ...bootstrapResponse.sessions[0], runtime_header: {} }] }],
     [{ ...bootstrapResponse, session_summary: { private_count: -1, project_counts: {} } }],
     [{ ...bootstrapResponse, session_summary: { private_count: 0, project_counts: {} } }],
     [{ ...bootstrapResponse, projects: [...bootstrapResponse.projects, bootstrapResponse.projects[0]] }],
@@ -2695,6 +2702,21 @@ describe('XAgent 后端客户端', () => {
     })
 
     await expect(client.workbench.bootstrap('token')).rejects.toMatchObject({ code: 'service-unavailable' })
+  })
+
+  test('projects without conversations retain zero counts', async () => {
+    const client = new XAgentBackendClient({
+      origin: 'https://api.example.test',
+      serviceToken: 'service-secret',
+      fetch: async () => Response.json({ ...bootstrapResponse, sessions: [] }),
+    })
+
+    const result = await client.workbench.bootstrap('token')
+    expect(result.sessionScopes).toEqual([])
+    expect(result.sessionSummary).toEqual({
+      privateCount: 0,
+      projectCounts: { [projectResponse.project.id]: 0 },
+    })
   })
 
   test.each([

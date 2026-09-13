@@ -93,7 +93,7 @@ async def bootstrap_route(
     request: VersionedRequest,
     context: SessionContext = Depends(get_session_context),
 ) -> dict[str, Any]:
-    if request.schema_version != 1:
+    if request.schema_version != 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "unsupported-version"},

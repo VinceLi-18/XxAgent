@@ -2,6 +2,10 @@
 
 此目录包含 kosma 的 FastAPI 服务、Alembic 迁移、最低权限 PostgreSQL 角色引导和本地容器编排。运行 Python 命令需要 Python 3.11 与 `uv`。
 
+## 工作台投影
+
+工作台内部 `/internal/xagent/workbench/bootstrap` 只接受并返回 `schema_version: 2`。响应的 `sessions` 仅含运行时 `session_id`（可为 null）、`visibility` 和 `project_id`，来自当前账号的普通 Session 可见性与私有项目引用检查。Host 负责生成工作台范围索引与计数；API 保留授权、上下文事务与项目详情 SQL 聚合。其他工作台接口使用版本 1。Host/API 配套部署或回滚，不需要数据库迁移。
+
 ## 本地 Python 环境
 
 在仓库根目录安装冻结依赖：

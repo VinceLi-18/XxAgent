@@ -4,6 +4,8 @@
 
 会话接口覆盖 list、create、open、events、append、fork 和 archive。append 只接受关闭的 `schema_version: 1`、精确末事件 sequence 与正整数 Session version 响应；未知或私有字段会使请求失败关闭。证据入账只接受 409 `evidence-conflict`、410 `evidence-expired` 及会话 append 的固定错误配对，其他状态、code 或额外错误字段统一为 `service-unavailable`。工作台接口覆盖账号态初始化、上下文选择、项目创建、项目详情和 Session 项目引用登记。上下文选择与项目创建成功后会重新读取完整 Bootstrap，调用方得到的账号、权限、项目、当前上下文、会话范围索引和会话计数均来自服务端当前状态。范围索引严格校验 private/null 与 project/UUID 组合，并拒绝重复 Session 或不可见项目引用。
 
+Bootstrap 内部请求与响应使用 `schema_version: 2`。FastAPI 返回经过授权的最小 `sessions` 记录，客户端从同一响应生成公开 `sessionScopes` 与 `sessionSummary`；没有运行时 ID 的普通 Session 计入数量但不进入范围索引，空项目保留零计数。其余工作台操作仍使用版本 1。版本不匹配或混入旧摘要字段会失败关闭；Host/API 必须配套部署或回滚，数据库格式不变。
+
 资料接口覆盖列表、详情、新资料上传、新版本上传、上传完成、失败重试、预览和下载。上传创建只返回短期 PUT 授权；完成和重试返回包含不可变版本历史的完整详情。预览与下载只返回服务端授权后的 opaque URL，客户端不跟随该 URL，也不读取资料正文。
 
 检索接口覆盖个人 Session 项目发现、资料搜索、回答释放前的批量引用授权和单条引用解析。单条解析请求只发送 Session 与短引用 ID；Artifact、Version 与 Chunk 身份只接受 FastAPI 从持久 cited-answer provenance 返回的关闭响应。个人 Session 搜索只接受已经转为小写、排序和去重的 canonical Project UUID 数组，最多 20 项；数组与本地 scope hash 不一致时不会发送请求。单次搜索最多接受 8 条唯一引用，完整模型可见 citations JSON 不超过 32 KiB；终态回答可从多次已入账搜索累计授权最多 64 条唯一引用。项目、资料、版本、分片和 Session 标识必须是 UUID；引用 ID 的 ordinal 必须是安全正整数，单次搜索响应中的 ID 必须按返回顺序连续递增；行号和版本号必须是安全正整数。项目发现和搜索返回的 receipt 只作为 opaque 值交给后续持久化，不进入模型正文。

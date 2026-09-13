@@ -10,7 +10,9 @@ The XAgent Business profile serves multiple accounts from one Host process. A pr
 
 ## Decision
 
-FastAPI and PostgreSQL own account capabilities, visible projects, the selected workbench or project context, and the Session scope index. Managers receive `project.create` by role; specialists receive it only through a server-side grant. A permission revision change revokes existing logins, so the browser must authenticate again before receiving the new capability set.
+FastAPI and PostgreSQL own account capabilities, visible projects, the selected workbench or project context, and authorized Session records. Managers receive `project.create` by role; specialists receive it only through a server-side grant. A permission revision change revokes existing logins, so the browser must authenticate again before receiving the new capability set.
+
+The Host backend client derives workbench Session scopes and counts from one authenticated Bootstrap response. FastAPI returns minimal conversation rows after the shared Session visibility and private project-reference checks; the Host never receives unauthorized rows to filter. Conversations without runtime headers count but have no openable scope, while hidden Business Skill test Sessions are absent. Bootstrap uses internal schema version 2 and rejects version mismatches; other workbench operations retain version 1. Host and API deploy or roll back together without database conversion. The [Phase 7A design](../../../../docs/superpowers/specs/2026-09-13-xagent-phase-7a-workbench-design.md) defines this migration batch.
 
 The Host authorizer derives an immutable principal from the authenticated connection and opens a principal-owned request scope around each `xagentProject` or `xagentArtifact` Remote operation. Each service owns an independent `AsyncLocalStorage`, and both read the user token only from the shared immutable scope. The eight Artifact methods always forward to FastAPI and do not cache lists, details, or URLs. Backend business rejections cross Typert through an explicit `TypertRemoteFailure`; the shared RPC schema recognizes the stable XAgent codes, while unknown exceptions remain `internal`. No identity-like request field is trusted.
 
@@ -25,6 +27,8 @@ The XAgent project client mounts its generated Remote contribution and publishes
 Only `xagent-business` mounts the project Host, account UI, and project UI rows. `xagent-developer`, ordinary Web profiles, and the separate JiaxinAgent repository retain their existing composition and behavior.
 
 ## Alternatives considered
+
+**Fetch projects and Sessions separately in the Host.** Rejected because workbench composition would span separate authorization transactions and extra HTTP requests. One backend response preserves the existing transaction and request lifetime while TypeScript owns the derived counts.
 
 **Persist project lists and selected context in localStorage.** Rejected because browser storage is not an authorization source and can briefly expose the previous account's project names after an account switch.
 
@@ -41,6 +45,8 @@ Only `xagent-business` mounts the project Host, account UI, and project UI rows.
 **Abort active content requests without awaiting settlement.** Rejected because route removal would report disposal while an old fetch or stream could still write to its response. The active registry makes quiescence observable and ordered.
 
 ## Consequences
+
+Client tests pin count/scope projection, malformed-row rejection, and unchanged public results. PostgreSQL API tests cover null runtime headers, hidden test Sessions, current account isolation, and private-reference revocation. Project-detail counting remains a SQL aggregate rather than transferring database rows solely to count them.
 
 Account switching, project visibility, project creation, and Session scope are all server-authoritative. A stale permission revision forces reauthentication, and late responses cannot restore the prior account. Stable business errors remain machine-readable without exposing FastAPI response bodies or credentials.
 

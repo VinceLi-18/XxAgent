@@ -86,6 +86,8 @@ const LOCK_TIMEOUT_MS = 2_000
  * timed-out error after the deadline. The contender never removes an existing
  * lock because file age cannot prove that its owner stopped; orphan recovery
  * is an operator action. The parent directory must exist.
+ * Windows EPERM during acquisition retries within the same deadline because
+ * a pending deletion can deny the open; persistent EPERM retains its error.
  * @param filename - the file whose writers this lock serializes.
  * @param operation - the read-render-commit cycle to run while holding the lock.
  * @returns the operation's result; the lock releases on both outcomes.
@@ -102,10 +104,15 @@ export async function withFileLock<T>(
       await writeFile(lockPath, `${process.pid}\n`, { mode: 0o600, flag: 'wx' })
       break
     } catch (error) {
-      if (!isEEXIST(error)) throw error
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(`atomic-write: timed out waiting for the writer lock at ${lockPath}`)
+      const exists = isEEXIST(error)
+      if (!exists) {
+        if (process.platform !== 'win32'
+          || (error as NodeJS.ErrnoException | null)?.code !== 'EPERM') throw error
+      }
+      if (Date.now() >= deadline) {
+        if (!exists) throw error
+        throw new Error(`atomic-write: timed out waiting for the writer lock at ${lockPath}`)
+      }
     }
     await new Promise(resolve => setTimeout(resolve, delay))
     delay = Math.min(delay * 2, LOCK_RETRY_MAX_MS)

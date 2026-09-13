@@ -4,6 +4,8 @@
 
 Authorizer 从物理连接建立 `@xagent/dsh-principal` 声明的完整认证请求 scope，Project Service 用自己的 `AsyncLocalStorage` 包围调用并只从该作用域读取用户令牌。并发账号拥有独立作用域，嵌套 scope、无 scope、Principal 与连接标识不一致、失效服务和响应账号不一致全部失败关闭。
 
+工作台 Bootstrap 的 Session 范围与计数由 Host 后端客户端根据一次已授权响应生成；FastAPI 仍负责可见性与上下文事务。内部 Bootstrap 使用版本 2，其他工作台请求保持版本 1；公开 Remote 返回类型不变。Host 与 API 必须配套部署或回滚，版本不匹配时请求失败。
+
 ## Model Experience
 
 ### Project authorization boundary（项目授权边界）
