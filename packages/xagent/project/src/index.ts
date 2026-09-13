@@ -146,7 +146,7 @@ export class XAgentProjectService extends TypertRemoteService implements XAgentP
     } catch (error) {
       if (!(error instanceof XAgentBackendError)) throw error
       const code = PROJECT_FAILURE_CODES.has(error.code) ? error.code : 'service-unavailable'
-      throw new TypertRemoteFailure({ code, message: 'XAgent project request failed', details: {} })
+      throw new TypertRemoteFailure({ code, message: 'kosma project request failed', details: {} })
     }
   }
 

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "XAgent"
+    PROJECT_NAME: str = "kosma"
     DATABASE_URL: str
     DATABASE_ADMIN_URL: str | None = None
     POSTGRES_APP_USER: str

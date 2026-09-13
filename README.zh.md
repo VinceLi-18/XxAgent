@@ -1,8 +1,8 @@
-# XxAgent
+# kosma
 
 [English](README.md) | 中文
 
-XxAgent 是私有发行的智能体应用，在一个仓库中集成 DeepSeek Harness 与 XAgent 业务源码。
+kosma 是私有发行的智能体应用，在一个仓库中集成 DeepSeek Harness、项目上下文、资料与业务协作功能。
 
 它采用**一切皆插件**的架构，并由 [Cordis](https://github.com/cordiverse/cordis) 驱动，其设计参见论文 [_A Programming Paradigm for Spatiotemporal Composability_](https://github.com/cordiverse/paper)。
 
@@ -14,7 +14,9 @@ DeepSeek Harness 目前处于 _开发者预览_ 阶段，正在快速迭代。**
 
 一个授权的仓库 revision 构成发行单元。JavaScript workspace、vendored Cordis 源码、native 启动器、Python runtime、FastAPI 服务、worker 与部署配置都是应用内部组件，不发布到 npm 或 PyPI。
 
-继承的 `@deepseek-ai/*` 与 XAgent 自有的 `@xagent/*` 包名保留为内部模块标识。每个内部依赖都从当前 workspace 解析，不依赖外部 DSH 包发行版。
+继承的 `@deepseek-ai/*` 与 kosma 自有的 `@xagent/*` 包名保留为内部模块标识。每个内部依赖都从当前 workspace 解析，不依赖外部 DSH 包发行版。
+
+产品名称与主要 CLI 命令为 `kosma`。`dsh` 可执行入口保留供内部脚本使用，两者使用同一个启动器。既有 `DSH_*`/`JX_*`/`XAGENT_*` 配置、profile 名称、存储标识与 GitHub 仓库地址保持不变。DeepSeek Harness 和 Cordis 保留上游来源署名。
 
 ## 从源码运行
 
@@ -23,7 +25,7 @@ DeepSeek Harness 目前处于 _开发者预览_ 阶段，正在快速迭代。**
 ```sh
 pnpm install --frozen-lockfile
 pnpm run build
-pnpm dsh web
+pnpm kosma web
 ```
 
 该命令会启动 Web UI，默认地址为 `http://127.0.0.1:3080`。详见 [Web UI 指南](docs/user/guide/index.md)。

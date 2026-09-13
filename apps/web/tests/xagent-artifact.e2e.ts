@@ -168,7 +168,7 @@ describe('XAgent Business 真实资料生命周期', () => {
         env: dshEnvironment,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
-      await waitForLine(dsh.child, /dsh web: (http:\/\/[^\s]+)/, 'XAgent Business')
+      await waitForLine(dsh.child, /kosma web: (http:\/\/[^\s]+)/, 'XAgent Business')
       browser = await chromium.launch({ headless: true })
       page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: ZH_BROWSER_LOCALE })
       page.on('console', (message) => {

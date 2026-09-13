@@ -82,7 +82,7 @@ export function installAssembledBootEnv(): void {
     // English here.
     Object.defineProperty(navigator, 'languages', { value: ['en-US'], configurable: true })
     Object.defineProperty(navigator, 'language', { value: 'en-US', configurable: true })
-    document.title = 'XAgent'
+    document.title = 'kosma'
     const platformFetch = globalThis.fetch
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const target = input instanceof Request ? input.url : String(input)

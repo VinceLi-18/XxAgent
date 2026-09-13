@@ -48,12 +48,12 @@ export const inject = ['sessions']
 
 function backendSessionId(id: SessionIdType): string {
   const match = SESSION_ID_PATTERN.exec(id)
-  if (match?.[1] === undefined) throw new TypeError('invalid XAgent session id')
+  if (match?.[1] === undefined) throw new TypeError('invalid kosma session id')
   return match[1]
 }
 
 function object(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('invalid XAgent session response')
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError('invalid kosma session response')
   return value as Record<string, unknown>
 }
 
@@ -69,29 +69,29 @@ function headerFrom(value: unknown): SessionHeader {
     || typeof createdAt !== 'number'
     || !Number.isSafeInteger(createdAt)
     || createdAt < 0
-  ) throw new TypeError('invalid XAgent runtime header')
+  ) throw new TypeError('invalid kosma runtime header')
   const optionalStrings = ['cwd', 'parentSession', 'agentPreset'] as const
   for (const key of optionalStrings) {
-    if (row[key] !== undefined && typeof row[key] !== 'string') throw new TypeError('invalid XAgent runtime header')
+    if (row[key] !== undefined && typeof row[key] !== 'string') throw new TypeError('invalid kosma runtime header')
   }
   for (const key of ['seedLength', 'delegationDepth'] as const) {
     if (row[key] !== undefined && (!Number.isSafeInteger(row[key]) || (row[key] as number) < 0)) {
-      throw new TypeError('invalid XAgent runtime header')
+      throw new TypeError('invalid kosma runtime header')
     }
   }
-  if (row.origin !== undefined && row.origin !== 'subagent') throw new TypeError('invalid XAgent runtime header')
+  if (row.origin !== undefined && row.origin !== 'subagent') throw new TypeError('invalid kosma runtime header')
   return structuredClone(row) as unknown as SessionHeader
 }
 
 function eventFrom(value: unknown, envelopeType?: unknown): SessionEvent {
   const row = object(value)
   if (row.type === 'business-skill/activated' || envelopeType === 'business-skill/activated') {
-    if (envelopeType !== row.type) throw new TypeError('invalid XAgent Business Skill session event')
+    if (envelopeType !== row.type) throw new TypeError('invalid kosma Business Skill session event')
     return decodeBusinessSkillEvent(row)
   }
   if (row.type === 'fact/proposal-decided' || envelopeType === 'fact/proposal-decided') {
     if (envelopeType !== row.type) {
-      throw new TypeError('invalid XAgent Fact session event')
+      throw new TypeError('invalid kosma Fact session event')
     }
     return decodeFactSessionEvent(row)
   }
@@ -104,7 +104,7 @@ function eventFrom(value: unknown, envelopeType?: unknown): SessionEvent {
     || (row.time as number) < 0
     || !Object.hasOwn(row, 'data')
     || (row.ignorable !== undefined && row.ignorable !== true)
-  ) throw new TypeError('invalid XAgent session event')
+  ) throw new TypeError('invalid kosma session event')
   return structuredClone(row) as unknown as SessionEvent
 }
 
@@ -131,7 +131,7 @@ function factToolResultPayload(event: SessionEvent): SessionEvent | undefined {
     || result?.type !== 'tool-result'
     || result.isError !== false
     || result.toolCallId !== source.callId
-  ) throw new TypeError('invalid XAgent Fact tool result metadata')
+  ) throw new TypeError('invalid kosma Fact tool result metadata')
   delete row.meta
   return payload as unknown as SessionEvent
 }
@@ -162,11 +162,11 @@ function eventEnvelope(event: SessionEvent): {
 
 function responseSessions(value: unknown): Record<string, unknown>[] {
   const sessions = object(value).sessions
-  if (!Array.isArray(sessions)) throw new TypeError('invalid XAgent session response')
+  if (!Array.isArray(sessions)) throw new TypeError('invalid kosma session response')
   return sessions.map((value) => {
     const row = object(value)
     if (row.purpose !== 'conversation' && row.purpose !== 'business_skill_test') {
-      throw new TypeError('invalid XAgent session purpose')
+      throw new TypeError('invalid kosma session purpose')
     }
     return row
   })
@@ -180,7 +180,7 @@ function validateCreatedSession(value: unknown, expectedId: string): void {
   const row = object(value)
   const session = object(row.session)
   if (row.schema_version !== 1 || session.id !== expectedId || session.purpose !== 'conversation') {
-    throw new TypeError('invalid XAgent session create response')
+    throw new TypeError('invalid kosma session create response')
   }
   if (session.visibility === 'private' && session.project_id === null) return
   if (
@@ -188,7 +188,7 @@ function validateCreatedSession(value: unknown, expectedId: string): void {
     && typeof session.project_id === 'string'
     && UUID_PATTERN.test(session.project_id)
   ) return
-  throw new TypeError('invalid XAgent session create response')
+  throw new TypeError('invalid kosma session create response')
 }
 
 function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: number): SessionHeader {
@@ -212,19 +212,19 @@ function forkedHeader(value: unknown, sourceId: SessionIdType, throughSequence: 
     || row.schema_version !== 1 || session.purpose !== 'conversation'
     || typeof id !== 'string' || !UUID_PATTERN.test(id)
     || session.last_event_sequence !== throughSequence) {
-    throw new TypeError('invalid XAgent session fork response')
+    throw new TypeError('invalid kosma session fork response')
   }
   if (!((session.visibility === 'private' && session.project_id === null)
     || (session.visibility === 'project' && typeof session.project_id === 'string'
       && UUID_PATTERN.test(session.project_id)))) {
-    throw new TypeError('invalid XAgent session fork response')
+    throw new TypeError('invalid kosma session fork response')
   }
   const header = headerFrom(runtimeHeader)
   const expectedChildId = `session-${id.toLowerCase()}`
   if (header.id !== expectedChildId || header.parentSession !== sourceId
     || header.seedLength !== throughSequence + 1
     || header.origin !== undefined || header.delegationDepth !== undefined) {
-    throw new TypeError('invalid XAgent session fork response')
+    throw new TypeError('invalid kosma session fork response')
   }
   return header
 }
@@ -238,20 +238,20 @@ function validateAppendResult(value: unknown, expectedLastSequence: number): voi
     || (row.version as number) < 1
     || Object.keys(row).length !== 3
   ) {
-    throw new TypeError('invalid XAgent session append response')
+    throw new TypeError('invalid kosma session append response')
   }
 }
 
 function responseInspection(value: unknown): SessionInspection {
   const row = object(value)
   const session = object(row.session)
-  if (session.purpose !== 'conversation') throw new TypeError('invalid XAgent session purpose')
+  if (session.purpose !== 'conversation') throw new TypeError('invalid kosma session purpose')
   const events = row.events
-  if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
+  if (!Array.isArray(events)) throw new TypeError('invalid kosma session response')
   const parsed = events.map((entry, index) => {
     const envelope = object(entry)
     const event = eventFrom(envelope.payload, envelope.event_type)
-    if (envelope.sequence !== index || event.seq !== index) throw new TypeError('non-contiguous XAgent session events')
+    if (envelope.sequence !== index || event.seq !== index) throw new TypeError('non-contiguous kosma session events')
     return adoptSessionEvent(event)
   })
   return Object.freeze({ meta: headerFrom(session.runtime_header), events: Object.freeze(parsed) })
@@ -259,13 +259,13 @@ function responseInspection(value: unknown): SessionInspection {
 
 function responseEvents(value: unknown, expectedSequence: number): SessionEvent[] {
   const events = object(value).events
-  if (!Array.isArray(events)) throw new TypeError('invalid XAgent session response')
+  if (!Array.isArray(events)) throw new TypeError('invalid kosma session response')
   return events.map((entry, index) => {
     const envelope = object(entry)
     const event = eventFrom(envelope.payload, envelope.event_type)
     const sequence = expectedSequence + index
     if (envelope.sequence !== sequence || event.seq !== sequence) {
-      throw new TypeError('non-contiguous XAgent session events')
+      throw new TypeError('non-contiguous kosma session events')
     }
     return adoptSessionEvent(event)
   })
@@ -427,7 +427,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     const token = this.tokenForEvents(id, events)
     if (token === undefined) throw new Error('unauthenticated')
     for (let index = 0; index < events.length; index++) {
-      if (events[index]?.seq !== first.seq + index) throw new TypeError('non-contiguous XAgent session append')
+      if (events[index]?.seq !== first.seq + index) throw new TypeError('non-contiguous kosma session append')
     }
     const receipts = this.receiptRegistry()
     const attachments = receipts?.attachments(String(id), first.seq, last.seq) ?? []
@@ -598,7 +598,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     return rows.map((row) => {
       const header = headerFrom(row.runtime_header)
       if (!Number.isSafeInteger(row.version) || !Number.isSafeInteger(row.last_event_sequence)) {
-        throw new TypeError('invalid XAgent session revision')
+        throw new TypeError('invalid kosma session revision')
       }
       this.leases.set(header.id, token)
       return {
@@ -626,7 +626,7 @@ export class XAgentSessionPersistence extends SessionPersistence {
     const token = this.tokenFor(id)
     const value = await this.backend.sessions.open(token, backendSessionId(id), signal)
     const inspected = responseInspection(value)
-    if (inspected.meta.id !== id) throw new TypeError('XAgent session identity mismatch')
+    if (inspected.meta.id !== id) throw new TypeError('kosma session identity mismatch')
     this.leases.set(id, token)
     return inspected
   }

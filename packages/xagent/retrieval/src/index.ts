@@ -264,7 +264,7 @@ const CITATION_REMOTE_ERRORS = new Set([
 function citationRemoteFailure(code: string): TypertRemoteFailure {
   return new TypertRemoteFailure({
     code: CITATION_REMOTE_ERRORS.has(code) ? code : 'service-unavailable',
-    message: 'XAgent citation request failed',
+    message: 'kosma citation request failed',
     details: {},
   })
 }

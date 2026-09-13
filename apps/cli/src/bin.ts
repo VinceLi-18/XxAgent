@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dsh — command-line entry. Dynamic imports per mode keep unrelated modes out
+ * kosma — command-line entry. Dynamic imports per mode keep unrelated modes out
  * of each dispatch path; the adapter prints and exits for
  * `--help`/`--version`/a parse error, so only a valid mode reaches the switch.
  * @module @deepseek-ai/dsh/bin
@@ -49,5 +49,5 @@ switch (invocation.mode) {
   }
   default:
     invocation satisfies never
-    throw new Error(`dsh: unhandled invocation mode ${JSON.stringify(invocation)}`)
+    throw new Error(`kosma: unhandled invocation mode ${JSON.stringify(invocation)}`)
 }

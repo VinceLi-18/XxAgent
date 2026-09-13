@@ -1,6 +1,6 @@
-# XAgent API
+# kosma API
 
-此目录包含 XAgent 的 FastAPI 服务、Alembic 迁移、最低权限 PostgreSQL 角色引导和本地容器编排。运行 Python 命令需要 Python 3.11 与 `uv`。
+此目录包含 kosma 的 FastAPI 服务、Alembic 迁移、最低权限 PostgreSQL 角色引导和本地容器编排。运行 Python 命令需要 Python 3.11 与 `uv`。
 
 ## 本地 Python 环境
 
@@ -128,7 +128,7 @@ API 只对精确的资料正文路径从 Uvicorn access log 移除 query；FastA
 
 `.dockerignore` 会阻止 `.env`、本地虚拟环境、测试缓存和构建产物进入 Docker 构建上下文。
 
-Compose 使用官方 Debian `clamav/clamav-debian:1.4` 多架构镜像，并等待镜像自带的 `clamdcheck.sh` 健康检查；MinIO 使用镜像已有的 `mc ready local`。PostgreSQL、MinIO、ClamAV 和 XAgent API 可在 Apple Silicon Docker 的原生 arm64 环境运行。
+Compose 使用官方 Debian `clamav/clamav-debian:1.4` 多架构镜像，并等待镜像自带的 `clamdcheck.sh` 健康检查；MinIO 使用镜像已有的 `mc ready local`。PostgreSQL、MinIO、ClamAV 和 kosma API 可在 Apple Silicon Docker 的原生 arm64 环境运行。
 
 也可以在仓库根目录使用顶层命令：
 

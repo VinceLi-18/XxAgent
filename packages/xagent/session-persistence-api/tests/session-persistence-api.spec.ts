@@ -91,7 +91,7 @@ describe('Business Skill activation codec', () => {
     const persistence = new XAgentSessionPersistence(ctx, value)
     try {
       await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
-        .rejects.toThrow('invalid XAgent Business Skill session event')
+        .rejects.toThrow('invalid kosma Business Skill session event')
     } finally { await ctx.fiber.dispose() }
   })
   test.each([
@@ -101,7 +101,7 @@ describe('Business Skill activation codec', () => {
     { data: { ...activation.data, turn: -1 } }, { data: { ...activation.data, toolPolicyDigest: 'not-a-digest' } },
     { data: { ...activation.data, instructions: 'private body' } },
   ])('rejects malformed or private fields %j', (patch) => {
-    expect(() => encodeBusinessSkillEvent({ ...activation, ...patch })).toThrow('invalid XAgent Business Skill session event')
+    expect(() => encodeBusinessSkillEvent({ ...activation, ...patch })).toThrow('invalid kosma Business Skill session event')
   })
 })
 
@@ -222,8 +222,8 @@ describe('XAgent FastAPI Session Persistence', () => {
   test('Fact codec rejects a wrong event type with an otherwise exact log-only payload', () => {
     const wrongType = { ...factDecisionEvent(0, event.time), type: 'turn/start' }
 
-    expect(() => encodeFactSessionEvent(wrongType)).toThrow('invalid XAgent Fact session event')
-    expect(() => decodeFactSessionEvent(wrongType)).toThrow('invalid XAgent Fact session event')
+    expect(() => encodeFactSessionEvent(wrongType)).toThrow('invalid kosma Fact session event')
+    expect(() => decodeFactSessionEvent(wrongType)).toThrow('invalid kosma Fact session event')
   })
 
   test('fork uses the source-derived backend transaction and binds its returned child identity', async () => {
@@ -329,7 +329,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     await expect(persistence.withUserToken(
       'alice-token',
       () => persistence.fork(id, 0, forkOperationId),
-    )).rejects.toThrow('invalid XAgent session fork response')
+    )).rejects.toThrow('invalid kosma session fork response')
   })
 
   test('fork accepts a private child and rejects invalid server scope or runtime lineage', async () => {
@@ -366,7 +366,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     ]) {
       value.sessions.fork = vi.fn(async () => invalid)
       await expect(persistence.withUserToken('alice-token', () => persistence.fork(id, 0, forkOperationId)))
-        .rejects.toThrow('invalid XAgent session fork response')
+        .rejects.toThrow('invalid kosma session fork response')
     }
   })
 
@@ -713,8 +713,8 @@ describe('XAgent FastAPI Session Persistence', () => {
 
     await expect(persistence.append(id, [invalid as never]))
       .rejects.toThrow(_case === 'boolean sequence'
-        ? 'non-contiguous XAgent session append'
-        : 'invalid XAgent Fact session event')
+        ? 'non-contiguous kosma session append'
+        : 'invalid kosma Fact session event')
     expect(value.calls.find(call => call.name === 'append')).toBeUndefined()
   })
 
@@ -774,7 +774,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const persistence = new XAgentSessionPersistence(new Context(), value)
 
     await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
-      .rejects.toThrow('invalid XAgent Fact session event')
+      .rejects.toThrow('invalid kosma Fact session event')
   })
 
   test('Fact read codec rejects a missing event envelope type', async () => {
@@ -801,7 +801,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const persistence = new XAgentSessionPersistence(new Context(), value)
 
     await expect(persistence.withUserToken('alice-token', () => persistence.readFrom(id, 0)))
-      .rejects.toThrow('invalid XAgent Fact session event')
+      .rejects.toThrow('invalid kosma Fact session event')
   })
 
   test('partial or failed mixed append acknowledgement retains every sidecar for the exact retry', async () => {
@@ -852,7 +852,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       factDecisionEvent(2, event.time + 2),
     ]
 
-    await expect(persistence.append(id, events)).rejects.toThrow('invalid XAgent session append response')
+    await expect(persistence.append(id, events)).rejects.toThrow('invalid kosma session append response')
     await expect(persistence.append(id, events)).rejects.toThrow('append unavailable')
     expect(retrievalCommit).not.toHaveBeenCalled()
     expect(factReceiptCommit).not.toHaveBeenCalled()
@@ -950,7 +950,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const persistence = new XAgentSessionPersistence(ctx, value)
     persistence.authorizeRequest(id, undefined, 'alice-token')
 
-    await expect(persistence.append(id, [event])).rejects.toThrow('invalid XAgent session append response')
+    await expect(persistence.append(id, [event])).rejects.toThrow('invalid kosma session append response')
     expect(commit).not.toHaveBeenCalled()
     await expect(persistence.append(id, [event])).resolves.toBeUndefined()
     expect(commit).toHaveBeenCalledOnce()
@@ -1147,7 +1147,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       },
     } as unknown as SessionEvent
 
-    await expect(persistence.append(id, [result])).rejects.toThrow('invalid XAgent Fact tool result metadata')
+    await expect(persistence.append(id, [result])).rejects.toThrow('invalid kosma Fact tool result metadata')
     expect(value.calls).toEqual([])
   })
 
@@ -1181,7 +1181,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       },
     } as unknown as SessionEvent
 
-    await expect(persistence.append(id, [result])).rejects.toThrow('invalid XAgent Fact tool result metadata')
+    await expect(persistence.append(id, [result])).rejects.toThrow('invalid kosma Fact tool result metadata')
     expect(value.calls).toEqual([])
   })
 
@@ -1350,7 +1350,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const persistence = new XAgentSessionPersistence(new Context(), value)
 
     await expect(persistence.withUserToken('alice-token', () => persistence.create(header)))
-      .rejects.toThrow('invalid XAgent session create response')
+      .rejects.toThrow('invalid kosma session create response')
     await expect(persistence.append(id, [event])).rejects.toThrow('unauthenticated')
   })
 
@@ -1381,7 +1381,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const persistence = new XAgentSessionPersistence(ctx, value)
     try {
       await expect(persistence.withUserToken('alice-token', () => persistence.inspect(id)))
-        .rejects.toThrow('invalid XAgent session purpose')
+        .rejects.toThrow('invalid kosma session purpose')
     } finally { await ctx.fiber.dispose() }
   })
 
@@ -1584,7 +1584,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const value = backend()
     value.sessions.list = vi.fn(async () => response as never)
     const persistence = new XAgentSessionPersistence(new Context(), value)
-    await expect(persistence.withUserToken('token', () => persistence.list())).rejects.toThrow('invalid XAgent session response')
+    await expect(persistence.withUserToken('token', () => persistence.list())).rejects.toThrow('invalid kosma session response')
   })
 
   test.each([undefined, null, '', 'test', 1])('Session 行拒绝缺失或未知 purpose %#', async (purpose) => {
@@ -1600,7 +1600,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     }))
     const persistence = new XAgentSessionPersistence(new Context(), value)
     await expect(persistence.withUserToken('token', () => persistence.list()))
-      .rejects.toThrow('invalid XAgent session purpose')
+      .rejects.toThrow('invalid kosma session purpose')
   })
 
   test('普通列表与 revision 列表防御性排除 Business Skill 测试 Session', async () => {
@@ -1686,7 +1686,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     const value = backend()
     value.sessions.list = vi.fn(async () => ({ sessions: [{ purpose: 'conversation', runtime_header: { ...header, ...override } }] }))
     const persistence = new XAgentSessionPersistence(new Context(), value)
-    await expect(persistence.withUserToken('token', () => persistence.list())).rejects.toThrow('invalid XAgent runtime header')
+    await expect(persistence.withUserToken('token', () => persistence.list())).rejects.toThrow('invalid kosma runtime header')
   })
 
   test.each([
@@ -1710,7 +1710,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     value.sessions.events = vi.fn(async () => response as never)
     const persistence = new XAgentSessionPersistence(new Context(), value)
     await expect(persistence.withUserToken('token', () => persistence.readFrom(id, 0)))
-      .rejects.toThrow(/invalid XAgent|non-contiguous/)
+      .rejects.toThrow(/invalid kosma|non-contiguous/)
   })
 
   test('open 响应校验容器、连续序列和 Session 身份', async () => {
@@ -1755,7 +1755,7 @@ describe('XAgent FastAPI Session Persistence', () => {
       value.sessions.list = vi.fn(async () => ({ sessions: [row] }))
       const candidate = new XAgentSessionPersistence(new Context(), value)
       await expect(candidate.withUserToken('token', () => candidate.listSnapshots()))
-        .rejects.toThrow('invalid XAgent session revision')
+        .rejects.toThrow('invalid kosma session revision')
     }
   })
 
@@ -1794,7 +1794,7 @@ describe('XAgent FastAPI Session Persistence', () => {
     await expect(persistence.append(id, [event, undefined as never])).resolves.toBeUndefined()
     await expect(new XAgentSessionPersistence(new Context(), backend()).inspect(id)).rejects.toThrow('unauthenticated')
     await expect(persistence.withUserToken('token', () => persistence.create({ ...header, id: SessionId('bad') })))
-      .rejects.toThrow('invalid XAgent session id')
+      .rejects.toThrow('invalid kosma session id')
   })
 
   test('消息令牌绑定忽略畸形或其他 Session 的 rpcId，并在 turn/end 后释放 turn lease', async () => {

@@ -1126,7 +1126,7 @@ describe('XAgent Fact provider', () => {
       { idempotencyKey: 'approve-1' },
     ))).rejects.toEqual(new TypertRemoteFailure({
       code: 'fact-revision-conflict',
-      message: 'XAgent Fact request failed',
+      message: 'kosma Fact request failed',
       details: {},
     }))
     value.approve = vi.fn(async () => { throw new XAgentBackendError('sequence-conflict') })

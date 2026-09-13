@@ -1,5 +1,5 @@
 /**
- * The web app's command-line provider: it parses the `dsh --profile web` flag
+ * The web app's command-line provider: it parses the `kosma --profile web` flag
  * family (`--host`, `--port`, `--trusted-host`) and its `--help`
  * text, then provides the immutable values as {@link WEB_STARTUP_SERVICE}.
  * Ordinary rows inject that service before reading it from lazy config.
@@ -42,16 +42,16 @@ interface WebOptions {
  */
 function webCommand(): Command {
   return new Command()
-    .name('dsh --profile web')
-    .description('Serve the DeepSeek Harness browser UI.')
+    .name('kosma --profile web')
+    .description('Serve the kosma browser UI.')
     .helpOption('-h, --help', 'show this help')
     .option('--host <host>', 'bind host')
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
     .addHelpText('after', `
 Examples:
-  dsh --profile web                          serve on the composed host and port
-  dsh --profile web --port 8080              serve on another port
+  kosma --profile web                          serve on the composed host and port
+  kosma --profile web --port 8080              serve on another port
 `)
 }
 

@@ -1,6 +1,6 @@
-/** XAgent Business Profile 的固定中文账号文案。 */
+/** kosma Business Profile 的固定中文账号文案。 */
 export const accountLocale = {
-  product: 'XAgent',
+  product: 'kosma',
   title: '登录工作空间',
   hint: '使用管理员分配的账号继续。',
   email: '邮箱',

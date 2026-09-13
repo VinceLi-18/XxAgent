@@ -30,7 +30,7 @@ OpenRouter 应用归属刻意未实现。`HTTP-Referer`、`X-OpenRouter-Title`�
 
 提供方无关的身份由 `dsh-llm`（`packages/llm/llm/src/attribution.ts`）拥有，而非各适配器。`AppIdentity` 仅包含构建 `User-Agent` 所需的公开产品事实，默认的 `APP_IDENTITY` 取值如下：
 
-- `User-Agent` 的产品 token：`deepseek-harness`（与 Agent Note 之前的线路值及仓库/组织身份保持连续性）
+- `User-Agent` 的产品 token：应用名称 `kosma`；内部包 scope 与提供方专用身份头部保留既有标识
 - 版本：通过 `createRequire` 从所属包的 manifest（元数据清单）读取，绝不手动复制常量
 - 应用 URL：`https://github.com/VinceLi-18/XxAgent`——仓库主页
 

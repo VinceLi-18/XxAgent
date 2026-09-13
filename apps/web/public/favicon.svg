@@ -5,5 +5,5 @@
       svg { color: #F6F8FB; }
     }
   </style>
-  <path d="M10 10H23L54 54H41L10 10ZM41 10H54L23 54H10L41 10Z" fill="currentColor"/>
+  <path d="M10 6H23V58H10ZM28 37L46 19H61L41 37L61 58H46L28 37Z" fill="currentColor"/>
 </svg>

@@ -522,7 +522,7 @@ describe.skipIf(process.env.XAGENT_FACT_APPROVAL_E2E !== '1')(
       }
       owned.child.stdout?.on('data', captureOutput)
       owned.child.stderr?.on('data', captureOutput)
-      await waitForLine(owned.child, /dsh web: (http:\/\/[^\s]+)/u, 'XAgent Business', diagnosticSecrets)
+      await waitForLine(owned.child, /kosma web: (http:\/\/[^\s]+)/u, 'XAgent Business', diagnosticSecrets)
       return owned
     }
 

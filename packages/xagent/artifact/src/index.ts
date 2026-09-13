@@ -332,7 +332,7 @@ export class XAgentArtifactService extends TypertRemoteService implements XAgent
     } catch (error) {
       if (!(error instanceof XAgentBackendError)) throw error
       const code = ARTIFACT_FAILURE_CODES.has(error.code) ? error.code : 'service-unavailable'
-      throw new TypertRemoteFailure({ code, message: 'XAgent artifact request failed', details: {} })
+      throw new TypertRemoteFailure({ code, message: 'kosma artifact request failed', details: {} })
     }
   }
 

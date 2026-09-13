@@ -276,7 +276,7 @@ describe('XAgent 项目工作台真实双账号流程', () => {
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    await waitForLine(dsh, /dsh web: (http:\/\/[^\s]+)/, 'XAgent Business')
+    await waitForLine(dsh, /kosma web: (http:\/\/[^\s]+)/, 'XAgent Business')
     browser = await chromium.launch({ headless: true })
     page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: ZH_BROWSER_LOCALE })
     page.on('console', (message) => { browserDiagnostics.push(`console:${message.type()}:${message.text()}`) })

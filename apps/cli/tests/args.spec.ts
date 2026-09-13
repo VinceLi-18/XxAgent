@@ -21,6 +21,16 @@ function exitCode(argv: string[]): number {
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('parseDshArgs', () => {
+  it('presents kosma as the launcher in help and runnable examples', () => {
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit') })
+    const output = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+    expect(() => parse(['--help'])).toThrow('exit')
+    const help = output.mock.calls.map(([chunk]) => String(chunk)).join('')
+    expect(help).toContain('Usage: kosma')
+    expect(help).toContain('kosma --profile headless')
+    expect(help).toContain('kosma plugin')
+  })
+
   it('routes profile boots and the web alias, handing the rest to the app', () => {
     expect(parse(['--profile', 'tui'])).toEqual({ mode: 'profile', profile: 'tui', patches: [], args: [] })
     expect(parse(['--profile', 'tui', '--patch', 'a.yml', '--patch', 'b.yml']))

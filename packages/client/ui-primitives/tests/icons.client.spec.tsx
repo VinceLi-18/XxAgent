@@ -55,7 +55,7 @@ describe('ic_ds_ icon set', () => {
 })
 
 describe('FishLogo', () => {
-  it('renders the XAgent geometric mark in currentColor at a square ratio', () => {
+  it('renders the kosma geometric mark in currentColor at a square ratio', () => {
     const { container } = render(<primitives.FishLogo />)
     const svg = container.querySelector('svg')!
     expect(svg.getAttribute('width')).toBe('24')

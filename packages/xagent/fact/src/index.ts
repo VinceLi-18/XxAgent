@@ -181,7 +181,7 @@ function factRemoteFailure(error: unknown): TypertRemoteFailure {
   const code = error instanceof XAgentBackendError && FACT_REMOTE_ERRORS.has(error.code as XAgentFactErrorCode)
     ? error.code as XAgentFactErrorCode
     : 'service-unavailable'
-  return new TypertRemoteFailure({ code, message: 'XAgent Fact request failed', details: {} })
+  return new TypertRemoteFailure({ code, message: 'kosma Fact request failed', details: {} })
 }
 
 function isFactDecisionNotice(message: GenerateOptions['messages'][number]): message is UserMessage & {

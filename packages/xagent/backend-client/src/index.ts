@@ -180,7 +180,7 @@ const STABLE_CODES = new Set<XAgentBackendErrorCode>([
 /** Stable fail-closed error returned by the XAgent backend boundary. */
 export class XAgentBackendError extends Error {
   constructor(readonly code: XAgentBackendErrorCode) {
-    super(`XAgent backend request failed: ${code}`)
+    super(`kosma backend request failed: ${code}`)
     this.name = 'XAgentBackendError'
   }
 }
@@ -1659,10 +1659,10 @@ export class XAgentBackendClient implements XAgentBackend {
     try {
       origin = new URL(options.origin)
     } catch {
-      throw new TypeError('invalid XAgent backend configuration')
+      throw new TypeError('invalid kosma backend configuration')
     }
     if ((origin.protocol !== 'http:' && origin.protocol !== 'https:') || options.serviceToken.length === 0) {
-      throw new TypeError('invalid XAgent backend configuration')
+      throw new TypeError('invalid kosma backend configuration')
     }
     this.origin = new URL(origin.origin)
     this.fetcher = options.fetch ?? globalThis.fetch
