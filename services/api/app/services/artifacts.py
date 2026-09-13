@@ -292,7 +292,12 @@ async def complete_upload(
         )
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        return _saved_detail(stored.result.get("detail")), version.id
+        return _saved_detail(
+            stored.result.get("detail"),
+            artifact_id=version.artifact_id,
+            version_id=version.id,
+            version_id_must_be_first=True,
+        ), version.id
 
     upload = await session.scalar(
         select(StagingUpload).where(
@@ -437,12 +442,20 @@ async def complete_upload(
     return detail, version.id
 
 
-def _saved_detail(value: Any) -> dict[str, Any]:
+def _saved_detail(
+    value: Any,
+    *,
+    artifact_id: UUID,
+    version_id: UUID,
+    version_id_must_be_first: bool,
+) -> dict[str, Any]:
     """Validate durable JSON without coercing or replacing the saved snapshot."""
     try:
         detail = ArtifactDetailResponse.model_validate_json(json.dumps(value), strict=True)
     except ValidationError:
         raise ArtifactSnapshotError from None
+    if type(value["schema_version"]) is not int or value["schema_version"] != 2:
+        raise ArtifactSnapshotError
     # Pydantic's JSON mode also accepts timestamp/UUID spellings outside the Host protocol.
     identifiers = [value["id"]]
     if value["scope"]["kind"] == "project":
@@ -460,6 +473,13 @@ def _saved_detail(value: Any) -> dict[str, Any]:
     if any(
         not isinstance(identifier, str) or ARTIFACT_UUID_PATTERN.fullmatch(identifier) is None
         for identifier in identifiers
+    ):
+        raise ArtifactSnapshotError
+    saved_version_ids = [version.id for version in detail.versions]
+    if (
+        detail.id != artifact_id
+        or version_id_must_be_first and saved_version_ids[0] != version_id
+        or not version_id_must_be_first and version_id not in saved_version_ids
     ):
         raise ArtifactSnapshotError
     return value
@@ -736,7 +756,12 @@ async def retry_version(
     if stored is not None and stored.expires_at > now:
         if stored.request_hash != digest:
             raise ArtifactIdempotencyConflict
-        return _saved_detail(stored.result.get("detail"))
+        return _saved_detail(
+            stored.result.get("detail"),
+            artifact_id=visible.artifact_id,
+            version_id=version_id,
+            version_id_must_be_first=False,
+        )
 
     if visible.scan_status != "failed":
         raise ArtifactNotFound

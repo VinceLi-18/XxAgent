@@ -205,6 +205,43 @@ async def test_retry_replay_returns_the_original_detail_after_worker_progress(
 
 
 @pytest.mark.anyio
+async def test_retry_replay_accepts_requested_version_later_in_saved_history(
+    client,
+    seeded_database,
+    alice,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = await _login(client, seeded_database, alice, "alice@example.test")
+    (version,) = await _seed_failed_versions(seeded_database, alice.id, 1)
+    monkeypatch.setattr(
+        "app.services.artifacts._runtime_gateway",
+        lambda: RetryGateway((version,)),
+    )
+    first = await _retry(client, token, version.id, "historical-replay")
+    assert first.status_code == 200
+    saved_detail = first.json()
+    requested = saved_detail["versions"][0]
+    saved_detail = {
+        **saved_detail,
+        "versions": [
+            {**requested, "id": str(uuid4()), "version": requested["version"] + 1},
+            requested,
+        ],
+    }
+    async with AsyncSession(seeded_database) as session, session.begin():
+        stored = await session.get(
+            XAgentIdempotencyKey,
+            (alice.id, "artifact.version.retry", "historical-replay"),
+        )
+        stored.result = {**stored.result, "detail": saved_detail}
+
+    replay = await _retry(client, token, version.id, "historical-replay")
+
+    assert replay.status_code == 200
+    assert replay.json() == saved_detail
+
+
+@pytest.mark.anyio
 async def test_retry_replay_rejects_corrupt_details_without_mutation(
     client, seeded_database, alice, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -254,10 +291,16 @@ async def _assert_corrupt_replays(client, engine, actor_id, token, operation, ke
         original = deepcopy(stored.result)
     detail = original["detail"]
     corruptions = [
+        {**detail, "id": str(uuid4())},
+        {
+            **detail,
+            "versions": [{**detail["versions"][0], "id": str(uuid4())}],
+        },
         {**detail, "id": detail["id"].replace("-", "")},
         {**detail, "scope": {"kind": "project", "project_id": f"urn:uuid:{uuid4()}"}},
         None, {}, {key: value for key, value in detail.items() if key != "schema_version"},
-        {**detail, "schema_version": 1}, {**detail, "schema_version": 3},
+        {**detail, "schema_version": 1}, {**detail, "schema_version": 2.0},
+        {**detail, "schema_version": 3},
         {**detail, "latest_version": 1}, {**detail, "can_edit": "true"},
         {**detail, "scope": {"kind": "private", "owner_id": "private-secret"}},
         {**detail, "scope": {"kind": "project", "project_id": "invalid"}},
