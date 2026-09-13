@@ -164,7 +164,7 @@ const sharedTheme: Pick<DefaultTheme.Config, 'search' | 'socialLinks' | 'editLin
 const base = process.env.DOCS_BASE ?? '/'
 
 /**
- * The DeepSeek wordmark, inlined so its `currentColor` fills follow the active
+ * The kosma wordmark, inlined so its `currentColor` fills follow the active
  * theme. An `<img>` would freeze the mark at the colors the file declares.
  */
 const wordmark = readFileSync(resolve(import.meta.dirname, '../public/wordmark.svg'), 'utf8')
@@ -247,8 +247,8 @@ function siteTitle(previewTag: string): string {
 }
 
 export default withMermaid({
-  title: 'DeepSeek Harness',
-  description: '用于构建 Agent Harness 的插件化 SDK',
+  title: 'kosma',
+  description: '用于项目上下文、资料与协作任务的智能体',
   base,
   head: [
     // VitePress leaves head hrefs untouched, so the base belongs here explicitly.

@@ -38,7 +38,7 @@ export interface AppIdentity {
  * can suppress attribution entirely.
  */
 export const APP_IDENTITY: AppIdentity = {
-  product: 'deepseek-harness',
+  product: 'kosma',
   version,
   url: 'https://github.com/VinceLi-18/XxAgent',
 }

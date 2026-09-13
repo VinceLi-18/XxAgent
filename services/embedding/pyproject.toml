@@ -1,7 +1,7 @@
 [project]
 name = "xagent-embedding"
 version = "0.1.0"
-description = "Internal CPU embedding service for XAgent retrieval"
+description = "Internal CPU embedding service for kosma retrieval"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115,<1.0",

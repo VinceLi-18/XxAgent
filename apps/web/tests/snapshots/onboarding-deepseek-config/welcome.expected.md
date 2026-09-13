@@ -1,4 +1,4 @@
-- dialog "XAgent":
-  - heading "XAgent" [level=2]
-  - paragraph: XAgent 用于组织项目上下文、资料与协作任务。配置模型后即可开始新会话。
+- dialog "kosma":
+  - heading "kosma" [level=2]
+  - paragraph: kosma 用于组织项目上下文、资料与协作任务。配置模型后即可开始新会话。
   - button "继续"

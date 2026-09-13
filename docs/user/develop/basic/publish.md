@@ -2,7 +2,7 @@
 
 English | [中文](publish.zh.md)
 
-The previous tutorials loaded a local plugin through a `--patch` overlay. This tutorial packages a separately owned extension as an installable **bundle**, installs it into a **profile** with `dsh plugin add`, and explains the layer order that determines the composed configuration. XxAgent's built-in workspaces are private source components and do not use this distribution path. This tutorial assumes the `dsh` CLI is installed. Complete [plugin configuration](./config.md) first.
+The previous tutorials loaded a local plugin through a `--patch` overlay. This tutorial packages a separately owned extension as an installable **bundle**, installs it into a **profile** with `kosma plugin add`, and explains the layer order that determines the composed configuration. kosma's built-in workspaces are private source components and do not use this distribution path. This tutorial assumes the `kosma` CLI is installed. Complete [plugin configuration](./config.md) first.
 
 To use a fresh source checkout instead, complete the [run-from-source section](../../../../README.md#run-from-source), keep this tutorial's `hello-plugin` directory at the repository root, and run the remaining `dsh ...` commands from there as `pnpm dsh ...`. See [source execution](../../../../apps/cli/reference/README.md#source-execution) for build and launcher behavior.
 
@@ -13,7 +13,7 @@ Installation is built on two concepts. Both are described by a `package.json`, b
 - A **bundle** is an npm package that ships a configuration layer. Its manifest declares `dsh.bundle`, answering "what does this package contribute?": a patch file that inserts or overrides plugin rows.
 - A **profile** is a directory under `$DSH_HOME/profiles/<name>` describing one runnable composition. Its manifest declares `dsh.profile`, answering "which bundles compose this setup, in what order?".
 
-A bundle is what you author and distribute; a profile is what a user boots with `dsh --profile <name>`. Nothing is both.
+A bundle is what you author and distribute; a profile is what a user boots with `kosma --profile <name>`. Nothing is both.
 
 ### The bundle manifest
 
@@ -61,7 +61,7 @@ Create `hello-plugin/cordis.patch.yml`. The patch is a YAML array like the `--pa
       name: dsh-hello-plugin
 ```
 
-A package without the `dsh.bundle` declaration still installs, but only as a plain dependency: `dsh plugin` prints a warning and activates no layer. Use that package format for a library that plugin packages import rather than a plugin users enable.
+A package without the `dsh.bundle` declaration still installs, but only as a plain dependency: `kosma plugin` prints a warning and activates no layer. Use that package format for a library that plugin packages import rather than a plugin users enable.
 
 ### The profile manifest
 
@@ -70,17 +70,17 @@ A profile directory holds two files:
 - `package.json` — the profile's out-of-tree plugin dependencies (managed by pnpm) plus the `dsh.profile` manifest with its ordered `bundles` list.
 - `cordis.patch.yml` — the user's own patch layer, applied after every bundle layer.
 
-You never write a profile manifest by hand: `dsh plugin` creates and maintains it. The next section shows the result.
+You never write a profile manifest by hand: `kosma plugin` creates and maintains it. The next section shows the result.
 
 ## Install into a profile
 
-`dsh plugin --profile <name> <args...>` forwards to pnpm in the profile directory, so every pnpm verb works. From the directory that contains `hello-plugin`, install the package checkout:
+`kosma plugin --profile <name> <args...>` forwards to pnpm in the profile directory, so every pnpm verb works. From the directory that contains `hello-plugin`, install the package checkout:
 
 ```sh
-dsh plugin --profile demo add ./hello-plugin
+kosma plugin --profile demo add ./hello-plugin
 ```
 
-The first use initializes the profile (with `@deepseek-ai/dsh-base` as its first bundle), pnpm links the checkout, and `dsh` appends the bundle to `dsh.profile.bundles` because the package declares `dsh.bundle`:
+The first use initializes the profile (with `@deepseek-ai/dsh-base` as its first bundle), pnpm links the checkout, and `kosma` appends the bundle to `dsh.profile.bundles` because the package declares `dsh.bundle`:
 
 ```json
 {
@@ -103,11 +103,11 @@ The first use initializes the profile (with `@deepseek-ai/dsh-base` as its first
 Verify the layer without booting, then boot:
 
 ```sh
-dsh --profile demo --dump-config   # shows a "# == dsh-hello-plugin" layer
-dsh --profile demo
+kosma --profile demo --dump-config   # shows a "# == dsh-hello-plugin" layer
+kosma --profile demo
 ```
 
-`dsh plugin --profile demo remove dsh-hello-plugin` removes both the dependency and the layer.
+`kosma plugin --profile demo remove dsh-hello-plugin` removes both the dependency and the layer.
 
 ## The loading order
 
@@ -155,13 +155,13 @@ On `--help`, the provider publishes no service, so those rows never activate. Lo
 Publishing to a registry is not required — users can install straight from a git host:
 
 ```sh
-dsh plugin --profile demo add github:you/hello-plugin
+kosma plugin --profile demo add github:you/hello-plugin
 ```
 
 But a git install fetches **sources, not built artifacts**: nothing runs your `build` script, so a TypeScript package arrives without its `lib/` output and fails to load. Two things must happen, one on each side:
 
 - **The author** ships a `prepare` script — pnpm runs it after a git install — that builds the published entry points from source, self-contained: it must not assume dev-only context such as a sibling monorepo checkout. [turtle-ui](https://github.com/deepseek-harness/turtle-ui) is a working example: its `prepare` runs a dedicated tsdown config that transpiles `src/` without project references or type checking.
-- **The user** allowlists the build. pnpm ≥10 refuses to run a git dependency's `prepare` script until it is explicitly allowed, so the first `add` fails; `dsh` points at the fix — copy the exact package key pnpm printed into the profile's `pnpm-workspace.yaml`:
+- **The user** allowlists the build. pnpm ≥10 refuses to run a git dependency's `prepare` script until it is explicitly allowed, so the first `add` fails; `kosma` points at the fix — copy the exact package key pnpm printed into the profile's `pnpm-workspace.yaml`:
 
   ```yaml
   allowBuilds:
@@ -174,8 +174,8 @@ Treat that allowance as what it is: **permission to execute the package's code o
 
 If you would rather not ask users for the allowance, distribute built artifacts instead — neither form needs any build permission:
 
-- **Publish to npm** with `lib/` built at `pnpm publish` time; `dsh plugin add your-package` then installs prebuilt code.
-- **Ship a tarball** from `pnpm pack`; users run `dsh plugin add ./hello-plugin-0.1.0.tgz`.
+- **Publish to npm** with `lib/` built at `pnpm publish` time; `kosma plugin add your-package` then installs prebuilt code.
+- **Ship a tarball** from `pnpm pack`; users run `kosma plugin add ./hello-plugin-0.1.0.tgz`.
 
 ## Next steps
 

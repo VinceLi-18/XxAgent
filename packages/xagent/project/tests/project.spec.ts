@@ -225,7 +225,7 @@ describe('XAgent Project Remote', () => {
     const service = new XAgentProjectService(new Context(), remote)
     await expect(service.withRequest(alice, () => service.createProject('Alpha', 'create-1')))
       .rejects.toEqual(new TypertRemoteFailure({
-        code: 'forbidden', message: 'XAgent project request failed', details: {},
+        code: 'forbidden', message: 'kosma project request failed', details: {},
       }))
 
     remote.createProject = vi.fn(async () => { throw new XAgentBackendError('sequence-conflict') })

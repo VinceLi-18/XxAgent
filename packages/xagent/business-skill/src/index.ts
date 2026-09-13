@@ -86,7 +86,7 @@ interface Registration {
 interface LoadedOwner { readonly registration: Registration; readonly version: XAgentBusinessSkillLoad }
 
 function failure(code = 'service-unavailable'): TypertRemoteFailure {
-  return new TypertRemoteFailure({ code, message: 'XAgent Business Skill request failed', details: {} })
+  return new TypertRemoteFailure({ code, message: 'kosma Business Skill request failed', details: {} })
 }
 function eligible(scope: XAgentAuthenticatedSessionRequestScope): scope is ProjectScope {
   return isXAgentAuthenticatedSessionRequestScope(scope)

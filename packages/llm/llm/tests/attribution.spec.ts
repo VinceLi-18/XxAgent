@@ -19,7 +19,7 @@ describe('APP_IDENTITY', () => {
 
   it('carries only static public product facts', () => {
     expect(APP_IDENTITY).toEqual({
-      product: 'deepseek-harness',
+      product: 'kosma',
       version: manifest.version,
       url: 'https://github.com/VinceLi-18/XxAgent',
     })
@@ -29,7 +29,7 @@ describe('APP_IDENTITY', () => {
 describe('userAgent', () => {
   it('renders product/version with the +url comment', () => {
     expect(userAgent()).toBe(
-      `deepseek-harness/${manifest.version} (+https://github.com/VinceLi-18/XxAgent)`,
+      `kosma/${manifest.version} (+https://github.com/VinceLi-18/XxAgent)`,
     )
   })
 

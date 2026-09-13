@@ -1,4 +1,4 @@
-/** Product-wide, versioned XAgent welcome notice. */
+/** Product-wide, versioned kosma welcome notice. */
 
 import { useCallback, useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'

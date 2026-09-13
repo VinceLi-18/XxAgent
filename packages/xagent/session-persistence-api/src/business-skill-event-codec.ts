@@ -4,7 +4,7 @@
  */
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-function invalid(): never { throw new TypeError('invalid XAgent Business Skill session event') }
+function invalid(): never { throw new TypeError('invalid kosma Business Skill session event') }
 
 function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) invalid()

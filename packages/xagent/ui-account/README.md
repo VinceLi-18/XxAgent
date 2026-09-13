@@ -1,6 +1,6 @@
 # @xagent/dsh-ui-account
 
-`@xagent/dsh-ui-account` 为 XAgent Business Profile 提供正式账号界面。客户端先检查同源 `/auth/session`；只有响应携带 `x-xagent-auth: 1` 时才接管登录流程，普通 DSH Profile 不显示账号界面，也不请求 XAgent 工作台数据。
+`@xagent/dsh-ui-account` 为 kosma Business Profile 提供正式账号界面。客户端先检查同源 `/auth/session`；只有响应携带 `x-xagent-auth: 1` 时才接管登录流程，普通 DSH Profile 不显示账号界面，也不请求 kosma 工作台数据。
 
 登录遮罩注册到 `shell.overlay`，账号摘要和退出入口注册到 `sidebar.footer.action`。成功认证后，插件通过 `xagentWorkbench` 执行服务器 Bootstrap；退出或账号变化会先清空项目、上下文和 Session 选择状态，迟到响应不能恢复旧账号数据。
 

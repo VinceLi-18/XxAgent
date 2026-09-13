@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "XAgent",
-  "short_name": "XAgent",
+  "name": "kosma",
+  "short_name": "kosma",
   "start_url": "/",
   "scope": "/",
   "display": "fullscreen",

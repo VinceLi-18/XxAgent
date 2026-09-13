@@ -10,16 +10,16 @@ export const WELCOME_NOTICE_ACK_FIELD = 'welcomeNoticeVersion'
  */
 export const WELCOME_NOTICE_VERSION = '2026-08-22.1'
 
-/** The complete XAgent welcome notice in both supported GUI locales. */
+/** The complete kosma welcome notice in both supported GUI locales. */
 export const WELCOME_NOTICE_COPY = {
   zh: {
-    title: 'XAgent',
-    body: 'XAgent 用于组织项目上下文、资料与协作任务。配置模型后即可开始新会话。',
+    title: 'kosma',
+    body: 'kosma 用于组织项目上下文、资料与协作任务。配置模型后即可开始新会话。',
     continueLabel: '继续',
   },
   en: {
-    title: 'XAgent',
-    body: 'XAgent organizes project context, resources, and collaborative tasks. Configure a model to start a new session.',
+    title: 'kosma',
+    body: 'kosma organizes project context, resources, and collaborative tasks. Configure a model to start a new session.',
     continueLabel: 'Continue',
   },
 } as const

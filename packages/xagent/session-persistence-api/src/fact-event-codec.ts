@@ -40,7 +40,7 @@ const SNAKE_FIELDS: FactFieldNames = {
 }
 
 function invalidFactEvent(): never {
-  throw new TypeError('invalid XAgent Fact session event')
+  throw new TypeError('invalid kosma Fact session event')
 }
 
 function record(value: unknown): Record<string, unknown> {

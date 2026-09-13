@@ -533,7 +533,7 @@ describe.skipIf(process.env.XAGENT_STRUCTURED_RETRIEVAL_E2E !== '1')(
         }
         dsh.child.stdout?.on('data', captureDshOutput)
         dsh.child.stderr?.on('data', captureDshOutput)
-        await waitForLine(dsh.child, /dsh web: (http:\/\/[^\s]+)/u, 'XAgent Business')
+        await waitForLine(dsh.child, /kosma web: (http:\/\/[^\s]+)/u, 'XAgent Business')
         browser = await chromium.launch({ headless: true })
         page = await browser.newPage({ viewport: { width: 1440, height: 900 }, locale: ZH_BROWSER_LOCALE })
         page.on('console', (message) => { diagnostics.push(`console:${message.type()}:${redactBrowserDiagnosticText(message.text())}`) })

@@ -118,6 +118,7 @@ describe('XAgent 正式账号界面', () => {
 
     const email = screen.getByLabelText('邮箱') as HTMLInputElement
     const password = screen.getByLabelText('密码') as HTMLInputElement
+    expect(screen.getByText('kosma')).toBeTruthy()
     expect(document.activeElement).toBe(email)
     expect(email.autocomplete).toBe('username')
     expect(password.autocomplete).toBe('current-password')

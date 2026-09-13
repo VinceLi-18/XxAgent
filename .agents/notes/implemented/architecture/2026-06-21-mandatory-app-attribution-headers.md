@@ -30,7 +30,7 @@ OpenRouter app attribution is deliberately not implemented. `HTTP-Referer`, `X-O
 
 The provider-neutral identity is owned by `dsh-llm` (`packages/llm/llm/src/attribution.ts`), not by individual adapters. `AppIdentity` contains only public product facts needed to build `User-Agent`, and the default `APP_IDENTITY` values:
 
-- product token for `User-Agent`: `deepseek-harness` (continuity with the pre-Agent Note wire value and the repo/org identity)
+- product token for `User-Agent`: `kosma`, the application name; internal package scopes and provider-specific identity headers retain their existing identifiers
 - version: read from the owning package's manifest via `createRequire`, never a hand-copied constant
 - app URL: `https://github.com/VinceLi-18/XxAgent` - the repository home
 

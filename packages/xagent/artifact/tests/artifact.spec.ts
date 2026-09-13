@@ -694,7 +694,7 @@ describe('XAgent Artifact Remote', () => {
     await expect(service.withRequest(alice, () => service.completeUpload(UPLOAD_ID, {
       size: 8, sha256: 'a'.repeat(64), idempotencyKey: 'complete-1',
     }))).rejects.toEqual(new TypertRemoteFailure({
-      code: 'upload-rejected', message: 'XAgent artifact request failed', details: {},
+      code: 'upload-rejected', message: 'kosma artifact request failed', details: {},
     }))
 
     remote.completeUpload = vi.fn(async () => { throw new XAgentBackendError('sequence-conflict') })

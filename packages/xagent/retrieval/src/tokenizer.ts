@@ -110,10 +110,10 @@ export class XAgentBgeM3HttpTokenizer implements XAgentBgeM3Tokenizer {
     try {
       backend = new URL(origin)
     } catch {
-      throw new TypeError('invalid XAgent tokenizer configuration')
+      throw new TypeError('invalid kosma tokenizer configuration')
     }
     if ((backend.protocol !== 'http:' && backend.protocol !== 'https:') || serviceToken.length === 0) {
-      throw new TypeError('invalid XAgent tokenizer configuration')
+      throw new TypeError('invalid kosma tokenizer configuration')
     }
     this.endpoint = new URL('/internal/xagent/retrieval/token-count', backend.origin).href
   }

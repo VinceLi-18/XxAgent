@@ -63,11 +63,11 @@ function mount(version?: string, mutateImpl: () => Promise<unknown> = () => Prom
 describe('WelcomeNotice', () => {
   it('uses the exact owner copy in both GUI locales', () => {
     expect(WELCOME_NOTICE_COPY.en).toEqual({
-      title: 'XAgent',
-      body: 'XAgent organizes project context, resources, and collaborative tasks. Configure a model to start a new session.',
+      title: 'kosma',
+      body: 'kosma organizes project context, resources, and collaborative tasks. Configure a model to start a new session.',
       continueLabel: 'Continue',
     })
-    expect(WELCOME_NOTICE_COPY.zh.body).toContain('XAgent')
+    expect(WELCOME_NOTICE_COPY.zh.body).toContain('kosma')
     expect(WELCOME_NOTICE_COPY.zh.body).toContain('项目上下文')
     expect(en.welcomeBody).toBe(WELCOME_NOTICE_COPY.en.body)
     expect(zh.welcomeBody).toBe(WELCOME_NOTICE_COPY.zh.body)
@@ -107,10 +107,10 @@ describe('WelcomeNotice', () => {
     expect(h.complete).toHaveBeenCalledOnce()
   })
 
-  it('shows the XAgent welcome notice after the prior testing notice was acknowledged', async () => {
+  it('shows the kosma welcome notice after the prior testing notice was acknowledged', async () => {
     const h = mount('2026-08-13.1')
     await act(async () => { await h.controller.load() })
-    expect(await screen.findByRole('dialog', { name: 'XAgent' })).toBeTruthy()
+    expect(await screen.findByRole('dialog', { name: 'kosma' })).toBeTruthy()
     expect(h.complete).not.toHaveBeenCalled()
   })
 

@@ -130,11 +130,11 @@ describe('XAgentBgeM3HttpTokenizer', () => {
 
   test('rejects invalid relay configuration before transport', () => {
     expect(() => new XAgentBgeM3HttpTokenizer('not a URL', 'service-secret'))
-      .toThrow('invalid XAgent tokenizer configuration')
+      .toThrow('invalid kosma tokenizer configuration')
     expect(() => new XAgentBgeM3HttpTokenizer('file:///tmp/tokenizer', 'service-secret'))
-      .toThrow('invalid XAgent tokenizer configuration')
+      .toThrow('invalid kosma tokenizer configuration')
     expect(() => new XAgentBgeM3HttpTokenizer('https://api.internal', ''))
-      .toThrow('invalid XAgent tokenizer configuration')
+      .toThrow('invalid kosma tokenizer configuration')
   })
 
   test('bounds and fatally decodes the streamed response before closed-schema validation', async () => {

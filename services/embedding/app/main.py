@@ -88,7 +88,7 @@ def create_app(model: EmbeddingModel | None = None, tokenizer: TokenizerCounter 
     """
     embedding_model = model or EmbeddingModel()
     tokenizer_counter = tokenizer or TokenizerCounter()
-    app = FastAPI(title="XAgent Embedding", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="kosma Embedding", docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.get("/health")
     async def health() -> dict[str, str | int]:

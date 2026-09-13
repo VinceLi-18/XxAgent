@@ -76,8 +76,8 @@ export const WELCOME_NOTICE_ACK_FIELD = 'welcomeNoticeVersion'
 export const WELCOME_NOTICE_VERSION = '2026-08-22.1'
 export const WELCOME_NOTICE_COPY = {
   zh: {
-    title: 'XAgent',
-    body: 'XAgent 用于组织项目上下文、资料与协作任务。配置模型后即可开始新会话。',
+    title: 'kosma',
+    body: 'kosma 用于组织项目上下文、资料与协作任务。配置模型后即可开始新会话。',
     continueLabel: '继续',
   },
 } as const

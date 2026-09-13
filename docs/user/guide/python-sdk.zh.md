@@ -2,7 +2,7 @@
 
 [English](python-sdk.md) | 中文
 
-本教程介绍 Web UI 之外的程序化使用方式：安装从授权 XxAgent revision 构建的私有 Python 载体、运行仓库内置的 agent（智能体）组合，并在自己的程序中调用同一套 API。
+本教程介绍 Web UI 之外的程序化使用方式：安装从授权 kosma revision 构建的私有 Python 载体、运行仓库内置的 agent（智能体）组合，并在自己的程序中调用同一套 API。
 
 ## 前置要求
 
@@ -17,8 +17,8 @@
 取得授权仓库 revision 及其匹配的私有 Python 产物集合。创建虚拟环境，然后在不查询 package registry 的情况下安装 SDK 及其内置运行时：
 
 ```sh
-git clone <authorized-xagent-repository-url> XxAgent
-cd XxAgent
+git clone <authorized-xagent-repository-url> kosma
+cd kosma
 python -m venv .venv
 . .venv/bin/activate
 python -m pip install --no-index \
