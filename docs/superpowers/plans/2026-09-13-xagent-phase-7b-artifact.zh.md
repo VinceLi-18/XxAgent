@@ -52,7 +52,7 @@ git diff --check
 
 ## 任务 3：验证组装回放、部署与回滚
 
-修改 `apps/cli/tests/xagent-artifact-runtime.e2e.ts` 和 `services/api/tests/e2e/test_artifact_pipeline.py`；在 `services/api/tests/api/test_artifact_snapshot_replay.py` 添加进程重启迁移验收，必要时在 `services/api/tests/` 下添加范围受限的子进程辅助程序。更新 `services/api/README.md`、`packages/xagent/backend-client/README.md`、`packages/xagent/artifact/README.md` 和现有 `.agents/notes/implemented/architecture/2026-08-25-xagent-artifact-processing.md` 双语对。当前作者自行更新双语对侧文件并记录哈希，不委派翻译。
+修改 `apps/cli/tests/xagent-artifact-runtime.e2e.ts` 和 `services/api/tests/e2e/test_artifact_pipeline.py`；在 `services/api/tests/api/test_artifact_snapshot_replay.py` 添加进程重启迁移验收，必要时在 `services/api/tests/` 下添加范围受限的子进程辅助程序。在 `.github/workflows/ci.yml` 的 `xagent-api` 作业中准备 Node、冻结的 pnpm 工作区依赖并运行 `pnpm run build:lib:host`，确保 CI 执行跨语言验收。投影连接程序按子进程测试策略，在普通 Node 下导入构建后的后端客户端；不复制投影，也不因缺依赖而跳过。更新 `services/api/README.md`、`packages/xagent/backend-client/README.md`、`packages/xagent/artifact/README.md` 和现有 `.agents/notes/implemented/architecture/2026-08-25-xagent-artifact-processing.md` 双语对。当前作者自行更新双语对侧文件并记录哈希，不委派翻译。
 
 - [ ] 更新真实 Cordis Loader fixture，断言三个 v2 请求及不变的公开详情字段；公开/UI fixture 保持不变。通过现有 e2e 配置运行。
 - [ ] 为两种写入操作添加跨真实 PostgreSQL 迁移及 API 进程终止/重启的回归。保存原始公开结果，迁移旧快照，推进 worker 状态，然后经重启进程使用相同业务身份回放。比较公开结果与持久化副作用计数，再撤销当前访问权限并验证拒绝。公开比较使用生产 TypeScript 投影，不在 Python 中复制；现有 Loader 可提供连接方式。RED 必须暴露缺失的组装保证或旧 fixture。
