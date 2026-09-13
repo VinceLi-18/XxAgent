@@ -73,7 +73,7 @@ class ArtifactVersionSummaryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: UUID
-    version: int = Field(ge=1)
+    version: int = Field(ge=1, le=2**53 - 1)
     original_filename: str = Field(min_length=1, max_length=255)
     uploaded_by: UUID
     size: int | None = Field(default=None, ge=0, le=50 * 1024 * 1024)

@@ -254,6 +254,8 @@ async def _assert_corrupt_replays(client, engine, actor_id, token, operation, ke
         original = deepcopy(stored.result)
     detail = original["detail"]
     corruptions = [
+        {**detail, "id": detail["id"].replace("-", "")},
+        {**detail, "scope": {"kind": "project", "project_id": f"urn:uuid:{uuid4()}"}},
         None, {}, {key: value for key, value in detail.items() if key != "schema_version"},
         {**detail, "schema_version": 1}, {**detail, "schema_version": 3},
         {**detail, "latest_version": 1}, {**detail, "can_edit": "true"},
@@ -272,6 +274,10 @@ async def _assert_corrupt_replays(client, engine, actor_id, token, operation, ke
         ("size", 50 * 1024 * 1024 + 1), ("size", None),
         ("sha256", "A" * 64), ("sha256", "a" * 64), ("status", "unknown"),
         ("created_at", "invalid"), ("original_filename", ""), ("content_type", ""),
+        ("created_at", "1789257600"), ("created_at", "2026-09-13 00:00:00Z"),
+        ("version", 9007199254740992),
+        ("id", version["id"].replace("-", "")),
+        ("uploaded_by", f"urn:uuid:{version['uploaded_by']}"),
     ))
     corruptions.append({**detail, "versions": [version, {**version, "id": str(uuid4()), "version": 2}]})
     corruptions.append({**detail, "versions": [{**version, "id": str(uuid4())}, version]})

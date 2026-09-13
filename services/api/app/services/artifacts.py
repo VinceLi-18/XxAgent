@@ -61,6 +61,12 @@ class ArtifactForbidden(Exception):
     pass
 
 
+ARTIFACT_UUID_PATTERN = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.IGNORECASE)
+ARTIFACT_INSTANT_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]+)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])"
+)
+
 INLINE_TYPES = frozenset(
     {
         "application/pdf",
@@ -437,12 +443,25 @@ def _saved_detail(value: Any) -> dict[str, Any]:
         detail = ArtifactDetailResponse.model_validate_json(json.dumps(value), strict=True)
     except ValidationError:
         raise ArtifactSnapshotError from None
-    for version in detail.versions:
+    # Pydantic's JSON mode also accepts timestamp/UUID spellings outside the Host protocol.
+    identifiers = [value["id"]]
+    if value["scope"]["kind"] == "project":
+        identifiers.append(value["scope"]["project_id"])
+    for raw_version, version in zip(value["versions"], detail.versions, strict=True):
+        identifiers.extend((raw_version["id"], raw_version["uploaded_by"]))
+        created_at = raw_version["created_at"]
+        if not isinstance(created_at, str) or ARTIFACT_INSTANT_PATTERN.fullmatch(created_at) is None:
+            raise ArtifactSnapshotError
         for field in ("size", "content_type", "sha256"):
             if field in version.model_fields_set and getattr(version, field) is None:
                 raise ArtifactSnapshotError
         if version.sha256 is not None and version.status not in {"clean", "quarantined"}:
             raise ArtifactSnapshotError
+    if any(
+        not isinstance(identifier, str) or ARTIFACT_UUID_PATTERN.fullmatch(identifier) is None
+        for identifier in identifiers
+    ):
+        raise ArtifactSnapshotError
     return value
 
 

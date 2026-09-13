@@ -124,7 +124,7 @@ Fact proposal admission 不信任客户端展示元数据。服务端先严格�
 
 详情查询、上传完成和扫描重试的请求必须携带 `schema_version: 2`，完成和重试还须提供原有业务字段；缺失或不支持的版本在写入或幂等重放前返回 422。响应只包含 `schema_version`、`id`、`display_name`、`scope`、`can_edit` 和 `versions`。FastAPI 负责当前授权、版本状态和安全字段披露，仅 clean/quarantined 版本可包含 hash；Host 从完整历史派生公开 latest 摘要。列表保留空请求及服务端摘要，不传递完整历史。
 
-完成和重试在 `result.detail` 保存相同的版本 2 详情。重放先检查当前编辑权限，再严格验证并返回保存的详情；worker 进度和后续版本不改变该响应。无效持久化详情返回固定 503 `service-unavailable`，不泄露验证输入，不产生版本、任务或幂等记录变更。操作名及业务请求 hash 不包含传输版本，Host/API 必须配套部署；历史快照转换由数据迁移负责。
+完成和重试在 `result.detail` 保存相同的版本 2 详情。重放先检查当前编辑权限，再严格验证原始 UUID/ISO 时间表示、安全整数范围及完整详情后返回保存的快照；worker 进度和后续版本不改变该响应。无效持久化详情返回固定 503 `service-unavailable`，不泄露验证输入，不产生版本、任务或幂等记录变更。操作名及业务请求 hash 不包含传输版本，Host/API 必须配套部署；历史快照转换由数据迁移负责。
 
 ### 资料读取 URL
 
