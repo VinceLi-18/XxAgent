@@ -67,7 +67,7 @@ async def _insert_skill_history(connection, table, rows, skill_id, number, sessi
 @pytest.mark.anyio
 async def test_revision_018_installs_governed_skill_relations(seeded_database):
     async with seeded_database.connect() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "020_skill_test_policy"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "021_artifact_detail_snapshots"
         tables = set(await connection.scalars(text(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
         )))
@@ -83,7 +83,7 @@ async def test_empty_schema_round_trip_preserves_conversation_purpose(seeded_dat
     async with seeded_database.connect() as connection:
         assert await connection.scalar(text("SELECT purpose FROM xagent_sessions WHERE id = :id"),
                                        {"id": fact_project_session.id}) == "conversation"
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "020_skill_test_policy"
+        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "021_artifact_detail_snapshots"
 
 
 @pytest.mark.anyio
